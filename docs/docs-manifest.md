@@ -4,2837 +4,2854 @@
 
 排除：`*_test.rs`、`*_tests.rs`、`test.rs`、`tests.rs`，`test/tests/testdata/benches/fuzz` 目录，以及仅承担装配、占位、桩接线或薄转发的 `lib.rs`、`mod.rs`、`doc.rs`、`stubs.rs`、`build.rs`、`bin_main.rs`。
 
+## 📘 推荐阅读顺序（由浅入深）
+
+正文仍按仓库目录排列；阅读时按下面的 `【序号】` 标记查找对应章节。同一阶段内建议按列出的先后顺序阅读，暂时看不懂的实现可以先跳过，沿主线读完后再回看。
+
+1. 【01·基础约定】`build/config.rs` → `pkg/errno` → `pkg/errors` → `pkg/errctx` → `pkg/format` → `pkg/param`
+2. 【02·通用能力】`pkg/types` → `pkg/util` → `pkg/config` → `pkg/metrics` → `pkg/timer` → `pkg/lock`
+3. 【03·SQL 数据模型】`pkg/parser` → `pkg/expression` → `pkg/tablecodec` → `pkg/structure` → `pkg/table` → `pkg/meta` → `pkg/infoschema`
+4. 【04·存储访问】`pkg/kv` → `pkg/keyspace` → `pkg/objstore` → `pkg/store` → `pkg/distsql`
+5. 【05·SQL 核心主线】`pkg/planner` → `pkg/executor` → `pkg/sessionctx` → `pkg/sessiontxn` → `pkg/session`
+6. 【06·实例生命周期】`pkg/domain` → `pkg/owner` → `pkg/autoid_service` → `pkg/ddl` → `pkg/server` → `cmd/tidb-server` → `pkg/tidbmanager` → `pkg/standby`
+7. 【07·治理与扩展】`pkg/privilege` → `pkg/bindinfo` → `pkg/plugin` → `pkg/extension` → `pkg/resourcegroup` → `pkg/resourcemanager` → `pkg/extworkload`
+8. 【08·数据维护】`pkg/statistics` → `pkg/ttl` → `pkg/workloadlearning` → `pkg/telemetry` → `pkg/inference` → `pkg/dxf` → `pkg/metaservice`
+9. 【09·导入导出】`pkg/dumpformat` → `dumpling/context` → `dumpling/log` → `dumpling/export` → `dumpling/cli` → `dumpling/cmd` → `pkg/importsdk` → `pkg/ingestor` → `pkg/lightning` → `lightning/pkg` → `lightning/cmd` → `br/pkg` → `br/cmd`
+10. 【10·工具与专项】`pkg/testkit` → `cmd/benchdb` → `cmd/benchkv` → `cmd/benchraw` → `cmd/importer` → `cmd/mirror` → `cmd/pluginpkg` → `build/debug-linter` → `build/linter` → `tools/check` → `tools/dashboard-linter` → `tools/fake-oauth` → `tools/gen-parquet` → `tools/patch-go` → `tools/tazel`
+
+> 推荐主线：先读【01】—【06】；需要了解完整产品能力时再读【07】—【09】；【10】适合最后按需查阅。
+
 ## br/cmd
 
-- [ ] `br/cmd/br/abort.rs.md` ← `br/cmd/br/abort.rs`（任务 `2-åæ-cmd-br-abort-02373426.md`）
-- [ ] `br/cmd/br/backup.rs.md` ← `br/cmd/br/backup.rs`（任务 `3-åæ-cmd-br-backup-6e7ba13a.md`）
-- [ ] `br/cmd/br/cmd.rs.md` ← `br/cmd/br/cmd.rs`（任务 `5-åæ-cmd-br-cmd-bc9cd352.md`）
-- [ ] `br/cmd/br/debug.rs.md` ← `br/cmd/br/debug.rs`（任务 `6-åæ-cmd-br-debug-35958afa.md`）
-- [ ] `br/cmd/br/fips.rs.md` ← `br/cmd/br/fips.rs`（任务 `7-åæ-cmd-br-fips-e39376de.md`）
-- [ ] `br/cmd/br/main.rs.md` ← `br/cmd/br/main.rs`（任务 `9-åæ-cmd-br-main-20dcb164.md`）
-- [ ] `br/cmd/br/operator.rs.md` ← `br/cmd/br/operator.rs`（任务 `10-åæ-cmd-br-operator-a20a2316.md`）
-- [ ] `br/cmd/br/restore.rs.md` ← `br/cmd/br/restore.rs`（任务 `11-åæ-cmd-br-restore-bf45e5b5.md`）
-- [ ] `br/cmd/br/stream.rs.md` ← `br/cmd/br/stream.rs`（任务 `12-åæ-cmd-br-stream-b203a5fc.md`）
+- [ ] `br/cmd/br/abort.rs.md`
+- [ ] `br/cmd/br/backup.rs.md`
+- [ ] `br/cmd/br/cmd.rs.md`
+- [ ] `br/cmd/br/debug.rs.md`
+- [ ] `br/cmd/br/fips.rs.md`
+- [ ] `br/cmd/br/main.rs.md`
+- [ ] `br/cmd/br/operator.rs.md`
+- [ ] `br/cmd/br/restore.rs.md`
+- [ ] `br/cmd/br/stream.rs.md`
 
 ## br/pkg
 
-- [ ] `br/pkg/aws/ebs.rs.md` ← `br/pkg/aws/ebs.rs`（任务 `14-åæ-pkg-aws-ebs-d507c004.md`）
-- [ ] `br/pkg/backup/client.rs.md` ← `br/pkg/backup/client.rs`（任务 `16-åæ-pkg-backup-client-71e905be.md`）
-- [ ] `br/pkg/backup/limit.rs.md` ← `br/pkg/backup/limit.rs`（任务 `18-åæ-pkg-backup-limit-3f752d83.md`）
-- [ ] `br/pkg/backup/prepare_snap/env.rs.md` ← `br/pkg/backup/prepare_snap/env.rs`（任务 `19-åæ-backup-prepare_snap-env-00495f91.md`）
-- [ ] `br/pkg/backup/prepare_snap/errors.rs.md` ← `br/pkg/backup/prepare_snap/errors.rs`（任务 `20-åæ-backup-prepare_snap-errors-cff0988e.md`）
-- [ ] `br/pkg/backup/prepare_snap/prepare.rs.md` ← `br/pkg/backup/prepare_snap/prepare.rs`（任务 `22-åæ-backup-prepare_snap-prepare-fb55309a.md`）
-- [ ] `br/pkg/backup/prepare_snap/stream.rs.md` ← `br/pkg/backup/prepare_snap/stream.rs`（任务 `23-åæ-backup-prepare_snap-stream-3ae077ed.md`）
-- [ ] `br/pkg/backup/schema.rs.md` ← `br/pkg/backup/schema.rs`（任务 `24-åæ-pkg-backup-schema-f2f17ebd.md`）
-- [ ] `br/pkg/backup/store.rs.md` ← `br/pkg/backup/store.rs`（任务 `25-åæ-pkg-backup-store-a46e0734.md`）
-- [ ] `br/pkg/checkpoint/backup.rs.md` ← `br/pkg/checkpoint/backup.rs`（任务 `27-åæ-pkg-checkpoint-backup-bd5edaf0.md`）
-- [ ] `br/pkg/checkpoint/checkpoint.rs.md` ← `br/pkg/checkpoint/checkpoint.rs`（任务 `28-åæ-pkg-checkpoint-checkpoint-29491a21.md`）
-- [ ] `br/pkg/checkpoint/external_storage.rs.md` ← `br/pkg/checkpoint/external_storage.rs`（任务 `29-åæ-pkg-checkpoint-external_storage-968612c8.md`）
-- [ ] `br/pkg/checkpoint/log_restore.rs.md` ← `br/pkg/checkpoint/log_restore.rs`（任务 `31-åæ-pkg-checkpoint-log_restore-04eeee12.md`）
-- [ ] `br/pkg/checkpoint/manager.rs.md` ← `br/pkg/checkpoint/manager.rs`（任务 `32-åæ-pkg-checkpoint-manager-1f6f745b.md`）
-- [ ] `br/pkg/checkpoint/restore.rs.md` ← `br/pkg/checkpoint/restore.rs`（任务 `33-åæ-pkg-checkpoint-restore-1491b658.md`）
-- [ ] `br/pkg/checkpoint/storage.rs.md` ← `br/pkg/checkpoint/storage.rs`（任务 `34-åæ-pkg-checkpoint-storage-7883e5c5.md`）
-- [ ] `br/pkg/checkpoint/ticker.rs.md` ← `br/pkg/checkpoint/ticker.rs`（任务 `36-åæ-pkg-checkpoint-ticker-2b55cc48.md`）
-- [ ] `br/pkg/checksum/executor.rs.md` ← `br/pkg/checksum/executor.rs`（任务 `37-åæ-pkg-checksum-executor-096eb969.md`）
-- [ ] `br/pkg/common/consts.rs.md` ← `br/pkg/common/consts.rs`（任务 `40-åæ-pkg-common-consts-a67ea5b6.md`）
-- [ ] `br/pkg/config/ebs.rs.md` ← `br/pkg/config/ebs.rs`（任务 `42-åæ-pkg-config-ebs-2bdd1ed4.md`）
-- [ ] `br/pkg/config/kv.rs.md` ← `br/pkg/config/kv.rs`（任务 `43-åæ-pkg-config-kv-f31bdcda.md`）
-- [ ] `br/pkg/conn/conn.rs.md` ← `br/pkg/conn/conn.rs`（任务 `45-åæ-pkg-conn-conn-07c4d0ad.md`）
-- [ ] `br/pkg/conn/util/util.rs.md` ← `br/pkg/conn/util/util.rs`（任务 `49-åæ-conn-util-util-f09bf845.md`）
-- [ ] `br/pkg/encryption/manager.rs.md` ← `br/pkg/encryption/manager.rs`（任务 `51-åæ-pkg-encryption-manager-3b1890a4.md`）
-- [ ] `br/pkg/encryption/master_key/common.rs.md` ← `br/pkg/encryption/master_key/common.rs`（任务 `52-åæ-encryption-master_key-common-6cceb808.md`）
-- [ ] `br/pkg/encryption/master_key/file_backend.rs.md` ← `br/pkg/encryption/master_key/file_backend.rs`（任务 `53-åæ-encryption-master_key-file_backend-a72fb6bf.md`）
-- [ ] `br/pkg/encryption/master_key/kms_backend.rs.md` ← `br/pkg/encryption/master_key/kms_backend.rs`（任务 `54-åæ-encryption-master_key-kms_backend-777f3618.md`）
-- [ ] `br/pkg/encryption/master_key/master_key.rs.md` ← `br/pkg/encryption/master_key/master_key.rs`（任务 `56-åæ-encryption-master_key-master_key-e8384974.md`）
-- [ ] `br/pkg/encryption/master_key/mem_backend.rs.md` ← `br/pkg/encryption/master_key/mem_backend.rs`（任务 `57-åæ-encryption-master_key-mem_backend-03d8cfd4.md`）
-- [ ] `br/pkg/encryption/master_key/multi_master_key_backend.rs.md` ← `br/pkg/encryption/master_key/multi_master_key_backend.rs`（任务 `58-åæ-encryption-master_key-multi_master_key_backend-4a7b47c6.md`）
-- [ ] `br/pkg/encryption/master_key/pb.rs.md` ← `br/pkg/encryption/master_key/pb.rs`（任务 `59-åæ-encryption-master_key-pb-ed335c51.md`）
-- [ ] `br/pkg/errors/errors.rs.md` ← `br/pkg/errors/errors.rs`（任务 `60-åæ-pkg-errors-errors-ffbd0715.md`）
-- [ ] `br/pkg/gc/manager.rs.md` ← `br/pkg/gc/manager.rs`（任务 `63-åæ-pkg-gc-manager-31529c86.md`）
-- [ ] `br/pkg/gc/manager_global.rs.md` ← `br/pkg/gc/manager_global.rs`（任务 `64-åæ-pkg-gc-manager_global-022d8192.md`）
-- [ ] `br/pkg/gc/manager_keyspace.rs.md` ← `br/pkg/gc/manager_keyspace.rs`（任务 `65-åæ-pkg-gc-manager_keyspace-4ffa429c.md`）
-- [ ] `br/pkg/gc/safepoint.rs.md` ← `br/pkg/gc/safepoint.rs`（任务 `66-åæ-pkg-gc-safepoint-f6687e9e.md`）
-- [ ] `br/pkg/glue/console_glue.rs.md` ← `br/pkg/glue/console_glue.rs`（任务 `67-åæ-pkg-glue-console_glue-b2e47ccb.md`）
-- [ ] `br/pkg/glue/glue.rs.md` ← `br/pkg/glue/glue.rs`（任务 `68-åæ-pkg-glue-glue-f14cf34d.md`）
-- [ ] `br/pkg/glue/progressing.rs.md` ← `br/pkg/glue/progressing.rs`（任务 `70-åæ-pkg-glue-progressing-64860afe.md`）
-- [ ] `br/pkg/gluetidb/glue.rs.md` ← `br/pkg/gluetidb/glue.rs`（任务 `71-åæ-pkg-gluetidb-glue-1b87f45e.md`）
-- [ ] `br/pkg/gluetidb/infoschema_filter.rs.md` ← `br/pkg/gluetidb/infoschema_filter.rs`（任务 `72-åæ-pkg-gluetidb-infoschema_filter-fbb567e7.md`）
-- [ ] `br/pkg/gluetidb/mock/mock.rs.md` ← `br/pkg/gluetidb/mock/mock.rs`（任务 `75-åæ-gluetidb-mock-mock-27361f10.md`）
-- [ ] `br/pkg/gluetikv/glue.rs.md` ← `br/pkg/gluetikv/glue.rs`（任务 `76-åæ-pkg-gluetikv-glue-92fa6546.md`）
-- [ ] `br/pkg/kms/aws.rs.md` ← `br/pkg/kms/aws.rs`（任务 `78-åæ-pkg-kms-aws-4b698686.md`）
-- [ ] `br/pkg/kms/common.rs.md` ← `br/pkg/kms/common.rs`（任务 `79-åæ-pkg-kms-common-d175a6d8.md`）
-- [ ] `br/pkg/kms/gcp.rs.md` ← `br/pkg/kms/gcp.rs`（任务 `80-åæ-pkg-kms-gcp-36545c8c.md`）
-- [ ] `br/pkg/kms/kms.rs.md` ← `br/pkg/kms/kms.rs`（任务 `81-åæ-pkg-kms-kms-06463a0d.md`）
-- [ ] `br/pkg/logutil/context.rs.md` ← `br/pkg/logutil/context.rs`（任务 `84-åæ-pkg-logutil-context-4ac24768.md`）
-- [ ] `br/pkg/logutil/logging.rs.md` ← `br/pkg/logutil/logging.rs`（任务 `86-åæ-pkg-logutil-logging-f5b86a73.md`）
-- [ ] `br/pkg/logutil/rate.rs.md` ← `br/pkg/logutil/rate.rs`（任务 `87-åæ-pkg-logutil-rate-67740225.md`）
-- [ ] `br/pkg/metautil/debug.rs.md` ← `br/pkg/metautil/debug.rs`（任务 `89-åæ-pkg-metautil-debug-7970b63f.md`）
-- [ ] `br/pkg/metautil/load.rs.md` ← `br/pkg/metautil/load.rs`（任务 `91-åæ-pkg-metautil-load-3e29b666.md`）
-- [ ] `br/pkg/metautil/metafile.rs.md` ← `br/pkg/metautil/metafile.rs`（任务 `92-åæ-pkg-metautil-metafile-6935abfe.md`）
-- [ ] `br/pkg/metautil/statsfile.rs.md` ← `br/pkg/metautil/statsfile.rs`（任务 `93-åæ-pkg-metautil-statsfile-729a8976.md`）
-- [ ] `br/pkg/metautil/statsfile_test_support.rs.md` ← `br/pkg/metautil/statsfile_test_support.rs`（任务 `94-åæ-pkg-metautil-statsfile_test_support-cefae69e.md`）
-- [ ] `br/pkg/mock/backend.rs.md` ← `br/pkg/mock/backend.rs`（任务 `96-åæ-pkg-mock-backend-54abcb9d.md`）
-- [ ] `br/pkg/mock/common.rs.md` ← `br/pkg/mock/common.rs`（任务 `97-åæ-pkg-mock-common-2662c2fc.md`）
-- [ ] `br/pkg/mock/encode.rs.md` ← `br/pkg/mock/encode.rs`（任务 `98-åæ-pkg-mock-encode-05d98df7.md`）
-- [ ] `br/pkg/mock/importer.rs.md` ← `br/pkg/mock/importer.rs`（任务 `99-åæ-pkg-mock-importer-044b3740.md`）
-- [ ] `br/pkg/mock/mock_cluster.rs.md` ← `br/pkg/mock/mock_cluster.rs`（任务 `101-åæ-pkg-mock-mock_cluster-50ab8a24.md`）
-- [ ] `br/pkg/mock/mockid/mockid.rs.md` ← `br/pkg/mock/mockid/mockid.rs`（任务 `103-åæ-mock-mockid-mockid-b7fcd9da.md`）
-- [ ] `br/pkg/mock/mocklocal/local.rs.md` ← `br/pkg/mock/mocklocal/local.rs`（任务 `105-åæ-mock-mocklocal-local-e8731ccc.md`）
-- [ ] `br/pkg/mock/task_register.rs.md` ← `br/pkg/mock/task_register.rs`（任务 `108-åæ-pkg-mock-task_register-2be58f13.md`）
-- [ ] `br/pkg/operation/context.rs.md` ← `br/pkg/operation/context.rs`（任务 `109-åæ-pkg-operation-context-d143395f.md`）
-- [ ] `br/pkg/pdutil/pd.rs.md` ← `br/pkg/pdutil/pd.rs`（任务 `112-åæ-pkg-pdutil-pd-2030c50f.md`）
-- [ ] `br/pkg/pdutil/utils.rs.md` ← `br/pkg/pdutil/utils.rs`（任务 `113-åæ-pkg-pdutil-utils-826547e2.md`）
-- [ ] `br/pkg/registry/heartbeat.rs.md` ← `br/pkg/registry/heartbeat.rs`（任务 `114-åæ-pkg-registry-heartbeat-0bb1f202.md`）
-- [ ] `br/pkg/registry/registration.rs.md` ← `br/pkg/registry/registration.rs`（任务 `116-åæ-pkg-registry-registration-badd27c8.md`）
-- [ ] `br/pkg/restore/data/data.rs.md` ← `br/pkg/restore/data/data.rs`（任务 `118-åæ-restore-data-data-d0ec9502.md`）
-- [ ] `br/pkg/restore/data/key.rs.md` ← `br/pkg/restore/data/key.rs`（任务 `119-åæ-restore-data-key-05e4e5e0.md`）
-- [ ] `br/pkg/restore/data/recover.rs.md` ← `br/pkg/restore/data/recover.rs`（任务 `121-åæ-restore-data-recover-a6701cec.md`）
-- [ ] `br/pkg/restore/import_mode_switcher.rs.md` ← `br/pkg/restore/import_mode_switcher.rs`（任务 `123-åæ-pkg-restore-import_mode_switcher-8b4fe796.md`）
-- [ ] `br/pkg/restore/ingestrec/foreign_key.rs.md` ← `br/pkg/restore/ingestrec/foreign_key.rs`（任务 `124-åæ-restore-ingestrec-foreign_key-656ff60e.md`）
-- [ ] `br/pkg/restore/ingestrec/ingest_recorder.rs.md` ← `br/pkg/restore/ingestrec/ingest_recorder.rs`（任务 `125-åæ-restore-ingestrec-ingest_recorder-45cb2e3e.md`）
-- [ ] `br/pkg/restore/ingestrec/model_stub.rs.md` ← `br/pkg/restore/ingestrec/model_stub.rs`（任务 `127-åæ-restore-ingestrec-model_stub-325f8ca7.md`）
-- [ ] `br/pkg/restore/internal/import_client/import_client.rs.md` ← `br/pkg/restore/internal/import_client/import_client.rs`（任务 `128-åæ-internal-import_client-import_client-82858a1b.md`）
-- [ ] `br/pkg/restore/internal/prealloc_db/db.rs.md` ← `br/pkg/restore/internal/prealloc_db/db.rs`（任务 `130-åæ-internal-prealloc_db-db-aa9a4f41.md`）
-- [ ] `br/pkg/restore/internal/prealloc_table_id/alloc.rs.md` ← `br/pkg/restore/internal/prealloc_table_id/alloc.rs`（任务 `132-åæ-internal-prealloc_table_id-alloc-8031435e.md`）
-- [ ] `br/pkg/restore/internal/rawkv/rawkv_client.rs.md` ← `br/pkg/restore/internal/rawkv/rawkv_client.rs`（任务 `135-åæ-internal-rawkv-rawkv_client-e731b045.md`）
-- [ ] `br/pkg/restore/log_client/batch_meta_processor.rs.md` ← `br/pkg/restore/log_client/batch_meta_processor.rs`（任务 `137-åæ-restore-log_client-batch_meta_processor-e67da38c.md`）
-- [ ] `br/pkg/restore/log_client/client.rs.md` ← `br/pkg/restore/log_client/client.rs`（任务 `138-åæ-restore-log_client-client-7b80188c.md`）
-- [ ] `br/pkg/restore/log_client/compacted_file_strategy.rs.md` ← `br/pkg/restore/log_client/compacted_file_strategy.rs`（任务 `139-åæ-restore-log_client-compacted_file_strategy-263ed5df.md`）
-- [ ] `br/pkg/restore/log_client/flow_control.rs.md` ← `br/pkg/restore/log_client/flow_control.rs`（任务 `140-åæ-restore-log_client-flow_control-f098998c.md`）
-- [ ] `br/pkg/restore/log_client/id_map.rs.md` ← `br/pkg/restore/log_client/id_map.rs`（任务 `141-åæ-restore-log_client-id_map-ac51a2a6.md`）
-- [ ] `br/pkg/restore/log_client/import.rs.md` ← `br/pkg/restore/log_client/import.rs`（任务 `142-åæ-restore-log_client-import-9838e536.md`）
-- [ ] `br/pkg/restore/log_client/import_retry.rs.md` ← `br/pkg/restore/log_client/import_retry.rs`（任务 `143-åæ-restore-log_client-import_retry-96d6e69e.md`）
-- [ ] `br/pkg/restore/log_client/log_file_manager.rs.md` ← `br/pkg/restore/log_client/log_file_manager.rs`（任务 `145-åæ-restore-log_client-log_file_manager-40afaa65.md`）
-- [ ] `br/pkg/restore/log_client/log_file_map.rs.md` ← `br/pkg/restore/log_client/log_file_map.rs`（任务 `146-åæ-restore-log_client-log_file_map-2ea7a51a.md`）
-- [ ] `br/pkg/restore/log_client/log_split_strategy.rs.md` ← `br/pkg/restore/log_client/log_split_strategy.rs`（任务 `147-åæ-restore-log_client-log_split_strategy-0f2da07b.md`）
-- [ ] `br/pkg/restore/log_client/migration.rs.md` ← `br/pkg/restore/log_client/migration.rs`（任务 `148-åæ-restore-log_client-migration-db40094d.md`）
-- [ ] `br/pkg/restore/log_client/ssts.rs.md` ← `br/pkg/restore/log_client/ssts.rs`（任务 `149-åæ-restore-log_client-ssts-b398e17c.md`）
-- [ ] `br/pkg/restore/misc.rs.md` ← `br/pkg/restore/misc.rs`（任务 `151-åæ-pkg-restore-misc-755e366c.md`）
-- [ ] `br/pkg/restore/restorer.rs.md` ← `br/pkg/restore/restorer.rs`（任务 `152-åæ-pkg-restore-restorer-163cd523.md`）
-- [ ] `br/pkg/restore/snap_client/client.rs.md` ← `br/pkg/restore/snap_client/client.rs`（任务 `153-åæ-restore-snap_client-client-c819834e.md`）
-- [ ] `br/pkg/restore/snap_client/import.rs.md` ← `br/pkg/restore/snap_client/import.rs`（任务 `154-åæ-restore-snap_client-import-fd5c21a3.md`）
-- [ ] `br/pkg/restore/snap_client/pipeline_items.rs.md` ← `br/pkg/restore/snap_client/pipeline_items.rs`（任务 `156-åæ-restore-snap_client-pipeline_items-03db7d4b.md`）
-- [ ] `br/pkg/restore/snap_client/pitr_collector.rs.md` ← `br/pkg/restore/snap_client/pitr_collector.rs`（任务 `157-åæ-restore-snap_client-pitr_collector-04c13917.md`）
-- [ ] `br/pkg/restore/snap_client/placement_rule_manager.rs.md` ← `br/pkg/restore/snap_client/placement_rule_manager.rs`（任务 `158-åæ-restore-snap_client-placement_rule_manager-4ed63e66.md`）
-- [ ] `br/pkg/restore/snap_client/systable_restore.rs.md` ← `br/pkg/restore/snap_client/systable_restore.rs`（任务 `160-åæ-restore-snap_client-systable_restore-8cecb045.md`）
-- [ ] `br/pkg/restore/snap_client/systable_schema_update.rs.md` ← `br/pkg/restore/snap_client/systable_schema_update.rs`（任务 `161-åæ-restore-snap_client-systable_schema_update-8276357c.md`）
-- [ ] `br/pkg/restore/snap_client/tikv_sender.rs.md` ← `br/pkg/restore/snap_client/tikv_sender.rs`（任务 `162-åæ-restore-snap_client-tikv_sender-630f87fa.md`）
-- [ ] `br/pkg/restore/split/client.rs.md` ← `br/pkg/restore/split/client.rs`（任务 `163-åæ-restore-split-client-a4bf77da.md`）
-- [ ] `br/pkg/restore/split/mock_pd_client.rs.md` ← `br/pkg/restore/split/mock_pd_client.rs`（任务 `165-åæ-restore-split-mock_pd_client-26cc0cc6.md`）
-- [ ] `br/pkg/restore/split/region.rs.md` ← `br/pkg/restore/split/region.rs`（任务 `166-åæ-restore-split-region-2e5ec434.md`）
-- [ ] `br/pkg/restore/split/split.rs.md` ← `br/pkg/restore/split/split.rs`（任务 `167-åæ-restore-split-split-eed2ee87.md`）
-- [ ] `br/pkg/restore/split/splitter.rs.md` ← `br/pkg/restore/split/splitter.rs`（任务 `168-åæ-restore-split-splitter-990a0bf2.md`）
-- [ ] `br/pkg/restore/split/sum_sorted.rs.md` ← `br/pkg/restore/split/sum_sorted.rs`（任务 `170-åæ-restore-split-sum_sorted-cd7cb574.md`）
-- [ ] `br/pkg/restore/tiflashrec/tiflash_recorder.rs.md` ← `br/pkg/restore/tiflashrec/tiflash_recorder.rs`（任务 `173-åæ-restore-tiflashrec-tiflash_recorder-f5636a1b.md`）
-- [ ] `br/pkg/restore/utils/common.rs.md` ← `br/pkg/restore/utils/common.rs`（任务 `174-åæ-restore-utils-common-73eec1fe.md`）
-- [ ] `br/pkg/restore/utils/merge.rs.md` ← `br/pkg/restore/utils/merge.rs`（任务 `176-åæ-restore-utils-merge-c29756d6.md`）
-- [ ] `br/pkg/restore/utils/misc.rs.md` ← `br/pkg/restore/utils/misc.rs`（任务 `177-åæ-restore-utils-misc-ff46856e.md`）
-- [ ] `br/pkg/restore/utils/rewrite_rule.rs.md` ← `br/pkg/restore/utils/rewrite_rule.rs`（任务 `178-åæ-restore-utils-rewrite_rule-4ecc1639.md`）
-- [ ] `br/pkg/rtree/logging.rs.md` ← `br/pkg/rtree/logging.rs`（任务 `181-åæ-pkg-rtree-logging-7837528e.md`）
-- [ ] `br/pkg/rtree/rtree.rs.md` ← `br/pkg/rtree/rtree.rs`（任务 `182-åæ-pkg-rtree-rtree-2fd16a4d.md`）
-- [ ] `br/pkg/stream/backupmetas/parser.rs.md` ← `br/pkg/stream/backupmetas/parser.rs`（任务 `185-åæ-stream-backupmetas-parser-6dc99934.md`）
-- [ ] `br/pkg/stream/crr/config/config.rs.md` ← `br/pkg/stream/crr/config/config.rs`（任务 `186-åæ-crr-config-config-5f630083.md`）
-- [ ] `br/pkg/stream/crr/internal/checkpoint/calculator.rs.md` ← `br/pkg/stream/crr/internal/checkpoint/calculator.rs`（任务 `188-åæ-internal-checkpoint-calculator-3707e19f.md`）
-- [ ] `br/pkg/stream/crr/internal/checkpoint/progress.rs.md` ← `br/pkg/stream/crr/internal/checkpoint/progress.rs`（任务 `191-åæ-internal-checkpoint-progress-26ff1a91.md`）
-- [ ] `br/pkg/stream/crr/internal/checkpoint/storage.rs.md` ← `br/pkg/stream/crr/internal/checkpoint/storage.rs`（任务 `192-åæ-internal-checkpoint-storage-dc079d67.md`）
-- [ ] `br/pkg/stream/crr/service/http.rs.md` ← `br/pkg/stream/crr/service/http.rs`（任务 `193-åæ-crr-service-http-cae40c0e.md`）
-- [ ] `br/pkg/stream/crr/service/metrics.rs.md` ← `br/pkg/stream/crr/service/metrics.rs`（任务 `195-åæ-crr-service-metrics-172d8f4d.md`）
-- [ ] `br/pkg/stream/crr/service/service.rs.md` ← `br/pkg/stream/crr/service/service.rs`（任务 `196-åæ-crr-service-service-5a714387.md`）
-- [ ] `br/pkg/stream/crr/service/status.rs.md` ← `br/pkg/stream/crr/service/status.rs`（任务 `197-åæ-crr-service-status-fc89ad08.md`）
-- [ ] `br/pkg/stream/decode_kv.rs.md` ← `br/pkg/stream/decode_kv.rs`（任务 `198-åæ-pkg-stream-decode_kv-a5eaec87.md`）
-- [ ] `br/pkg/stream/logging_helper.rs.md` ← `br/pkg/stream/logging_helper.rs`（任务 `200-åæ-pkg-stream-logging_helper-ce9c518e.md`）
-- [ ] `br/pkg/stream/meta_kv.rs.md` ← `br/pkg/stream/meta_kv.rs`（任务 `201-åæ-pkg-stream-meta_kv-a447bd1c.md`）
-- [ ] `br/pkg/stream/rewrite_meta_rawkv.rs.md` ← `br/pkg/stream/rewrite_meta_rawkv.rs`（任务 `202-åæ-pkg-stream-rewrite_meta_rawkv-bfda744c.md`）
-- [ ] `br/pkg/stream/search.rs.md` ← `br/pkg/stream/search.rs`（任务 `203-åæ-pkg-stream-search-b00e5be8.md`）
-- [ ] `br/pkg/stream/stream_metas.rs.md` ← `br/pkg/stream/stream_metas.rs`（任务 `204-åæ-pkg-stream-stream_metas-7a70ca01.md`）
-- [ ] `br/pkg/stream/stream_mgr.rs.md` ← `br/pkg/stream/stream_mgr.rs`（任务 `205-åæ-pkg-stream-stream_mgr-3c02f3b7.md`）
-- [ ] `br/pkg/stream/stream_status.rs.md` ← `br/pkg/stream/stream_status.rs`（任务 `206-åæ-pkg-stream-stream_status-bc594e3f.md`）
-- [ ] `br/pkg/stream/table_history.rs.md` ← `br/pkg/stream/table_history.rs`（任务 `208-åæ-pkg-stream-table_history-7a6cb2b1.md`）
-- [ ] `br/pkg/stream/table_mapping.rs.md` ← `br/pkg/stream/table_mapping.rs`（任务 `209-åæ-pkg-stream-table_mapping-bb884d91.md`）
-- [ ] `br/pkg/streamhelper/advancer.rs.md` ← `br/pkg/streamhelper/advancer.rs`（任务 `210-åæ-pkg-streamhelper-advancer-40aae990.md`）
-- [ ] `br/pkg/streamhelper/advancer_cliext.rs.md` ← `br/pkg/streamhelper/advancer_cliext.rs`（任务 `211-åæ-pkg-streamhelper-advancer_cliext-16f2b464.md`）
-- [ ] `br/pkg/streamhelper/advancer_daemon.rs.md` ← `br/pkg/streamhelper/advancer_daemon.rs`（任务 `212-åæ-pkg-streamhelper-advancer_daemon-3505a987.md`）
-- [ ] `br/pkg/streamhelper/advancer_env.rs.md` ← `br/pkg/streamhelper/advancer_env.rs`（任务 `213-åæ-pkg-streamhelper-advancer_env-1597e6bf.md`）
-- [ ] `br/pkg/streamhelper/client.rs.md` ← `br/pkg/streamhelper/client.rs`（任务 `214-åæ-pkg-streamhelper-client-77fda944.md`）
-- [ ] `br/pkg/streamhelper/collector.rs.md` ← `br/pkg/streamhelper/collector.rs`（任务 `215-åæ-pkg-streamhelper-collector-93171a96.md`）
-- [ ] `br/pkg/streamhelper/config/command_conf.rs.md` ← `br/pkg/streamhelper/config/command_conf.rs`（任务 `216-åæ-streamhelper-config-command_conf-bc9eeb62.md`）
-- [ ] `br/pkg/streamhelper/config/tidb_conf.rs.md` ← `br/pkg/streamhelper/config/tidb_conf.rs`（任务 `218-åæ-streamhelper-config-tidb_conf-f219550e.md`）
-- [ ] `br/pkg/streamhelper/config/types.rs.md` ← `br/pkg/streamhelper/config/types.rs`（任务 `219-åæ-streamhelper-config-types-7cb5de62.md`）
-- [ ] `br/pkg/streamhelper/daemon/interface.rs.md` ← `br/pkg/streamhelper/daemon/interface.rs`（任务 `220-åæ-streamhelper-daemon-interface-527ba585.md`）
-- [ ] `br/pkg/streamhelper/daemon/owner_daemon.rs.md` ← `br/pkg/streamhelper/daemon/owner_daemon.rs`（任务 `222-åæ-streamhelper-daemon-owner_daemon-ed52547b.md`）
-- [ ] `br/pkg/streamhelper/flush_subscriber.rs.md` ← `br/pkg/streamhelper/flush_subscriber.rs`（任务 `223-åæ-pkg-streamhelper-flush_subscriber-83dd1d37.md`）
-- [ ] `br/pkg/streamhelper/models.rs.md` ← `br/pkg/streamhelper/models.rs`（任务 `225-åæ-pkg-streamhelper-models-015c491c.md`）
-- [ ] `br/pkg/streamhelper/prefix_scanner.rs.md` ← `br/pkg/streamhelper/prefix_scanner.rs`（任务 `226-åæ-pkg-streamhelper-prefix_scanner-31147b87.md`）
-- [ ] `br/pkg/streamhelper/regioniter.rs.md` ← `br/pkg/streamhelper/regioniter.rs`（任务 `227-åæ-pkg-streamhelper-regioniter-67994302.md`）
-- [ ] `br/pkg/streamhelper/spans/sorted.rs.md` ← `br/pkg/streamhelper/spans/sorted.rs`（任务 `229-åæ-streamhelper-spans-sorted-caaa8f4a.md`）
-- [ ] `br/pkg/streamhelper/spans/utils.rs.md` ← `br/pkg/streamhelper/spans/utils.rs`（任务 `230-åæ-streamhelper-spans-utils-bef2cdf9.md`）
-- [ ] `br/pkg/streamhelper/spans/value_sorted.rs.md` ← `br/pkg/streamhelper/spans/value_sorted.rs`（任务 `231-åæ-streamhelper-spans-value_sorted-8c95078b.md`）
-- [ ] `br/pkg/summary/collector.rs.md` ← `br/pkg/summary/collector.rs`（任务 `233-åæ-pkg-summary-collector-17e9ac81.md`）
-- [ ] `br/pkg/summary/summary.rs.md` ← `br/pkg/summary/summary.rs`（任务 `235-åæ-pkg-summary-summary-f16dfa64.md`）
-- [ ] `br/pkg/task/backup.rs.md` ← `br/pkg/task/backup.rs`（任务 `236-åæ-pkg-task-backup-1d7d8115.md`）
-- [ ] `br/pkg/task/backup_ebs.rs.md` ← `br/pkg/task/backup_ebs.rs`（任务 `237-åæ-pkg-task-backup_ebs-cc42d510.md`）
-- [ ] `br/pkg/task/backup_raw.rs.md` ← `br/pkg/task/backup_raw.rs`（任务 `238-åæ-pkg-task-backup_raw-ff62926a.md`）
-- [ ] `br/pkg/task/backup_txn.rs.md` ← `br/pkg/task/backup_txn.rs`（任务 `239-åæ-pkg-task-backup_txn-5c55edb2.md`）
-- [ ] `br/pkg/task/common.rs.md` ← `br/pkg/task/common.rs`（任务 `240-åæ-pkg-task-common-2e8ca572.md`）
-- [ ] `br/pkg/task/encryption.rs.md` ← `br/pkg/task/encryption.rs`（任务 `241-åæ-pkg-task-encryption-7bae3293.md`）
-- [ ] `br/pkg/task/operator/base64ify.rs.md` ← `br/pkg/task/operator/base64ify.rs`（任务 `243-åæ-task-operator-base64ify-765640cf.md`）
-- [ ] `br/pkg/task/operator/checksum_table.rs.md` ← `br/pkg/task/operator/checksum_table.rs`（任务 `244-åæ-task-operator-checksum_table-2332d98c.md`）
-- [ ] `br/pkg/task/operator/config.rs.md` ← `br/pkg/task/operator/config.rs`（任务 `245-åæ-task-operator-config-f6e9bb81.md`）
-- [ ] `br/pkg/task/operator/crr_checkpoint.rs.md` ← `br/pkg/task/operator/crr_checkpoint.rs`（任务 `246-åæ-task-operator-crr_checkpoint-90996334.md`）
-- [ ] `br/pkg/task/operator/force_flush.rs.md` ← `br/pkg/task/operator/force_flush.rs`（任务 `247-åæ-task-operator-force_flush-df3f737d.md`）
-- [ ] `br/pkg/task/operator/list_migration.rs.md` ← `br/pkg/task/operator/list_migration.rs`（任务 `249-åæ-task-operator-list_migration-912b6467.md`）
-- [ ] `br/pkg/task/operator/migrate_to.rs.md` ← `br/pkg/task/operator/migrate_to.rs`（任务 `250-åæ-task-operator-migrate_to-01ae8a5c.md`）
-- [ ] `br/pkg/task/operator/prepare_snap.rs.md` ← `br/pkg/task/operator/prepare_snap.rs`（任务 `251-åæ-task-operator-prepare_snap-5981bef9.md`）
-- [ ] `br/pkg/task/operator/test_storage.rs.md` ← `br/pkg/task/operator/test_storage.rs`（任务 `253-åæ-task-operator-test_storage-f56ad3fd.md`）
-- [ ] `br/pkg/task/restore.rs.md` ← `br/pkg/task/restore.rs`（任务 `254-åæ-pkg-task-restore-2e0d29a1.md`）
-- [ ] `br/pkg/task/restore_data.rs.md` ← `br/pkg/task/restore_data.rs`（任务 `255-åæ-pkg-task-restore_data-4e2eefbd.md`）
-- [ ] `br/pkg/task/restore_ebs_meta.rs.md` ← `br/pkg/task/restore_ebs_meta.rs`（任务 `256-åæ-pkg-task-restore_ebs_meta-2d5fa136.md`）
-- [ ] `br/pkg/task/restore_lifecycle.rs.md` ← `br/pkg/task/restore_lifecycle.rs`（任务 `257-åæ-pkg-task-restore_lifecycle-64734398.md`）
-- [ ] `br/pkg/task/restore_raw.rs.md` ← `br/pkg/task/restore_raw.rs`（任务 `258-åæ-pkg-task-restore_raw-d7c481b2.md`）
-- [ ] `br/pkg/task/restore_txn.rs.md` ← `br/pkg/task/restore_txn.rs`（任务 `259-åæ-pkg-task-restore_txn-0688f87f.md`）
-- [ ] `br/pkg/task/show/cmd.rs.md` ← `br/pkg/task/show/cmd.rs`（任务 `260-åæ-task-show-cmd-29507721.md`）
-- [ ] `br/pkg/task/stream.rs.md` ← `br/pkg/task/stream.rs`（任务 `263-åæ-pkg-task-stream-7b81ffe0.md`）
-- [ ] `br/pkg/trace/tracing.rs.md` ← `br/pkg/trace/tracing.rs`（任务 `266-åæ-pkg-trace-tracing-972075f8.md`）
-- [ ] `br/pkg/utils/backoff.rs.md` ← `br/pkg/utils/backoff.rs`（任务 `267-åæ-pkg-utils-backoff-1784f582.md`）
-- [ ] `br/pkg/utils/common.rs.md` ← `br/pkg/utils/common.rs`（任务 `268-åæ-pkg-utils-common-1b9f2773.md`）
-- [ ] `br/pkg/utils/consts/consts.rs.md` ← `br/pkg/utils/consts/consts.rs`（任务 `269-åæ-utils-consts-consts-10b01f41.md`）
-- [ ] `br/pkg/utils/db.rs.md` ← `br/pkg/utils/db.rs`（任务 `271-åæ-pkg-utils-db-bdd2a5af.md`）
-- [ ] `br/pkg/utils/dyn_pprof_other.rs.md` ← `br/pkg/utils/dyn_pprof_other.rs`（任务 `272-åæ-pkg-utils-dyn_pprof_other-c046a951.md`）
-- [ ] `br/pkg/utils/dyn_pprof_unix.rs.md` ← `br/pkg/utils/dyn_pprof_unix.rs`（任务 `273-åæ-pkg-utils-dyn_pprof_unix-c2ba2155.md`）
-- [ ] `br/pkg/utils/encryption.rs.md` ← `br/pkg/utils/encryption.rs`（任务 `274-åæ-pkg-utils-encryption-519796ba.md`）
-- [ ] `br/pkg/utils/error_handling.rs.md` ← `br/pkg/utils/error_handling.rs`（任务 `275-åæ-pkg-utils-error_handling-3ef7a1d9.md`）
-- [ ] `br/pkg/utils/filter.rs.md` ← `br/pkg/utils/filter.rs`（任务 `276-åæ-pkg-utils-filter-5ea24abc.md`）
-- [ ] `br/pkg/utils/iter/combinator_types.rs.md` ← `br/pkg/utils/iter/combinator_types.rs`（任务 `277-åæ-utils-iter-combinator_types-841a31bb.md`）
-- [ ] `br/pkg/utils/iter/combinators.rs.md` ← `br/pkg/utils/iter/combinators.rs`（任务 `278-åæ-utils-iter-combinators-08da12ee.md`）
-- [ ] `br/pkg/utils/iter/iter.rs.md` ← `br/pkg/utils/iter/iter.rs`（任务 `279-åæ-utils-iter-iter-b7089d69.md`）
-- [ ] `br/pkg/utils/iter/source.rs.md` ← `br/pkg/utils/iter/source.rs`（任务 `281-åæ-utils-iter-source-5f76adfe.md`）
-- [ ] `br/pkg/utils/iter/source_types.rs.md` ← `br/pkg/utils/iter/source_types.rs`（任务 `282-åæ-utils-iter-source_types-1bb96c8b.md`）
-- [ ] `br/pkg/utils/json.rs.md` ← `br/pkg/utils/json.rs`（任务 `283-åæ-pkg-utils-json-aea17f00.md`）
-- [ ] `br/pkg/utils/key.rs.md` ← `br/pkg/utils/key.rs`（任务 `284-åæ-pkg-utils-key-b80c9940.md`）
-- [ ] `br/pkg/utils/memory_monitor.rs.md` ← `br/pkg/utils/memory_monitor.rs`（任务 `286-åæ-pkg-utils-memory_monitor-1e307bc5.md`）
-- [ ] `br/pkg/utils/metadata_register.rs.md` ← `br/pkg/utils/metadata_register.rs`（任务 `287-åæ-pkg-utils-metadata_register-19ddebcb.md`）
-- [ ] `br/pkg/utils/misc.rs.md` ← `br/pkg/utils/misc.rs`（任务 `288-åæ-pkg-utils-misc-acc01de7.md`）
-- [ ] `br/pkg/utils/pointer.rs.md` ← `br/pkg/utils/pointer.rs`（任务 `289-åæ-pkg-utils-pointer-a6626815.md`）
-- [ ] `br/pkg/utils/pprof.rs.md` ← `br/pkg/utils/pprof.rs`（任务 `290-åæ-pkg-utils-pprof-04606912.md`）
-- [ ] `br/pkg/utils/progress.rs.md` ← `br/pkg/utils/progress.rs`（任务 `291-åæ-pkg-utils-progress-7a49d286.md`）
-- [ ] `br/pkg/utils/register.rs.md` ← `br/pkg/utils/register.rs`（任务 `292-åæ-pkg-utils-register-b50a523a.md`）
-- [ ] `br/pkg/utils/retry.rs.md` ← `br/pkg/utils/retry.rs`（任务 `293-åæ-pkg-utils-retry-a8fa2540.md`）
-- [ ] `br/pkg/utils/schema.rs.md` ← `br/pkg/utils/schema.rs`（任务 `294-åæ-pkg-utils-schema-929a7c59.md`）
-- [ ] `br/pkg/utils/store_manager.rs.md` ← `br/pkg/utils/store_manager.rs`（任务 `295-åæ-pkg-utils-store_manager-7b29a3d4.md`）
-- [ ] `br/pkg/utils/storewatch/watching.rs.md` ← `br/pkg/utils/storewatch/watching.rs`（任务 `297-åæ-utils-storewatch-watching-65c91dd2.md`）
-- [ ] `br/pkg/utils/wait.rs.md` ← `br/pkg/utils/wait.rs`（任务 `299-åæ-pkg-utils-wait-996abade.md`）
-- [ ] `br/pkg/utils/worker.rs.md` ← `br/pkg/utils/worker.rs`（任务 `300-åæ-pkg-utils-worker-074e6285.md`）
-- [ ] `br/pkg/utiltest/crr/builder.rs.md` ← `br/pkg/utiltest/crr/builder.rs`（任务 `301-åæ-utiltest-crr-builder-a2210c56.md`）
-- [ ] `br/pkg/utiltest/crr/crr_sim.rs.md` ← `br/pkg/utiltest/crr/crr_sim.rs`（任务 `302-åæ-utiltest-crr-crr_sim-9fa66567.md`）
-- [ ] `br/pkg/utiltest/crr/flush_sim.rs.md` ← `br/pkg/utiltest/crr/flush_sim.rs`（任务 `303-åæ-utiltest-crr-flush_sim-0d5ecad3.md`）
-- [ ] `br/pkg/utiltest/crr/harness.rs.md` ← `br/pkg/utiltest/crr/harness.rs`（任务 `304-åæ-utiltest-crr-harness-770959d3.md`）
-- [ ] `br/pkg/utiltest/crr/pd_sim.rs.md` ← `br/pkg/utiltest/crr/pd_sim.rs`（任务 `306-åæ-utiltest-crr-pd_sim-7e46b2d4.md`）
-- [ ] `br/pkg/utiltest/crr/pd_sim_service.rs.md` ← `br/pkg/utiltest/crr/pd_sim_service.rs`（任务 `307-åæ-utiltest-crr-pd_sim_service-fc1b674e.md`）
-- [ ] `br/pkg/utiltest/crr/types.rs.md` ← `br/pkg/utiltest/crr/types.rs`（任务 `309-åæ-utiltest-crr-types-262507ba.md`）
-- [ ] `br/pkg/utiltest/fakecluster/core.rs.md` ← `br/pkg/utiltest/fakecluster/core.rs`（任务 `310-åæ-utiltest-fakecluster-core-5f895afa.md`）
-- [ ] `br/pkg/utiltest/suite.rs.md` ← `br/pkg/utiltest/suite.rs`（任务 `315-åæ-pkg-utiltest-suite-c98cf405.md`）
-- [ ] `br/pkg/utiltest/syncpoint/syncpoint.rs.md` ← `br/pkg/utiltest/syncpoint/syncpoint.rs`（任务 `318-åæ-utiltest-syncpoint-syncpoint-25016639.md`）
-- [ ] `br/pkg/version/build/info.rs.md` ← `br/pkg/version/build/info.rs`（任务 `319-åæ-version-build-info-ded1898f.md`）
-- [ ] `br/pkg/version/version.rs.md` ← `br/pkg/version/version.rs`（任务 `322-åæ-pkg-version-version-f14113d8.md`）
+- [ ] `br/pkg/aws/ebs.rs.md`
+- [ ] `br/pkg/backup/client.rs.md`
+- [ ] `br/pkg/backup/limit.rs.md`
+- [ ] `br/pkg/backup/prepare_snap/env.rs.md`
+- [ ] `br/pkg/backup/prepare_snap/errors.rs.md`
+- [ ] `br/pkg/backup/prepare_snap/prepare.rs.md`
+- [ ] `br/pkg/backup/prepare_snap/stream.rs.md`
+- [ ] `br/pkg/backup/schema.rs.md`
+- [ ] `br/pkg/backup/store.rs.md`
+- [ ] `br/pkg/checkpoint/backup.rs.md`
+- [ ] `br/pkg/checkpoint/checkpoint.rs.md`
+- [ ] `br/pkg/checkpoint/external_storage.rs.md`
+- [ ] `br/pkg/checkpoint/log_restore.rs.md`
+- [ ] `br/pkg/checkpoint/manager.rs.md`
+- [ ] `br/pkg/checkpoint/restore.rs.md`
+- [ ] `br/pkg/checkpoint/storage.rs.md`
+- [ ] `br/pkg/checkpoint/ticker.rs.md`
+- [ ] `br/pkg/checksum/executor.rs.md`
+- [ ] `br/pkg/common/consts.rs.md`
+- [ ] `br/pkg/config/ebs.rs.md`
+- [ ] `br/pkg/config/kv.rs.md`
+- [ ] `br/pkg/conn/conn.rs.md`
+- [ ] `br/pkg/conn/util/util.rs.md`
+- [ ] `br/pkg/encryption/manager.rs.md`
+- [ ] `br/pkg/encryption/master_key/common.rs.md`
+- [ ] `br/pkg/encryption/master_key/file_backend.rs.md`
+- [ ] `br/pkg/encryption/master_key/kms_backend.rs.md`
+- [ ] `br/pkg/encryption/master_key/master_key.rs.md`
+- [ ] `br/pkg/encryption/master_key/mem_backend.rs.md`
+- [ ] `br/pkg/encryption/master_key/multi_master_key_backend.rs.md`
+- [ ] `br/pkg/encryption/master_key/pb.rs.md`
+- [ ] `br/pkg/errors/errors.rs.md`
+- [ ] `br/pkg/gc/manager.rs.md`
+- [ ] `br/pkg/gc/manager_global.rs.md`
+- [ ] `br/pkg/gc/manager_keyspace.rs.md`
+- [ ] `br/pkg/gc/safepoint.rs.md`
+- [ ] `br/pkg/glue/console_glue.rs.md`
+- [ ] `br/pkg/glue/glue.rs.md`
+- [ ] `br/pkg/glue/progressing.rs.md`
+- [ ] `br/pkg/gluetidb/glue.rs.md`
+- [ ] `br/pkg/gluetidb/infoschema_filter.rs.md`
+- [ ] `br/pkg/gluetidb/mock/mock.rs.md`
+- [ ] `br/pkg/gluetikv/glue.rs.md`
+- [ ] `br/pkg/kms/aws.rs.md`
+- [ ] `br/pkg/kms/common.rs.md`
+- [ ] `br/pkg/kms/gcp.rs.md`
+- [ ] `br/pkg/kms/kms.rs.md`
+- [ ] `br/pkg/logutil/context.rs.md`
+- [ ] `br/pkg/logutil/logging.rs.md`
+- [ ] `br/pkg/logutil/rate.rs.md`
+- [ ] `br/pkg/metautil/debug.rs.md`
+- [ ] `br/pkg/metautil/load.rs.md`
+- [ ] `br/pkg/metautil/metafile.rs.md`
+- [ ] `br/pkg/metautil/statsfile.rs.md`
+- [ ] `br/pkg/metautil/statsfile_test_support.rs.md`
+- [ ] `br/pkg/mock/backend.rs.md`
+- [ ] `br/pkg/mock/common.rs.md`
+- [ ] `br/pkg/mock/encode.rs.md`
+- [ ] `br/pkg/mock/importer.rs.md`
+- [ ] `br/pkg/mock/mock_cluster.rs.md`
+- [ ] `br/pkg/mock/mockid/mockid.rs.md`
+- [ ] `br/pkg/mock/mocklocal/local.rs.md`
+- [ ] `br/pkg/mock/task_register.rs.md`
+- [ ] `br/pkg/operation/context.rs.md`
+- [ ] `br/pkg/pdutil/pd.rs.md`
+- [ ] `br/pkg/pdutil/utils.rs.md`
+- [ ] `br/pkg/registry/heartbeat.rs.md`
+- [ ] `br/pkg/registry/registration.rs.md`
+- [ ] `br/pkg/restore/data/data.rs.md`
+- [ ] `br/pkg/restore/data/key.rs.md`
+- [ ] `br/pkg/restore/data/recover.rs.md`
+- [ ] `br/pkg/restore/import_mode_switcher.rs.md`
+- [ ] `br/pkg/restore/ingestrec/foreign_key.rs.md`
+- [ ] `br/pkg/restore/ingestrec/ingest_recorder.rs.md`
+- [ ] `br/pkg/restore/ingestrec/model_stub.rs.md`
+- [ ] `br/pkg/restore/internal/import_client/import_client.rs.md`
+- [ ] `br/pkg/restore/internal/prealloc_db/db.rs.md`
+- [ ] `br/pkg/restore/internal/prealloc_table_id/alloc.rs.md`
+- [ ] `br/pkg/restore/internal/rawkv/rawkv_client.rs.md`
+- [ ] `br/pkg/restore/log_client/batch_meta_processor.rs.md`
+- [ ] `br/pkg/restore/log_client/client.rs.md`
+- [ ] `br/pkg/restore/log_client/compacted_file_strategy.rs.md`
+- [ ] `br/pkg/restore/log_client/flow_control.rs.md`
+- [ ] `br/pkg/restore/log_client/id_map.rs.md`
+- [ ] `br/pkg/restore/log_client/import.rs.md`
+- [ ] `br/pkg/restore/log_client/import_retry.rs.md`
+- [ ] `br/pkg/restore/log_client/log_file_manager.rs.md`
+- [ ] `br/pkg/restore/log_client/log_file_map.rs.md`
+- [ ] `br/pkg/restore/log_client/log_split_strategy.rs.md`
+- [ ] `br/pkg/restore/log_client/migration.rs.md`
+- [ ] `br/pkg/restore/log_client/ssts.rs.md`
+- [ ] `br/pkg/restore/misc.rs.md`
+- [ ] `br/pkg/restore/restorer.rs.md`
+- [ ] `br/pkg/restore/snap_client/client.rs.md`
+- [ ] `br/pkg/restore/snap_client/import.rs.md`
+- [ ] `br/pkg/restore/snap_client/pipeline_items.rs.md`
+- [ ] `br/pkg/restore/snap_client/pitr_collector.rs.md`
+- [ ] `br/pkg/restore/snap_client/placement_rule_manager.rs.md`
+- [ ] `br/pkg/restore/snap_client/systable_restore.rs.md`
+- [ ] `br/pkg/restore/snap_client/systable_schema_update.rs.md`
+- [ ] `br/pkg/restore/snap_client/tikv_sender.rs.md`
+- [ ] `br/pkg/restore/split/client.rs.md`
+- [ ] `br/pkg/restore/split/mock_pd_client.rs.md`
+- [ ] `br/pkg/restore/split/region.rs.md`
+- [ ] `br/pkg/restore/split/split.rs.md`
+- [ ] `br/pkg/restore/split/splitter.rs.md`
+- [ ] `br/pkg/restore/split/sum_sorted.rs.md`
+- [ ] `br/pkg/restore/tiflashrec/tiflash_recorder.rs.md`
+- [ ] `br/pkg/restore/utils/common.rs.md`
+- [ ] `br/pkg/restore/utils/merge.rs.md`
+- [ ] `br/pkg/restore/utils/misc.rs.md`
+- [ ] `br/pkg/restore/utils/rewrite_rule.rs.md`
+- [ ] `br/pkg/rtree/logging.rs.md`
+- [ ] `br/pkg/rtree/rtree.rs.md`
+- [ ] `br/pkg/stream/backupmetas/parser.rs.md`
+- [ ] `br/pkg/stream/crr/config/config.rs.md`
+- [ ] `br/pkg/stream/crr/internal/checkpoint/calculator.rs.md`
+- [ ] `br/pkg/stream/crr/internal/checkpoint/progress.rs.md`
+- [ ] `br/pkg/stream/crr/internal/checkpoint/storage.rs.md`
+- [ ] `br/pkg/stream/crr/service/http.rs.md`
+- [ ] `br/pkg/stream/crr/service/metrics.rs.md`
+- [ ] `br/pkg/stream/crr/service/service.rs.md`
+- [ ] `br/pkg/stream/crr/service/status.rs.md`
+- [ ] `br/pkg/stream/decode_kv.rs.md`
+- [ ] `br/pkg/stream/logging_helper.rs.md`
+- [ ] `br/pkg/stream/meta_kv.rs.md`
+- [ ] `br/pkg/stream/rewrite_meta_rawkv.rs.md`
+- [ ] `br/pkg/stream/search.rs.md`
+- [ ] `br/pkg/stream/stream_metas.rs.md`
+- [ ] `br/pkg/stream/stream_mgr.rs.md`
+- [ ] `br/pkg/stream/stream_status.rs.md`
+- [ ] `br/pkg/stream/table_history.rs.md`
+- [ ] `br/pkg/stream/table_mapping.rs.md`
+- [ ] `br/pkg/streamhelper/advancer.rs.md`
+- [ ] `br/pkg/streamhelper/advancer_cliext.rs.md`
+- [ ] `br/pkg/streamhelper/advancer_daemon.rs.md`
+- [ ] `br/pkg/streamhelper/advancer_env.rs.md`
+- [ ] `br/pkg/streamhelper/client.rs.md`
+- [ ] `br/pkg/streamhelper/collector.rs.md`
+- [ ] `br/pkg/streamhelper/config/command_conf.rs.md`
+- [ ] `br/pkg/streamhelper/config/tidb_conf.rs.md`
+- [ ] `br/pkg/streamhelper/config/types.rs.md`
+- [ ] `br/pkg/streamhelper/daemon/interface.rs.md`
+- [ ] `br/pkg/streamhelper/daemon/owner_daemon.rs.md`
+- [ ] `br/pkg/streamhelper/flush_subscriber.rs.md`
+- [ ] `br/pkg/streamhelper/models.rs.md`
+- [ ] `br/pkg/streamhelper/prefix_scanner.rs.md`
+- [ ] `br/pkg/streamhelper/regioniter.rs.md`
+- [ ] `br/pkg/streamhelper/spans/sorted.rs.md`
+- [ ] `br/pkg/streamhelper/spans/utils.rs.md`
+- [ ] `br/pkg/streamhelper/spans/value_sorted.rs.md`
+- [ ] `br/pkg/summary/collector.rs.md`
+- [ ] `br/pkg/summary/summary.rs.md`
+- [ ] `br/pkg/task/backup.rs.md`
+- [ ] `br/pkg/task/backup_ebs.rs.md`
+- [ ] `br/pkg/task/backup_raw.rs.md`
+- [ ] `br/pkg/task/backup_txn.rs.md`
+- [ ] `br/pkg/task/common.rs.md`
+- [ ] `br/pkg/task/encryption.rs.md`
+- [ ] `br/pkg/task/operator/base64ify.rs.md`
+- [ ] `br/pkg/task/operator/checksum_table.rs.md`
+- [ ] `br/pkg/task/operator/config.rs.md`
+- [ ] `br/pkg/task/operator/crr_checkpoint.rs.md`
+- [ ] `br/pkg/task/operator/force_flush.rs.md`
+- [ ] `br/pkg/task/operator/list_migration.rs.md`
+- [ ] `br/pkg/task/operator/migrate_to.rs.md`
+- [ ] `br/pkg/task/operator/prepare_snap.rs.md`
+- [ ] `br/pkg/task/operator/test_storage.rs.md`
+- [ ] `br/pkg/task/restore.rs.md`
+- [ ] `br/pkg/task/restore_data.rs.md`
+- [ ] `br/pkg/task/restore_ebs_meta.rs.md`
+- [ ] `br/pkg/task/restore_lifecycle.rs.md`
+- [ ] `br/pkg/task/restore_raw.rs.md`
+- [ ] `br/pkg/task/restore_txn.rs.md`
+- [ ] `br/pkg/task/show/cmd.rs.md`
+- [ ] `br/pkg/task/stream.rs.md`
+- [ ] `br/pkg/trace/tracing.rs.md`
+- [ ] `br/pkg/utils/backoff.rs.md`
+- [ ] `br/pkg/utils/common.rs.md`
+- [ ] `br/pkg/utils/consts/consts.rs.md`
+- [ ] `br/pkg/utils/db.rs.md`
+- [ ] `br/pkg/utils/dyn_pprof_other.rs.md`
+- [ ] `br/pkg/utils/dyn_pprof_unix.rs.md`
+- [ ] `br/pkg/utils/encryption.rs.md`
+- [ ] `br/pkg/utils/error_handling.rs.md`
+- [ ] `br/pkg/utils/filter.rs.md`
+- [ ] `br/pkg/utils/iter/combinator_types.rs.md`
+- [ ] `br/pkg/utils/iter/combinators.rs.md`
+- [ ] `br/pkg/utils/iter/iter.rs.md`
+- [ ] `br/pkg/utils/iter/source.rs.md`
+- [ ] `br/pkg/utils/iter/source_types.rs.md`
+- [ ] `br/pkg/utils/json.rs.md`
+- [ ] `br/pkg/utils/key.rs.md`
+- [ ] `br/pkg/utils/memory_monitor.rs.md`
+- [ ] `br/pkg/utils/metadata_register.rs.md`
+- [ ] `br/pkg/utils/misc.rs.md`
+- [ ] `br/pkg/utils/pointer.rs.md`
+- [ ] `br/pkg/utils/pprof.rs.md`
+- [ ] `br/pkg/utils/progress.rs.md`
+- [ ] `br/pkg/utils/register.rs.md`
+- [ ] `br/pkg/utils/retry.rs.md`
+- [ ] `br/pkg/utils/schema.rs.md`
+- [ ] `br/pkg/utils/store_manager.rs.md`
+- [ ] `br/pkg/utils/storewatch/watching.rs.md`
+- [ ] `br/pkg/utils/wait.rs.md`
+- [ ] `br/pkg/utils/worker.rs.md`
+- [ ] `br/pkg/utiltest/crr/builder.rs.md`
+- [ ] `br/pkg/utiltest/crr/crr_sim.rs.md`
+- [ ] `br/pkg/utiltest/crr/flush_sim.rs.md`
+- [ ] `br/pkg/utiltest/crr/harness.rs.md`
+- [ ] `br/pkg/utiltest/crr/pd_sim.rs.md`
+- [ ] `br/pkg/utiltest/crr/pd_sim_service.rs.md`
+- [ ] `br/pkg/utiltest/crr/types.rs.md`
+- [ ] `br/pkg/utiltest/fakecluster/core.rs.md`
+- [ ] `br/pkg/utiltest/suite.rs.md`
+- [ ] `br/pkg/utiltest/syncpoint/syncpoint.rs.md`
+- [ ] `br/pkg/version/build/info.rs.md`
+- [ ] `br/pkg/version/version.rs.md`
 
 ## build/config.rs
 
-- [ ] `build/config.rs.md` ← `build/config.rs`（任务 `323-åæ-build-config-3bb90dd8.md`）
+- [ ] `build/config.rs.md`
 
 ## build/debug-linter
 
-- [ ] `build/debug-linter/main.rs.md` ← `build/debug-linter/main.rs`（任务 `324-åæ-build-debug-linter-main-c385eee8.md`）
+- [ ] `build/debug-linter/main.rs.md`
 
 ## build/linter
 
-- [ ] `build/linter/allrevive/analyzer.rs.md` ← `build/linter/allrevive/analyzer.rs`（任务 `325-åæ-linter-allrevive-analyzer-e5f520f3.md`）
-- [ ] `build/linter/assertionapi/analyzer.rs.md` ← `build/linter/assertionapi/analyzer.rs`（任务 `326-åæ-linter-assertionapi-analyzer-727bc9ed.md`）
-- [ ] `build/linter/bodyclose/analysis.rs.md` ← `build/linter/bodyclose/analysis.rs`（任务 `327-åæ-linter-bodyclose-analysis-72fb604e.md`）
-- [ ] `build/linter/bootstrap/analyzer.rs.md` ← `build/linter/bootstrap/analyzer.rs`（任务 `328-åæ-linter-bootstrap-analyzer-805f2ce5.md`）
-- [ ] `build/linter/constructor/analyzer.rs.md` ← `build/linter/constructor/analyzer.rs`（任务 `329-åæ-linter-constructor-analyzer-63aedac5.md`）
-- [ ] `build/linter/copyloopvar/analyzer.rs.md` ← `build/linter/copyloopvar/analyzer.rs`（任务 `330-åæ-linter-copyloopvar-analyzer-b3f348c8.md`）
-- [ ] `build/linter/deferrecover/analyzer.rs.md` ← `build/linter/deferrecover/analyzer.rs`（任务 `331-åæ-linter-deferrecover-analyzer-5bde97b7.md`）
-- [ ] `build/linter/durationcheck/analyzer.rs.md` ← `build/linter/durationcheck/analyzer.rs`（任务 `332-åæ-linter-durationcheck-analyzer-7231660c.md`）
-- [ ] `build/linter/errcheck/analyzer.rs.md` ← `build/linter/errcheck/analyzer.rs`（任务 `333-åæ-linter-errcheck-analyzer-ec50adcd.md`）
-- [ ] `build/linter/etcdconfig/analyzer.rs.md` ← `build/linter/etcdconfig/analyzer.rs`（任务 `334-åæ-linter-etcdconfig-analyzer-862094d7.md`）
-- [ ] `build/linter/exptostd/analyzer.rs.md` ← `build/linter/exptostd/analyzer.rs`（任务 `335-åæ-linter-exptostd-analyzer-d9c71e6c.md`）
-- [ ] `build/linter/filepermission/checker.rs.md` ← `build/linter/filepermission/checker.rs`（任务 `336-åæ-linter-filepermission-checker-2df3e2fe.md`）
-- [ ] `build/linter/forbidigo/analyzer.rs.md` ← `build/linter/forbidigo/analyzer.rs`（任务 `337-åæ-linter-forbidigo-analyzer-b7a9c5d2.md`）
-- [ ] `build/linter/forcetypeassert/analysis.rs.md` ← `build/linter/forcetypeassert/analysis.rs`（任务 `338-åæ-linter-forcetypeassert-analysis-a0b2c32e.md`）
-- [ ] `build/linter/gci/analysis.rs.md` ← `build/linter/gci/analysis.rs`（任务 `339-åæ-linter-gci-analysis-57a3dacf.md`）
-- [ ] `build/linter/gofmt/analyzer.rs.md` ← `build/linter/gofmt/analyzer.rs`（任务 `340-åæ-linter-gofmt-analyzer-f3611c27.md`）
-- [ ] `build/linter/gosec/analysis.rs.md` ← `build/linter/gosec/analysis.rs`（任务 `341-åæ-linter-gosec-analysis-0752f969.md`）
-- [ ] `build/linter/ineffassign/analyzer.rs.md` ← `build/linter/ineffassign/analyzer.rs`（任务 `342-åæ-linter-ineffassign-analyzer-06ff9a9a.md`）
-- [ ] `build/linter/intrange/analyzer.rs.md` ← `build/linter/intrange/analyzer.rs`（任务 `343-åæ-linter-intrange-analyzer-c0b8d7c4.md`）
-- [ ] `build/linter/linter.rs.md` ← `build/linter/linter.rs`（任务 `344-åæ-build-linter-linter-3567dfc6.md`）
-- [ ] `build/linter/lll/analyzer.rs.md` ← `build/linter/lll/analyzer.rs`（任务 `345-åæ-linter-lll-analyzer-2d494019.md`）
-- [ ] `build/linter/makezero/analyzer.rs.md` ← `build/linter/makezero/analyzer.rs`（任务 `346-åæ-linter-makezero-analyzer-29a29405.md`）
-- [ ] `build/linter/mirror/analyzer.rs.md` ← `build/linter/mirror/analyzer.rs`（任务 `347-åæ-linter-mirror-analyzer-ed6b4943.md`）
-- [ ] `build/linter/misspell/analyzer.rs.md` ← `build/linter/misspell/analyzer.rs`（任务 `348-åæ-linter-misspell-analyzer-e6ec9b30.md`）
-- [ ] `build/linter/prealloc/analyzer.rs.md` ← `build/linter/prealloc/analyzer.rs`（任务 `349-åæ-linter-prealloc-analyzer-20861fce.md`）
-- [ ] `build/linter/predeclared/analysis.rs.md` ← `build/linter/predeclared/analysis.rs`（任务 `350-åæ-linter-predeclared-analysis-b477ba82.md`）
-- [ ] `build/linter/printexpression/analyzer.rs.md` ← `build/linter/printexpression/analyzer.rs`（任务 `351-åæ-linter-printexpression-analyzer-b3f2496c.md`）
-- [ ] `build/linter/revive/analyzer.rs.md` ← `build/linter/revive/analyzer.rs`（任务 `352-åæ-linter-revive-analyzer-c5b61ce8.md`）
-- [ ] `build/linter/rowserrcheck/analyzer.rs.md` ← `build/linter/rowserrcheck/analyzer.rs`（任务 `353-åæ-linter-rowserrcheck-analyzer-521a9651.md`）
-- [ ] `build/linter/staticcheck/analyzer.rs.md` ← `build/linter/staticcheck/analyzer.rs`（任务 `354-åæ-linter-staticcheck-analyzer-63c53b25.md`）
-- [ ] `build/linter/staticcheck/util.rs.md` ← `build/linter/staticcheck/util.rs`（任务 `355-åæ-linter-staticcheck-util-987e3afc.md`）
-- [ ] `build/linter/toomanytests/analyze.rs.md` ← `build/linter/toomanytests/analyze.rs`（任务 `356-åæ-linter-toomanytests-analyze-69393b01.md`）
-- [ ] `build/linter/unconvert/analysis.rs.md` ← `build/linter/unconvert/analysis.rs`（任务 `357-åæ-linter-unconvert-analysis-082b962a.md`）
-- [ ] `build/linter/util/exclude.rs.md` ← `build/linter/util/exclude.rs`（任务 `358-åæ-linter-util-exclude-703c8a7d.md`）
-- [ ] `build/linter/util/util.rs.md` ← `build/linter/util/util.rs`（任务 `359-åæ-linter-util-util-96ef122a.md`）
+- [ ] `build/linter/allrevive/analyzer.rs.md`
+- [ ] `build/linter/assertionapi/analyzer.rs.md`
+- [ ] `build/linter/bodyclose/analysis.rs.md`
+- [ ] `build/linter/bootstrap/analyzer.rs.md`
+- [ ] `build/linter/constructor/analyzer.rs.md`
+- [ ] `build/linter/copyloopvar/analyzer.rs.md`
+- [ ] `build/linter/deferrecover/analyzer.rs.md`
+- [ ] `build/linter/durationcheck/analyzer.rs.md`
+- [ ] `build/linter/errcheck/analyzer.rs.md`
+- [ ] `build/linter/etcdconfig/analyzer.rs.md`
+- [ ] `build/linter/exptostd/analyzer.rs.md`
+- [ ] `build/linter/filepermission/checker.rs.md`
+- [ ] `build/linter/forbidigo/analyzer.rs.md`
+- [ ] `build/linter/forcetypeassert/analysis.rs.md`
+- [ ] `build/linter/gci/analysis.rs.md`
+- [ ] `build/linter/gofmt/analyzer.rs.md`
+- [ ] `build/linter/gosec/analysis.rs.md`
+- [ ] `build/linter/ineffassign/analyzer.rs.md`
+- [ ] `build/linter/intrange/analyzer.rs.md`
+- [ ] `build/linter/linter.rs.md`
+- [ ] `build/linter/lll/analyzer.rs.md`
+- [ ] `build/linter/makezero/analyzer.rs.md`
+- [ ] `build/linter/mirror/analyzer.rs.md`
+- [ ] `build/linter/misspell/analyzer.rs.md`
+- [ ] `build/linter/prealloc/analyzer.rs.md`
+- [ ] `build/linter/predeclared/analysis.rs.md`
+- [ ] `build/linter/printexpression/analyzer.rs.md`
+- [ ] `build/linter/revive/analyzer.rs.md`
+- [ ] `build/linter/rowserrcheck/analyzer.rs.md`
+- [ ] `build/linter/staticcheck/analyzer.rs.md`
+- [ ] `build/linter/staticcheck/util.rs.md`
+- [ ] `build/linter/toomanytests/analyze.rs.md`
+- [ ] `build/linter/unconvert/analysis.rs.md`
+- [ ] `build/linter/util/exclude.rs.md`
+- [ ] `build/linter/util/util.rs.md`
 
 ## cmd/benchdb
 
-- [ ] `cmd/benchdb/main.rs.md` ← `cmd/benchdb/main.rs`（任务 `362-åæ-cmd-benchdb-main-15546ef6.md`）
+- [ ] `cmd/benchdb/main.rs.md`
 
 ## cmd/benchkv
 
-- [ ] `cmd/benchkv/main.rs.md` ← `cmd/benchkv/main.rs`（任务 `366-åæ-cmd-benchkv-main-c43a9400.md`）
+- [ ] `cmd/benchkv/main.rs.md`
 
 ## cmd/benchraw
 
-- [ ] `cmd/benchraw/main.rs.md` ← `cmd/benchraw/main.rs`（任务 `370-åæ-cmd-benchraw-main-402b651d.md`）
+- [ ] `cmd/benchraw/main.rs.md`
 
 ## cmd/importer
 
-- [ ] `cmd/importer/config.rs.md` ← `cmd/importer/config.rs`（任务 `375-åæ-cmd-importer-config-6e36d18f.md`）
-- [ ] `cmd/importer/data.rs.md` ← `cmd/importer/data.rs`（任务 `376-åæ-cmd-importer-data-6a497552.md`）
-- [ ] `cmd/importer/db.rs.md` ← `cmd/importer/db.rs`（任务 `377-åæ-cmd-importer-db-98e35efd.md`）
-- [ ] `cmd/importer/job.rs.md` ← `cmd/importer/job.rs`（任务 `378-åæ-cmd-importer-job-c842eebd.md`）
-- [ ] `cmd/importer/main.rs.md` ← `cmd/importer/main.rs`（任务 `380-åæ-cmd-importer-main-a142a8bb.md`）
-- [ ] `cmd/importer/parser.rs.md` ← `cmd/importer/parser.rs`（任务 `381-åæ-cmd-importer-parser-1b56b0f8.md`）
-- [ ] `cmd/importer/rand.rs.md` ← `cmd/importer/rand.rs`（任务 `382-åæ-cmd-importer-rand-6471f6eb.md`）
-- [ ] `cmd/importer/stats.rs.md` ← `cmd/importer/stats.rs`（任务 `383-åæ-cmd-importer-stats-d50fbada.md`）
+- [ ] `cmd/importer/config.rs.md`
+- [ ] `cmd/importer/data.rs.md`
+- [ ] `cmd/importer/db.rs.md`
+- [ ] `cmd/importer/job.rs.md`
+- [ ] `cmd/importer/main.rs.md`
+- [ ] `cmd/importer/parser.rs.md`
+- [ ] `cmd/importer/rand.rs.md`
+- [ ] `cmd/importer/stats.rs.md`
 
 ## cmd/mirror
 
-- [ ] `cmd/mirror/mirror.rs.md` ← `cmd/mirror/mirror.rs`（任务 `387-åæ-cmd-mirror-mirror-cc6a6c20.md`）
+- [ ] `cmd/mirror/mirror.rs.md`
 
 ## cmd/pluginpkg
 
-- [ ] `cmd/pluginpkg/pluginpkg.rs.md` ← `cmd/pluginpkg/pluginpkg.rs`（任务 `391-åæ-cmd-pluginpkg-pluginpkg-d3008d7c.md`）
+- [ ] `cmd/pluginpkg/pluginpkg.rs.md`
 
 ## cmd/tidb-server
 
-- [ ] `cmd/tidb-server/fips.rs.md` ← `cmd/tidb-server/fips.rs`（任务 `394-åæ-cmd-tidb-server-fips-4c8efe38.md`）
-- [ ] `cmd/tidb-server/main.rs.md` ← `cmd/tidb-server/main.rs`（任务 `396-åæ-cmd-tidb-server-main-731a8327.md`）
+- [ ] `cmd/tidb-server/fips.rs.md`
+- [ ] `cmd/tidb-server/main.rs.md`
 
 ## dumpling/cli
 
-- [ ] `dumpling/cli/versions.rs.md` ← `dumpling/cli/versions.rs`（任务 `399-åæ-dumpling-cli-versions-6df86d5b.md`）
+- [ ] `dumpling/cli/versions.rs.md`
 
 ## dumpling/cmd
 
-- [ ] `dumpling/cmd/dumpling/config_flags.rs.md` ← `dumpling/cmd/dumpling/config_flags.rs`（任务 `401-åæ-cmd-dumpling-config_flags-339bb4c4.md`）
-- [ ] `dumpling/cmd/dumpling/main.rs.md` ← `dumpling/cmd/dumpling/main.rs`（任务 `403-åæ-cmd-dumpling-main-759c5db6.md`）
+- [ ] `dumpling/cmd/dumpling/config_flags.rs.md`
+- [ ] `dumpling/cmd/dumpling/main.rs.md`
 
 ## dumpling/context
 
-- [ ] `dumpling/context/context.rs.md` ← `dumpling/context/context.rs`（任务 `405-åæ-dumpling-context-context-cb69d60e.md`）
+- [ ] `dumpling/context/context.rs.md`
 
 ## dumpling/export
 
-- [ ] `dumpling/export/block_allow_list.rs.md` ← `dumpling/export/block_allow_list.rs`（任务 `408-åæ-dumpling-export-block_allow_list-68c6e7fd.md`）
-- [ ] `dumpling/export/column_filter.rs.md` ← `dumpling/export/column_filter.rs`（任务 `409-åæ-dumpling-export-column_filter-e300cb67.md`）
-- [ ] `dumpling/export/config.rs.md` ← `dumpling/export/config.rs`（任务 `410-åæ-dumpling-export-config-e0fb3c8f.md`）
-- [ ] `dumpling/export/conn.rs.md` ← `dumpling/export/conn.rs`（任务 `411-åæ-dumpling-export-conn-bd780f85.md`）
-- [ ] `dumpling/export/consistency.rs.md` ← `dumpling/export/consistency.rs`（任务 `412-åæ-dumpling-export-consistency-740604f3.md`）
-- [ ] `dumpling/export/dump.rs.md` ← `dumpling/export/dump.rs`（任务 `413-åæ-dumpling-export-dump-e5f3f6a7.md`）
-- [ ] `dumpling/export/http_handler.rs.md` ← `dumpling/export/http_handler.rs`（任务 `414-åæ-dumpling-export-http_handler-37aa29a2.md`）
-- [ ] `dumpling/export/ir.rs.md` ← `dumpling/export/ir.rs`（任务 `415-åæ-dumpling-export-ir-6b3568df.md`）
-- [ ] `dumpling/export/ir_impl.rs.md` ← `dumpling/export/ir_impl.rs`（任务 `416-åæ-dumpling-export-ir_impl-be7c36ea.md`）
-- [ ] `dumpling/export/metadata.rs.md` ← `dumpling/export/metadata.rs`（任务 `418-åæ-dumpling-export-metadata-cc2faf90.md`）
-- [ ] `dumpling/export/metrics.rs.md` ← `dumpling/export/metrics.rs`（任务 `419-åæ-dumpling-export-metrics-ee47f739.md`）
-- [ ] `dumpling/export/prepare.rs.md` ← `dumpling/export/prepare.rs`（任务 `420-åæ-dumpling-export-prepare-25ffca6d.md`）
-- [ ] `dumpling/export/retry.rs.md` ← `dumpling/export/retry.rs`（任务 `421-åæ-dumpling-export-retry-604df2cf.md`）
-- [ ] `dumpling/export/schema_projection.rs.md` ← `dumpling/export/schema_projection.rs`（任务 `422-åæ-dumpling-export-schema_projection-e3330331.md`）
-- [ ] `dumpling/export/schema_projection_restore.rs.md` ← `dumpling/export/schema_projection_restore.rs`（任务 `423-åæ-dumpling-export-schema_projection_restore-b2e1ddad.md`）
-- [ ] `dumpling/export/sql.rs.md` ← `dumpling/export/sql.rs`（任务 `424-åæ-dumpling-export-sql-27276299.md`）
-- [ ] `dumpling/export/sql_type.rs.md` ← `dumpling/export/sql_type.rs`（任务 `425-åæ-dumpling-export-sql_type-6095193f.md`）
-- [ ] `dumpling/export/status.rs.md` ← `dumpling/export/status.rs`（任务 `426-åæ-dumpling-export-status-ed751bd9.md`）
-- [ ] `dumpling/export/task.rs.md` ← `dumpling/export/task.rs`（任务 `428-åæ-dumpling-export-task-0237c406.md`）
-- [ ] `dumpling/export/util.rs.md` ← `dumpling/export/util.rs`（任务 `429-åæ-dumpling-export-util-5c568277.md`）
-- [ ] `dumpling/export/writer.rs.md` ← `dumpling/export/writer.rs`（任务 `430-åæ-dumpling-export-writer-3d8d6506.md`）
-- [ ] `dumpling/export/writer_util.rs.md` ← `dumpling/export/writer_util.rs`（任务 `431-åæ-dumpling-export-writer_util-696c24fe.md`）
+- [ ] `dumpling/export/block_allow_list.rs.md`
+- [ ] `dumpling/export/column_filter.rs.md`
+- [ ] `dumpling/export/config.rs.md`
+- [ ] `dumpling/export/conn.rs.md`
+- [ ] `dumpling/export/consistency.rs.md`
+- [ ] `dumpling/export/dump.rs.md`
+- [ ] `dumpling/export/http_handler.rs.md`
+- [ ] `dumpling/export/ir.rs.md`
+- [ ] `dumpling/export/ir_impl.rs.md`
+- [ ] `dumpling/export/metadata.rs.md`
+- [ ] `dumpling/export/metrics.rs.md`
+- [ ] `dumpling/export/prepare.rs.md`
+- [ ] `dumpling/export/retry.rs.md`
+- [ ] `dumpling/export/schema_projection.rs.md`
+- [ ] `dumpling/export/schema_projection_restore.rs.md`
+- [ ] `dumpling/export/sql.rs.md`
+- [ ] `dumpling/export/sql_type.rs.md`
+- [ ] `dumpling/export/status.rs.md`
+- [ ] `dumpling/export/task.rs.md`
+- [ ] `dumpling/export/util.rs.md`
+- [ ] `dumpling/export/writer.rs.md`
+- [ ] `dumpling/export/writer_util.rs.md`
 
 ## dumpling/log
 
-- [ ] `dumpling/log/log.rs.md` ← `dumpling/log/log.rs`（任务 `433-åæ-dumpling-log-log-715b04e9.md`）
+- [ ] `dumpling/log/log.rs.md`
 
 ## lightning/cmd
 
-- [ ] `lightning/cmd/tidb-lightning-ctl/fips.rs.md` ← `lightning/cmd/tidb-lightning-ctl/fips.rs`（任务 `435-åæ-cmd-tidb-lightning-ctl-fips-3093405f.md`）
-- [ ] `lightning/cmd/tidb-lightning-ctl/main.rs.md` ← `lightning/cmd/tidb-lightning-ctl/main.rs`（任务 `437-åæ-cmd-tidb-lightning-ctl-main-1a7dd028.md`）
-- [ ] `lightning/cmd/tidb-lightning/fips.rs.md` ← `lightning/cmd/tidb-lightning/fips.rs`（任务 `440-åæ-cmd-tidb-lightning-fips-abefbe80.md`）
-- [ ] `lightning/cmd/tidb-lightning/main.rs.md` ← `lightning/cmd/tidb-lightning/main.rs`（任务 `442-åæ-cmd-tidb-lightning-main-7ddd08db.md`）
+- [ ] `lightning/cmd/tidb-lightning-ctl/fips.rs.md`
+- [ ] `lightning/cmd/tidb-lightning-ctl/main.rs.md`
+- [ ] `lightning/cmd/tidb-lightning/fips.rs.md`
+- [ ] `lightning/cmd/tidb-lightning/main.rs.md`
 
 ## lightning/pkg
 
-- [ ] `lightning/pkg/checkpoints/checkpoints.rs.md` ← `lightning/pkg/checkpoints/checkpoints.rs`（任务 `444-åæ-pkg-checkpoints-checkpoints-da121381.md`）
-- [ ] `lightning/pkg/checkpoints/checkpointspb/file_checkpoints.pb.rs.md` ← `lightning/pkg/checkpoints/checkpointspb/file_checkpoints.pb.rs`（任务 `445-åæ-checkpoints-checkpointspb-file_checkpoints-pb-924691dc.md`）
-- [ ] `lightning/pkg/errormanager/errormanager.rs.md` ← `lightning/pkg/errormanager/errormanager.rs`（任务 `449-åæ-pkg-errormanager-errormanager-4d00fe58.md`）
-- [ ] `lightning/pkg/importer/check_info.rs.md` ← `lightning/pkg/importer/check_info.rs`（任务 `452-åæ-pkg-importer-check_info-c86f8616.md`）
-- [ ] `lightning/pkg/importer/check_template.rs.md` ← `lightning/pkg/importer/check_template.rs`（任务 `453-åæ-pkg-importer-check_template-af7db71c.md`）
-- [ ] `lightning/pkg/importer/checksum_helper.rs.md` ← `lightning/pkg/importer/checksum_helper.rs`（任务 `454-åæ-pkg-importer-checksum_helper-372aa014.md`）
-- [ ] `lightning/pkg/importer/chunk_process.rs.md` ← `lightning/pkg/importer/chunk_process.rs`（任务 `455-åæ-pkg-importer-chunk_process-c9eb0077.md`）
-- [ ] `lightning/pkg/importer/dup_detect.rs.md` ← `lightning/pkg/importer/dup_detect.rs`（任务 `456-åæ-pkg-importer-dup_detect-5d9e9f4b.md`）
-- [ ] `lightning/pkg/importer/get_pre_info.rs.md` ← `lightning/pkg/importer/get_pre_info.rs`（任务 `457-åæ-pkg-importer-get_pre_info-dfd36c6a.md`）
-- [ ] `lightning/pkg/importer/import.rs.md` ← `lightning/pkg/importer/import.rs`（任务 `458-åæ-pkg-importer-import-14ae06d7.md`）
-- [ ] `lightning/pkg/importer/meta_manager.rs.md` ← `lightning/pkg/importer/meta_manager.rs`（任务 `460-åæ-pkg-importer-meta_manager-263bca72.md`）
-- [ ] `lightning/pkg/importer/mock/mock.rs.md` ← `lightning/pkg/importer/mock/mock.rs`（任务 `462-åæ-importer-mock-mock-22bf12dc.md`）
-- [ ] `lightning/pkg/importer/opts/get_pre_info_opts.rs.md` ← `lightning/pkg/importer/opts/get_pre_info_opts.rs`（任务 `464-åæ-importer-opts-get_pre_info_opts-5c1abe3e.md`）
-- [ ] `lightning/pkg/importer/opts/precheck_opts.rs.md` ← `lightning/pkg/importer/opts/precheck_opts.rs`（任务 `466-åæ-importer-opts-precheck_opts-3f9283f5.md`）
-- [ ] `lightning/pkg/importer/precheck.rs.md` ← `lightning/pkg/importer/precheck.rs`（任务 `468-åæ-pkg-importer-precheck-22b397c2.md`）
-- [ ] `lightning/pkg/importer/precheck_impl.rs.md` ← `lightning/pkg/importer/precheck_impl.rs`（任务 `469-åæ-pkg-importer-precheck_impl-e1cebd05.md`）
-- [ ] `lightning/pkg/importer/table_import.rs.md` ← `lightning/pkg/importer/table_import.rs`（任务 `471-åæ-pkg-importer-table_import-ab2c10ba.md`）
-- [ ] `lightning/pkg/importer/tidb.rs.md` ← `lightning/pkg/importer/tidb.rs`（任务 `472-åæ-pkg-importer-tidb-6ffe61cf.md`）
-- [ ] `lightning/pkg/importinto/checkpoint.rs.md` ← `lightning/pkg/importinto/checkpoint.rs`（任务 `473-åæ-pkg-importinto-checkpoint-e43ef06e.md`）
-- [ ] `lightning/pkg/importinto/importer.rs.md` ← `lightning/pkg/importinto/importer.rs`（任务 `474-åæ-pkg-importinto-importer-361c44ad.md`）
-- [ ] `lightning/pkg/importinto/job_monitor.rs.md` ← `lightning/pkg/importinto/job_monitor.rs`（任务 `475-åæ-pkg-importinto-job_monitor-74622a6c.md`）
-- [ ] `lightning/pkg/importinto/job_orchestrator.rs.md` ← `lightning/pkg/importinto/job_orchestrator.rs`（任务 `476-åæ-pkg-importinto-job_orchestrator-162cb321.md`）
-- [ ] `lightning/pkg/importinto/job_progress.rs.md` ← `lightning/pkg/importinto/job_progress.rs`（任务 `477-åæ-pkg-importinto-job_progress-8ddc9714.md`）
-- [ ] `lightning/pkg/importinto/job_submitter.rs.md` ← `lightning/pkg/importinto/job_submitter.rs`（任务 `478-åæ-pkg-importinto-job_submitter-c086f9e7.md`）
-- [ ] `lightning/pkg/importinto/mock/import_mock.rs.md` ← `lightning/pkg/importinto/mock/import_mock.rs`（任务 `480-åæ-importinto-mock-import_mock-567e50cf.md`）
-- [ ] `lightning/pkg/importinto/precheck.rs.md` ← `lightning/pkg/importinto/precheck.rs`（任务 `483-åæ-pkg-importinto-precheck-cf88cf9b.md`）
-- [ ] `lightning/pkg/precheck/precheck.rs.md` ← `lightning/pkg/precheck/precheck.rs`（任务 `486-åæ-pkg-precheck-precheck-ee15f9e4.md`）
-- [ ] `lightning/pkg/progress/progress.rs.md` ← `lightning/pkg/progress/progress.rs`（任务 `489-åæ-pkg-progress-progress-16631e59.md`）
-- [ ] `lightning/pkg/server/checkpoint_control.rs.md` ← `lightning/pkg/server/checkpoint_control.rs`（任务 `491-åæ-pkg-server-checkpoint_control-7e4b2f42.md`）
-- [ ] `lightning/pkg/server/lightning.rs.md` ← `lightning/pkg/server/lightning.rs`（任务 `493-åæ-pkg-server-lightning-6f472b8c.md`）
-- [ ] `lightning/pkg/server/run_options.rs.md` ← `lightning/pkg/server/run_options.rs`（任务 `494-åæ-pkg-server-run_options-41b5b9e7.md`）
-- [ ] `lightning/pkg/server/sigusr1_other.rs.md` ← `lightning/pkg/server/sigusr1_other.rs`（任务 `495-åæ-pkg-server-sigusr1_other-d3b5b637.md`）
-- [ ] `lightning/pkg/server/sigusr1_unix.rs.md` ← `lightning/pkg/server/sigusr1_unix.rs`（任务 `496-åæ-pkg-server-sigusr1_unix-7e65749e.md`）
+- [ ] `lightning/pkg/checkpoints/checkpoints.rs.md`
+- [ ] `lightning/pkg/checkpoints/checkpointspb/file_checkpoints.pb.rs.md`
+- [ ] `lightning/pkg/errormanager/errormanager.rs.md`
+- [ ] `lightning/pkg/importer/check_info.rs.md`
+- [ ] `lightning/pkg/importer/check_template.rs.md`
+- [ ] `lightning/pkg/importer/checksum_helper.rs.md`
+- [ ] `lightning/pkg/importer/chunk_process.rs.md`
+- [ ] `lightning/pkg/importer/dup_detect.rs.md`
+- [ ] `lightning/pkg/importer/get_pre_info.rs.md`
+- [ ] `lightning/pkg/importer/import.rs.md`
+- [ ] `lightning/pkg/importer/meta_manager.rs.md`
+- [ ] `lightning/pkg/importer/mock/mock.rs.md`
+- [ ] `lightning/pkg/importer/opts/get_pre_info_opts.rs.md`
+- [ ] `lightning/pkg/importer/opts/precheck_opts.rs.md`
+- [ ] `lightning/pkg/importer/precheck.rs.md`
+- [ ] `lightning/pkg/importer/precheck_impl.rs.md`
+- [ ] `lightning/pkg/importer/table_import.rs.md`
+- [ ] `lightning/pkg/importer/tidb.rs.md`
+- [ ] `lightning/pkg/importinto/checkpoint.rs.md`
+- [ ] `lightning/pkg/importinto/importer.rs.md`
+- [ ] `lightning/pkg/importinto/job_monitor.rs.md`
+- [ ] `lightning/pkg/importinto/job_orchestrator.rs.md`
+- [ ] `lightning/pkg/importinto/job_progress.rs.md`
+- [ ] `lightning/pkg/importinto/job_submitter.rs.md`
+- [ ] `lightning/pkg/importinto/mock/import_mock.rs.md`
+- [ ] `lightning/pkg/importinto/precheck.rs.md`
+- [ ] `lightning/pkg/precheck/precheck.rs.md`
+- [ ] `lightning/pkg/progress/progress.rs.md`
+- [ ] `lightning/pkg/server/checkpoint_control.rs.md`
+- [ ] `lightning/pkg/server/lightning.rs.md`
+- [ ] `lightning/pkg/server/run_options.rs.md`
+- [ ] `lightning/pkg/server/sigusr1_other.rs.md`
+- [ ] `lightning/pkg/server/sigusr1_unix.rs.md`
 
 ## pkg/autoid_service
 
-- [ ] `pkg/autoid_service/autoid.rs.md` ← `pkg/autoid_service/autoid.rs`（任务 `498-åæ-pkg-autoid_service-autoid-67a991ca.md`）
-- [ ] `pkg/autoid_service/client.rs.md` ← `pkg/autoid_service/client.rs`（任务 `499-åæ-pkg-autoid_service-client-c610639f.md`）
+- [ ] `pkg/autoid_service/autoid.rs.md`
+- [ ] `pkg/autoid_service/client.rs.md`
 
 ## pkg/bindinfo
 
-- [ ] `pkg/bindinfo/binding.rs.md` ← `pkg/bindinfo/binding.rs`（任务 `501-åæ-pkg-bindinfo-binding-c76623ab.md`）
-- [ ] `pkg/bindinfo/binding_auto.rs.md` ← `pkg/bindinfo/binding_auto.rs`（任务 `502-åæ-pkg-bindinfo-binding_auto-4880f00b.md`）
-- [ ] `pkg/bindinfo/binding_cache.rs.md` ← `pkg/bindinfo/binding_cache.rs`（任务 `503-åæ-pkg-bindinfo-binding_cache-d86ba923.md`）
-- [ ] `pkg/bindinfo/binding_handle.rs.md` ← `pkg/bindinfo/binding_handle.rs`（任务 `504-åæ-pkg-bindinfo-binding_handle-e19569a6.md`）
-- [ ] `pkg/bindinfo/binding_operator.rs.md` ← `pkg/bindinfo/binding_operator.rs`（任务 `505-åæ-pkg-bindinfo-binding_operator-30084b88.md`）
-- [ ] `pkg/bindinfo/binding_plan_evolution.rs.md` ← `pkg/bindinfo/binding_plan_evolution.rs`（任务 `506-åæ-pkg-bindinfo-binding_plan_evolution-0f93ed10.md`）
-- [ ] `pkg/bindinfo/binding_plan_generation.rs.md` ← `pkg/bindinfo/binding_plan_generation.rs`（任务 `507-åæ-pkg-bindinfo-binding_plan_generation-64346f9c.md`）
-- [ ] `pkg/bindinfo/session_handle.rs.md` ← `pkg/bindinfo/session_handle.rs`（任务 `509-åæ-pkg-bindinfo-session_handle-b95444de.md`）
-- [ ] `pkg/bindinfo/utils.rs.md` ← `pkg/bindinfo/utils.rs`（任务 `510-åæ-pkg-bindinfo-utils-9514d823.md`）
+- [ ] `pkg/bindinfo/binding.rs.md`
+- [ ] `pkg/bindinfo/binding_auto.rs.md`
+- [ ] `pkg/bindinfo/binding_cache.rs.md`
+- [ ] `pkg/bindinfo/binding_handle.rs.md`
+- [ ] `pkg/bindinfo/binding_operator.rs.md`
+- [ ] `pkg/bindinfo/binding_plan_evolution.rs.md`
+- [ ] `pkg/bindinfo/binding_plan_generation.rs.md`
+- [ ] `pkg/bindinfo/session_handle.rs.md`
+- [ ] `pkg/bindinfo/utils.rs.md`
 
 ## pkg/config
 
-- [ ] `pkg/config/config.rs.md` ← `pkg/config/config.rs`（任务 `511-åæ-pkg-config-config-77e04055.md`）
-- [ ] `pkg/config/config_util.rs.md` ← `pkg/config/config_util.rs`（任务 `512-åæ-pkg-config-config_util-2a5f1330.md`）
-- [ ] `pkg/config/configtypes/go_units.rs.md` ← `pkg/config/configtypes/go_units.rs`（任务 `513-åæ-config-configtypes-go_units-56ab52b1.md`）
-- [ ] `pkg/config/configtypes/types.rs.md` ← `pkg/config/configtypes/types.rs`（任务 `515-åæ-config-configtypes-types-fd892735.md`）
-- [ ] `pkg/config/const.rs.md` ← `pkg/config/const.rs`（任务 `516-åæ-pkg-config-const-dd819e4d.md`）
-- [ ] `pkg/config/deploymode/mode.rs.md` ← `pkg/config/deploymode/mode.rs`（任务 `519-åæ-config-deploymode-mode-bd56e382.md`）
-- [ ] `pkg/config/external_workload.rs.md` ← `pkg/config/external_workload.rs`（任务 `520-åæ-pkg-config-external_workload-820c560d.md`）
-- [ ] `pkg/config/kerneltype/classic.rs.md` ← `pkg/config/kerneltype/classic.rs`（任务 `521-åæ-config-kerneltype-classic-58334385.md`）
-- [ ] `pkg/config/kerneltype/nextgen.rs.md` ← `pkg/config/kerneltype/nextgen.rs`（任务 `524-åæ-config-kerneltype-nextgen-0ce266c7.md`）
-- [ ] `pkg/config/kerneltype/type.rs.md` ← `pkg/config/kerneltype/type.rs`（任务 `525-åæ-config-kerneltype-type-ed91a56c.md`）
-- [ ] `pkg/config/keyspace_observability.rs.md` ← `pkg/config/keyspace_observability.rs`（任务 `526-åæ-pkg-config-keyspace_observability-34d5765e.md`）
-- [ ] `pkg/config/store.rs.md` ← `pkg/config/store.rs`（任务 `528-åæ-pkg-config-store-a5cfecc5.md`）
-- [ ] `pkg/config/tiflash.rs.md` ← `pkg/config/tiflash.rs`（任务 `529-åæ-pkg-config-tiflash-a9f157f7.md`）
+- [ ] `pkg/config/config.rs.md`
+- [ ] `pkg/config/config_util.rs.md`
+- [ ] `pkg/config/configtypes/go_units.rs.md`
+- [ ] `pkg/config/configtypes/types.rs.md`
+- [ ] `pkg/config/const.rs.md`
+- [ ] `pkg/config/deploymode/mode.rs.md`
+- [ ] `pkg/config/external_workload.rs.md`
+- [ ] `pkg/config/kerneltype/classic.rs.md`
+- [ ] `pkg/config/kerneltype/nextgen.rs.md`
+- [ ] `pkg/config/kerneltype/type.rs.md`
+- [ ] `pkg/config/keyspace_observability.rs.md`
+- [ ] `pkg/config/store.rs.md`
+- [ ] `pkg/config/tiflash.rs.md`
 
 ## pkg/ddl
 
-- [ ] `pkg/ddl/add_column.rs.md` ← `pkg/ddl/add_column.rs`（任务 `530-åæ-pkg-ddl-add_column-3f77f8a4.md`）
-- [ ] `pkg/ddl/affinity.rs.md` ← `pkg/ddl/affinity.rs`（任务 `531-åæ-pkg-ddl-affinity-70399c3c.md`）
-- [ ] `pkg/ddl/backfill_metrics.rs.md` ← `pkg/ddl/backfill_metrics.rs`（任务 `532-åæ-pkg-ddl-backfill_metrics-7cff5455.md`）
-- [ ] `pkg/ddl/backfilling.rs.md` ← `pkg/ddl/backfilling.rs`（任务 `533-åæ-pkg-ddl-backfilling-b6b3f7e6.md`）
-- [ ] `pkg/ddl/backfilling_clean_s3.rs.md` ← `pkg/ddl/backfilling_clean_s3.rs`（任务 `534-åæ-pkg-ddl-backfilling_clean_s3-fb8c8a80.md`）
-- [ ] `pkg/ddl/backfilling_dist_executor.rs.md` ← `pkg/ddl/backfilling_dist_executor.rs`（任务 `535-åæ-pkg-ddl-backfilling_dist_executor-04606f18.md`）
-- [ ] `pkg/ddl/backfilling_dist_scheduler.rs.md` ← `pkg/ddl/backfilling_dist_scheduler.rs`（任务 `536-åæ-pkg-ddl-backfilling_dist_scheduler-66406d76.md`）
-- [ ] `pkg/ddl/backfilling_import_cloud.rs.md` ← `pkg/ddl/backfilling_import_cloud.rs`（任务 `537-åæ-pkg-ddl-backfilling_import_cloud-a81f382d.md`）
-- [ ] `pkg/ddl/backfilling_merge_sort.rs.md` ← `pkg/ddl/backfilling_merge_sort.rs`（任务 `538-åæ-pkg-ddl-backfilling_merge_sort-1691a65f.md`）
-- [ ] `pkg/ddl/backfilling_merge_temp.rs.md` ← `pkg/ddl/backfilling_merge_temp.rs`（任务 `539-åæ-pkg-ddl-backfilling_merge_temp-38f565c5.md`）
-- [ ] `pkg/ddl/backfilling_operators.rs.md` ← `pkg/ddl/backfilling_operators.rs`（任务 `540-åæ-pkg-ddl-backfilling_operators-b50577af.md`）
-- [ ] `pkg/ddl/backfilling_read_index.rs.md` ← `pkg/ddl/backfilling_read_index.rs`（任务 `541-åæ-pkg-ddl-backfilling_read_index-4df2a822.md`）
-- [ ] `pkg/ddl/backfilling_txn_executor.rs.md` ← `pkg/ddl/backfilling_txn_executor.rs`（任务 `542-åæ-pkg-ddl-backfilling_txn_executor-2143452f.md`）
-- [ ] `pkg/ddl/bdr/bdr.rs.md` ← `pkg/ddl/bdr/bdr.rs`（任务 `543-åæ-ddl-bdr-bdr-11cb0205.md`）
-- [ ] `pkg/ddl/cluster.rs.md` ← `pkg/ddl/cluster.rs`（任务 `545-åæ-pkg-ddl-cluster-ae00487f.md`）
-- [ ] `pkg/ddl/column.rs.md` ← `pkg/ddl/column.rs`（任务 `546-åæ-pkg-ddl-column-4b61a975.md`）
-- [ ] `pkg/ddl/constraint.rs.md` ← `pkg/ddl/constraint.rs`（任务 `547-åæ-pkg-ddl-constraint-ae0b2220.md`）
-- [ ] `pkg/ddl/copr/copr_ctx.rs.md` ← `pkg/ddl/copr/copr_ctx.rs`（任务 `548-åæ-ddl-copr-copr_ctx-0c7f5e7f.md`）
-- [ ] `pkg/ddl/create_table.rs.md` ← `pkg/ddl/create_table.rs`（任务 `550-åæ-pkg-ddl-create_table-c13f95fe.md`）
-- [ ] `pkg/ddl/ddl.rs.md` ← `pkg/ddl/ddl.rs`（任务 `551-åæ-pkg-ddl-ddl-c414c769.md`）
-- [ ] `pkg/ddl/ddl_algorithm.rs.md` ← `pkg/ddl/ddl_algorithm.rs`（任务 `552-åæ-pkg-ddl-ddl_algorithm-a4f0bb7f.md`）
-- [ ] `pkg/ddl/ddl_history.rs.md` ← `pkg/ddl/ddl_history.rs`（任务 `553-åæ-pkg-ddl-ddl_history-2dbef707.md`）
-- [ ] `pkg/ddl/ddl_running_jobs.rs.md` ← `pkg/ddl/ddl_running_jobs.rs`（任务 `554-åæ-pkg-ddl-ddl_running_jobs-9daa79de.md`）
-- [ ] `pkg/ddl/ddl_tiflash_api.rs.md` ← `pkg/ddl/ddl_tiflash_api.rs`（任务 `555-åæ-pkg-ddl-ddl_tiflash_api-568b2796.md`）
-- [ ] `pkg/ddl/ddl_workerpool.rs.md` ← `pkg/ddl/ddl_workerpool.rs`（任务 `556-åæ-pkg-ddl-ddl_workerpool-7a2931bb.md`）
-- [ ] `pkg/ddl/delete_range.rs.md` ← `pkg/ddl/delete_range.rs`（任务 `557-åæ-pkg-ddl-delete_range-5a721a15.md`）
-- [ ] `pkg/ddl/delete_range_util.rs.md` ← `pkg/ddl/delete_range_util.rs`（任务 `558-åæ-pkg-ddl-delete_range_util-9df75af4.md`）
-- [ ] `pkg/ddl/dist_owner.rs.md` ← `pkg/ddl/dist_owner.rs`（任务 `559-åæ-pkg-ddl-dist_owner-2d8504a8.md`）
-- [ ] `pkg/ddl/executor.rs.md` ← `pkg/ddl/executor.rs`（任务 `561-åæ-pkg-ddl-executor-04e2357d.md`）
-- [ ] `pkg/ddl/foreign_key.rs.md` ← `pkg/ddl/foreign_key.rs`（任务 `562-åæ-pkg-ddl-foreign_key-6335042a.md`）
-- [ ] `pkg/ddl/generated_column.rs.md` ← `pkg/ddl/generated_column.rs`（任务 `563-åæ-pkg-ddl-generated_column-315d5e77.md`）
-- [ ] `pkg/ddl/index.rs.md` ← `pkg/ddl/index.rs`（任务 `564-åæ-pkg-ddl-index-06920792.md`）
-- [ ] `pkg/ddl/index_auto_presplit.rs.md` ← `pkg/ddl/index_auto_presplit.rs`（任务 `565-åæ-pkg-ddl-index_auto_presplit-ca6f39b5.md`）
-- [ ] `pkg/ddl/index_cop.rs.md` ← `pkg/ddl/index_cop.rs`（任务 `566-åæ-pkg-ddl-index_cop-a7f590bf.md`）
-- [ ] `pkg/ddl/index_merge_tmp.rs.md` ← `pkg/ddl/index_merge_tmp.rs`（任务 `567-åæ-pkg-ddl-index_merge_tmp-bc473f9e.md`）
-- [ ] `pkg/ddl/index_presplit.rs.md` ← `pkg/ddl/index_presplit.rs`（任务 `568-åæ-pkg-ddl-index_presplit-4231da16.md`）
-- [ ] `pkg/ddl/ingest/backend.rs.md` ← `pkg/ddl/ingest/backend.rs`（任务 `569-åæ-ddl-ingest-backend-5074e276.md`）
-- [ ] `pkg/ddl/ingest/backend_mgr.rs.md` ← `pkg/ddl/ingest/backend_mgr.rs`（任务 `570-åæ-ddl-ingest-backend_mgr-edb5fdc1.md`）
-- [ ] `pkg/ddl/ingest/checkpoint.rs.md` ← `pkg/ddl/ingest/checkpoint.rs`（任务 `571-åæ-ddl-ingest-checkpoint-a0300fa9.md`）
-- [ ] `pkg/ddl/ingest/collector.rs.md` ← `pkg/ddl/ingest/collector.rs`（任务 `572-åæ-ddl-ingest-collector-d8f67548.md`）
-- [ ] `pkg/ddl/ingest/config.rs.md` ← `pkg/ddl/ingest/config.rs`（任务 `573-åæ-ddl-ingest-config-5c80e888.md`）
-- [ ] `pkg/ddl/ingest/disk_root.rs.md` ← `pkg/ddl/ingest/disk_root.rs`（任务 `574-åæ-ddl-ingest-disk_root-fdaf8586.md`）
-- [ ] `pkg/ddl/ingest/engine.rs.md` ← `pkg/ddl/ingest/engine.rs`（任务 `575-åæ-ddl-ingest-engine-0f79c5c4.md`）
-- [ ] `pkg/ddl/ingest/engine_mgr.rs.md` ← `pkg/ddl/ingest/engine_mgr.rs`（任务 `576-åæ-ddl-ingest-engine_mgr-dea69c07.md`）
-- [ ] `pkg/ddl/ingest/env.rs.md` ← `pkg/ddl/ingest/env.rs`（任务 `577-åæ-ddl-ingest-env-ef6132e3.md`）
-- [ ] `pkg/ddl/ingest/mem_root.rs.md` ← `pkg/ddl/ingest/mem_root.rs`（任务 `579-åæ-ddl-ingest-mem_root-0a7e21ed.md`）
-- [ ] `pkg/ddl/ingest/message.rs.md` ← `pkg/ddl/ingest/message.rs`（任务 `580-åæ-ddl-ingest-message-aff84553.md`）
-- [ ] `pkg/ddl/ingest/mock.rs.md` ← `pkg/ddl/ingest/mock.rs`（任务 `581-åæ-ddl-ingest-mock-881c8832.md`）
-- [ ] `pkg/ddl/ingest/testutil/testutil.rs.md` ← `pkg/ddl/ingest/testutil/testutil.rs`（任务 `583-åæ-ingest-testutil-testutil-0a96894b.md`）
-- [ ] `pkg/ddl/ingest/util.rs.md` ← `pkg/ddl/ingest/util.rs`（任务 `584-åæ-ddl-ingest-util-3e3121cd.md`）
-- [ ] `pkg/ddl/job_scheduler.rs.md` ← `pkg/ddl/job_scheduler.rs`（任务 `585-åæ-pkg-ddl-job_scheduler-ed1fc84b.md`）
-- [ ] `pkg/ddl/job_submitter.rs.md` ← `pkg/ddl/job_submitter.rs`（任务 `586-åæ-pkg-ddl-job_submitter-5f829d5e.md`）
-- [ ] `pkg/ddl/job_worker.rs.md` ← `pkg/ddl/job_worker.rs`（任务 `587-åæ-pkg-ddl-job_worker-4e24fd63.md`）
-- [ ] `pkg/ddl/jobsubmit/submit.rs.md` ← `pkg/ddl/jobsubmit/submit.rs`（任务 `589-åæ-ddl-jobsubmit-submit-00def4c5.md`）
-- [ ] `pkg/ddl/jobsubmit/table_mode.rs.md` ← `pkg/ddl/jobsubmit/table_mode.rs`（任务 `590-åæ-ddl-jobsubmit-table_mode-37551a8a.md`）
-- [ ] `pkg/ddl/jobsubmit/types.rs.md` ← `pkg/ddl/jobsubmit/types.rs`（任务 `591-åæ-ddl-jobsubmit-types-2f81f9f0.md`）
-- [ ] `pkg/ddl/label/attributes.rs.md` ← `pkg/ddl/label/attributes.rs`（任务 `592-åæ-ddl-label-attributes-1d7e4d94.md`）
-- [ ] `pkg/ddl/label/errors.rs.md` ← `pkg/ddl/label/errors.rs`（任务 `593-åæ-ddl-label-errors-6df2fa17.md`）
-- [ ] `pkg/ddl/label/rule.rs.md` ← `pkg/ddl/label/rule.rs`（任务 `595-åæ-ddl-label-rule-5be9ee0b.md`）
-- [ ] `pkg/ddl/logutil/logutil.rs.md` ← `pkg/ddl/logutil/logutil.rs`（任务 `598-åæ-ddl-logutil-logutil-50ad9ace.md`）
-- [ ] `pkg/ddl/masking_policy.rs.md` ← `pkg/ddl/masking_policy.rs`（任务 `599-åæ-pkg-ddl-masking_policy-255ddea4.md`）
-- [ ] `pkg/ddl/metabuild.rs.md` ← `pkg/ddl/metabuild.rs`（任务 `600-åæ-pkg-ddl-metabuild-4d93b584.md`）
-- [ ] `pkg/ddl/mock.rs.md` ← `pkg/ddl/mock.rs`（任务 `601-åæ-pkg-ddl-mock-541a6e28.md`）
-- [ ] `pkg/ddl/mock/schema_loader_mock.rs.md` ← `pkg/ddl/mock/schema_loader_mock.rs`（任务 `603-åæ-ddl-mock-schema_loader_mock-9d819e58.md`）
-- [ ] `pkg/ddl/mock/systable_manager_mock.rs.md` ← `pkg/ddl/mock/systable_manager_mock.rs`（任务 `604-åæ-ddl-mock-systable_manager_mock-287e4326.md`）
-- [ ] `pkg/ddl/modify_column.rs.md` ← `pkg/ddl/modify_column.rs`（任务 `605-åæ-pkg-ddl-modify_column-d41aa949.md`）
-- [ ] `pkg/ddl/multi_schema_change.rs.md` ← `pkg/ddl/multi_schema_change.rs`（任务 `606-åæ-pkg-ddl-multi_schema_change-d375772f.md`）
-- [ ] `pkg/ddl/normal_policy.rs.md` ← `pkg/ddl/normal_policy.rs`（任务 `607-åæ-pkg-ddl-normal_policy-d8f0615b.md`）
-- [ ] `pkg/ddl/notifier/events.rs.md` ← `pkg/ddl/notifier/events.rs`（任务 `608-åæ-ddl-notifier-events-e58f6de7.md`）
-- [ ] `pkg/ddl/notifier/publish.rs.md` ← `pkg/ddl/notifier/publish.rs`（任务 `610-åæ-ddl-notifier-publish-2f468bb2.md`）
-- [ ] `pkg/ddl/notifier/store.rs.md` ← `pkg/ddl/notifier/store.rs`（任务 `611-åæ-ddl-notifier-store-fcb2a560.md`）
-- [ ] `pkg/ddl/notifier/subscribe.rs.md` ← `pkg/ddl/notifier/subscribe.rs`（任务 `612-åæ-ddl-notifier-subscribe-688cc184.md`）
-- [ ] `pkg/ddl/options.rs.md` ← `pkg/ddl/options.rs`（任务 `613-åæ-pkg-ddl-options-97ce4bea.md`）
-- [ ] `pkg/ddl/owner_mgr.rs.md` ← `pkg/ddl/owner_mgr.rs`（任务 `614-åæ-pkg-ddl-owner_mgr-fdb6ad3f.md`）
-- [ ] `pkg/ddl/partition.rs.md` ← `pkg/ddl/partition.rs`（任务 `615-åæ-pkg-ddl-partition-b9b0bb56.md`）
-- [ ] `pkg/ddl/persistent_actions.rs.md` ← `pkg/ddl/persistent_actions.rs`（任务 `616-åæ-pkg-ddl-persistent_actions-02d6becb.md`）
-- [ ] `pkg/ddl/persistent_alter_materialized_view_attributes.rs.md` ← `pkg/ddl/persistent_alter_materialized_view_attributes.rs`（任务 `617-åæ-pkg-ddl-persistent_alter_materialized_view_attributes-77e82be6.md`）
-- [ ] `pkg/ddl/persistent_alter_materialized_view_log_purge.rs.md` ← `pkg/ddl/persistent_alter_materialized_view_log_purge.rs`（任务 `618-åæ-pkg-ddl-persistent_alter_materialized_view_log_purge-4efb4c5f.md`）
-- [ ] `pkg/ddl/persistent_alter_materialized_view_refresh.rs.md` ← `pkg/ddl/persistent_alter_materialized_view_refresh.rs`（任务 `619-åæ-pkg-ddl-persistent_alter_materialized_view_refresh-5802add0.md`）
-- [ ] `pkg/ddl/persistent_create_materialized_view.rs.md` ← `pkg/ddl/persistent_create_materialized_view.rs`（任务 `620-åæ-pkg-ddl-persistent_create_materialized_view-2ef597b1.md`）
-- [ ] `pkg/ddl/persistent_create_materialized_view_log.rs.md` ← `pkg/ddl/persistent_create_materialized_view_log.rs`（任务 `621-åæ-pkg-ddl-persistent_create_materialized_view_log-f00c2bda.md`）
-- [ ] `pkg/ddl/persistent_create_materialized_view_shadow.rs.md` ← `pkg/ddl/persistent_create_materialized_view_shadow.rs`（任务 `622-åæ-pkg-ddl-persistent_create_materialized_view_shadow-a9cb50f2.md`）
-- [ ] `pkg/ddl/persistent_create_table.rs.md` ← `pkg/ddl/persistent_create_table.rs`（任务 `623-åæ-pkg-ddl-persistent_create_table-6570fb74.md`）
-- [ ] `pkg/ddl/persistent_drop_column.rs.md` ← `pkg/ddl/persistent_drop_column.rs`（任务 `624-åæ-pkg-ddl-persistent_drop_column-bb1d1c4d.md`）
-- [ ] `pkg/ddl/persistent_masking_actions.rs.md` ← `pkg/ddl/persistent_masking_actions.rs`（任务 `625-åæ-pkg-ddl-persistent_masking_actions-60511bab.md`）
-- [ ] `pkg/ddl/persistent_modify_column.rs.md` ← `pkg/ddl/persistent_modify_column.rs`（任务 `626-åæ-pkg-ddl-persistent_modify_column-70bafb8f.md`）
-- [ ] `pkg/ddl/persistent_mview_out_of_place_cutover.rs.md` ← `pkg/ddl/persistent_mview_out_of_place_cutover.rs`（任务 `627-åæ-pkg-ddl-persistent_mview_out_of_place_cutover-b2116c12.md`）
-- [ ] `pkg/ddl/placement/bundle.rs.md` ← `pkg/ddl/placement/bundle.rs`（任务 `628-åæ-ddl-placement-bundle-bd66ca9d.md`）
-- [ ] `pkg/ddl/placement/common.rs.md` ← `pkg/ddl/placement/common.rs`（任务 `629-åæ-ddl-placement-common-e409ec91.md`）
-- [ ] `pkg/ddl/placement/constraint.rs.md` ← `pkg/ddl/placement/constraint.rs`（任务 `630-åæ-ddl-placement-constraint-46afb5e6.md`）
-- [ ] `pkg/ddl/placement/constraints.rs.md` ← `pkg/ddl/placement/constraints.rs`（任务 `631-åæ-ddl-placement-constraints-2c03dbc9.md`）
-- [ ] `pkg/ddl/placement/errors.rs.md` ← `pkg/ddl/placement/errors.rs`（任务 `632-åæ-ddl-placement-errors-5615b837.md`）
-- [ ] `pkg/ddl/placement/rule.rs.md` ← `pkg/ddl/placement/rule.rs`（任务 `634-åæ-ddl-placement-rule-de9ce85d.md`）
-- [ ] `pkg/ddl/placement_policy.rs.md` ← `pkg/ddl/placement_policy.rs`（任务 `635-åæ-pkg-ddl-placement_policy-a2df1445.md`）
-- [ ] `pkg/ddl/reorg.rs.md` ← `pkg/ddl/reorg.rs`（任务 `636-åæ-pkg-ddl-reorg-79ce7230.md`）
-- [ ] `pkg/ddl/reorg_util.rs.md` ← `pkg/ddl/reorg_util.rs`（任务 `637-åæ-pkg-ddl-reorg_util-4c4dd8b7.md`）
-- [ ] `pkg/ddl/resource_group.rs.md` ← `pkg/ddl/resource_group.rs`（任务 `638-åæ-pkg-ddl-resource_group-9297ba89.md`）
-- [ ] `pkg/ddl/resourcegroup/errors.rs.md` ← `pkg/ddl/resourcegroup/errors.rs`（任务 `640-åæ-ddl-resourcegroup-errors-998d7210.md`）
-- [ ] `pkg/ddl/resourcegroup/group.rs.md` ← `pkg/ddl/resourcegroup/group.rs`（任务 `641-åæ-ddl-resourcegroup-group-e47a430b.md`）
-- [ ] `pkg/ddl/rollingback.rs.md` ← `pkg/ddl/rollingback.rs`（任务 `643-åæ-pkg-ddl-rollingback-cfd11d8d.md`）
-- [ ] `pkg/ddl/sanity_check.rs.md` ← `pkg/ddl/sanity_check.rs`（任务 `644-åæ-pkg-ddl-sanity_check-1b4366a9.md`）
-- [ ] `pkg/ddl/schema.rs.md` ← `pkg/ddl/schema.rs`（任务 `645-åæ-pkg-ddl-schema-a4a258c8.md`）
-- [ ] `pkg/ddl/schema_version.rs.md` ← `pkg/ddl/schema_version.rs`（任务 `646-åæ-pkg-ddl-schema_version-8c2e4256.md`）
-- [ ] `pkg/ddl/schematracker/checker.rs.md` ← `pkg/ddl/schematracker/checker.rs`（任务 `647-åæ-ddl-schematracker-checker-bfd38e20.md`）
-- [ ] `pkg/ddl/schematracker/dm_tracker.rs.md` ← `pkg/ddl/schematracker/dm_tracker.rs`（任务 `648-åæ-ddl-schematracker-dm_tracker-4151c8a1.md`）
-- [ ] `pkg/ddl/schematracker/info_store.rs.md` ← `pkg/ddl/schematracker/info_store.rs`（任务 `649-åæ-ddl-schematracker-info_store-383c3ee0.md`）
-- [ ] `pkg/ddl/schemaver/mem_syncer.rs.md` ← `pkg/ddl/schemaver/mem_syncer.rs`（任务 `652-åæ-ddl-schemaver-mem_syncer-e3750892.md`）
-- [ ] `pkg/ddl/schemaver/syncer.rs.md` ← `pkg/ddl/schemaver/syncer.rs`（任务 `653-åæ-ddl-schemaver-syncer-ee33016b.md`）
-- [ ] `pkg/ddl/sequence.rs.md` ← `pkg/ddl/sequence.rs`（任务 `654-åæ-pkg-ddl-sequence-169afb4e.md`）
-- [ ] `pkg/ddl/serverstate/mem_syncer.rs.md` ← `pkg/ddl/serverstate/mem_syncer.rs`（任务 `656-åæ-ddl-serverstate-mem_syncer-4f50a8b9.md`）
-- [ ] `pkg/ddl/serverstate/syncer.rs.md` ← `pkg/ddl/serverstate/syncer.rs`（任务 `657-åæ-ddl-serverstate-syncer-035f859e.md`）
-- [ ] `pkg/ddl/session/session.rs.md` ← `pkg/ddl/session/session.rs`（任务 `659-åæ-ddl-session-session-59a8f97f.md`）
-- [ ] `pkg/ddl/session/session_pool.rs.md` ← `pkg/ddl/session/session_pool.rs`（任务 `660-åæ-ddl-session-session_pool-53591754.md`）
-- [ ] `pkg/ddl/split_region.rs.md` ← `pkg/ddl/split_region.rs`（任务 `661-åæ-pkg-ddl-split_region-765d3e39.md`）
-- [ ] `pkg/ddl/stat.rs.md` ← `pkg/ddl/stat.rs`（任务 `662-åæ-pkg-ddl-stat-51af7855.md`）
-- [ ] `pkg/ddl/storage_class.rs.md` ← `pkg/ddl/storage_class.rs`（任务 `663-åæ-pkg-ddl-storage_class-249d598c.md`）
-- [ ] `pkg/ddl/storage_class_transition.rs.md` ← `pkg/ddl/storage_class_transition.rs`（任务 `664-åæ-pkg-ddl-storage_class_transition-c2e5e058.md`）
-- [ ] `pkg/ddl/systable/manager.rs.md` ← `pkg/ddl/systable/manager.rs`（任务 `666-åæ-ddl-systable-manager-39734be7.md`）
-- [ ] `pkg/ddl/systable/min_job_id.rs.md` ← `pkg/ddl/systable/min_job_id.rs`（任务 `667-åæ-ddl-systable-min_job_id-706799af.md`）
-- [ ] `pkg/ddl/systable/schema_loader.rs.md` ← `pkg/ddl/systable/schema_loader.rs`（任务 `668-åæ-ddl-systable-schema_loader-2d89f9cc.md`）
-- [ ] `pkg/ddl/table.rs.md` ← `pkg/ddl/table.rs`（任务 `669-åæ-pkg-ddl-table-991072ed.md`）
-- [ ] `pkg/ddl/table_lock.rs.md` ← `pkg/ddl/table_lock.rs`（任务 `670-åæ-pkg-ddl-table_lock-ba2203e3.md`）
-- [ ] `pkg/ddl/table_mode.rs.md` ← `pkg/ddl/table_mode.rs`（任务 `671-åæ-pkg-ddl-table_mode-7112e273.md`）
-- [ ] `pkg/ddl/testargsv1/force_v1.rs.md` ← `pkg/ddl/testargsv1/force_v1.rs`（任务 `672-åæ-ddl-testargsv1-force_v1-e0c00b07.md`）
-- [ ] `pkg/ddl/testargsv1/normal.rs.md` ← `pkg/ddl/testargsv1/normal.rs`（任务 `674-åæ-ddl-testargsv1-normal-3c522c26.md`）
-- [ ] `pkg/ddl/testutil/operator.rs.md` ← `pkg/ddl/testutil/operator.rs`（任务 `676-åæ-ddl-testutil-operator-f7fc94db.md`）
-- [ ] `pkg/ddl/testutil/testutil.rs.md` ← `pkg/ddl/testutil/testutil.rs`（任务 `677-åæ-ddl-testutil-testutil-941dcceb.md`）
-- [ ] `pkg/ddl/ttl.rs.md` ← `pkg/ddl/ttl.rs`（任务 `678-åæ-pkg-ddl-ttl-3a0d2022.md`）
-- [ ] `pkg/ddl/util/dead_table_lock_checker.rs.md` ← `pkg/ddl/util/dead_table_lock_checker.rs`（任务 `679-åæ-ddl-util-dead_table_lock_checker-dfbf4bb8.md`）
-- [ ] `pkg/ddl/util/util.rs.md` ← `pkg/ddl/util/util.rs`（任务 `681-åæ-ddl-util-util-6ec13cfc.md`）
-- [ ] `pkg/ddl/util/watcher.rs.md` ← `pkg/ddl/util/watcher.rs`（任务 `682-åæ-ddl-util-watcher-6635f2a2.md`）
+- [ ] `pkg/ddl/add_column.rs.md`
+- [ ] `pkg/ddl/affinity.rs.md`
+- [ ] `pkg/ddl/backfill_metrics.rs.md`
+- [ ] `pkg/ddl/backfilling.rs.md`
+- [ ] `pkg/ddl/backfilling_clean_s3.rs.md`
+- [ ] `pkg/ddl/backfilling_dist_executor.rs.md`
+- [ ] `pkg/ddl/backfilling_dist_scheduler.rs.md`
+- [ ] `pkg/ddl/backfilling_import_cloud.rs.md`
+- [ ] `pkg/ddl/backfilling_merge_sort.rs.md`
+- [ ] `pkg/ddl/backfilling_merge_temp.rs.md`
+- [ ] `pkg/ddl/backfilling_operators.rs.md`
+- [ ] `pkg/ddl/backfilling_read_index.rs.md`
+- [ ] `pkg/ddl/backfilling_txn_executor.rs.md`
+- [ ] `pkg/ddl/bdr/bdr.rs.md`
+- [ ] `pkg/ddl/cluster.rs.md`
+- [ ] `pkg/ddl/column.rs.md`
+- [ ] `pkg/ddl/constraint.rs.md`
+- [ ] `pkg/ddl/copr/copr_ctx.rs.md`
+- [ ] `pkg/ddl/create_table.rs.md`
+- [ ] `pkg/ddl/ddl.rs.md`
+- [ ] `pkg/ddl/ddl_algorithm.rs.md`
+- [ ] `pkg/ddl/ddl_history.rs.md`
+- [ ] `pkg/ddl/ddl_running_jobs.rs.md`
+- [ ] `pkg/ddl/ddl_tiflash_api.rs.md`
+- [ ] `pkg/ddl/ddl_workerpool.rs.md`
+- [ ] `pkg/ddl/delete_range.rs.md`
+- [ ] `pkg/ddl/delete_range_util.rs.md`
+- [ ] `pkg/ddl/dist_owner.rs.md`
+- [ ] `pkg/ddl/executor.rs.md`
+- [ ] `pkg/ddl/foreign_key.rs.md`
+- [ ] `pkg/ddl/generated_column.rs.md`
+- [ ] `pkg/ddl/index.rs.md`
+- [ ] `pkg/ddl/index_auto_presplit.rs.md`
+- [ ] `pkg/ddl/index_cop.rs.md`
+- [ ] `pkg/ddl/index_merge_tmp.rs.md`
+- [ ] `pkg/ddl/index_presplit.rs.md`
+- [ ] `pkg/ddl/ingest/backend.rs.md`
+- [ ] `pkg/ddl/ingest/backend_mgr.rs.md`
+- [ ] `pkg/ddl/ingest/checkpoint.rs.md`
+- [ ] `pkg/ddl/ingest/collector.rs.md`
+- [ ] `pkg/ddl/ingest/config.rs.md`
+- [ ] `pkg/ddl/ingest/disk_root.rs.md`
+- [ ] `pkg/ddl/ingest/engine.rs.md`
+- [ ] `pkg/ddl/ingest/engine_mgr.rs.md`
+- [ ] `pkg/ddl/ingest/env.rs.md`
+- [ ] `pkg/ddl/ingest/mem_root.rs.md`
+- [ ] `pkg/ddl/ingest/message.rs.md`
+- [ ] `pkg/ddl/ingest/mock.rs.md`
+- [ ] `pkg/ddl/ingest/testutil/testutil.rs.md`
+- [ ] `pkg/ddl/ingest/util.rs.md`
+- [ ] `pkg/ddl/job_scheduler.rs.md`
+- [ ] `pkg/ddl/job_submitter.rs.md`
+- [ ] `pkg/ddl/job_worker.rs.md`
+- [ ] `pkg/ddl/jobsubmit/submit.rs.md`
+- [ ] `pkg/ddl/jobsubmit/table_mode.rs.md`
+- [ ] `pkg/ddl/jobsubmit/types.rs.md`
+- [ ] `pkg/ddl/label/attributes.rs.md`
+- [ ] `pkg/ddl/label/errors.rs.md`
+- [ ] `pkg/ddl/label/rule.rs.md`
+- [ ] `pkg/ddl/logutil/logutil.rs.md`
+- [ ] `pkg/ddl/masking_policy.rs.md`
+- [ ] `pkg/ddl/metabuild.rs.md`
+- [ ] `pkg/ddl/mock.rs.md`
+- [ ] `pkg/ddl/mock/schema_loader_mock.rs.md`
+- [ ] `pkg/ddl/mock/systable_manager_mock.rs.md`
+- [ ] `pkg/ddl/modify_column.rs.md`
+- [ ] `pkg/ddl/multi_schema_change.rs.md`
+- [ ] `pkg/ddl/normal_policy.rs.md`
+- [ ] `pkg/ddl/notifier/events.rs.md`
+- [ ] `pkg/ddl/notifier/publish.rs.md`
+- [ ] `pkg/ddl/notifier/store.rs.md`
+- [ ] `pkg/ddl/notifier/subscribe.rs.md`
+- [ ] `pkg/ddl/options.rs.md`
+- [ ] `pkg/ddl/owner_mgr.rs.md`
+- [ ] `pkg/ddl/partition.rs.md`
+- [ ] `pkg/ddl/persistent_actions.rs.md`
+- [ ] `pkg/ddl/persistent_alter_materialized_view_attributes.rs.md`
+- [ ] `pkg/ddl/persistent_alter_materialized_view_log_purge.rs.md`
+- [ ] `pkg/ddl/persistent_alter_materialized_view_refresh.rs.md`
+- [ ] `pkg/ddl/persistent_create_materialized_view.rs.md`
+- [ ] `pkg/ddl/persistent_create_materialized_view_log.rs.md`
+- [ ] `pkg/ddl/persistent_create_materialized_view_shadow.rs.md`
+- [ ] `pkg/ddl/persistent_create_table.rs.md`
+- [ ] `pkg/ddl/persistent_drop_column.rs.md`
+- [ ] `pkg/ddl/persistent_masking_actions.rs.md`
+- [ ] `pkg/ddl/persistent_modify_column.rs.md`
+- [ ] `pkg/ddl/persistent_mview_out_of_place_cutover.rs.md`
+- [ ] `pkg/ddl/placement/bundle.rs.md`
+- [ ] `pkg/ddl/placement/common.rs.md`
+- [ ] `pkg/ddl/placement/constraint.rs.md`
+- [ ] `pkg/ddl/placement/constraints.rs.md`
+- [ ] `pkg/ddl/placement/errors.rs.md`
+- [ ] `pkg/ddl/placement/rule.rs.md`
+- [ ] `pkg/ddl/placement_policy.rs.md`
+- [ ] `pkg/ddl/reorg.rs.md`
+- [ ] `pkg/ddl/reorg_util.rs.md`
+- [ ] `pkg/ddl/resource_group.rs.md`
+- [ ] `pkg/ddl/resourcegroup/errors.rs.md`
+- [ ] `pkg/ddl/resourcegroup/group.rs.md`
+- [ ] `pkg/ddl/rollingback.rs.md`
+- [ ] `pkg/ddl/sanity_check.rs.md`
+- [ ] `pkg/ddl/schema.rs.md`
+- [ ] `pkg/ddl/schema_version.rs.md`
+- [ ] `pkg/ddl/schematracker/checker.rs.md`
+- [ ] `pkg/ddl/schematracker/dm_tracker.rs.md`
+- [ ] `pkg/ddl/schematracker/info_store.rs.md`
+- [ ] `pkg/ddl/schemaver/mem_syncer.rs.md`
+- [ ] `pkg/ddl/schemaver/syncer.rs.md`
+- [ ] `pkg/ddl/sequence.rs.md`
+- [ ] `pkg/ddl/serverstate/mem_syncer.rs.md`
+- [ ] `pkg/ddl/serverstate/syncer.rs.md`
+- [ ] `pkg/ddl/session/session.rs.md`
+- [ ] `pkg/ddl/session/session_pool.rs.md`
+- [ ] `pkg/ddl/split_region.rs.md`
+- [ ] `pkg/ddl/stat.rs.md`
+- [ ] `pkg/ddl/storage_class.rs.md`
+- [ ] `pkg/ddl/storage_class_transition.rs.md`
+- [ ] `pkg/ddl/systable/manager.rs.md`
+- [ ] `pkg/ddl/systable/min_job_id.rs.md`
+- [ ] `pkg/ddl/systable/schema_loader.rs.md`
+- [ ] `pkg/ddl/table.rs.md`
+- [ ] `pkg/ddl/table_lock.rs.md`
+- [ ] `pkg/ddl/table_mode.rs.md`
+- [ ] `pkg/ddl/testargsv1/force_v1.rs.md`
+- [ ] `pkg/ddl/testargsv1/normal.rs.md`
+- [ ] `pkg/ddl/testutil/operator.rs.md`
+- [ ] `pkg/ddl/testutil/testutil.rs.md`
+- [ ] `pkg/ddl/ttl.rs.md`
+- [ ] `pkg/ddl/util/dead_table_lock_checker.rs.md`
+- [ ] `pkg/ddl/util/util.rs.md`
+- [ ] `pkg/ddl/util/watcher.rs.md`
 
 ## pkg/distsql
 
-- [ ] `pkg/distsql/context/context.rs.md` ← `pkg/distsql/context/context.rs`（任务 `683-åæ-distsql-context-context-6bec82eb.md`）
-- [ ] `pkg/distsql/distsql.rs.md` ← `pkg/distsql/distsql.rs`（任务 `685-åæ-pkg-distsql-distsql-52c3ec59.md`）
-- [ ] `pkg/distsql/request_builder.rs.md` ← `pkg/distsql/request_builder.rs`（任务 `687-åæ-pkg-distsql-request_builder-b72c3c0b.md`）
-- [ ] `pkg/distsql/select_result.rs.md` ← `pkg/distsql/select_result.rs`（任务 `688-åæ-pkg-distsql-select_result-82b73948.md`）
+- [ ] `pkg/distsql/context/context.rs.md`
+- [ ] `pkg/distsql/distsql.rs.md`
+- [ ] `pkg/distsql/request_builder.rs.md`
+- [ ] `pkg/distsql/select_result.rs.md`
 
 ## pkg/domain
 
-- [ ] `pkg/domain/affinity/http_client.rs.md` ← `pkg/domain/affinity/http_client.rs`（任务 `689-åæ-domain-affinity-http_client-1a5f8d60.md`）
-- [ ] `pkg/domain/affinity/interface.rs.md` ← `pkg/domain/affinity/interface.rs`（任务 `690-åæ-domain-affinity-interface-566c24b2.md`）
-- [ ] `pkg/domain/affinity/manager.rs.md` ← `pkg/domain/affinity/manager.rs`（任务 `692-åæ-domain-affinity-manager-16e800de.md`）
-- [ ] `pkg/domain/autoid_store.rs.md` ← `pkg/domain/autoid_store.rs`（任务 `693-åæ-pkg-domain-autoid_store-9c1c2fef.md`）
-- [ ] `pkg/domain/canonical_domain.rs.md` ← `pkg/domain/canonical_domain.rs`（任务 `694-åæ-pkg-domain-canonical_domain-68bce334.md`）
-- [ ] `pkg/domain/crossks/coordinator.rs.md` ← `pkg/domain/crossks/coordinator.rs`（任务 `695-åæ-domain-crossks-coordinator-537f0eef.md`）
-- [ ] `pkg/domain/crossks/cross_ks.rs.md` ← `pkg/domain/crossks/cross_ks.rs`（任务 `696-åæ-domain-crossks-cross_ks-abeeb871.md`）
-- [ ] `pkg/domain/crossks/ddl_submit.rs.md` ← `pkg/domain/crossks/ddl_submit.rs`（任务 `697-åæ-domain-crossks-ddl_submit-b0508ef3.md`）
-- [ ] `pkg/domain/crossks/reporter.rs.md` ← `pkg/domain/crossks/reporter.rs`（任务 `699-åæ-domain-crossks-reporter-a2da349b.md`）
-- [ ] `pkg/domain/domain.rs.md` ← `pkg/domain/domain.rs`（任务 `700-åæ-pkg-domain-domain-7f40df4a.md`）
-- [ ] `pkg/domain/domain_sysvars.rs.md` ← `pkg/domain/domain_sysvars.rs`（任务 `701-åæ-pkg-domain-domain_sysvars-846f6a6d.md`）
-- [ ] `pkg/domain/domainctx.rs.md` ← `pkg/domain/domainctx.rs`（任务 `702-åæ-pkg-domain-domainctx-c5f3a6a5.md`）
-- [ ] `pkg/domain/extract.rs.md` ← `pkg/domain/extract.rs`（任务 `703-åæ-pkg-domain-extract-694010d6.md`）
-- [ ] `pkg/domain/globalconfigsync/globalconfig.rs.md` ← `pkg/domain/globalconfigsync/globalconfig.rs`（任务 `704-åæ-domain-globalconfigsync-globalconfig-9ba5bb75.md`）
-- [ ] `pkg/domain/historical_stats.rs.md` ← `pkg/domain/historical_stats.rs`（任务 `706-åæ-pkg-domain-historical_stats-f04f84c9.md`）
-- [ ] `pkg/domain/infosync/error.rs.md` ← `pkg/domain/infosync/error.rs`（任务 `707-åæ-domain-infosync-error-351246c6.md`）
-- [ ] `pkg/domain/infosync/info.rs.md` ← `pkg/domain/infosync/info.rs`（任务 `708-åæ-domain-infosync-info-488dec7d.md`）
-- [ ] `pkg/domain/infosync/label_manager.rs.md` ← `pkg/domain/infosync/label_manager.rs`（任务 `709-åæ-domain-infosync-label_manager-5f2ff2b8.md`）
-- [ ] `pkg/domain/infosync/mock_info.rs.md` ← `pkg/domain/infosync/mock_info.rs`（任务 `711-åæ-domain-infosync-mock_info-2489f830.md`）
-- [ ] `pkg/domain/infosync/placement_manager.rs.md` ← `pkg/domain/infosync/placement_manager.rs`（任务 `712-åæ-domain-infosync-placement_manager-d5a19b32.md`）
-- [ ] `pkg/domain/infosync/region.rs.md` ← `pkg/domain/infosync/region.rs`（任务 `713-åæ-domain-infosync-region-e5b8cdcb.md`）
-- [ ] `pkg/domain/infosync/resource_manager_client.rs.md` ← `pkg/domain/infosync/resource_manager_client.rs`（任务 `714-åæ-domain-infosync-resource_manager_client-b1ee9d87.md`）
-- [ ] `pkg/domain/infosync/schedule_manager.rs.md` ← `pkg/domain/infosync/schedule_manager.rs`（任务 `715-åæ-domain-infosync-schedule_manager-45c5effa.md`）
-- [ ] `pkg/domain/infosync/tiflash_manager.rs.md` ← `pkg/domain/infosync/tiflash_manager.rs`（任务 `716-åæ-domain-infosync-tiflash_manager-15a54436.md`）
-- [ ] `pkg/domain/infosync/types.rs.md` ← `pkg/domain/infosync/types.rs`（任务 `717-åæ-domain-infosync-types-7395535c.md`）
-- [ ] `pkg/domain/metrics/metrics.rs.md` ← `pkg/domain/metrics/metrics.rs`（任务 `720-åæ-domain-metrics-metrics-94acf5a5.md`）
-- [ ] `pkg/domain/optimize_trace.rs.md` ← `pkg/domain/optimize_trace.rs`（任务 `721-åæ-pkg-domain-optimize_trace-60d37264.md`）
-- [ ] `pkg/domain/plan_replayer.rs.md` ← `pkg/domain/plan_replayer.rs`（任务 `722-åæ-pkg-domain-plan_replayer-0c0cf4cb.md`）
-- [ ] `pkg/domain/plan_replayer_dump.rs.md` ← `pkg/domain/plan_replayer_dump.rs`（任务 `723-åæ-pkg-domain-plan_replayer_dump-00f19d8c.md`）
-- [ ] `pkg/domain/resource_group_controller_options.rs.md` ← `pkg/domain/resource_group_controller_options.rs`（任务 `724-åæ-pkg-domain-resource_group_controller_options-69c2641a.md`）
-- [ ] `pkg/domain/resource_group_runtime.rs.md` ← `pkg/domain/resource_group_runtime.rs`（任务 `725-åæ-pkg-domain-resource_group_runtime-cbbc3cfd.md`）
-- [ ] `pkg/domain/ru_stats.rs.md` ← `pkg/domain/ru_stats.rs`（任务 `726-åæ-pkg-domain-ru_stats-cf144ffd.md`）
-- [ ] `pkg/domain/runaway.rs.md` ← `pkg/domain/runaway.rs`（任务 `727-åæ-pkg-domain-runaway-8ca1880d.md`）
-- [ ] `pkg/domain/ruv2_reporter.rs.md` ← `pkg/domain/ruv2_reporter.rs`（任务 `728-åæ-pkg-domain-ruv2_reporter-00924526.md`）
-- [ ] `pkg/domain/schema_checker.rs.md` ← `pkg/domain/schema_checker.rs`（任务 `729-åæ-pkg-domain-schema_checker-8cb25c49.md`）
-- [ ] `pkg/domain/serverinfo/info.rs.md` ← `pkg/domain/serverinfo/info.rs`（任务 `730-åæ-domain-serverinfo-info-63f7cd12.md`）
-- [ ] `pkg/domain/serverinfo/real_etcd.rs.md` ← `pkg/domain/serverinfo/real_etcd.rs`（任务 `732-åæ-domain-serverinfo-real_etcd-f63e4149.md`）
-- [ ] `pkg/domain/serverinfo/status_endpoint_claim.rs.md` ← `pkg/domain/serverinfo/status_endpoint_claim.rs`（任务 `733-åæ-domain-serverinfo-status_endpoint_claim-49b64e1b.md`）
-- [ ] `pkg/domain/serverinfo/syncer.rs.md` ← `pkg/domain/serverinfo/syncer.rs`（任务 `734-åæ-domain-serverinfo-syncer-6457bd13.md`）
-- [ ] `pkg/domain/sqlsvrapi/mock/ksruntime_mock.rs.md` ← `pkg/domain/sqlsvrapi/mock/ksruntime_mock.rs`（任务 `736-åæ-sqlsvrapi-mock-ksruntime_mock-7f44deb7.md`）
-- [ ] `pkg/domain/sqlsvrapi/mock/runtime_mock.rs.md` ← `pkg/domain/sqlsvrapi/mock/runtime_mock.rs`（任务 `738-åæ-sqlsvrapi-mock-runtime_mock-cbeed1d6.md`）
-- [ ] `pkg/domain/sqlsvrapi/mock/server_mock.rs.md` ← `pkg/domain/sqlsvrapi/mock/server_mock.rs`（任务 `739-åæ-sqlsvrapi-mock-server_mock-f8d8e227.md`）
-- [ ] `pkg/domain/sqlsvrapi/server.rs.md` ← `pkg/domain/sqlsvrapi/server.rs`（任务 `740-åæ-domain-sqlsvrapi-server-99a8d978.md`）
-- [ ] `pkg/domain/sysvar_cache.rs.md` ← `pkg/domain/sysvar_cache.rs`（任务 `741-åæ-pkg-domain-sysvar_cache-516231b2.md`）
-- [ ] `pkg/domain/test_helper.rs.md` ← `pkg/domain/test_helper.rs`（任务 `742-åæ-pkg-domain-test_helper-7d5190b4.md`）
-- [ ] `pkg/domain/topn_slow_query.rs.md` ← `pkg/domain/topn_slow_query.rs`（任务 `743-åæ-pkg-domain-topn_slow_query-ea167e1d.md`）
+- [ ] `pkg/domain/affinity/http_client.rs.md`
+- [ ] `pkg/domain/affinity/interface.rs.md`
+- [ ] `pkg/domain/affinity/manager.rs.md`
+- [ ] `pkg/domain/autoid_store.rs.md`
+- [ ] `pkg/domain/canonical_domain.rs.md`
+- [ ] `pkg/domain/crossks/coordinator.rs.md`
+- [ ] `pkg/domain/crossks/cross_ks.rs.md`
+- [ ] `pkg/domain/crossks/ddl_submit.rs.md`
+- [ ] `pkg/domain/crossks/reporter.rs.md`
+- [ ] `pkg/domain/domain.rs.md`
+- [ ] `pkg/domain/domain_sysvars.rs.md`
+- [ ] `pkg/domain/domainctx.rs.md`
+- [ ] `pkg/domain/extract.rs.md`
+- [ ] `pkg/domain/globalconfigsync/globalconfig.rs.md`
+- [ ] `pkg/domain/historical_stats.rs.md`
+- [ ] `pkg/domain/infosync/error.rs.md`
+- [ ] `pkg/domain/infosync/info.rs.md`
+- [ ] `pkg/domain/infosync/label_manager.rs.md`
+- [ ] `pkg/domain/infosync/mock_info.rs.md`
+- [ ] `pkg/domain/infosync/placement_manager.rs.md`
+- [ ] `pkg/domain/infosync/region.rs.md`
+- [ ] `pkg/domain/infosync/resource_manager_client.rs.md`
+- [ ] `pkg/domain/infosync/schedule_manager.rs.md`
+- [ ] `pkg/domain/infosync/tiflash_manager.rs.md`
+- [ ] `pkg/domain/infosync/types.rs.md`
+- [ ] `pkg/domain/metrics/metrics.rs.md`
+- [ ] `pkg/domain/optimize_trace.rs.md`
+- [ ] `pkg/domain/plan_replayer.rs.md`
+- [ ] `pkg/domain/plan_replayer_dump.rs.md`
+- [ ] `pkg/domain/resource_group_controller_options.rs.md`
+- [ ] `pkg/domain/resource_group_runtime.rs.md`
+- [ ] `pkg/domain/ru_stats.rs.md`
+- [ ] `pkg/domain/runaway.rs.md`
+- [ ] `pkg/domain/ruv2_reporter.rs.md`
+- [ ] `pkg/domain/schema_checker.rs.md`
+- [ ] `pkg/domain/serverinfo/info.rs.md`
+- [ ] `pkg/domain/serverinfo/real_etcd.rs.md`
+- [ ] `pkg/domain/serverinfo/status_endpoint_claim.rs.md`
+- [ ] `pkg/domain/serverinfo/syncer.rs.md`
+- [ ] `pkg/domain/sqlsvrapi/mock/ksruntime_mock.rs.md`
+- [ ] `pkg/domain/sqlsvrapi/mock/runtime_mock.rs.md`
+- [ ] `pkg/domain/sqlsvrapi/mock/server_mock.rs.md`
+- [ ] `pkg/domain/sqlsvrapi/server.rs.md`
+- [ ] `pkg/domain/sysvar_cache.rs.md`
+- [ ] `pkg/domain/test_helper.rs.md`
+- [ ] `pkg/domain/topn_slow_query.rs.md`
 
 ## pkg/dumpformat
 
-- [ ] `pkg/dumpformat/csvfile/csv.rs.md` ← `pkg/dumpformat/csvfile/csv.rs`（任务 `744-åæ-dumpformat-csvfile-csv-05e28336.md`）
-- [ ] `pkg/dumpformat/csvfile/csvfile.rs.md` ← `pkg/dumpformat/csvfile/csvfile.rs`（任务 `745-åæ-dumpformat-csvfile-csvfile-52e78959.md`）
-- [ ] `pkg/dumpformat/csvfile/writer.rs.md` ← `pkg/dumpformat/csvfile/writer.rs`（任务 `747-åæ-dumpformat-csvfile-writer-feaad867.md`）
-- [ ] `pkg/dumpformat/kind.rs.md` ← `pkg/dumpformat/kind.rs`（任务 `748-åæ-pkg-dumpformat-kind-1d1284ff.md`）
-- [ ] `pkg/dumpformat/parquetfile/column_buffer.rs.md` ← `pkg/dumpformat/parquetfile/column_buffer.rs`（任务 `750-åæ-dumpformat-parquetfile-column_buffer-f0d93144.md`）
-- [ ] `pkg/dumpformat/parquetfile/column_type.rs.md` ← `pkg/dumpformat/parquetfile/column_type.rs`（任务 `751-åæ-dumpformat-parquetfile-column_type-b509cf2c.md`）
-- [ ] `pkg/dumpformat/parquetfile/column_value.rs.md` ← `pkg/dumpformat/parquetfile/column_value.rs`（任务 `752-åæ-dumpformat-parquetfile-column_value-65584fe9.md`）
-- [ ] `pkg/dumpformat/parquetfile/file_parser.rs.md` ← `pkg/dumpformat/parquetfile/file_parser.rs`（任务 `753-åæ-dumpformat-parquetfile-file_parser-aa7c3c9c.md`）
-- [ ] `pkg/dumpformat/parquetfile/parser.rs.md` ← `pkg/dumpformat/parquetfile/parser.rs`（任务 `755-åæ-dumpformat-parquetfile-parser-79c738ad.md`）
-- [ ] `pkg/dumpformat/parquetfile/reader_wrapper.rs.md` ← `pkg/dumpformat/parquetfile/reader_wrapper.rs`（任务 `756-åæ-dumpformat-parquetfile-reader_wrapper-43801fd1.md`）
-- [ ] `pkg/dumpformat/parquetfile/schema_builder.rs.md` ← `pkg/dumpformat/parquetfile/schema_builder.rs`（任务 `757-åæ-dumpformat-parquetfile-schema_builder-8ad9606d.md`）
-- [ ] `pkg/dumpformat/parquetfile/source_reader.rs.md` ← `pkg/dumpformat/parquetfile/source_reader.rs`（任务 `758-åæ-dumpformat-parquetfile-source_reader-e20c75ca.md`）
-- [ ] `pkg/dumpformat/parquetfile/spark_rebase.rs.md` ← `pkg/dumpformat/parquetfile/spark_rebase.rs`（任务 `759-åæ-dumpformat-parquetfile-spark_rebase-66e5341b.md`）
-- [ ] `pkg/dumpformat/parquetfile/spark_rebase_micros_generated.rs.md` ← `pkg/dumpformat/parquetfile/spark_rebase_micros_generated.rs`（任务 `760-åæ-dumpformat-parquetfile-spark_rebase_micros_generated-5d7a5156.md`）
-- [ ] `pkg/dumpformat/parquetfile/type_converter.rs.md` ← `pkg/dumpformat/parquetfile/type_converter.rs`（任务 `761-åæ-dumpformat-parquetfile-type_converter-0fe3c49f.md`）
-- [ ] `pkg/dumpformat/parquetfile/writer.rs.md` ← `pkg/dumpformat/parquetfile/writer.rs`（任务 `762-åæ-dumpformat-parquetfile-writer-73f37f3b.md`）
-- [ ] `pkg/dumpformat/parsedef/def.rs.md` ← `pkg/dumpformat/parsedef/def.rs`（任务 `763-åæ-dumpformat-parsedef-def-a2dbf201.md`）
-- [ ] `pkg/dumpformat/sqlfile/sql.rs.md` ← `pkg/dumpformat/sqlfile/sql.rs`（任务 `766-åæ-dumpformat-sqlfile-sql-b36c7484.md`）
-- [ ] `pkg/dumpformat/sqlfile/writer.rs.md` ← `pkg/dumpformat/sqlfile/writer.rs`（任务 `767-åæ-dumpformat-sqlfile-writer-41bc9811.md`）
-- [ ] `pkg/dumpformat/testutils/parquet_writer.rs.md` ← `pkg/dumpformat/testutils/parquet_writer.rs`（任务 `769-åæ-dumpformat-testutils-parquet_writer-3ebabd35.md`）
+- [ ] `pkg/dumpformat/csvfile/csv.rs.md`
+- [ ] `pkg/dumpformat/csvfile/csvfile.rs.md`
+- [ ] `pkg/dumpformat/csvfile/writer.rs.md`
+- [ ] `pkg/dumpformat/kind.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/column_buffer.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/column_type.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/column_value.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/file_parser.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/parser.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/reader_wrapper.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/schema_builder.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/source_reader.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/spark_rebase.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/spark_rebase_micros_generated.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/type_converter.rs.md`
+- [ ] `pkg/dumpformat/parquetfile/writer.rs.md`
+- [ ] `pkg/dumpformat/parsedef/def.rs.md`
+- [ ] `pkg/dumpformat/sqlfile/sql.rs.md`
+- [ ] `pkg/dumpformat/sqlfile/writer.rs.md`
+- [ ] `pkg/dumpformat/testutils/parquet_writer.rs.md`
 
 ## pkg/dxf
 
-- [ ] `pkg/dxf/example/proto.rs.md` ← `pkg/dxf/example/proto.rs`（任务 `772-åæ-dxf-example-proto-82b10b62.md`）
-- [ ] `pkg/dxf/example/scheduler.rs.md` ← `pkg/dxf/example/scheduler.rs`（任务 `773-åæ-dxf-example-scheduler-f2942829.md`）
-- [ ] `pkg/dxf/example/task_executor.rs.md` ← `pkg/dxf/example/task_executor.rs`（任务 `774-åæ-dxf-example-task_executor-58078176.md`）
-- [ ] `pkg/dxf/framework/dxfmetric/collector.rs.md` ← `pkg/dxf/framework/dxfmetric/collector.rs`（任务 `776-åæ-framework-dxfmetric-collector-4b341c4c.md`）
-- [ ] `pkg/dxf/framework/dxfmetric/metric.rs.md` ← `pkg/dxf/framework/dxfmetric/metric.rs`（任务 `778-åæ-framework-dxfmetric-metric-6a2369e0.md`）
-- [ ] `pkg/dxf/framework/dxfutil/util.rs.md` ← `pkg/dxf/framework/dxfutil/util.rs`（任务 `780-åæ-framework-dxfutil-util-ba411a74.md`）
-- [ ] `pkg/dxf/framework/handle/handle.rs.md` ← `pkg/dxf/framework/handle/handle.rs`（任务 `781-åæ-framework-handle-handle-b5661ebf.md`）
-- [ ] `pkg/dxf/framework/handle/status.rs.md` ← `pkg/dxf/framework/handle/status.rs`（任务 `783-åæ-framework-handle-status-a4c18809.md`）
-- [ ] `pkg/dxf/framework/metering/data.rs.md` ← `pkg/dxf/framework/metering/data.rs`（任务 `786-åæ-framework-metering-data-b08080ab.md`）
-- [ ] `pkg/dxf/framework/metering/metering.rs.md` ← `pkg/dxf/framework/metering/metering.rs`（任务 `788-åæ-framework-metering-metering-20958b8c.md`）
-- [ ] `pkg/dxf/framework/metering/recorder.rs.md` ← `pkg/dxf/framework/metering/recorder.rs`（任务 `789-åæ-framework-metering-recorder-92f15f9a.md`）
-- [ ] `pkg/dxf/framework/mock/execute/execute_mock.rs.md` ← `pkg/dxf/framework/mock/execute/execute_mock.rs`（任务 `790-åæ-mock-execute-execute_mock-911ec076.md`）
-- [ ] `pkg/dxf/framework/mock/plan_mock.rs.md` ← `pkg/dxf/framework/mock/plan_mock.rs`（任务 `793-åæ-framework-mock-plan_mock-159c8ac6.md`）
-- [ ] `pkg/dxf/framework/mock/scheduler_mock.rs.md` ← `pkg/dxf/framework/mock/scheduler_mock.rs`（任务 `794-åæ-framework-mock-scheduler_mock-bb173ca5.md`）
-- [ ] `pkg/dxf/framework/mock/storage_manager_mock.rs.md` ← `pkg/dxf/framework/mock/storage_manager_mock.rs`（任务 `795-åæ-framework-mock-storage_manager_mock-da073bf5.md`）
-- [ ] `pkg/dxf/framework/mock/task_executor_mock.rs.md` ← `pkg/dxf/framework/mock/task_executor_mock.rs`（任务 `796-åæ-framework-mock-task_executor_mock-ef6220f9.md`）
-- [ ] `pkg/dxf/framework/planner/plan.rs.md` ← `pkg/dxf/framework/planner/plan.rs`（任务 `798-åæ-framework-planner-plan-42391358.md`）
-- [ ] `pkg/dxf/framework/planner/planner.rs.md` ← `pkg/dxf/framework/planner/planner.rs`（任务 `799-åæ-framework-planner-planner-38031ccf.md`）
-- [ ] `pkg/dxf/framework/proto/modify.rs.md` ← `pkg/dxf/framework/proto/modify.rs`（任务 `801-åæ-framework-proto-modify-63420c5d.md`）
-- [ ] `pkg/dxf/framework/proto/node.rs.md` ← `pkg/dxf/framework/proto/node.rs`（任务 `802-åæ-framework-proto-node-bfaea730.md`）
-- [ ] `pkg/dxf/framework/proto/step.rs.md` ← `pkg/dxf/framework/proto/step.rs`（任务 `803-åæ-framework-proto-step-872979df.md`）
-- [ ] `pkg/dxf/framework/proto/subtask.rs.md` ← `pkg/dxf/framework/proto/subtask.rs`（任务 `804-åæ-framework-proto-subtask-48331775.md`）
-- [ ] `pkg/dxf/framework/proto/task.rs.md` ← `pkg/dxf/framework/proto/task.rs`（任务 `805-åæ-framework-proto-task-01bc99b7.md`）
-- [ ] `pkg/dxf/framework/proto/type.rs.md` ← `pkg/dxf/framework/proto/type.rs`（任务 `806-åæ-framework-proto-type-4522c326.md`）
-- [ ] `pkg/dxf/framework/scheduler/autoscaler.rs.md` ← `pkg/dxf/framework/scheduler/autoscaler.rs`（任务 `807-åæ-framework-scheduler-autoscaler-e0ebbcb7.md`）
-- [ ] `pkg/dxf/framework/scheduler/balancer.rs.md` ← `pkg/dxf/framework/scheduler/balancer.rs`（任务 `808-åæ-framework-scheduler-balancer-e223cb88.md`）
-- [ ] `pkg/dxf/framework/scheduler/interface.rs.md` ← `pkg/dxf/framework/scheduler/interface.rs`（任务 `809-åæ-framework-scheduler-interface-1bf56484.md`）
-- [ ] `pkg/dxf/framework/scheduler/mock/scheduler_mock.rs.md` ← `pkg/dxf/framework/scheduler/mock/scheduler_mock.rs`（任务 `812-åæ-scheduler-mock-scheduler_mock-b098bb9b.md`）
-- [ ] `pkg/dxf/framework/scheduler/mock/storage_adapter.rs.md` ← `pkg/dxf/framework/scheduler/mock/storage_adapter.rs`（任务 `813-åæ-scheduler-mock-storage_adapter-98d45b20.md`）
-- [ ] `pkg/dxf/framework/scheduler/nodes.rs.md` ← `pkg/dxf/framework/scheduler/nodes.rs`（任务 `814-åæ-framework-scheduler-nodes-6a4ce228.md`）
-- [ ] `pkg/dxf/framework/scheduler/scheduler.rs.md` ← `pkg/dxf/framework/scheduler/scheduler.rs`（任务 `815-åæ-framework-scheduler-scheduler-7a99c2ca.md`）
-- [ ] `pkg/dxf/framework/scheduler/scheduler_manager.rs.md` ← `pkg/dxf/framework/scheduler/scheduler_manager.rs`（任务 `816-åæ-framework-scheduler-scheduler_manager-3b4c7e85.md`）
-- [ ] `pkg/dxf/framework/scheduler/slots.rs.md` ← `pkg/dxf/framework/scheduler/slots.rs`（任务 `817-åæ-framework-scheduler-slots-954e9af3.md`）
-- [ ] `pkg/dxf/framework/scheduler/state_transform.rs.md` ← `pkg/dxf/framework/scheduler/state_transform.rs`（任务 `818-åæ-framework-scheduler-state_transform-9849d2c4.md`）
-- [ ] `pkg/dxf/framework/scheduler/storage_adapter.rs.md` ← `pkg/dxf/framework/scheduler/storage_adapter.rs`（任务 `819-åæ-framework-scheduler-storage_adapter-9f57f123.md`）
-- [ ] `pkg/dxf/framework/scheduler/test_support.rs.md` ← `pkg/dxf/framework/scheduler/test_support.rs`（任务 `820-åæ-framework-scheduler-test_support-92a80975.md`）
-- [ ] `pkg/dxf/framework/schstatus/status.rs.md` ← `pkg/dxf/framework/schstatus/status.rs`（任务 `822-åæ-framework-schstatus-status-947781be.md`）
-- [ ] `pkg/dxf/framework/schstatus/tune.rs.md` ← `pkg/dxf/framework/schstatus/tune.rs`（任务 `823-åæ-framework-schstatus-tune-7656c72a.md`）
-- [ ] `pkg/dxf/framework/storage/converter.rs.md` ← `pkg/dxf/framework/storage/converter.rs`（任务 `824-åæ-framework-storage-converter-434819a3.md`）
-- [ ] `pkg/dxf/framework/storage/history.rs.md` ← `pkg/dxf/framework/storage/history.rs`（任务 `825-åæ-framework-storage-history-36cd8201.md`）
-- [ ] `pkg/dxf/framework/storage/nodes.rs.md` ← `pkg/dxf/framework/storage/nodes.rs`（任务 `827-åæ-framework-storage-nodes-df3dca11.md`）
-- [ ] `pkg/dxf/framework/storage/subtask_state.rs.md` ← `pkg/dxf/framework/storage/subtask_state.rs`（任务 `828-åæ-framework-storage-subtask_state-a3ad04c7.md`）
-- [ ] `pkg/dxf/framework/storage/task_state.rs.md` ← `pkg/dxf/framework/storage/task_state.rs`（任务 `829-åæ-framework-storage-task_state-8d5ff35b.md`）
-- [ ] `pkg/dxf/framework/storage/task_table.rs.md` ← `pkg/dxf/framework/storage/task_table.rs`（任务 `830-åæ-framework-storage-task_table-38766948.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/execute/interface.rs.md` ← `pkg/dxf/framework/taskexecutor/execute/interface.rs`（任务 `831-åæ-taskexecutor-execute-interface-8d41760f.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/interface.rs.md` ← `pkg/dxf/framework/taskexecutor/interface.rs`（任务 `833-åæ-framework-taskexecutor-interface-fc28c858.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/manager.rs.md` ← `pkg/dxf/framework/taskexecutor/manager.rs`（任务 `835-åæ-framework-taskexecutor-manager-d559168d.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/register.rs.md` ← `pkg/dxf/framework/taskexecutor/register.rs`（任务 `836-åæ-framework-taskexecutor-register-3df7c6c7.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/slot.rs.md` ← `pkg/dxf/framework/taskexecutor/slot.rs`（任务 `837-åæ-framework-taskexecutor-slot-43fbe5d2.md`）
-- [ ] `pkg/dxf/framework/taskexecutor/task_executor.rs.md` ← `pkg/dxf/framework/taskexecutor/task_executor.rs`（任务 `838-åæ-framework-taskexecutor-task_executor-bcf94e8e.md`）
-- [ ] `pkg/dxf/framework/testutil/context.rs.md` ← `pkg/dxf/framework/testutil/context.rs`（任务 `839-åæ-framework-testutil-context-6f669e71.md`）
-- [ ] `pkg/dxf/framework/testutil/disttest_util.rs.md` ← `pkg/dxf/framework/testutil/disttest_util.rs`（任务 `840-åæ-framework-testutil-disttest_util-e55d9201.md`）
-- [ ] `pkg/dxf/framework/testutil/executor_util.rs.md` ← `pkg/dxf/framework/testutil/executor_util.rs`（任务 `841-åæ-framework-testutil-executor_util-236cd16a.md`）
-- [ ] `pkg/dxf/framework/testutil/scheduler_util.rs.md` ← `pkg/dxf/framework/testutil/scheduler_util.rs`（任务 `843-åæ-framework-testutil-scheduler_util-539aff00.md`）
-- [ ] `pkg/dxf/framework/testutil/table_util.rs.md` ← `pkg/dxf/framework/testutil/table_util.rs`（任务 `844-åæ-framework-testutil-table_util-9c5c318f.md`）
-- [ ] `pkg/dxf/framework/testutil/task_util.rs.md` ← `pkg/dxf/framework/testutil/task_util.rs`（任务 `845-åæ-framework-testutil-task_util-db95d246.md`）
-- [ ] `pkg/dxf/importinto/clean_up.rs.md` ← `pkg/dxf/importinto/clean_up.rs`（任务 `846-åæ-dxf-importinto-clean_up-bc2d8010.md`）
-- [ ] `pkg/dxf/importinto/collect_conflicts.rs.md` ← `pkg/dxf/importinto/collect_conflicts.rs`（任务 `847-åæ-dxf-importinto-collect_conflicts-7afefb90.md`）
-- [ ] `pkg/dxf/importinto/conflict_resolution.rs.md` ← `pkg/dxf/importinto/conflict_resolution.rs`（任务 `848-åæ-dxf-importinto-conflict_resolution-5472aa20.md`）
-- [ ] `pkg/dxf/importinto/conflictedkv/collector.rs.md` ← `pkg/dxf/importinto/conflictedkv/collector.rs`（任务 `849-åæ-importinto-conflictedkv-collector-7a0f3b41.md`）
-- [ ] `pkg/dxf/importinto/conflictedkv/deleter.rs.md` ← `pkg/dxf/importinto/conflictedkv/deleter.rs`（任务 `850-åæ-importinto-conflictedkv-deleter-824592a4.md`）
-- [ ] `pkg/dxf/importinto/conflictedkv/handler.rs.md` ← `pkg/dxf/importinto/conflictedkv/handler.rs`（任务 `852-åæ-importinto-conflictedkv-handler-0301dd7f.md`）
-- [ ] `pkg/dxf/importinto/conflictedkv/row_handle.rs.md` ← `pkg/dxf/importinto/conflictedkv/row_handle.rs`（任务 `854-åæ-importinto-conflictedkv-row_handle-7e860700.md`）
-- [ ] `pkg/dxf/importinto/conflictrows.rs.md` ← `pkg/dxf/importinto/conflictrows.rs`（任务 `855-åæ-dxf-importinto-conflictrows-cca84bbf.md`）
-- [ ] `pkg/dxf/importinto/encode_and_sort_operator.rs.md` ← `pkg/dxf/importinto/encode_and_sort_operator.rs`（任务 `856-åæ-dxf-importinto-encode_and_sort_operator-1488f39a.md`）
-- [ ] `pkg/dxf/importinto/job.rs.md` ← `pkg/dxf/importinto/job.rs`（任务 `857-åæ-dxf-importinto-job-6795c733.md`）
-- [ ] `pkg/dxf/importinto/jobhistory/history.rs.md` ← `pkg/dxf/importinto/jobhistory/history.rs`（任务 `858-åæ-importinto-jobhistory-history-b3a97906.md`）
-- [ ] `pkg/dxf/importinto/metrics.rs.md` ← `pkg/dxf/importinto/metrics.rs`（任务 `861-åæ-dxf-importinto-metrics-c6a94b8f.md`）
-- [ ] `pkg/dxf/importinto/mock/import_mock.rs.md` ← `pkg/dxf/importinto/mock/import_mock.rs`（任务 `862-åæ-importinto-mock-import_mock-d59866c2.md`）
-- [ ] `pkg/dxf/importinto/planner.rs.md` ← `pkg/dxf/importinto/planner.rs`（任务 `864-åæ-dxf-importinto-planner-fbed07a8.md`）
-- [ ] `pkg/dxf/importinto/proto.rs.md` ← `pkg/dxf/importinto/proto.rs`（任务 `865-åæ-dxf-importinto-proto-71febd7d.md`）
-- [ ] `pkg/dxf/importinto/scheduler.rs.md` ← `pkg/dxf/importinto/scheduler.rs`（任务 `866-åæ-dxf-importinto-scheduler-31cf98b0.md`）
-- [ ] `pkg/dxf/importinto/subtask_executor.rs.md` ← `pkg/dxf/importinto/subtask_executor.rs`（任务 `867-åæ-dxf-importinto-subtask_executor-66947632.md`）
-- [ ] `pkg/dxf/importinto/task_executor.rs.md` ← `pkg/dxf/importinto/task_executor.rs`（任务 `868-åæ-dxf-importinto-task_executor-994cd842.md`）
-- [ ] `pkg/dxf/importinto/taskkey/task_key.rs.md` ← `pkg/dxf/importinto/taskkey/task_key.rs`（任务 `870-åæ-importinto-taskkey-task_key-53d2883f.md`）
-- [ ] `pkg/dxf/importinto/write_ingest_backend.rs.md` ← `pkg/dxf/importinto/write_ingest_backend.rs`（任务 `871-åæ-dxf-importinto-write_ingest_backend-90c9f727.md`）
-- [ ] `pkg/dxf/operator/compose.rs.md` ← `pkg/dxf/operator/compose.rs`（任务 `872-åæ-dxf-operator-compose-a843a0e0.md`）
-- [ ] `pkg/dxf/operator/operator.rs.md` ← `pkg/dxf/operator/operator.rs`（任务 `874-åæ-dxf-operator-operator-7b0ec795.md`）
-- [ ] `pkg/dxf/operator/pipeline.rs.md` ← `pkg/dxf/operator/pipeline.rs`（任务 `875-åæ-dxf-operator-pipeline-8a021bcc.md`）
-- [ ] `pkg/dxf/operator/wrapper.rs.md` ← `pkg/dxf/operator/wrapper.rs`（任务 `876-åæ-dxf-operator-wrapper-e9a96c01.md`）
+- [ ] `pkg/dxf/example/proto.rs.md`
+- [ ] `pkg/dxf/example/scheduler.rs.md`
+- [ ] `pkg/dxf/example/task_executor.rs.md`
+- [ ] `pkg/dxf/framework/dxfmetric/collector.rs.md`
+- [ ] `pkg/dxf/framework/dxfmetric/metric.rs.md`
+- [ ] `pkg/dxf/framework/dxfutil/util.rs.md`
+- [ ] `pkg/dxf/framework/handle/handle.rs.md`
+- [ ] `pkg/dxf/framework/handle/status.rs.md`
+- [ ] `pkg/dxf/framework/metering/data.rs.md`
+- [ ] `pkg/dxf/framework/metering/metering.rs.md`
+- [ ] `pkg/dxf/framework/metering/recorder.rs.md`
+- [ ] `pkg/dxf/framework/mock/execute/execute_mock.rs.md`
+- [ ] `pkg/dxf/framework/mock/plan_mock.rs.md`
+- [ ] `pkg/dxf/framework/mock/scheduler_mock.rs.md`
+- [ ] `pkg/dxf/framework/mock/storage_manager_mock.rs.md`
+- [ ] `pkg/dxf/framework/mock/task_executor_mock.rs.md`
+- [ ] `pkg/dxf/framework/planner/plan.rs.md`
+- [ ] `pkg/dxf/framework/planner/planner.rs.md`
+- [ ] `pkg/dxf/framework/proto/modify.rs.md`
+- [ ] `pkg/dxf/framework/proto/node.rs.md`
+- [ ] `pkg/dxf/framework/proto/step.rs.md`
+- [ ] `pkg/dxf/framework/proto/subtask.rs.md`
+- [ ] `pkg/dxf/framework/proto/task.rs.md`
+- [ ] `pkg/dxf/framework/proto/type.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/autoscaler.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/balancer.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/interface.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/mock/scheduler_mock.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/mock/storage_adapter.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/nodes.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/scheduler.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/scheduler_manager.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/slots.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/state_transform.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/storage_adapter.rs.md`
+- [ ] `pkg/dxf/framework/scheduler/test_support.rs.md`
+- [ ] `pkg/dxf/framework/schstatus/status.rs.md`
+- [ ] `pkg/dxf/framework/schstatus/tune.rs.md`
+- [ ] `pkg/dxf/framework/storage/converter.rs.md`
+- [ ] `pkg/dxf/framework/storage/history.rs.md`
+- [ ] `pkg/dxf/framework/storage/nodes.rs.md`
+- [ ] `pkg/dxf/framework/storage/subtask_state.rs.md`
+- [ ] `pkg/dxf/framework/storage/task_state.rs.md`
+- [ ] `pkg/dxf/framework/storage/task_table.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/execute/interface.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/interface.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/manager.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/register.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/slot.rs.md`
+- [ ] `pkg/dxf/framework/taskexecutor/task_executor.rs.md`
+- [ ] `pkg/dxf/framework/testutil/context.rs.md`
+- [ ] `pkg/dxf/framework/testutil/disttest_util.rs.md`
+- [ ] `pkg/dxf/framework/testutil/executor_util.rs.md`
+- [ ] `pkg/dxf/framework/testutil/scheduler_util.rs.md`
+- [ ] `pkg/dxf/framework/testutil/table_util.rs.md`
+- [ ] `pkg/dxf/framework/testutil/task_util.rs.md`
+- [ ] `pkg/dxf/importinto/clean_up.rs.md`
+- [ ] `pkg/dxf/importinto/collect_conflicts.rs.md`
+- [ ] `pkg/dxf/importinto/conflict_resolution.rs.md`
+- [ ] `pkg/dxf/importinto/conflictedkv/collector.rs.md`
+- [ ] `pkg/dxf/importinto/conflictedkv/deleter.rs.md`
+- [ ] `pkg/dxf/importinto/conflictedkv/handler.rs.md`
+- [ ] `pkg/dxf/importinto/conflictedkv/row_handle.rs.md`
+- [ ] `pkg/dxf/importinto/conflictrows.rs.md`
+- [ ] `pkg/dxf/importinto/encode_and_sort_operator.rs.md`
+- [ ] `pkg/dxf/importinto/job.rs.md`
+- [ ] `pkg/dxf/importinto/jobhistory/history.rs.md`
+- [ ] `pkg/dxf/importinto/metrics.rs.md`
+- [ ] `pkg/dxf/importinto/mock/import_mock.rs.md`
+- [ ] `pkg/dxf/importinto/planner.rs.md`
+- [ ] `pkg/dxf/importinto/proto.rs.md`
+- [ ] `pkg/dxf/importinto/scheduler.rs.md`
+- [ ] `pkg/dxf/importinto/subtask_executor.rs.md`
+- [ ] `pkg/dxf/importinto/task_executor.rs.md`
+- [ ] `pkg/dxf/importinto/taskkey/task_key.rs.md`
+- [ ] `pkg/dxf/importinto/write_ingest_backend.rs.md`
+- [ ] `pkg/dxf/operator/compose.rs.md`
+- [ ] `pkg/dxf/operator/operator.rs.md`
+- [ ] `pkg/dxf/operator/pipeline.rs.md`
+- [ ] `pkg/dxf/operator/wrapper.rs.md`
 
 ## pkg/errctx
 
-- [ ] `pkg/errctx/context.rs.md` ← `pkg/errctx/context.rs`（任务 `877-åæ-pkg-errctx-context-46ebb7ce.md`）
+- [ ] `pkg/errctx/context.rs.md`
 
 ## pkg/errno
 
-- [ ] `pkg/errno/errcode.rs.md` ← `pkg/errno/errcode.rs`（任务 `879-åæ-pkg-errno-errcode-75c99853.md`）
-- [ ] `pkg/errno/errname.rs.md` ← `pkg/errno/errname.rs`（任务 `880-åæ-pkg-errno-errname-a47ce4dd.md`）
-- [ ] `pkg/errno/infoschema.rs.md` ← `pkg/errno/infoschema.rs`（任务 `881-åæ-pkg-errno-infoschema-f7849a5f.md`）
+- [ ] `pkg/errno/errcode.rs.md`
+- [ ] `pkg/errno/errname.rs.md`
+- [ ] `pkg/errno/infoschema.rs.md`
 
 ## pkg/errors
 
-- [ ] `pkg/errors/adaptor.rs.md` ← `pkg/errors/adaptor.rs`（任务 `883-åæ-pkg-errors-adaptor-5bdc6191.md`）
-- [ ] `pkg/errors/core.rs.md` ← `pkg/errors/core.rs`（任务 `884-åæ-pkg-errors-core-eae25ff2.md`）
-- [ ] `pkg/errors/group.rs.md` ← `pkg/errors/group.rs`（任务 `885-åæ-pkg-errors-group-21fe24d0.md`）
-- [ ] `pkg/errors/join.rs.md` ← `pkg/errors/join.rs`（任务 `886-åæ-pkg-errors-join-f3015fd1.md`）
-- [ ] `pkg/errors/normalize.rs.md` ← `pkg/errors/normalize.rs`（任务 `888-åæ-pkg-errors-normalize-33d11102.md`）
-- [ ] `pkg/errors/stack.rs.md` ← `pkg/errors/stack.rs`（任务 `889-åæ-pkg-errors-stack-29648420.md`）
-- [ ] `pkg/errors/wrap.rs.md` ← `pkg/errors/wrap.rs`（任务 `890-åæ-pkg-errors-wrap-86d4d2e3.md`）
+- [ ] `pkg/errors/adaptor.rs.md`
+- [ ] `pkg/errors/core.rs.md`
+- [ ] `pkg/errors/group.rs.md`
+- [ ] `pkg/errors/join.rs.md`
+- [ ] `pkg/errors/normalize.rs.md`
+- [ ] `pkg/errors/stack.rs.md`
+- [ ] `pkg/errors/wrap.rs.md`
 
 ## pkg/executor
 
-- [ ] `pkg/executor/adapter.rs.md` ← `pkg/executor/adapter.rs`（任务 `891-åæ-pkg-executor-adapter-1d26e77e.md`）
-- [ ] `pkg/executor/adapter_slow_log.rs.md` ← `pkg/executor/adapter_slow_log.rs`（任务 `892-åæ-pkg-executor-adapter_slow_log-9bc53434.md`）
-- [ ] `pkg/executor/admin.rs.md` ← `pkg/executor/admin.rs`（任务 `893-åæ-pkg-executor-admin-cfc32701.md`）
-- [ ] `pkg/executor/admin_plugins.rs.md` ← `pkg/executor/admin_plugins.rs`（任务 `894-åæ-pkg-executor-admin_plugins-7c8189ba.md`）
-- [ ] `pkg/executor/aggfuncs/aggfuncs.rs.md` ← `pkg/executor/aggfuncs/aggfuncs.rs`（任务 `895-åæ-executor-aggfuncs-aggfuncs-f498806e.md`）
-- [ ] `pkg/executor/aggfuncs/builder.rs.md` ← `pkg/executor/aggfuncs/builder.rs`（任务 `896-åæ-executor-aggfuncs-builder-a5b68313.md`）
-- [ ] `pkg/executor/aggfuncs/func_avg.rs.md` ← `pkg/executor/aggfuncs/func_avg.rs`（任务 `897-åæ-executor-aggfuncs-func_avg-d047682c.md`）
-- [ ] `pkg/executor/aggfuncs/func_bitfuncs.rs.md` ← `pkg/executor/aggfuncs/func_bitfuncs.rs`（任务 `898-åæ-executor-aggfuncs-func_bitfuncs-6bed50bc.md`）
-- [ ] `pkg/executor/aggfuncs/func_count.rs.md` ← `pkg/executor/aggfuncs/func_count.rs`（任务 `899-åæ-executor-aggfuncs-func_count-cdc4c887.md`）
-- [ ] `pkg/executor/aggfuncs/func_count_distinct.rs.md` ← `pkg/executor/aggfuncs/func_count_distinct.rs`（任务 `900-åæ-executor-aggfuncs-func_count_distinct-acaa6e39.md`）
-- [ ] `pkg/executor/aggfuncs/func_cume_dist.rs.md` ← `pkg/executor/aggfuncs/func_cume_dist.rs`（任务 `901-åæ-executor-aggfuncs-func_cume_dist-de6ca0d7.md`）
-- [ ] `pkg/executor/aggfuncs/func_first_row.rs.md` ← `pkg/executor/aggfuncs/func_first_row.rs`（任务 `902-åæ-executor-aggfuncs-func_first_row-052e50d4.md`）
-- [ ] `pkg/executor/aggfuncs/func_group_concat.rs.md` ← `pkg/executor/aggfuncs/func_group_concat.rs`（任务 `903-åæ-executor-aggfuncs-func_group_concat-46fef87d.md`）
-- [ ] `pkg/executor/aggfuncs/func_json_arrayagg.rs.md` ← `pkg/executor/aggfuncs/func_json_arrayagg.rs`（任务 `904-åæ-executor-aggfuncs-func_json_arrayagg-1ce4d640.md`）
-- [ ] `pkg/executor/aggfuncs/func_json_objectagg.rs.md` ← `pkg/executor/aggfuncs/func_json_objectagg.rs`（任务 `905-åæ-executor-aggfuncs-func_json_objectagg-5cbf5b56.md`）
-- [ ] `pkg/executor/aggfuncs/func_lead_lag.rs.md` ← `pkg/executor/aggfuncs/func_lead_lag.rs`（任务 `906-åæ-executor-aggfuncs-func_lead_lag-69aa8f6d.md`）
-- [ ] `pkg/executor/aggfuncs/func_max_min.rs.md` ← `pkg/executor/aggfuncs/func_max_min.rs`（任务 `907-åæ-executor-aggfuncs-func_max_min-df8f7d0c.md`）
-- [ ] `pkg/executor/aggfuncs/func_max_min_count.rs.md` ← `pkg/executor/aggfuncs/func_max_min_count.rs`（任务 `908-åæ-executor-aggfuncs-func_max_min_count-7856ea7a.md`）
-- [ ] `pkg/executor/aggfuncs/func_ntile.rs.md` ← `pkg/executor/aggfuncs/func_ntile.rs`（任务 `909-åæ-executor-aggfuncs-func_ntile-5de8a5dc.md`）
-- [ ] `pkg/executor/aggfuncs/func_percent_rank.rs.md` ← `pkg/executor/aggfuncs/func_percent_rank.rs`（任务 `910-åæ-executor-aggfuncs-func_percent_rank-a8390764.md`）
-- [ ] `pkg/executor/aggfuncs/func_percentile.rs.md` ← `pkg/executor/aggfuncs/func_percentile.rs`（任务 `911-åæ-executor-aggfuncs-func_percentile-b20ada2b.md`）
-- [ ] `pkg/executor/aggfuncs/func_rank.rs.md` ← `pkg/executor/aggfuncs/func_rank.rs`（任务 `912-åæ-executor-aggfuncs-func_rank-d8b058c0.md`）
-- [ ] `pkg/executor/aggfuncs/func_stddevpop.rs.md` ← `pkg/executor/aggfuncs/func_stddevpop.rs`（任务 `913-åæ-executor-aggfuncs-func_stddevpop-7fe8bdcc.md`）
-- [ ] `pkg/executor/aggfuncs/func_stddevsamp.rs.md` ← `pkg/executor/aggfuncs/func_stddevsamp.rs`（任务 `914-åæ-executor-aggfuncs-func_stddevsamp-a1c1111b.md`）
-- [ ] `pkg/executor/aggfuncs/func_sum.rs.md` ← `pkg/executor/aggfuncs/func_sum.rs`（任务 `915-åæ-executor-aggfuncs-func_sum-07479b88.md`）
-- [ ] `pkg/executor/aggfuncs/func_sum_int.rs.md` ← `pkg/executor/aggfuncs/func_sum_int.rs`（任务 `916-åæ-executor-aggfuncs-func_sum_int-143a4db8.md`）
-- [ ] `pkg/executor/aggfuncs/func_value.rs.md` ← `pkg/executor/aggfuncs/func_value.rs`（任务 `917-åæ-executor-aggfuncs-func_value-34bc1c39.md`）
-- [ ] `pkg/executor/aggfuncs/func_varpop.rs.md` ← `pkg/executor/aggfuncs/func_varpop.rs`（任务 `918-åæ-executor-aggfuncs-func_varpop-f082b049.md`）
-- [ ] `pkg/executor/aggfuncs/func_varsamp.rs.md` ← `pkg/executor/aggfuncs/func_varsamp.rs`（任务 `919-åæ-executor-aggfuncs-func_varsamp-6d269977.md`）
-- [ ] `pkg/executor/aggfuncs/row_number.rs.md` ← `pkg/executor/aggfuncs/row_number.rs`（任务 `921-åæ-executor-aggfuncs-row_number-83492a13.md`）
-- [ ] `pkg/executor/aggfuncs/spill_deserialize_helper.rs.md` ← `pkg/executor/aggfuncs/spill_deserialize_helper.rs`（任务 `922-åæ-executor-aggfuncs-spill_deserialize_helper-e162fde8.md`）
-- [ ] `pkg/executor/aggfuncs/spill_serialize_helper.rs.md` ← `pkg/executor/aggfuncs/spill_serialize_helper.rs`（任务 `923-åæ-executor-aggfuncs-spill_serialize_helper-4ccb6a7e.md`）
-- [ ] `pkg/executor/aggregate/agg_hash_base_worker.rs.md` ← `pkg/executor/aggregate/agg_hash_base_worker.rs`（任务 `924-åæ-executor-aggregate-agg_hash_base_worker-c036d6c2.md`）
-- [ ] `pkg/executor/aggregate/agg_hash_executor.rs.md` ← `pkg/executor/aggregate/agg_hash_executor.rs`（任务 `925-åæ-executor-aggregate-agg_hash_executor-65388453.md`）
-- [ ] `pkg/executor/aggregate/agg_hash_final_worker.rs.md` ← `pkg/executor/aggregate/agg_hash_final_worker.rs`（任务 `926-åæ-executor-aggregate-agg_hash_final_worker-20ed1161.md`）
-- [ ] `pkg/executor/aggregate/agg_hash_partial_worker.rs.md` ← `pkg/executor/aggregate/agg_hash_partial_worker.rs`（任务 `927-åæ-executor-aggregate-agg_hash_partial_worker-b8bf8f55.md`）
-- [ ] `pkg/executor/aggregate/agg_spill.rs.md` ← `pkg/executor/aggregate/agg_spill.rs`（任务 `928-åæ-executor-aggregate-agg_spill-23b99080.md`）
-- [ ] `pkg/executor/aggregate/agg_stream_executor.rs.md` ← `pkg/executor/aggregate/agg_stream_executor.rs`（任务 `929-åæ-executor-aggregate-agg_stream_executor-7515196e.md`）
-- [ ] `pkg/executor/aggregate/agg_util.rs.md` ← `pkg/executor/aggregate/agg_util.rs`（任务 `930-åæ-executor-aggregate-agg_util-df99bbf8.md`）
-- [ ] `pkg/executor/analyze.rs.md` ← `pkg/executor/analyze.rs`（任务 `932-åæ-pkg-executor-analyze-846d5a36.md`）
-- [ ] `pkg/executor/analyze_col.rs.md` ← `pkg/executor/analyze_col.rs`（任务 `933-åæ-pkg-executor-analyze_col-26b9eb09.md`）
-- [ ] `pkg/executor/analyze_col_sampling.rs.md` ← `pkg/executor/analyze_col_sampling.rs`（任务 `934-åæ-pkg-executor-analyze_col_sampling-6c8baa5f.md`）
-- [ ] `pkg/executor/analyze_global_stats.rs.md` ← `pkg/executor/analyze_global_stats.rs`（任务 `935-åæ-pkg-executor-analyze_global_stats-21fa9a50.md`）
-- [ ] `pkg/executor/analyze_idx.rs.md` ← `pkg/executor/analyze_idx.rs`（任务 `936-åæ-pkg-executor-analyze_idx-faafca49.md`）
-- [ ] `pkg/executor/analyze_utils.rs.md` ← `pkg/executor/analyze_utils.rs`（任务 `937-åæ-pkg-executor-analyze_utils-e9cf8955.md`）
-- [ ] `pkg/executor/analyze_worker.rs.md` ← `pkg/executor/analyze_worker.rs`（任务 `938-åæ-pkg-executor-analyze_worker-a191fac1.md`）
-- [ ] `pkg/executor/batch_checker.rs.md` ← `pkg/executor/batch_checker.rs`（任务 `939-åæ-pkg-executor-batch_checker-d32ca56a.md`）
-- [ ] `pkg/executor/batch_point_get.rs.md` ← `pkg/executor/batch_point_get.rs`（任务 `940-åæ-pkg-executor-batch_point_get-806f254d.md`）
-- [ ] `pkg/executor/bind.rs.md` ← `pkg/executor/bind.rs`（任务 `941-åæ-pkg-executor-bind-af4f3008.md`）
-- [ ] `pkg/executor/brie.rs.md` ← `pkg/executor/brie.rs`（任务 `942-åæ-pkg-executor-brie-0b631d9e.md`）
-- [ ] `pkg/executor/brie_utils.rs.md` ← `pkg/executor/brie_utils.rs`（任务 `943-åæ-pkg-executor-brie_utils-ed46b11f.md`）
-- [ ] `pkg/executor/builder.rs.md` ← `pkg/executor/builder.rs`（任务 `944-åæ-pkg-executor-builder-e8d07bf5.md`）
-- [ ] `pkg/executor/check_table_index.rs.md` ← `pkg/executor/check_table_index.rs`（任务 `945-åæ-pkg-executor-check_table_index-d788f3d0.md`）
-- [ ] `pkg/executor/checksum.rs.md` ← `pkg/executor/checksum.rs`（任务 `946-åæ-pkg-executor-checksum-4f55b522.md`）
-- [ ] `pkg/executor/compact_table.rs.md` ← `pkg/executor/compact_table.rs`（任务 `947-åæ-pkg-executor-compact_table-1a72d850.md`）
-- [ ] `pkg/executor/compiler.rs.md` ← `pkg/executor/compiler.rs`（任务 `948-åæ-pkg-executor-compiler-0dbddbaf.md`）
-- [ ] `pkg/executor/coprocessor.rs.md` ← `pkg/executor/coprocessor.rs`（任务 `949-åæ-pkg-executor-coprocessor-dc04e993.md`）
-- [ ] `pkg/executor/cte.rs.md` ← `pkg/executor/cte.rs`（任务 `950-åæ-pkg-executor-cte-4a0b0421.md`）
-- [ ] `pkg/executor/cte_table_reader.rs.md` ← `pkg/executor/cte_table_reader.rs`（任务 `951-åæ-pkg-executor-cte_table_reader-690d901d.md`）
-- [ ] `pkg/executor/ddl.rs.md` ← `pkg/executor/ddl.rs`（任务 `952-åæ-pkg-executor-ddl-2b2a7517.md`）
-- [ ] `pkg/executor/delete.rs.md` ← `pkg/executor/delete.rs`（任务 `953-åæ-pkg-executor-delete-299c18d8.md`）
-- [ ] `pkg/executor/detach.rs.md` ← `pkg/executor/detach.rs`（任务 `954-åæ-pkg-executor-detach-941a31fd.md`）
-- [ ] `pkg/executor/distribute.rs.md` ← `pkg/executor/distribute.rs`（任务 `955-åæ-pkg-executor-distribute-80805c81.md`）
-- [ ] `pkg/executor/distsql.rs.md` ← `pkg/executor/distsql.rs`（任务 `956-åæ-pkg-executor-distsql-86586aae.md`）
-- [ ] `pkg/executor/expand.rs.md` ← `pkg/executor/expand.rs`（任务 `957-åæ-pkg-executor-expand-c2647e73.md`）
-- [ ] `pkg/executor/explain.rs.md` ← `pkg/executor/explain.rs`（任务 `958-åæ-pkg-executor-explain-bfd47b43.md`）
-- [ ] `pkg/executor/foreign_key.rs.md` ← `pkg/executor/foreign_key.rs`（任务 `959-åæ-pkg-executor-foreign_key-2eed8eba.md`）
-- [ ] `pkg/executor/grant.rs.md` ← `pkg/executor/grant.rs`（任务 `960-åæ-pkg-executor-grant-4f738574.md`）
-- [ ] `pkg/executor/import_into.rs.md` ← `pkg/executor/import_into.rs`（任务 `961-åæ-pkg-executor-import_into-0f174ce5.md`）
-- [ ] `pkg/executor/import_into_storage.rs.md` ← `pkg/executor/import_into_storage.rs`（任务 `962-åæ-pkg-executor-import_into_storage-2f55b194.md`）
-- [ ] `pkg/executor/importer/chunk_process.rs.md` ← `pkg/executor/importer/chunk_process.rs`（任务 `963-åæ-executor-importer-chunk_process-47c03a62.md`）
-- [ ] `pkg/executor/importer/engine_process.rs.md` ← `pkg/executor/importer/engine_process.rs`（任务 `964-åæ-executor-importer-engine_process-6ccdbf4b.md`）
-- [ ] `pkg/executor/importer/import.rs.md` ← `pkg/executor/importer/import.rs`（任务 `965-åæ-executor-importer-import-ad8a3d68.md`）
-- [ ] `pkg/executor/importer/job.rs.md` ← `pkg/executor/importer/job.rs`（任务 `966-åæ-executor-importer-job-947fb1cc.md`）
-- [ ] `pkg/executor/importer/kv_encode.rs.md` ← `pkg/executor/importer/kv_encode.rs`（任务 `967-åæ-executor-importer-kv_encode-8ff4c429.md`）
-- [ ] `pkg/executor/importer/precheck.rs.md` ← `pkg/executor/importer/precheck.rs`（任务 `969-åæ-executor-importer-precheck-67a0ab67.md`）
-- [ ] `pkg/executor/importer/production_regions.rs.md` ← `pkg/executor/importer/production_regions.rs`（任务 `970-åæ-executor-importer-production_regions-5cfb9b60.md`）
-- [ ] `pkg/executor/importer/production_resource.rs.md` ← `pkg/executor/importer/production_resource.rs`（任务 `971-åæ-executor-importer-production_resource-6db6765b.md`）
-- [ ] `pkg/executor/importer/production_size.rs.md` ← `pkg/executor/importer/production_size.rs`（任务 `972-åæ-executor-importer-production_size-b9272f8c.md`）
-- [ ] `pkg/executor/importer/production_storage.rs.md` ← `pkg/executor/importer/production_storage.rs`（任务 `973-åæ-executor-importer-production_storage-90df4f98.md`）
-- [ ] `pkg/executor/importer/sampler.rs.md` ← `pkg/executor/importer/sampler.rs`（任务 `974-åæ-executor-importer-sampler-b4ea5c37.md`）
-- [ ] `pkg/executor/importer/table_import.rs.md` ← `pkg/executor/importer/table_import.rs`（任务 `975-åæ-executor-importer-table_import-2f4fa890.md`）
-- [ ] `pkg/executor/index_merge_reader.rs.md` ← `pkg/executor/index_merge_reader.rs`（任务 `976-åæ-pkg-executor-index_merge_reader-08bd3c16.md`）
-- [ ] `pkg/executor/infoschema_reader.rs.md` ← `pkg/executor/infoschema_reader.rs`（任务 `977-åæ-pkg-executor-infoschema_reader-146e78a3.md`）
-- [ ] `pkg/executor/insert.rs.md` ← `pkg/executor/insert.rs`（任务 `978-åæ-pkg-executor-insert-e48e3e3b.md`）
-- [ ] `pkg/executor/insert_common.rs.md` ← `pkg/executor/insert_common.rs`（任务 `979-åæ-pkg-executor-insert_common-7e57453a.md`）
-- [ ] `pkg/executor/inspection_common.rs.md` ← `pkg/executor/inspection_common.rs`（任务 `980-åæ-pkg-executor-inspection_common-080fbb58.md`）
-- [ ] `pkg/executor/inspection_profile.rs.md` ← `pkg/executor/inspection_profile.rs`（任务 `981-åæ-pkg-executor-inspection_profile-66504185.md`）
-- [ ] `pkg/executor/inspection_result.rs.md` ← `pkg/executor/inspection_result.rs`（任务 `982-åæ-pkg-executor-inspection_result-1bb4e05b.md`）
-- [ ] `pkg/executor/inspection_summary.rs.md` ← `pkg/executor/inspection_summary.rs`（任务 `983-åæ-pkg-executor-inspection_summary-c175286d.md`）
-- [ ] `pkg/executor/internal/applycache/apply_cache.rs.md` ← `pkg/executor/internal/applycache/apply_cache.rs`（任务 `984-åæ-internal-applycache-apply_cache-003d36ba.md`）
-- [ ] `pkg/executor/internal/builder/builder_utils.rs.md` ← `pkg/executor/internal/builder/builder_utils.rs`（任务 `986-åæ-internal-builder-builder_utils-dfbc7dac.md`）
-- [ ] `pkg/executor/internal/calibrateresource/calibrate_resource.rs.md` ← `pkg/executor/internal/calibrateresource/calibrate_resource.rs`（任务 `988-åæ-internal-calibrateresource-calibrate_resource-cbe23bca.md`）
-- [ ] `pkg/executor/internal/exec/adaptive_limit_controller.rs.md` ← `pkg/executor/internal/exec/adaptive_limit_controller.rs`（任务 `990-åæ-internal-exec-adaptive_limit_controller-4300a122.md`）
-- [ ] `pkg/executor/internal/exec/executor.rs.md` ← `pkg/executor/internal/exec/executor.rs`（任务 `991-åæ-internal-exec-executor-236f4a83.md`）
-- [ ] `pkg/executor/internal/exec/indexusage.rs.md` ← `pkg/executor/internal/exec/indexusage.rs`（任务 `992-åæ-internal-exec-indexusage-269cd3db.md`）
-- [ ] `pkg/executor/internal/mpp/executor_with_retry.rs.md` ← `pkg/executor/internal/mpp/executor_with_retry.rs`（任务 `994-åæ-internal-mpp-executor_with_retry-c25dac12.md`）
-- [ ] `pkg/executor/internal/mpp/local_mpp_coordinator.rs.md` ← `pkg/executor/internal/mpp/local_mpp_coordinator.rs`（任务 `996-åæ-internal-mpp-local_mpp_coordinator-58f41fd2.md`）
-- [ ] `pkg/executor/internal/mpp/recovery_handler.rs.md` ← `pkg/executor/internal/mpp/recovery_handler.rs`（任务 `997-åæ-internal-mpp-recovery_handler-e794bce8.md`）
-- [ ] `pkg/executor/internal/pdhelper/pd.rs.md` ← `pkg/executor/internal/pdhelper/pd.rs`（任务 `999-åæ-internal-pdhelper-pd-9f3513b8.md`）
-- [ ] `pkg/executor/internal/querywatch/query_watch.rs.md` ← `pkg/executor/internal/querywatch/query_watch.rs`（任务 `1001-åæ-internal-querywatch-query_watch-c4bf73af.md`）
-- [ ] `pkg/executor/internal/testutil/agg.rs.md` ← `pkg/executor/internal/testutil/agg.rs`（任务 `1002-åæ-internal-testutil-agg-68f8db53.md`）
-- [ ] `pkg/executor/internal/testutil/limit.rs.md` ← `pkg/executor/internal/testutil/limit.rs`（任务 `1004-åæ-internal-testutil-limit-50d994c1.md`）
-- [ ] `pkg/executor/internal/testutil/sort.rs.md` ← `pkg/executor/internal/testutil/sort.rs`（任务 `1005-åæ-internal-testutil-sort-53c709d8.md`）
-- [ ] `pkg/executor/internal/testutil/testutil.rs.md` ← `pkg/executor/internal/testutil/testutil.rs`（任务 `1006-åæ-internal-testutil-testutil-b54dfc90.md`）
-- [ ] `pkg/executor/internal/testutil/window.rs.md` ← `pkg/executor/internal/testutil/window.rs`（任务 `1007-åæ-internal-testutil-window-106b2dd6.md`）
-- [ ] `pkg/executor/internal/util/partition_table.rs.md` ← `pkg/executor/internal/util/partition_table.rs`（任务 `1009-åæ-internal-util-partition_table-88f13d0e.md`）
-- [ ] `pkg/executor/internal/util/util.rs.md` ← `pkg/executor/internal/util/util.rs`（任务 `1010-åæ-internal-util-util-fe3e275e.md`）
-- [ ] `pkg/executor/internal/vecgroupchecker/vec_group_checker.rs.md` ← `pkg/executor/internal/vecgroupchecker/vec_group_checker.rs`（任务 `1012-åæ-internal-vecgroupchecker-vec_group_checker-c281f45a.md`）
-- [ ] `pkg/executor/join/anti_semi_join_probe.rs.md` ← `pkg/executor/join/anti_semi_join_probe.rs`（任务 `1013-åæ-executor-join-anti_semi_join_probe-921c2ca8.md`）
-- [ ] `pkg/executor/join/base_join_probe.rs.md` ← `pkg/executor/join/base_join_probe.rs`（任务 `1014-åæ-executor-join-base_join_probe-a0d32cba.md`）
-- [ ] `pkg/executor/join/base_semi_join.rs.md` ← `pkg/executor/join/base_semi_join.rs`（任务 `1015-åæ-executor-join-base_semi_join-1613c1b4.md`）
-- [ ] `pkg/executor/join/concurrent_map.rs.md` ← `pkg/executor/join/concurrent_map.rs`（任务 `1016-åæ-executor-join-concurrent_map-7e321086.md`）
-- [ ] `pkg/executor/join/hash_join_base.rs.md` ← `pkg/executor/join/hash_join_base.rs`（任务 `1017-åæ-executor-join-hash_join_base-07a8bfb9.md`）
-- [ ] `pkg/executor/join/hash_join_spill.rs.md` ← `pkg/executor/join/hash_join_spill.rs`（任务 `1018-åæ-executor-join-hash_join_spill-474b0d99.md`）
-- [ ] `pkg/executor/join/hash_join_spill_helper.rs.md` ← `pkg/executor/join/hash_join_spill_helper.rs`（任务 `1019-åæ-executor-join-hash_join_spill_helper-8f129c4c.md`）
-- [ ] `pkg/executor/join/hash_join_stats.rs.md` ← `pkg/executor/join/hash_join_stats.rs`（任务 `1020-åæ-executor-join-hash_join_stats-9c99c193.md`）
-- [ ] `pkg/executor/join/hash_join_test_util.rs.md` ← `pkg/executor/join/hash_join_test_util.rs`（任务 `1021-åæ-executor-join-hash_join_test_util-a54b1c40.md`）
-- [ ] `pkg/executor/join/hash_join_v1.rs.md` ← `pkg/executor/join/hash_join_v1.rs`（任务 `1022-åæ-executor-join-hash_join_v1-e56f8671.md`）
-- [ ] `pkg/executor/join/hash_join_v2.rs.md` ← `pkg/executor/join/hash_join_v2.rs`（任务 `1023-åæ-executor-join-hash_join_v2-611d2421.md`）
-- [ ] `pkg/executor/join/hash_table_v1.rs.md` ← `pkg/executor/join/hash_table_v1.rs`（任务 `1024-åæ-executor-join-hash_table_v1-7fc3085f.md`）
-- [ ] `pkg/executor/join/hash_table_v2.rs.md` ← `pkg/executor/join/hash_table_v2.rs`（任务 `1025-åæ-executor-join-hash_table_v2-b81e7412.md`）
-- [ ] `pkg/executor/join/index_lookup_hash_join.rs.md` ← `pkg/executor/join/index_lookup_hash_join.rs`（任务 `1026-åæ-executor-join-index_lookup_hash_join-d7177587.md`）
-- [ ] `pkg/executor/join/index_lookup_join.rs.md` ← `pkg/executor/join/index_lookup_join.rs`（任务 `1027-åæ-executor-join-index_lookup_join-3ae43a78.md`）
-- [ ] `pkg/executor/join/index_lookup_merge_join.rs.md` ← `pkg/executor/join/index_lookup_merge_join.rs`（任务 `1028-åæ-executor-join-index_lookup_merge_join-b8bfd8ff.md`）
-- [ ] `pkg/executor/join/inner_join_probe.rs.md` ← `pkg/executor/join/inner_join_probe.rs`（任务 `1029-åæ-executor-join-inner_join_probe-13c0fceb.md`）
-- [ ] `pkg/executor/join/join_row_table.rs.md` ← `pkg/executor/join/join_row_table.rs`（任务 `1030-åæ-executor-join-join_row_table-8de1982d.md`）
-- [ ] `pkg/executor/join/join_table_meta.rs.md` ← `pkg/executor/join/join_table_meta.rs`（任务 `1031-åæ-executor-join-join_table_meta-f4374e6e.md`）
-- [ ] `pkg/executor/join/joiner.rs.md` ← `pkg/executor/join/joiner.rs`（任务 `1032-åæ-executor-join-joiner-7f32a9ac.md`）
-- [ ] `pkg/executor/join/joinversion/join_version.rs.md` ← `pkg/executor/join/joinversion/join_version.rs`（任务 `1033-åæ-join-joinversion-join_version-a94f3b4b.md`）
-- [ ] `pkg/executor/join/left_outer_semi_join_probe.rs.md` ← `pkg/executor/join/left_outer_semi_join_probe.rs`（任务 `1035-åæ-executor-join-left_outer_semi_join_probe-815364be.md`）
-- [ ] `pkg/executor/join/merge_join.rs.md` ← `pkg/executor/join/merge_join.rs`（任务 `1037-åæ-executor-join-merge_join-bab52147.md`）
-- [ ] `pkg/executor/join/outer_join_probe.rs.md` ← `pkg/executor/join/outer_join_probe.rs`（任务 `1038-åæ-executor-join-outer_join_probe-a45fe54d.md`）
-- [ ] `pkg/executor/join/row_table_builder.rs.md` ← `pkg/executor/join/row_table_builder.rs`（任务 `1039-åæ-executor-join-row_table_builder-587d800e.md`）
-- [ ] `pkg/executor/join/semi_join_probe.rs.md` ← `pkg/executor/join/semi_join_probe.rs`（任务 `1040-åæ-executor-join-semi_join_probe-fed08366.md`）
-- [ ] `pkg/executor/join/tagged_ptr.rs.md` ← `pkg/executor/join/tagged_ptr.rs`（任务 `1041-åæ-executor-join-tagged_ptr-755bcafd.md`）
-- [ ] `pkg/executor/load_data.rs.md` ← `pkg/executor/load_data.rs`（任务 `1043-åæ-pkg-executor-load_data-723ed81c.md`）
-- [ ] `pkg/executor/load_stats.rs.md` ← `pkg/executor/load_stats.rs`（任务 `1044-åæ-pkg-executor-load_stats-0dd869aa.md`）
-- [ ] `pkg/executor/lockstats/lock_stats_executor.rs.md` ← `pkg/executor/lockstats/lock_stats_executor.rs`（任务 `1046-åæ-executor-lockstats-lock_stats_executor-a4022103.md`）
-- [ ] `pkg/executor/lockstats/unlock_stats_executor.rs.md` ← `pkg/executor/lockstats/unlock_stats_executor.rs`（任务 `1047-åæ-executor-lockstats-unlock_stats_executor-358a9da7.md`）
-- [ ] `pkg/executor/mem_reader.rs.md` ← `pkg/executor/mem_reader.rs`（任务 `1048-åæ-pkg-executor-mem_reader-dd7824cb.md`）
-- [ ] `pkg/executor/memtable_reader.rs.md` ← `pkg/executor/memtable_reader.rs`（任务 `1049-åæ-pkg-executor-memtable_reader-9b40f1db.md`）
-- [ ] `pkg/executor/metrics/metrics.rs.md` ← `pkg/executor/metrics/metrics.rs`（任务 `1051-åæ-executor-metrics-metrics-13606188.md`）
-- [ ] `pkg/executor/metrics_reader.rs.md` ← `pkg/executor/metrics_reader.rs`（任务 `1052-åæ-pkg-executor-metrics_reader-d8fde5d6.md`）
-- [ ] `pkg/executor/mpp_gather.rs.md` ← `pkg/executor/mpp_gather.rs`（任务 `1053-åæ-pkg-executor-mpp_gather-a4ed4ed4.md`）
-- [ ] `pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md` ← `pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs`（任务 `1055-åæ-executor-mppcoordmanager-mpp_coordinator_manager-20cc8b20.md`）
-- [ ] `pkg/executor/operate_ddl_jobs.rs.md` ← `pkg/executor/operate_ddl_jobs.rs`（任务 `1056-åæ-pkg-executor-operate_ddl_jobs-6c4ecea3.md`）
-- [ ] `pkg/executor/opt_rule_blacklist.rs.md` ← `pkg/executor/opt_rule_blacklist.rs`（任务 `1057-åæ-pkg-executor-opt_rule_blacklist-3a4311ae.md`）
-- [ ] `pkg/executor/parallel_apply.rs.md` ← `pkg/executor/parallel_apply.rs`（任务 `1058-åæ-pkg-executor-parallel_apply-87ee3131.md`）
-- [ ] `pkg/executor/partition_runtime.rs.md` ← `pkg/executor/partition_runtime.rs`（任务 `1059-åæ-pkg-executor-partition_runtime-bb3ac12a.md`）
-- [ ] `pkg/executor/physical_plan_runtime.rs.md` ← `pkg/executor/physical_plan_runtime.rs`（任务 `1060-åæ-pkg-executor-physical_plan_runtime-68a11f2b.md`）
-- [ ] `pkg/executor/plan_replayer.rs.md` ← `pkg/executor/plan_replayer.rs`（任务 `1061-åæ-pkg-executor-plan_replayer-26b3b54e.md`）
-- [ ] `pkg/executor/point_get.rs.md` ← `pkg/executor/point_get.rs`（任务 `1062-åæ-pkg-executor-point_get-901ebc67.md`）
-- [ ] `pkg/executor/prepared.rs.md` ← `pkg/executor/prepared.rs`（任务 `1063-åæ-pkg-executor-prepared-8b4b7a2a.md`）
-- [ ] `pkg/executor/projection.rs.md` ← `pkg/executor/projection.rs`（任务 `1064-åæ-pkg-executor-projection-20bd52e8.md`）
-- [ ] `pkg/executor/recommend_index.rs.md` ← `pkg/executor/recommend_index.rs`（任务 `1065-åæ-pkg-executor-recommend_index-55b5233c.md`）
-- [ ] `pkg/executor/reload_expr_pushdown_blacklist.rs.md` ← `pkg/executor/reload_expr_pushdown_blacklist.rs`（任务 `1066-åæ-pkg-executor-reload_expr_pushdown_blacklist-5c0bf4cb.md`）
-- [ ] `pkg/executor/replace.rs.md` ← `pkg/executor/replace.rs`（任务 `1067-åæ-pkg-executor-replace-f4e14e19.md`）
-- [ ] `pkg/executor/revoke.rs.md` ← `pkg/executor/revoke.rs`（任务 `1068-åæ-pkg-executor-revoke-696da259.md`）
-- [ ] `pkg/executor/sample.rs.md` ← `pkg/executor/sample.rs`（任务 `1069-åæ-pkg-executor-sample-74bede51.md`）
-- [ ] `pkg/executor/select.rs.md` ← `pkg/executor/select.rs`（任务 `1070-åæ-pkg-executor-select-d42f5d14.md`）
-- [ ] `pkg/executor/select_into.rs.md` ← `pkg/executor/select_into.rs`（任务 `1071-åæ-pkg-executor-select_into-866f8220.md`）
-- [ ] `pkg/executor/set.rs.md` ← `pkg/executor/set.rs`（任务 `1072-åæ-pkg-executor-set-9319365b.md`）
-- [ ] `pkg/executor/set_config.rs.md` ← `pkg/executor/set_config.rs`（任务 `1073-åæ-pkg-executor-set_config-550dab2c.md`）
-- [ ] `pkg/executor/show.rs.md` ← `pkg/executor/show.rs`（任务 `1074-åæ-pkg-executor-show-fe2fb989.md`）
-- [ ] `pkg/executor/show_affinity.rs.md` ← `pkg/executor/show_affinity.rs`（任务 `1075-åæ-pkg-executor-show_affinity-0d2e96e7.md`）
-- [ ] `pkg/executor/show_bdr_role.rs.md` ← `pkg/executor/show_bdr_role.rs`（任务 `1076-åæ-pkg-executor-show_bdr_role-aa7d895f.md`）
-- [ ] `pkg/executor/show_ddl.rs.md` ← `pkg/executor/show_ddl.rs`（任务 `1077-åæ-pkg-executor-show_ddl-1debb3bd.md`）
-- [ ] `pkg/executor/show_ddl_job_queries.rs.md` ← `pkg/executor/show_ddl_job_queries.rs`（任务 `1078-åæ-pkg-executor-show_ddl_job_queries-9ad5388c.md`）
-- [ ] `pkg/executor/show_ddl_jobs.rs.md` ← `pkg/executor/show_ddl_jobs.rs`（任务 `1079-åæ-pkg-executor-show_ddl_jobs-0cb5a61e.md`）
-- [ ] `pkg/executor/show_next_row_id.rs.md` ← `pkg/executor/show_next_row_id.rs`（任务 `1080-åæ-pkg-executor-show_next_row_id-0d7b086e.md`）
-- [ ] `pkg/executor/show_placement.rs.md` ← `pkg/executor/show_placement.rs`（任务 `1081-åæ-pkg-executor-show_placement-5326922e.md`）
-- [ ] `pkg/executor/show_slow_queries.rs.md` ← `pkg/executor/show_slow_queries.rs`（任务 `1082-åæ-pkg-executor-show_slow_queries-96985dda.md`）
-- [ ] `pkg/executor/show_stats.rs.md` ← `pkg/executor/show_stats.rs`（任务 `1083-åæ-pkg-executor-show_stats-d3693461.md`）
-- [ ] `pkg/executor/shuffle.rs.md` ← `pkg/executor/shuffle.rs`（任务 `1084-åæ-pkg-executor-shuffle-4e2d7ff4.md`）
-- [ ] `pkg/executor/simple.rs.md` ← `pkg/executor/simple.rs`（任务 `1085-åæ-pkg-executor-simple-e1e00c45.md`）
-- [ ] `pkg/executor/slow_query.rs.md` ← `pkg/executor/slow_query.rs`（任务 `1086-åæ-pkg-executor-slow_query-e2a8c62e.md`）
-- [ ] `pkg/executor/sortexec/multi_way_merge.rs.md` ← `pkg/executor/sortexec/multi_way_merge.rs`（任务 `1088-åæ-executor-sortexec-multi_way_merge-e3ea1c32.md`）
-- [ ] `pkg/executor/sortexec/parallel_sort_spill_helper.rs.md` ← `pkg/executor/sortexec/parallel_sort_spill_helper.rs`（任务 `1089-åæ-executor-sortexec-parallel_sort_spill_helper-8e73d5da.md`）
-- [ ] `pkg/executor/sortexec/parallel_sort_worker.rs.md` ← `pkg/executor/sortexec/parallel_sort_worker.rs`（任务 `1090-åæ-executor-sortexec-parallel_sort_worker-6c81b14f.md`）
-- [ ] `pkg/executor/sortexec/sort.rs.md` ← `pkg/executor/sortexec/sort.rs`（任务 `1091-åæ-executor-sortexec-sort-7bc1dc76.md`）
-- [ ] `pkg/executor/sortexec/sort_partition.rs.md` ← `pkg/executor/sortexec/sort_partition.rs`（任务 `1092-åæ-executor-sortexec-sort_partition-b55756e4.md`）
-- [ ] `pkg/executor/sortexec/sort_spill.rs.md` ← `pkg/executor/sortexec/sort_spill.rs`（任务 `1093-åæ-executor-sortexec-sort_spill-9b1b767e.md`）
-- [ ] `pkg/executor/sortexec/sort_util.rs.md` ← `pkg/executor/sortexec/sort_util.rs`（任务 `1094-åæ-executor-sortexec-sort_util-6c4dea06.md`）
-- [ ] `pkg/executor/sortexec/topn.rs.md` ← `pkg/executor/sortexec/topn.rs`（任务 `1095-åæ-executor-sortexec-topn-8d33ac02.md`）
-- [ ] `pkg/executor/sortexec/topn_chunk_heap.rs.md` ← `pkg/executor/sortexec/topn_chunk_heap.rs`（任务 `1096-åæ-executor-sortexec-topn_chunk_heap-587dbd0d.md`）
-- [ ] `pkg/executor/sortexec/topn_spill.rs.md` ← `pkg/executor/sortexec/topn_spill.rs`（任务 `1097-åæ-executor-sortexec-topn_spill-ea38bc51.md`）
-- [ ] `pkg/executor/sortexec/topn_worker.rs.md` ← `pkg/executor/sortexec/topn_worker.rs`（任务 `1098-åæ-executor-sortexec-topn_worker-0ece00d5.md`）
-- [ ] `pkg/executor/split.rs.md` ← `pkg/executor/split.rs`（任务 `1099-åæ-pkg-executor-split-53ac72e3.md`）
-- [ ] `pkg/executor/statement_ru_plan_walk.rs.md` ← `pkg/executor/statement_ru_plan_walk.rs`（任务 `1100-åæ-pkg-executor-statement_ru_plan_walk-30cca6a7.md`）
-- [ ] `pkg/executor/statement_ru_reporting.rs.md` ← `pkg/executor/statement_ru_reporting.rs`（任务 `1101-åæ-pkg-executor-statement_ru_reporting-16e9279d.md`）
-- [ ] `pkg/executor/statement_ru_result.rs.md` ← `pkg/executor/statement_ru_result.rs`（任务 `1102-åæ-pkg-executor-statement_ru_result-648654d6.md`）
-- [ ] `pkg/executor/staticrecordset/cursorrecordset.rs.md` ← `pkg/executor/staticrecordset/cursorrecordset.rs`（任务 `1103-åæ-executor-staticrecordset-cursorrecordset-9ddb3bff.md`）
-- [ ] `pkg/executor/staticrecordset/recordset.rs.md` ← `pkg/executor/staticrecordset/recordset.rs`（任务 `1105-åæ-executor-staticrecordset-recordset-34e58d63.md`）
-- [ ] `pkg/executor/stmtsummary.rs.md` ← `pkg/executor/stmtsummary.rs`（任务 `1106-åæ-pkg-executor-stmtsummary-2c13fe45.md`）
-- [ ] `pkg/executor/table_reader.rs.md` ← `pkg/executor/table_reader.rs`（任务 `1107-åæ-pkg-executor-table_reader-50ff2223.md`）
-- [ ] `pkg/executor/trace.rs.md` ← `pkg/executor/trace.rs`（任务 `1108-åæ-pkg-executor-trace-73bde935.md`）
-- [ ] `pkg/executor/traffic.rs.md` ← `pkg/executor/traffic.rs`（任务 `1109-åæ-pkg-executor-traffic-2b885e64.md`）
-- [ ] `pkg/executor/typed_hash_agg.rs.md` ← `pkg/executor/typed_hash_agg.rs`（任务 `1110-åæ-pkg-executor-typed_hash_agg-58748706.md`）
-- [ ] `pkg/executor/typed_hash_join.rs.md` ← `pkg/executor/typed_hash_join.rs`（任务 `1111-åæ-pkg-executor-typed_hash_join-b78d08a7.md`）
-- [ ] `pkg/executor/typed_index_lookup.rs.md` ← `pkg/executor/typed_index_lookup.rs`（任务 `1112-åæ-pkg-executor-typed_index_lookup-b4862933.md`）
-- [ ] `pkg/executor/typed_index_reader.rs.md` ← `pkg/executor/typed_index_reader.rs`（任务 `1113-åæ-pkg-executor-typed_index_reader-53c62619.md`）
-- [ ] `pkg/executor/typed_kv_scan.rs.md` ← `pkg/executor/typed_kv_scan.rs`（任务 `1114-åæ-pkg-executor-typed_kv_scan-f829abca.md`）
-- [ ] `pkg/executor/typed_limit.rs.md` ← `pkg/executor/typed_limit.rs`（任务 `1115-åæ-pkg-executor-typed_limit-aa871379.md`）
-- [ ] `pkg/executor/typed_point_get.rs.md` ← `pkg/executor/typed_point_get.rs`（任务 `1116-åæ-pkg-executor-typed_point_get-8f7eee45.md`）
-- [ ] `pkg/executor/typed_projection.rs.md` ← `pkg/executor/typed_projection.rs`（任务 `1117-åæ-pkg-executor-typed_projection-ecd00013.md`）
-- [ ] `pkg/executor/typed_selection.rs.md` ← `pkg/executor/typed_selection.rs`（任务 `1118-åæ-pkg-executor-typed_selection-03f6a7b3.md`）
-- [ ] `pkg/executor/union_scan.rs.md` ← `pkg/executor/union_scan.rs`（任务 `1119-åæ-pkg-executor-union_scan-ee71cf81.md`）
-- [ ] `pkg/executor/unionexec/union.rs.md` ← `pkg/executor/unionexec/union.rs`（任务 `1121-åæ-executor-unionexec-union-40a29b9a.md`）
-- [ ] `pkg/executor/update.rs.md` ← `pkg/executor/update.rs`（任务 `1122-åæ-pkg-executor-update-23d63cbc.md`）
-- [ ] `pkg/executor/utils.rs.md` ← `pkg/executor/utils.rs`（任务 `1123-åæ-pkg-executor-utils-7166bb3b.md`）
-- [ ] `pkg/executor/windows/builder.rs.md` ← `pkg/executor/windows/builder.rs`（任务 `1124-åæ-executor-windows-builder-b9c62001.md`）
-- [ ] `pkg/executor/windows/pipelined_window.rs.md` ← `pkg/executor/windows/pipelined_window.rs`（任务 `1126-åæ-executor-windows-pipelined_window-eea1d02d.md`）
-- [ ] `pkg/executor/windows/window.rs.md` ← `pkg/executor/windows/window.rs`（任务 `1127-åæ-executor-windows-window-e83f66c3.md`）
-- [ ] `pkg/executor/workloadrepo.rs.md` ← `pkg/executor/workloadrepo.rs`（任务 `1128-åæ-pkg-executor-workloadrepo-0ce09b25.md`）
-- [ ] `pkg/executor/write.rs.md` ← `pkg/executor/write.rs`（任务 `1129-åæ-pkg-executor-write-18dae2b1.md`）
+- [ ] `pkg/executor/adapter.rs.md`
+- [ ] `pkg/executor/adapter_slow_log.rs.md`
+- [ ] `pkg/executor/admin.rs.md`
+- [ ] `pkg/executor/admin_plugins.rs.md`
+- [ ] `pkg/executor/aggfuncs/aggfuncs.rs.md`
+- [ ] `pkg/executor/aggfuncs/builder.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_avg.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_bitfuncs.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_count.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_count_distinct.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_cume_dist.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_first_row.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_group_concat.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_json_arrayagg.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_json_objectagg.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_lead_lag.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_max_min.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_max_min_count.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_ntile.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_percent_rank.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_percentile.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_rank.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_stddevpop.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_stddevsamp.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_sum.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_sum_int.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_value.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_varpop.rs.md`
+- [ ] `pkg/executor/aggfuncs/func_varsamp.rs.md`
+- [ ] `pkg/executor/aggfuncs/row_number.rs.md`
+- [ ] `pkg/executor/aggfuncs/spill_deserialize_helper.rs.md`
+- [ ] `pkg/executor/aggfuncs/spill_serialize_helper.rs.md`
+- [ ] `pkg/executor/aggregate/agg_hash_base_worker.rs.md`
+- [ ] `pkg/executor/aggregate/agg_hash_executor.rs.md`
+- [ ] `pkg/executor/aggregate/agg_hash_final_worker.rs.md`
+- [ ] `pkg/executor/aggregate/agg_hash_partial_worker.rs.md`
+- [ ] `pkg/executor/aggregate/agg_spill.rs.md`
+- [ ] `pkg/executor/aggregate/agg_stream_executor.rs.md`
+- [ ] `pkg/executor/aggregate/agg_util.rs.md`
+- [ ] `pkg/executor/analyze.rs.md`
+- [ ] `pkg/executor/analyze_col.rs.md`
+- [ ] `pkg/executor/analyze_col_sampling.rs.md`
+- [ ] `pkg/executor/analyze_global_stats.rs.md`
+- [ ] `pkg/executor/analyze_idx.rs.md`
+- [ ] `pkg/executor/analyze_utils.rs.md`
+- [ ] `pkg/executor/analyze_worker.rs.md`
+- [ ] `pkg/executor/batch_checker.rs.md`
+- [ ] `pkg/executor/batch_point_get.rs.md`
+- [ ] `pkg/executor/bind.rs.md`
+- [ ] `pkg/executor/brie.rs.md`
+- [ ] `pkg/executor/brie_utils.rs.md`
+- [ ] `pkg/executor/builder.rs.md`
+- [ ] `pkg/executor/check_table_index.rs.md`
+- [ ] `pkg/executor/checksum.rs.md`
+- [ ] `pkg/executor/compact_table.rs.md`
+- [ ] `pkg/executor/compiler.rs.md`
+- [ ] `pkg/executor/coprocessor.rs.md`
+- [ ] `pkg/executor/cte.rs.md`
+- [ ] `pkg/executor/cte_table_reader.rs.md`
+- [ ] `pkg/executor/ddl.rs.md`
+- [ ] `pkg/executor/delete.rs.md`
+- [ ] `pkg/executor/detach.rs.md`
+- [ ] `pkg/executor/distribute.rs.md`
+- [ ] `pkg/executor/distsql.rs.md`
+- [ ] `pkg/executor/expand.rs.md`
+- [ ] `pkg/executor/explain.rs.md`
+- [ ] `pkg/executor/foreign_key.rs.md`
+- [ ] `pkg/executor/grant.rs.md`
+- [ ] `pkg/executor/import_into.rs.md`
+- [ ] `pkg/executor/import_into_storage.rs.md`
+- [ ] `pkg/executor/importer/chunk_process.rs.md`
+- [ ] `pkg/executor/importer/engine_process.rs.md`
+- [ ] `pkg/executor/importer/import.rs.md`
+- [ ] `pkg/executor/importer/job.rs.md`
+- [ ] `pkg/executor/importer/kv_encode.rs.md`
+- [ ] `pkg/executor/importer/precheck.rs.md`
+- [ ] `pkg/executor/importer/production_regions.rs.md`
+- [ ] `pkg/executor/importer/production_resource.rs.md`
+- [ ] `pkg/executor/importer/production_size.rs.md`
+- [ ] `pkg/executor/importer/production_storage.rs.md`
+- [ ] `pkg/executor/importer/sampler.rs.md`
+- [ ] `pkg/executor/importer/table_import.rs.md`
+- [ ] `pkg/executor/index_merge_reader.rs.md`
+- [ ] `pkg/executor/infoschema_reader.rs.md`
+- [ ] `pkg/executor/insert.rs.md`
+- [ ] `pkg/executor/insert_common.rs.md`
+- [ ] `pkg/executor/inspection_common.rs.md`
+- [ ] `pkg/executor/inspection_profile.rs.md`
+- [ ] `pkg/executor/inspection_result.rs.md`
+- [ ] `pkg/executor/inspection_summary.rs.md`
+- [ ] `pkg/executor/internal/applycache/apply_cache.rs.md`
+- [ ] `pkg/executor/internal/builder/builder_utils.rs.md`
+- [ ] `pkg/executor/internal/calibrateresource/calibrate_resource.rs.md`
+- [ ] `pkg/executor/internal/exec/adaptive_limit_controller.rs.md`
+- [ ] `pkg/executor/internal/exec/executor.rs.md`
+- [ ] `pkg/executor/internal/exec/indexusage.rs.md`
+- [ ] `pkg/executor/internal/mpp/executor_with_retry.rs.md`
+- [ ] `pkg/executor/internal/mpp/local_mpp_coordinator.rs.md`
+- [ ] `pkg/executor/internal/mpp/recovery_handler.rs.md`
+- [ ] `pkg/executor/internal/pdhelper/pd.rs.md`
+- [ ] `pkg/executor/internal/querywatch/query_watch.rs.md`
+- [ ] `pkg/executor/internal/testutil/agg.rs.md`
+- [ ] `pkg/executor/internal/testutil/limit.rs.md`
+- [ ] `pkg/executor/internal/testutil/sort.rs.md`
+- [ ] `pkg/executor/internal/testutil/testutil.rs.md`
+- [ ] `pkg/executor/internal/testutil/window.rs.md`
+- [ ] `pkg/executor/internal/util/partition_table.rs.md`
+- [ ] `pkg/executor/internal/util/util.rs.md`
+- [ ] `pkg/executor/internal/vecgroupchecker/vec_group_checker.rs.md`
+- [ ] `pkg/executor/join/anti_semi_join_probe.rs.md`
+- [ ] `pkg/executor/join/base_join_probe.rs.md`
+- [ ] `pkg/executor/join/base_semi_join.rs.md`
+- [ ] `pkg/executor/join/concurrent_map.rs.md`
+- [ ] `pkg/executor/join/hash_join_base.rs.md`
+- [ ] `pkg/executor/join/hash_join_spill.rs.md`
+- [ ] `pkg/executor/join/hash_join_spill_helper.rs.md`
+- [ ] `pkg/executor/join/hash_join_stats.rs.md`
+- [ ] `pkg/executor/join/hash_join_test_util.rs.md`
+- [ ] `pkg/executor/join/hash_join_v1.rs.md`
+- [ ] `pkg/executor/join/hash_join_v2.rs.md`
+- [ ] `pkg/executor/join/hash_table_v1.rs.md`
+- [ ] `pkg/executor/join/hash_table_v2.rs.md`
+- [ ] `pkg/executor/join/index_lookup_hash_join.rs.md`
+- [ ] `pkg/executor/join/index_lookup_join.rs.md`
+- [ ] `pkg/executor/join/index_lookup_merge_join.rs.md`
+- [ ] `pkg/executor/join/inner_join_probe.rs.md`
+- [ ] `pkg/executor/join/join_row_table.rs.md`
+- [ ] `pkg/executor/join/join_table_meta.rs.md`
+- [ ] `pkg/executor/join/joiner.rs.md`
+- [ ] `pkg/executor/join/joinversion/join_version.rs.md`
+- [ ] `pkg/executor/join/left_outer_semi_join_probe.rs.md`
+- [ ] `pkg/executor/join/merge_join.rs.md`
+- [ ] `pkg/executor/join/outer_join_probe.rs.md`
+- [ ] `pkg/executor/join/row_table_builder.rs.md`
+- [ ] `pkg/executor/join/semi_join_probe.rs.md`
+- [ ] `pkg/executor/join/tagged_ptr.rs.md`
+- [ ] `pkg/executor/load_data.rs.md`
+- [ ] `pkg/executor/load_stats.rs.md`
+- [ ] `pkg/executor/lockstats/lock_stats_executor.rs.md`
+- [ ] `pkg/executor/lockstats/unlock_stats_executor.rs.md`
+- [ ] `pkg/executor/mem_reader.rs.md`
+- [ ] `pkg/executor/memtable_reader.rs.md`
+- [ ] `pkg/executor/metrics/metrics.rs.md`
+- [ ] `pkg/executor/metrics_reader.rs.md`
+- [ ] `pkg/executor/mpp_gather.rs.md`
+- [ ] `pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md`
+- [ ] `pkg/executor/operate_ddl_jobs.rs.md`
+- [ ] `pkg/executor/opt_rule_blacklist.rs.md`
+- [ ] `pkg/executor/parallel_apply.rs.md`
+- [ ] `pkg/executor/partition_runtime.rs.md`
+- [ ] `pkg/executor/physical_plan_runtime.rs.md`
+- [ ] `pkg/executor/plan_replayer.rs.md`
+- [ ] `pkg/executor/point_get.rs.md`
+- [ ] `pkg/executor/prepared.rs.md`
+- [ ] `pkg/executor/projection.rs.md`
+- [ ] `pkg/executor/recommend_index.rs.md`
+- [ ] `pkg/executor/reload_expr_pushdown_blacklist.rs.md`
+- [ ] `pkg/executor/replace.rs.md`
+- [ ] `pkg/executor/revoke.rs.md`
+- [ ] `pkg/executor/sample.rs.md`
+- [ ] `pkg/executor/select.rs.md`
+- [ ] `pkg/executor/select_into.rs.md`
+- [ ] `pkg/executor/set.rs.md`
+- [ ] `pkg/executor/set_config.rs.md`
+- [ ] `pkg/executor/show.rs.md`
+- [ ] `pkg/executor/show_affinity.rs.md`
+- [ ] `pkg/executor/show_bdr_role.rs.md`
+- [ ] `pkg/executor/show_ddl.rs.md`
+- [ ] `pkg/executor/show_ddl_job_queries.rs.md`
+- [ ] `pkg/executor/show_ddl_jobs.rs.md`
+- [ ] `pkg/executor/show_next_row_id.rs.md`
+- [ ] `pkg/executor/show_placement.rs.md`
+- [ ] `pkg/executor/show_slow_queries.rs.md`
+- [ ] `pkg/executor/show_stats.rs.md`
+- [ ] `pkg/executor/shuffle.rs.md`
+- [ ] `pkg/executor/simple.rs.md`
+- [ ] `pkg/executor/slow_query.rs.md`
+- [ ] `pkg/executor/sortexec/multi_way_merge.rs.md`
+- [ ] `pkg/executor/sortexec/parallel_sort_spill_helper.rs.md`
+- [ ] `pkg/executor/sortexec/parallel_sort_worker.rs.md`
+- [ ] `pkg/executor/sortexec/sort.rs.md`
+- [ ] `pkg/executor/sortexec/sort_partition.rs.md`
+- [ ] `pkg/executor/sortexec/sort_spill.rs.md`
+- [ ] `pkg/executor/sortexec/sort_util.rs.md`
+- [ ] `pkg/executor/sortexec/topn.rs.md`
+- [ ] `pkg/executor/sortexec/topn_chunk_heap.rs.md`
+- [ ] `pkg/executor/sortexec/topn_spill.rs.md`
+- [ ] `pkg/executor/sortexec/topn_worker.rs.md`
+- [ ] `pkg/executor/split.rs.md`
+- [ ] `pkg/executor/statement_ru_plan_walk.rs.md`
+- [ ] `pkg/executor/statement_ru_reporting.rs.md`
+- [ ] `pkg/executor/statement_ru_result.rs.md`
+- [ ] `pkg/executor/staticrecordset/cursorrecordset.rs.md`
+- [ ] `pkg/executor/staticrecordset/recordset.rs.md`
+- [ ] `pkg/executor/stmtsummary.rs.md`
+- [ ] `pkg/executor/table_reader.rs.md`
+- [ ] `pkg/executor/trace.rs.md`
+- [ ] `pkg/executor/traffic.rs.md`
+- [ ] `pkg/executor/typed_hash_agg.rs.md`
+- [ ] `pkg/executor/typed_hash_join.rs.md`
+- [ ] `pkg/executor/typed_index_lookup.rs.md`
+- [ ] `pkg/executor/typed_index_reader.rs.md`
+- [ ] `pkg/executor/typed_kv_scan.rs.md`
+- [ ] `pkg/executor/typed_limit.rs.md`
+- [ ] `pkg/executor/typed_point_get.rs.md`
+- [ ] `pkg/executor/typed_projection.rs.md`
+- [ ] `pkg/executor/typed_selection.rs.md`
+- [ ] `pkg/executor/union_scan.rs.md`
+- [ ] `pkg/executor/unionexec/union.rs.md`
+- [ ] `pkg/executor/update.rs.md`
+- [ ] `pkg/executor/utils.rs.md`
+- [ ] `pkg/executor/windows/builder.rs.md`
+- [ ] `pkg/executor/windows/pipelined_window.rs.md`
+- [ ] `pkg/executor/windows/window.rs.md`
+- [ ] `pkg/executor/workloadrepo.rs.md`
+- [ ] `pkg/executor/write.rs.md`
 
 ## pkg/expression
 
-- [ ] `pkg/expression/aggregation/agg_to_pb.rs.md` ← `pkg/expression/aggregation/agg_to_pb.rs`（任务 `1130-åæ-expression-aggregation-agg_to_pb-1378ce64.md`）
-- [ ] `pkg/expression/aggregation/aggregation.rs.md` ← `pkg/expression/aggregation/aggregation.rs`（任务 `1131-åæ-expression-aggregation-aggregation-d094a9af.md`）
-- [ ] `pkg/expression/aggregation/avg.rs.md` ← `pkg/expression/aggregation/avg.rs`（任务 `1132-åæ-expression-aggregation-avg-520f749e.md`）
-- [ ] `pkg/expression/aggregation/base_func.rs.md` ← `pkg/expression/aggregation/base_func.rs`（任务 `1133-åæ-expression-aggregation-base_func-cc965eb1.md`）
-- [ ] `pkg/expression/aggregation/bit_and.rs.md` ← `pkg/expression/aggregation/bit_and.rs`（任务 `1134-åæ-expression-aggregation-bit_and-c3f95975.md`）
-- [ ] `pkg/expression/aggregation/bit_or.rs.md` ← `pkg/expression/aggregation/bit_or.rs`（任务 `1135-åæ-expression-aggregation-bit_or-3ed1a94a.md`）
-- [ ] `pkg/expression/aggregation/bit_xor.rs.md` ← `pkg/expression/aggregation/bit_xor.rs`（任务 `1136-åæ-expression-aggregation-bit_xor-5aaf64c0.md`）
-- [ ] `pkg/expression/aggregation/concat.rs.md` ← `pkg/expression/aggregation/concat.rs`（任务 `1137-åæ-expression-aggregation-concat-cfaa1067.md`）
-- [ ] `pkg/expression/aggregation/count.rs.md` ← `pkg/expression/aggregation/count.rs`（任务 `1138-åæ-expression-aggregation-count-ffd9c2c4.md`）
-- [ ] `pkg/expression/aggregation/descriptor.rs.md` ← `pkg/expression/aggregation/descriptor.rs`（任务 `1139-åæ-expression-aggregation-descriptor-efb0db89.md`）
-- [ ] `pkg/expression/aggregation/explain.rs.md` ← `pkg/expression/aggregation/explain.rs`（任务 `1140-åæ-expression-aggregation-explain-52df78e6.md`）
-- [ ] `pkg/expression/aggregation/first_row.rs.md` ← `pkg/expression/aggregation/first_row.rs`（任务 `1141-åæ-expression-aggregation-first_row-99e35d2b.md`）
-- [ ] `pkg/expression/aggregation/max_min.rs.md` ← `pkg/expression/aggregation/max_min.rs`（任务 `1143-åæ-expression-aggregation-max_min-d8cf64d4.md`）
-- [ ] `pkg/expression/aggregation/max_min_count.rs.md` ← `pkg/expression/aggregation/max_min_count.rs`（任务 `1144-åæ-expression-aggregation-max_min_count-81d4922c.md`）
-- [ ] `pkg/expression/aggregation/sum.rs.md` ← `pkg/expression/aggregation/sum.rs`（任务 `1145-åæ-expression-aggregation-sum-3d6dce8f.md`）
-- [ ] `pkg/expression/aggregation/sum_int.rs.md` ← `pkg/expression/aggregation/sum_int.rs`（任务 `1146-åæ-expression-aggregation-sum_int-67dcbe43.md`）
-- [ ] `pkg/expression/aggregation/util.rs.md` ← `pkg/expression/aggregation/util.rs`（任务 `1147-åæ-expression-aggregation-util-96ad926c.md`）
-- [ ] `pkg/expression/aggregation/window_func.rs.md` ← `pkg/expression/aggregation/window_func.rs`（任务 `1148-åæ-expression-aggregation-window_func-5a34d314.md`）
-- [ ] `pkg/expression/builtin.rs.md` ← `pkg/expression/builtin.rs`（任务 `1149-åæ-pkg-expression-builtin-c8d7a2af.md`）
-- [ ] `pkg/expression/builtin_arithmetic.rs.md` ← `pkg/expression/builtin_arithmetic.rs`（任务 `1150-åæ-pkg-expression-builtin_arithmetic-dbcbc31f.md`）
-- [ ] `pkg/expression/builtin_arithmetic_vec.rs.md` ← `pkg/expression/builtin_arithmetic_vec.rs`（任务 `1151-åæ-pkg-expression-builtin_arithmetic_vec-d3c6ff10.md`）
-- [ ] `pkg/expression/builtin_cast.rs.md` ← `pkg/expression/builtin_cast.rs`（任务 `1152-åæ-pkg-expression-builtin_cast-c59436e4.md`）
-- [ ] `pkg/expression/builtin_cast_vec.rs.md` ← `pkg/expression/builtin_cast_vec.rs`（任务 `1153-åæ-pkg-expression-builtin_cast_vec-ba7d2998.md`）
-- [ ] `pkg/expression/builtin_compare.rs.md` ← `pkg/expression/builtin_compare.rs`（任务 `1154-åæ-pkg-expression-builtin_compare-7e304102.md`）
-- [ ] `pkg/expression/builtin_compare_vec.rs.md` ← `pkg/expression/builtin_compare_vec.rs`（任务 `1155-åæ-pkg-expression-builtin_compare_vec-3d223f34.md`）
-- [ ] `pkg/expression/builtin_compare_vec_generated.rs.md` ← `pkg/expression/builtin_compare_vec_generated.rs`（任务 `1156-åæ-pkg-expression-builtin_compare_vec_generated-7b300620.md`）
-- [ ] `pkg/expression/builtin_control.rs.md` ← `pkg/expression/builtin_control.rs`（任务 `1157-åæ-pkg-expression-builtin_control-d1daecf7.md`）
-- [ ] `pkg/expression/builtin_control_vec_generated.rs.md` ← `pkg/expression/builtin_control_vec_generated.rs`（任务 `1158-åæ-pkg-expression-builtin_control_vec_generated-edc5d5c2.md`）
-- [ ] `pkg/expression/builtin_convert_charset.rs.md` ← `pkg/expression/builtin_convert_charset.rs`（任务 `1159-åæ-pkg-expression-builtin_convert_charset-c54357a7.md`）
-- [ ] `pkg/expression/builtin_core.rs.md` ← `pkg/expression/builtin_core.rs`（任务 `1160-åæ-pkg-expression-builtin_core-e5f62589.md`）
-- [ ] `pkg/expression/builtin_encryption.rs.md` ← `pkg/expression/builtin_encryption.rs`（任务 `1161-åæ-pkg-expression-builtin_encryption-d73c8cc7.md`）
-- [ ] `pkg/expression/builtin_encryption_vec.rs.md` ← `pkg/expression/builtin_encryption_vec.rs`（任务 `1162-åæ-pkg-expression-builtin_encryption_vec-43f30ef4.md`）
-- [ ] `pkg/expression/builtin_fts.rs.md` ← `pkg/expression/builtin_fts.rs`（任务 `1163-åæ-pkg-expression-builtin_fts-6e2e8c99.md`）
-- [ ] `pkg/expression/builtin_func_param.rs.md` ← `pkg/expression/builtin_func_param.rs`（任务 `1164-åæ-pkg-expression-builtin_func_param-1e975671.md`）
-- [ ] `pkg/expression/builtin_grouping.rs.md` ← `pkg/expression/builtin_grouping.rs`（任务 `1165-åæ-pkg-expression-builtin_grouping-eb41dcca.md`）
-- [ ] `pkg/expression/builtin_ilike.rs.md` ← `pkg/expression/builtin_ilike.rs`（任务 `1166-åæ-pkg-expression-builtin_ilike-1e1195a9.md`）
-- [ ] `pkg/expression/builtin_ilike_vec.rs.md` ← `pkg/expression/builtin_ilike_vec.rs`（任务 `1167-åæ-pkg-expression-builtin_ilike_vec-0f31023a.md`）
-- [ ] `pkg/expression/builtin_inference.rs.md` ← `pkg/expression/builtin_inference.rs`（任务 `1168-åæ-pkg-expression-builtin_inference-d4f4ad1d.md`）
-- [ ] `pkg/expression/builtin_info.rs.md` ← `pkg/expression/builtin_info.rs`（任务 `1169-åæ-pkg-expression-builtin_info-4d9b9335.md`）
-- [ ] `pkg/expression/builtin_info_vec.rs.md` ← `pkg/expression/builtin_info_vec.rs`（任务 `1170-åæ-pkg-expression-builtin_info_vec-4743ab49.md`）
-- [ ] `pkg/expression/builtin_json.rs.md` ← `pkg/expression/builtin_json.rs`（任务 `1171-åæ-pkg-expression-builtin_json-9933e6e6.md`）
-- [ ] `pkg/expression/builtin_json_vec.rs.md` ← `pkg/expression/builtin_json_vec.rs`（任务 `1172-åæ-pkg-expression-builtin_json_vec-6e2d3b99.md`）
-- [ ] `pkg/expression/builtin_like.rs.md` ← `pkg/expression/builtin_like.rs`（任务 `1173-åæ-pkg-expression-builtin_like-e9fb77fb.md`）
-- [ ] `pkg/expression/builtin_like_vec.rs.md` ← `pkg/expression/builtin_like_vec.rs`（任务 `1174-åæ-pkg-expression-builtin_like_vec-9d59f534.md`）
-- [ ] `pkg/expression/builtin_math.rs.md` ← `pkg/expression/builtin_math.rs`（任务 `1175-åæ-pkg-expression-builtin_math-17c80979.md`）
-- [ ] `pkg/expression/builtin_math_vec.rs.md` ← `pkg/expression/builtin_math_vec.rs`（任务 `1176-åæ-pkg-expression-builtin_math_vec-cf942843.md`）
-- [ ] `pkg/expression/builtin_miscellaneous.rs.md` ← `pkg/expression/builtin_miscellaneous.rs`（任务 `1177-åæ-pkg-expression-builtin_miscellaneous-f2a3d511.md`）
-- [ ] `pkg/expression/builtin_miscellaneous_vec.rs.md` ← `pkg/expression/builtin_miscellaneous_vec.rs`（任务 `1178-åæ-pkg-expression-builtin_miscellaneous_vec-97fb97b7.md`）
-- [ ] `pkg/expression/builtin_op.rs.md` ← `pkg/expression/builtin_op.rs`（任务 `1179-åæ-pkg-expression-builtin_op-2167f330.md`）
-- [ ] `pkg/expression/builtin_op_vec.rs.md` ← `pkg/expression/builtin_op_vec.rs`（任务 `1180-åæ-pkg-expression-builtin_op_vec-006cc431.md`）
-- [ ] `pkg/expression/builtin_other.rs.md` ← `pkg/expression/builtin_other.rs`（任务 `1181-åæ-pkg-expression-builtin_other-723c695e.md`）
-- [ ] `pkg/expression/builtin_other_vec.rs.md` ← `pkg/expression/builtin_other_vec.rs`（任务 `1182-åæ-pkg-expression-builtin_other_vec-df8ae4cf.md`）
-- [ ] `pkg/expression/builtin_other_vec_generated.rs.md` ← `pkg/expression/builtin_other_vec_generated.rs`（任务 `1183-åæ-pkg-expression-builtin_other_vec_generated-54ce303d.md`）
-- [ ] `pkg/expression/builtin_regexp.rs.md` ← `pkg/expression/builtin_regexp.rs`（任务 `1184-åæ-pkg-expression-builtin_regexp-27fd29a9.md`）
-- [ ] `pkg/expression/builtin_regexp_util.rs.md` ← `pkg/expression/builtin_regexp_util.rs`（任务 `1185-åæ-pkg-expression-builtin_regexp_util-280ba5d3.md`）
-- [ ] `pkg/expression/builtin_registry.rs.md` ← `pkg/expression/builtin_registry.rs`（任务 `1186-åæ-pkg-expression-builtin_registry-8096229d.md`）
-- [ ] `pkg/expression/builtin_string.rs.md` ← `pkg/expression/builtin_string.rs`（任务 `1187-åæ-pkg-expression-builtin_string-c00967e0.md`）
-- [ ] `pkg/expression/builtin_string_vec.rs.md` ← `pkg/expression/builtin_string_vec.rs`（任务 `1188-åæ-pkg-expression-builtin_string_vec-d5a83d2a.md`）
-- [ ] `pkg/expression/builtin_string_vec_generated.rs.md` ← `pkg/expression/builtin_string_vec_generated.rs`（任务 `1189-åæ-pkg-expression-builtin_string_vec_generated-94cff27d.md`）
-- [ ] `pkg/expression/builtin_threadsafe_generated.rs.md` ← `pkg/expression/builtin_threadsafe_generated.rs`（任务 `1190-åæ-pkg-expression-builtin_threadsafe_generated-1fb3241a.md`）
-- [ ] `pkg/expression/builtin_threadunsafe_generated.rs.md` ← `pkg/expression/builtin_threadunsafe_generated.rs`（任务 `1191-åæ-pkg-expression-builtin_threadunsafe_generated-4ce10e17.md`）
-- [ ] `pkg/expression/builtin_time.rs.md` ← `pkg/expression/builtin_time.rs`（任务 `1192-åæ-pkg-expression-builtin_time-9977acfa.md`）
-- [ ] `pkg/expression/builtin_time_vec.rs.md` ← `pkg/expression/builtin_time_vec.rs`（任务 `1193-åæ-pkg-expression-builtin_time_vec-2d77d169.md`）
-- [ ] `pkg/expression/builtin_time_vec_generated.rs.md` ← `pkg/expression/builtin_time_vec_generated.rs`（任务 `1194-åæ-pkg-expression-builtin_time_vec_generated-0457922f.md`）
-- [ ] `pkg/expression/builtin_vec.rs.md` ← `pkg/expression/builtin_vec.rs`（任务 `1195-åæ-pkg-expression-builtin_vec-74a00cb9.md`）
-- [ ] `pkg/expression/builtin_vec_vec.rs.md` ← `pkg/expression/builtin_vec_vec.rs`（任务 `1196-åæ-pkg-expression-builtin_vec_vec-0074316f.md`）
-- [ ] `pkg/expression/builtin_vectorized.rs.md` ← `pkg/expression/builtin_vectorized.rs`（任务 `1197-åæ-pkg-expression-builtin_vectorized-2bd27b62.md`）
-- [ ] `pkg/expression/cache_snapshot.rs.md` ← `pkg/expression/cache_snapshot.rs`（任务 `1198-åæ-pkg-expression-cache_snapshot-b05e5961.md`）
-- [ ] `pkg/expression/chunk_executor.rs.md` ← `pkg/expression/chunk_executor.rs`（任务 `1199-åæ-pkg-expression-chunk_executor-cf4449f2.md`）
-- [ ] `pkg/expression/collation.rs.md` ← `pkg/expression/collation.rs`（任务 `1200-åæ-pkg-expression-collation-e2fd47cc.md`）
-- [ ] `pkg/expression/column.rs.md` ← `pkg/expression/column.rs`（任务 `1201-åæ-pkg-expression-column-cb11b1f9.md`）
-- [ ] `pkg/expression/constant.rs.md` ← `pkg/expression/constant.rs`（任务 `1202-åæ-pkg-expression-constant-17eeac75.md`）
-- [ ] `pkg/expression/constant_fold.rs.md` ← `pkg/expression/constant_fold.rs`（任务 `1203-åæ-pkg-expression-constant_fold-732455bf.md`）
-- [ ] `pkg/expression/constant_propagation.rs.md` ← `pkg/expression/constant_propagation.rs`（任务 `1204-åæ-pkg-expression-constant_propagation-d47cfd3c.md`）
-- [ ] `pkg/expression/context.rs.md` ← `pkg/expression/context.rs`（任务 `1205-åæ-pkg-expression-context-b2bb4cbc.md`）
-- [ ] `pkg/expression/core_impl.rs.md` ← `pkg/expression/core_impl.rs`（任务 `1206-åæ-pkg-expression-core_impl-45d2a10a.md`）
-- [ ] `pkg/expression/core_support.rs.md` ← `pkg/expression/core_support.rs`（任务 `1207-åæ-pkg-expression-core_support-f960980f.md`）
-- [ ] `pkg/expression/distsql_builtin.rs.md` ← `pkg/expression/distsql_builtin.rs`（任务 `1208-åæ-pkg-expression-distsql_builtin-8d08f875.md`）
-- [ ] `pkg/expression/errors.rs.md` ← `pkg/expression/errors.rs`（任务 `1209-åæ-pkg-expression-errors-d4dda067.md`）
-- [ ] `pkg/expression/evaluator.rs.md` ← `pkg/expression/evaluator.rs`（任务 `1210-åæ-pkg-expression-evaluator-ddf84b98.md`）
-- [ ] `pkg/expression/explain.rs.md` ← `pkg/expression/explain.rs`（任务 `1211-åæ-pkg-expression-explain-847e7c68.md`）
-- [ ] `pkg/expression/explicit_collation.rs.md` ← `pkg/expression/explicit_collation.rs`（任务 `1212-åæ-pkg-expression-explicit_collation-d7639da4.md`）
-- [ ] `pkg/expression/expr_to_pb.rs.md` ← `pkg/expression/expr_to_pb.rs`（任务 `1213-åæ-pkg-expression-expr_to_pb-bc416103.md`）
-- [ ] `pkg/expression/exprctx/context.rs.md` ← `pkg/expression/exprctx/context.rs`（任务 `1214-åæ-expression-exprctx-context-dc7700f8.md`）
-- [ ] `pkg/expression/exprctx/optional.rs.md` ← `pkg/expression/exprctx/optional.rs`（任务 `1216-åæ-expression-exprctx-optional-8038f689.md`）
-- [ ] `pkg/expression/exprctx/param.rs.md` ← `pkg/expression/exprctx/param.rs`（任务 `1217-åæ-expression-exprctx-param-db719874.md`）
-- [ ] `pkg/expression/expression.rs.md` ← `pkg/expression/expression.rs`（任务 `1218-åæ-pkg-expression-expression-3d857886.md`）
-- [ ] `pkg/expression/expropt/advisory_lock.rs.md` ← `pkg/expression/expropt/advisory_lock.rs`（任务 `1219-åæ-expression-expropt-advisory_lock-7981fed3.md`）
-- [ ] `pkg/expression/expropt/current_user.rs.md` ← `pkg/expression/expropt/current_user.rs`（任务 `1220-åæ-expression-expropt-current_user-72cb9681.md`）
-- [ ] `pkg/expression/expropt/ddlowner.rs.md` ← `pkg/expression/expropt/ddlowner.rs`（任务 `1221-åæ-expression-expropt-ddlowner-5ad609e6.md`）
-- [ ] `pkg/expression/expropt/infoschema.rs.md` ← `pkg/expression/expropt/infoschema.rs`（任务 `1222-åæ-expression-expropt-infoschema-fd972244.md`）
-- [ ] `pkg/expression/expropt/kvstore.rs.md` ← `pkg/expression/expropt/kvstore.rs`（任务 `1223-åæ-expression-expropt-kvstore-fdf5d8fb.md`）
-- [ ] `pkg/expression/expropt/optional.rs.md` ← `pkg/expression/expropt/optional.rs`（任务 `1225-åæ-expression-expropt-optional-8e06d147.md`）
-- [ ] `pkg/expression/expropt/priv.rs.md` ← `pkg/expression/expropt/priv.rs`（任务 `1226-åæ-expression-expropt-priv-fdb56fdb.md`）
-- [ ] `pkg/expression/expropt/sequence.rs.md` ← `pkg/expression/expropt/sequence.rs`（任务 `1227-åæ-expression-expropt-sequence-b3448da2.md`）
-- [ ] `pkg/expression/expropt/sessioncontext.rs.md` ← `pkg/expression/expropt/sessioncontext.rs`（任务 `1228-åæ-expression-expropt-sessioncontext-4e1e0929.md`）
-- [ ] `pkg/expression/expropt/sessionvars.rs.md` ← `pkg/expression/expropt/sessionvars.rs`（任务 `1229-åæ-expression-expropt-sessionvars-bb5386c4.md`）
-- [ ] `pkg/expression/expropt/sqlexec.rs.md` ← `pkg/expression/expropt/sqlexec.rs`（任务 `1230-åæ-expression-expropt-sqlexec-7c307dd6.md`）
-- [ ] `pkg/expression/exprstatic/evalctx.rs.md` ← `pkg/expression/exprstatic/evalctx.rs`（任务 `1231-åæ-expression-exprstatic-evalctx-cb8cf794.md`）
-- [ ] `pkg/expression/exprstatic/exprctx.rs.md` ← `pkg/expression/exprstatic/exprctx.rs`（任务 `1232-åæ-expression-exprstatic-exprctx-34a614ac.md`）
-- [ ] `pkg/expression/extension.rs.md` ← `pkg/expression/extension.rs`（任务 `1234-åæ-pkg-expression-extension-455d8c78.md`）
-- [ ] `pkg/expression/fts_helper.rs.md` ← `pkg/expression/fts_helper.rs`（任务 `1235-åæ-pkg-expression-fts_helper-c0c46c3c.md`）
-- [ ] `pkg/expression/fts_to_like.rs.md` ← `pkg/expression/fts_to_like.rs`（任务 `1236-åæ-pkg-expression-fts_to_like-218f7a0e.md`）
-- [ ] `pkg/expression/function_traits.rs.md` ← `pkg/expression/function_traits.rs`（任务 `1237-åæ-pkg-expression-function_traits-55372303.md`）
-- [ ] `pkg/expression/generator/builtin_threadsafe.rs.md` ← `pkg/expression/generator/builtin_threadsafe.rs`（任务 `1238-åæ-expression-generator-builtin_threadsafe-827b051a.md`）
-- [ ] `pkg/expression/generator/compare_vec.rs.md` ← `pkg/expression/generator/compare_vec.rs`（任务 `1239-åæ-expression-generator-compare_vec-07214321.md`）
-- [ ] `pkg/expression/generator/control_vec.rs.md` ← `pkg/expression/generator/control_vec.rs`（任务 `1240-åæ-expression-generator-control_vec-89b5294b.md`）
-- [ ] `pkg/expression/generator/helper/helper.rs.md` ← `pkg/expression/generator/helper/helper.rs`（任务 `1241-åæ-generator-helper-helper-ab4b1685.md`）
-- [ ] `pkg/expression/generator/other_vec.rs.md` ← `pkg/expression/generator/other_vec.rs`（任务 `1244-åæ-expression-generator-other_vec-ad2e3111.md`）
-- [ ] `pkg/expression/generator/string_vec.rs.md` ← `pkg/expression/generator/string_vec.rs`（任务 `1245-åæ-expression-generator-string_vec-c501e0a6.md`）
-- [ ] `pkg/expression/generator/time_vec.rs.md` ← `pkg/expression/generator/time_vec.rs`（任务 `1246-åæ-expression-generator-time_vec-c5fe866a.md`）
-- [ ] `pkg/expression/grouping_sets.rs.md` ← `pkg/expression/grouping_sets.rs`（任务 `1247-åæ-pkg-expression-grouping_sets-db7e0fcd.md`）
-- [ ] `pkg/expression/helper.rs.md` ← `pkg/expression/helper.rs`（任务 `1248-åæ-pkg-expression-helper-e91f3a65.md`）
-- [ ] `pkg/expression/infer_pushdown.rs.md` ← `pkg/expression/infer_pushdown.rs`（任务 `1249-åæ-pkg-expression-infer_pushdown-534859f9.md`）
-- [ ] `pkg/expression/inference_helper.rs.md` ← `pkg/expression/inference_helper.rs`（任务 `1250-åæ-pkg-expression-inference_helper-b1ca3c3c.md`）
-- [ ] `pkg/expression/legacy_vectorized_runtime.rs.md` ← `pkg/expression/legacy_vectorized_runtime.rs`（任务 `1252-åæ-pkg-expression-legacy_vectorized_runtime-7688e035.md`）
-- [ ] `pkg/expression/pb_to_expr_runtime.rs.md` ← `pkg/expression/pb_to_expr_runtime.rs`（任务 `1254-åæ-pkg-expression-pb_to_expr_runtime-8db9501e.md`）
-- [ ] `pkg/expression/planner_bridge.rs.md` ← `pkg/expression/planner_bridge.rs`（任务 `1255-åæ-pkg-expression-planner_bridge-ab856950.md`）
-- [ ] `pkg/expression/pushdown_context.rs.md` ← `pkg/expression/pushdown_context.rs`（任务 `1256-åæ-pkg-expression-pushdown_context-9e4feb34.md`）
-- [ ] `pkg/expression/scalar_function.rs.md` ← `pkg/expression/scalar_function.rs`（任务 `1257-åæ-pkg-expression-scalar_function-512576f0.md`）
-- [ ] `pkg/expression/schema.rs.md` ← `pkg/expression/schema.rs`（任务 `1258-åæ-pkg-expression-schema-6ca52c8d.md`）
-- [ ] `pkg/expression/sessionexpr/sessionctx.rs.md` ← `pkg/expression/sessionexpr/sessionctx.rs`（任务 `1260-åæ-expression-sessionexpr-sessionctx-ca5b9d7a.md`）
-- [ ] `pkg/expression/simple_rewriter.rs.md` ← `pkg/expression/simple_rewriter.rs`（任务 `1261-åæ-pkg-expression-simple_rewriter-034525af.md`）
-- [ ] `pkg/expression/util.rs.md` ← `pkg/expression/util.rs`（任务 `1262-åæ-pkg-expression-util-14300790.md`）
-- [ ] `pkg/expression/vectorized.rs.md` ← `pkg/expression/vectorized.rs`（任务 `1263-åæ-pkg-expression-vectorized-a668cca4.md`）
-- [ ] `pkg/expression/vs_helper.rs.md` ← `pkg/expression/vs_helper.rs`（任务 `1264-åæ-pkg-expression-vs_helper-2e674143.md`）
+- [ ] `pkg/expression/aggregation/agg_to_pb.rs.md`
+- [ ] `pkg/expression/aggregation/aggregation.rs.md`
+- [ ] `pkg/expression/aggregation/avg.rs.md`
+- [ ] `pkg/expression/aggregation/base_func.rs.md`
+- [ ] `pkg/expression/aggregation/bit_and.rs.md`
+- [ ] `pkg/expression/aggregation/bit_or.rs.md`
+- [ ] `pkg/expression/aggregation/bit_xor.rs.md`
+- [ ] `pkg/expression/aggregation/concat.rs.md`
+- [ ] `pkg/expression/aggregation/count.rs.md`
+- [ ] `pkg/expression/aggregation/descriptor.rs.md`
+- [ ] `pkg/expression/aggregation/explain.rs.md`
+- [ ] `pkg/expression/aggregation/first_row.rs.md`
+- [ ] `pkg/expression/aggregation/max_min.rs.md`
+- [ ] `pkg/expression/aggregation/max_min_count.rs.md`
+- [ ] `pkg/expression/aggregation/sum.rs.md`
+- [ ] `pkg/expression/aggregation/sum_int.rs.md`
+- [ ] `pkg/expression/aggregation/util.rs.md`
+- [ ] `pkg/expression/aggregation/window_func.rs.md`
+- [ ] `pkg/expression/builtin.rs.md`
+- [ ] `pkg/expression/builtin_arithmetic.rs.md`
+- [ ] `pkg/expression/builtin_arithmetic_vec.rs.md`
+- [ ] `pkg/expression/builtin_cast.rs.md`
+- [ ] `pkg/expression/builtin_cast_vec.rs.md`
+- [ ] `pkg/expression/builtin_compare.rs.md`
+- [ ] `pkg/expression/builtin_compare_vec.rs.md`
+- [ ] `pkg/expression/builtin_compare_vec_generated.rs.md`
+- [ ] `pkg/expression/builtin_control.rs.md`
+- [ ] `pkg/expression/builtin_control_vec_generated.rs.md`
+- [ ] `pkg/expression/builtin_convert_charset.rs.md`
+- [ ] `pkg/expression/builtin_core.rs.md`
+- [ ] `pkg/expression/builtin_encryption.rs.md`
+- [ ] `pkg/expression/builtin_encryption_vec.rs.md`
+- [ ] `pkg/expression/builtin_fts.rs.md`
+- [ ] `pkg/expression/builtin_func_param.rs.md`
+- [ ] `pkg/expression/builtin_grouping.rs.md`
+- [ ] `pkg/expression/builtin_ilike.rs.md`
+- [ ] `pkg/expression/builtin_ilike_vec.rs.md`
+- [ ] `pkg/expression/builtin_inference.rs.md`
+- [ ] `pkg/expression/builtin_info.rs.md`
+- [ ] `pkg/expression/builtin_info_vec.rs.md`
+- [ ] `pkg/expression/builtin_json.rs.md`
+- [ ] `pkg/expression/builtin_json_vec.rs.md`
+- [ ] `pkg/expression/builtin_like.rs.md`
+- [ ] `pkg/expression/builtin_like_vec.rs.md`
+- [ ] `pkg/expression/builtin_math.rs.md`
+- [ ] `pkg/expression/builtin_math_vec.rs.md`
+- [ ] `pkg/expression/builtin_miscellaneous.rs.md`
+- [ ] `pkg/expression/builtin_miscellaneous_vec.rs.md`
+- [ ] `pkg/expression/builtin_op.rs.md`
+- [ ] `pkg/expression/builtin_op_vec.rs.md`
+- [ ] `pkg/expression/builtin_other.rs.md`
+- [ ] `pkg/expression/builtin_other_vec.rs.md`
+- [ ] `pkg/expression/builtin_other_vec_generated.rs.md`
+- [ ] `pkg/expression/builtin_regexp.rs.md`
+- [ ] `pkg/expression/builtin_regexp_util.rs.md`
+- [ ] `pkg/expression/builtin_registry.rs.md`
+- [ ] `pkg/expression/builtin_string.rs.md`
+- [ ] `pkg/expression/builtin_string_vec.rs.md`
+- [ ] `pkg/expression/builtin_string_vec_generated.rs.md`
+- [ ] `pkg/expression/builtin_threadsafe_generated.rs.md`
+- [ ] `pkg/expression/builtin_threadunsafe_generated.rs.md`
+- [ ] `pkg/expression/builtin_time.rs.md`
+- [ ] `pkg/expression/builtin_time_vec.rs.md`
+- [ ] `pkg/expression/builtin_time_vec_generated.rs.md`
+- [ ] `pkg/expression/builtin_vec.rs.md`
+- [ ] `pkg/expression/builtin_vec_vec.rs.md`
+- [ ] `pkg/expression/builtin_vectorized.rs.md`
+- [ ] `pkg/expression/cache_snapshot.rs.md`
+- [ ] `pkg/expression/chunk_executor.rs.md`
+- [ ] `pkg/expression/collation.rs.md`
+- [ ] `pkg/expression/column.rs.md`
+- [ ] `pkg/expression/constant.rs.md`
+- [ ] `pkg/expression/constant_fold.rs.md`
+- [ ] `pkg/expression/constant_propagation.rs.md`
+- [ ] `pkg/expression/context.rs.md`
+- [ ] `pkg/expression/core_impl.rs.md`
+- [ ] `pkg/expression/core_support.rs.md`
+- [ ] `pkg/expression/distsql_builtin.rs.md`
+- [ ] `pkg/expression/errors.rs.md`
+- [ ] `pkg/expression/evaluator.rs.md`
+- [ ] `pkg/expression/explain.rs.md`
+- [ ] `pkg/expression/explicit_collation.rs.md`
+- [ ] `pkg/expression/expr_to_pb.rs.md`
+- [ ] `pkg/expression/exprctx/context.rs.md`
+- [ ] `pkg/expression/exprctx/optional.rs.md`
+- [ ] `pkg/expression/exprctx/param.rs.md`
+- [ ] `pkg/expression/expression.rs.md`
+- [ ] `pkg/expression/expropt/advisory_lock.rs.md`
+- [ ] `pkg/expression/expropt/current_user.rs.md`
+- [ ] `pkg/expression/expropt/ddlowner.rs.md`
+- [ ] `pkg/expression/expropt/infoschema.rs.md`
+- [ ] `pkg/expression/expropt/kvstore.rs.md`
+- [ ] `pkg/expression/expropt/optional.rs.md`
+- [ ] `pkg/expression/expropt/priv.rs.md`
+- [ ] `pkg/expression/expropt/sequence.rs.md`
+- [ ] `pkg/expression/expropt/sessioncontext.rs.md`
+- [ ] `pkg/expression/expropt/sessionvars.rs.md`
+- [ ] `pkg/expression/expropt/sqlexec.rs.md`
+- [ ] `pkg/expression/exprstatic/evalctx.rs.md`
+- [ ] `pkg/expression/exprstatic/exprctx.rs.md`
+- [ ] `pkg/expression/extension.rs.md`
+- [ ] `pkg/expression/fts_helper.rs.md`
+- [ ] `pkg/expression/fts_to_like.rs.md`
+- [ ] `pkg/expression/function_traits.rs.md`
+- [ ] `pkg/expression/generator/builtin_threadsafe.rs.md`
+- [ ] `pkg/expression/generator/compare_vec.rs.md`
+- [ ] `pkg/expression/generator/control_vec.rs.md`
+- [ ] `pkg/expression/generator/helper/helper.rs.md`
+- [ ] `pkg/expression/generator/other_vec.rs.md`
+- [ ] `pkg/expression/generator/string_vec.rs.md`
+- [ ] `pkg/expression/generator/time_vec.rs.md`
+- [ ] `pkg/expression/grouping_sets.rs.md`
+- [ ] `pkg/expression/helper.rs.md`
+- [ ] `pkg/expression/infer_pushdown.rs.md`
+- [ ] `pkg/expression/inference_helper.rs.md`
+- [ ] `pkg/expression/legacy_vectorized_runtime.rs.md`
+- [ ] `pkg/expression/pb_to_expr_runtime.rs.md`
+- [ ] `pkg/expression/planner_bridge.rs.md`
+- [ ] `pkg/expression/pushdown_context.rs.md`
+- [ ] `pkg/expression/scalar_function.rs.md`
+- [ ] `pkg/expression/schema.rs.md`
+- [ ] `pkg/expression/sessionexpr/sessionctx.rs.md`
+- [ ] `pkg/expression/simple_rewriter.rs.md`
+- [ ] `pkg/expression/util.rs.md`
+- [ ] `pkg/expression/vectorized.rs.md`
+- [ ] `pkg/expression/vs_helper.rs.md`
 
 ## pkg/extension
 
-- [ ] `pkg/extension/_import/import.rs.md` ← `pkg/extension/_import/import.rs`（任务 `1265-åæ-extension-_import-import-7165492a.md`）
-- [ ] `pkg/extension/auth.rs.md` ← `pkg/extension/auth.rs`（任务 `1266-åæ-pkg-extension-auth-f9b52706.md`）
-- [ ] `pkg/extension/extensionimpl/bootstrap.rs.md` ← `pkg/extension/extensionimpl/bootstrap.rs`（任务 `1267-åæ-extension-extensionimpl-bootstrap-d4217ec4.md`）
-- [ ] `pkg/extension/extensions.rs.md` ← `pkg/extension/extensions.rs`（任务 `1269-åæ-pkg-extension-extensions-72996579.md`）
-- [ ] `pkg/extension/function.rs.md` ← `pkg/extension/function.rs`（任务 `1270-åæ-pkg-extension-function-2661e35b.md`）
-- [ ] `pkg/extension/manifest.rs.md` ← `pkg/extension/manifest.rs`（任务 `1272-åæ-pkg-extension-manifest-9a159133.md`）
-- [ ] `pkg/extension/registry.rs.md` ← `pkg/extension/registry.rs`（任务 `1273-åæ-pkg-extension-registry-b773abcb.md`）
-- [ ] `pkg/extension/session.rs.md` ← `pkg/extension/session.rs`（任务 `1274-åæ-pkg-extension-session-bc363a7b.md`）
-- [ ] `pkg/extension/util.rs.md` ← `pkg/extension/util.rs`（任务 `1275-åæ-pkg-extension-util-038ef0c3.md`）
+- [ ] `pkg/extension/_import/import.rs.md`
+- [ ] `pkg/extension/auth.rs.md`
+- [ ] `pkg/extension/extensionimpl/bootstrap.rs.md`
+- [ ] `pkg/extension/extensions.rs.md`
+- [ ] `pkg/extension/function.rs.md`
+- [ ] `pkg/extension/manifest.rs.md`
+- [ ] `pkg/extension/registry.rs.md`
+- [ ] `pkg/extension/session.rs.md`
+- [ ] `pkg/extension/util.rs.md`
 
 ## pkg/extworkload
 
-- [ ] `pkg/extworkload/client/client.rs.md` ← `pkg/extworkload/client/client.rs`（任务 `1277-åæ-extworkload-client-client-7a376a72.md`）
-- [ ] `pkg/extworkload/external_workload.rs.md` ← `pkg/extworkload/external_workload.rs`（任务 `1279-åæ-pkg-extworkload-external_workload-0157730b.md`）
-- [ ] `pkg/extworkload/manager.rs.md` ← `pkg/extworkload/manager.rs`（任务 `1281-åæ-pkg-extworkload-manager-a2e1f07e.md`）
-- [ ] `pkg/extworkload/real_client.rs.md` ← `pkg/extworkload/real_client.rs`（任务 `1282-åæ-pkg-extworkload-real_client-2459087c.md`）
-- [ ] `pkg/extworkload/util.rs.md` ← `pkg/extworkload/util.rs`（任务 `1283-åæ-pkg-extworkload-util-88a00f82.md`）
+- [ ] `pkg/extworkload/client/client.rs.md`
+- [ ] `pkg/extworkload/external_workload.rs.md`
+- [ ] `pkg/extworkload/manager.rs.md`
+- [ ] `pkg/extworkload/real_client.rs.md`
+- [ ] `pkg/extworkload/util.rs.md`
 
 ## pkg/format
 
-- [ ] `pkg/format/textrow/result_encoder.rs.md` ← `pkg/format/textrow/result_encoder.rs`（任务 `1285-åæ-format-textrow-result_encoder-e3e38fc6.md`）
-- [ ] `pkg/format/textrow/textrow.rs.md` ← `pkg/format/textrow/textrow.rs`（任务 `1286-åæ-format-textrow-textrow-150c6148.md`）
+- [ ] `pkg/format/textrow/result_encoder.rs.md`
+- [ ] `pkg/format/textrow/textrow.rs.md`
 
 ## pkg/importsdk
 
-- [ ] `pkg/importsdk/config.rs.md` ← `pkg/importsdk/config.rs`（任务 `1287-åæ-pkg-importsdk-config-a2fc2626.md`）
-- [ ] `pkg/importsdk/error.rs.md` ← `pkg/importsdk/error.rs`（任务 `1288-åæ-pkg-importsdk-error-bf9b157c.md`）
-- [ ] `pkg/importsdk/file_scanner.rs.md` ← `pkg/importsdk/file_scanner.rs`（任务 `1289-åæ-pkg-importsdk-file_scanner-713c97ab.md`）
-- [ ] `pkg/importsdk/job_manager.rs.md` ← `pkg/importsdk/job_manager.rs`（任务 `1290-åæ-pkg-importsdk-job_manager-5a01c849.md`）
-- [ ] `pkg/importsdk/mock/sdk_mock.rs.md` ← `pkg/importsdk/mock/sdk_mock.rs`（任务 `1293-åæ-importsdk-mock-sdk_mock-5de944b9.md`）
-- [ ] `pkg/importsdk/model.rs.md` ← `pkg/importsdk/model.rs`（任务 `1294-åæ-pkg-importsdk-model-3d00c091.md`）
-- [ ] `pkg/importsdk/pattern.rs.md` ← `pkg/importsdk/pattern.rs`（任务 `1295-åæ-pkg-importsdk-pattern-9f611b4d.md`）
-- [ ] `pkg/importsdk/sdk.rs.md` ← `pkg/importsdk/sdk.rs`（任务 `1296-åæ-pkg-importsdk-sdk-0287c171.md`）
-- [ ] `pkg/importsdk/sql_generator.rs.md` ← `pkg/importsdk/sql_generator.rs`（任务 `1297-åæ-pkg-importsdk-sql_generator-a3f2462e.md`）
+- [ ] `pkg/importsdk/config.rs.md`
+- [ ] `pkg/importsdk/error.rs.md`
+- [ ] `pkg/importsdk/file_scanner.rs.md`
+- [ ] `pkg/importsdk/job_manager.rs.md`
+- [ ] `pkg/importsdk/mock/sdk_mock.rs.md`
+- [ ] `pkg/importsdk/model.rs.md`
+- [ ] `pkg/importsdk/pattern.rs.md`
+- [ ] `pkg/importsdk/sdk.rs.md`
+- [ ] `pkg/importsdk/sql_generator.rs.md`
 
 ## pkg/inference
 
-- [ ] `pkg/inference/base.rs.md` ← `pkg/inference/base.rs`（任务 `1298-åæ-pkg-inference-base-f58ea13f.md`）
-- [ ] `pkg/inference/cohere.rs.md` ← `pkg/inference/cohere.rs`（任务 `1299-åæ-pkg-inference-cohere-52bd7e6f.md`）
-- [ ] `pkg/inference/embed_fn.rs.md` ← `pkg/inference/embed_fn.rs`（任务 `1300-åæ-pkg-inference-embed_fn-b26350a7.md`）
-- [ ] `pkg/inference/gemini.rs.md` ← `pkg/inference/gemini.rs`（任务 `1301-åæ-pkg-inference-gemini-c158b5be.md`）
-- [ ] `pkg/inference/huggingface.rs.md` ← `pkg/inference/huggingface.rs`（任务 `1302-åæ-pkg-inference-huggingface-5546720a.md`）
-- [ ] `pkg/inference/jina.rs.md` ← `pkg/inference/jina.rs`（任务 `1303-åæ-pkg-inference-jina-61efe6cb.md`）
-- [ ] `pkg/inference/mock.rs.md` ← `pkg/inference/mock.rs`（任务 `1305-åæ-pkg-inference-mock-338a8016.md`）
-- [ ] `pkg/inference/nvidia.rs.md` ← `pkg/inference/nvidia.rs`（任务 `1306-åæ-pkg-inference-nvidia-c31aa6bb.md`）
-- [ ] `pkg/inference/openai.rs.md` ← `pkg/inference/openai.rs`（任务 `1307-åæ-pkg-inference-openai-f5ba2c02.md`）
-- [ ] `pkg/inference/raw_http.rs.md` ← `pkg/inference/raw_http.rs`（任务 `1308-åæ-pkg-inference-raw_http-4fda0073.md`）
-- [ ] `pkg/inference/tidbcloud.rs.md` ← `pkg/inference/tidbcloud.rs`（任务 `1309-åæ-pkg-inference-tidbcloud-6beb6f72.md`）
+- [ ] `pkg/inference/base.rs.md`
+- [ ] `pkg/inference/cohere.rs.md`
+- [ ] `pkg/inference/embed_fn.rs.md`
+- [ ] `pkg/inference/gemini.rs.md`
+- [ ] `pkg/inference/huggingface.rs.md`
+- [ ] `pkg/inference/jina.rs.md`
+- [ ] `pkg/inference/mock.rs.md`
+- [ ] `pkg/inference/nvidia.rs.md`
+- [ ] `pkg/inference/openai.rs.md`
+- [ ] `pkg/inference/raw_http.rs.md`
+- [ ] `pkg/inference/tidbcloud.rs.md`
 
 ## pkg/infoschema
 
-- [ ] `pkg/infoschema/builder.rs.md` ← `pkg/infoschema/builder.rs`（任务 `1310-åæ-pkg-infoschema-builder-6ff5ffbc.md`）
-- [ ] `pkg/infoschema/builder_misc.rs.md` ← `pkg/infoschema/builder_misc.rs`（任务 `1311-åæ-pkg-infoschema-builder_misc-b651fffb.md`）
-- [ ] `pkg/infoschema/bundle_builder.rs.md` ← `pkg/infoschema/bundle_builder.rs`（任务 `1312-åæ-pkg-infoschema-bundle_builder-5ab6b5e2.md`）
-- [ ] `pkg/infoschema/cache.rs.md` ← `pkg/infoschema/cache.rs`（任务 `1313-åæ-pkg-infoschema-cache-96645288.md`）
-- [ ] `pkg/infoschema/catalog_columns_go45.rs.md` ← `pkg/infoschema/catalog_columns_go45.rs`（任务 `1314-åæ-pkg-infoschema-catalog_columns_go45-00bf4026.md`）
-- [ ] `pkg/infoschema/cluster.rs.md` ← `pkg/infoschema/cluster.rs`（任务 `1315-åæ-pkg-infoschema-cluster-1beb9195.md`）
-- [ ] `pkg/infoschema/context/infoschema.rs.md` ← `pkg/infoschema/context/infoschema.rs`（任务 `1316-åæ-infoschema-context-infoschema-c7ea7a9c.md`）
-- [ ] `pkg/infoschema/error.rs.md` ← `pkg/infoschema/error.rs`（任务 `1318-åæ-pkg-infoschema-error-f2bfc87d.md`）
-- [ ] `pkg/infoschema/infoschema.rs.md` ← `pkg/infoschema/infoschema.rs`（任务 `1319-åæ-pkg-infoschema-infoschema-fddf0512.md`）
-- [ ] `pkg/infoschema/infoschema_v2.rs.md` ← `pkg/infoschema/infoschema_v2.rs`（任务 `1320-åæ-pkg-infoschema-infoschema_v2-726102fa.md`）
-- [ ] `pkg/infoschema/interface.rs.md` ← `pkg/infoschema/interface.rs`（任务 `1321-åæ-pkg-infoschema-interface-3fc1e809.md`）
-- [ ] `pkg/infoschema/internal/sizer.rs.md` ← `pkg/infoschema/internal/sizer.rs`（任务 `1323-åæ-infoschema-internal-sizer-44e7d952.md`）
-- [ ] `pkg/infoschema/internal/testkit.rs.md` ← `pkg/infoschema/internal/testkit.rs`（任务 `1324-åæ-infoschema-internal-testkit-7a18cbba.md`）
-- [ ] `pkg/infoschema/issyncer/deferfn.rs.md` ← `pkg/infoschema/issyncer/deferfn.rs`（任务 `1325-åæ-infoschema-issyncer-deferfn-17251fd1.md`）
-- [ ] `pkg/infoschema/issyncer/filter.rs.md` ← `pkg/infoschema/issyncer/filter.rs`（任务 `1326-åæ-infoschema-issyncer-filter-3c753d46.md`）
-- [ ] `pkg/infoschema/issyncer/loader.rs.md` ← `pkg/infoschema/issyncer/loader.rs`（任务 `1328-åæ-infoschema-issyncer-loader-ae53e7ad.md`）
-- [ ] `pkg/infoschema/issyncer/mdl_check.rs.md` ← `pkg/infoschema/issyncer/mdl_check.rs`（任务 `1329-åæ-infoschema-issyncer-mdl_check-2b0a3fbf.md`）
-- [ ] `pkg/infoschema/issyncer/mdldef/mdl.rs.md` ← `pkg/infoschema/issyncer/mdldef/mdl.rs`（任务 `1331-åæ-issyncer-mdldef-mdl-0bfb0614.md`）
-- [ ] `pkg/infoschema/issyncer/syncer.rs.md` ← `pkg/infoschema/issyncer/syncer.rs`（任务 `1332-åæ-infoschema-issyncer-syncer-01e0e547.md`）
-- [ ] `pkg/infoschema/isvalidator/validator.rs.md` ← `pkg/infoschema/isvalidator/validator.rs`（任务 `1334-åæ-infoschema-isvalidator-validator-92aaf4a4.md`）
-- [ ] `pkg/infoschema/metric_table_def.rs.md` ← `pkg/infoschema/metric_table_def.rs`（任务 `1336-åæ-pkg-infoschema-metric_table_def-3ed583cd.md`）
-- [ ] `pkg/infoschema/metrics.rs.md` ← `pkg/infoschema/metrics.rs`（任务 `1337-åæ-pkg-infoschema-metrics-7b2c22c9.md`）
-- [ ] `pkg/infoschema/metrics/metrics.rs.md` ← `pkg/infoschema/metrics/metrics.rs`（任务 `1339-åæ-infoschema-metrics-metrics-bf328935.md`）
-- [ ] `pkg/infoschema/metrics_schema.rs.md` ← `pkg/infoschema/metrics_schema.rs`（任务 `1340-åæ-pkg-infoschema-metrics_schema-8739d18b.md`）
-- [ ] `pkg/infoschema/perfschema/const.rs.md` ← `pkg/infoschema/perfschema/const.rs`（任务 `1341-åæ-infoschema-perfschema-const-be6efe2e.md`）
-- [ ] `pkg/infoschema/perfschema/init.rs.md` ← `pkg/infoschema/perfschema/init.rs`（任务 `1342-åæ-infoschema-perfschema-init-6e601c90.md`）
-- [ ] `pkg/infoschema/perfschema/tables.rs.md` ← `pkg/infoschema/perfschema/tables.rs`（任务 `1344-åæ-infoschema-perfschema-tables-38c75b7c.md`）
-- [ ] `pkg/infoschema/sieve.rs.md` ← `pkg/infoschema/sieve.rs`（任务 `1345-åæ-pkg-infoschema-sieve-9a01508d.md`）
-- [ ] `pkg/infoschema/tables.rs.md` ← `pkg/infoschema/tables.rs`（任务 `1346-åæ-pkg-infoschema-tables-92b2277e.md`）
-- [ ] `pkg/infoschema/validatorapi/interface.rs.md` ← `pkg/infoschema/validatorapi/interface.rs`（任务 `1347-åæ-infoschema-validatorapi-interface-ca80564f.md`）
+- [ ] `pkg/infoschema/builder.rs.md`
+- [ ] `pkg/infoschema/builder_misc.rs.md`
+- [ ] `pkg/infoschema/bundle_builder.rs.md`
+- [ ] `pkg/infoschema/cache.rs.md`
+- [ ] `pkg/infoschema/catalog_columns_go45.rs.md`
+- [ ] `pkg/infoschema/cluster.rs.md`
+- [ ] `pkg/infoschema/context/infoschema.rs.md`
+- [ ] `pkg/infoschema/error.rs.md`
+- [ ] `pkg/infoschema/infoschema.rs.md`
+- [ ] `pkg/infoschema/infoschema_v2.rs.md`
+- [ ] `pkg/infoschema/interface.rs.md`
+- [ ] `pkg/infoschema/internal/sizer.rs.md`
+- [ ] `pkg/infoschema/internal/testkit.rs.md`
+- [ ] `pkg/infoschema/issyncer/deferfn.rs.md`
+- [ ] `pkg/infoschema/issyncer/filter.rs.md`
+- [ ] `pkg/infoschema/issyncer/loader.rs.md`
+- [ ] `pkg/infoschema/issyncer/mdl_check.rs.md`
+- [ ] `pkg/infoschema/issyncer/mdldef/mdl.rs.md`
+- [ ] `pkg/infoschema/issyncer/syncer.rs.md`
+- [ ] `pkg/infoschema/isvalidator/validator.rs.md`
+- [ ] `pkg/infoschema/metric_table_def.rs.md`
+- [ ] `pkg/infoschema/metrics.rs.md`
+- [ ] `pkg/infoschema/metrics/metrics.rs.md`
+- [ ] `pkg/infoschema/metrics_schema.rs.md`
+- [ ] `pkg/infoschema/perfschema/const.rs.md`
+- [ ] `pkg/infoschema/perfschema/init.rs.md`
+- [ ] `pkg/infoschema/perfschema/tables.rs.md`
+- [ ] `pkg/infoschema/sieve.rs.md`
+- [ ] `pkg/infoschema/tables.rs.md`
+- [ ] `pkg/infoschema/validatorapi/interface.rs.md`
 
 ## pkg/ingestor
 
-- [ ] `pkg/ingestor/engineapi/engine.rs.md` ← `pkg/ingestor/engineapi/engine.rs`（任务 `1350-åæ-ingestor-engineapi-engine-e14eb768.md`）
-- [ ] `pkg/ingestor/engineapi/ingest_data.rs.md` ← `pkg/ingestor/engineapi/ingest_data.rs`（任务 `1351-åæ-ingestor-engineapi-ingest_data-b6dcb7c8.md`）
-- [ ] `pkg/ingestor/errdef/errors.rs.md` ← `pkg/ingestor/errdef/errors.rs`（任务 `1353-åæ-ingestor-errdef-errors-cd78df06.md`）
-- [ ] `pkg/ingestor/globalsort/engine.rs.md` ← `pkg/ingestor/globalsort/engine.rs`（任务 `1355-åæ-ingestor-globalsort-engine-6f26a967.md`）
-- [ ] `pkg/ingestor/globalsort/engine_api.rs.md` ← `pkg/ingestor/globalsort/engine_api.rs`（任务 `1356-åæ-ingestor-globalsort-engine_api-f5b96f04.md`）
-- [ ] `pkg/ingestor/globalsort/kvgroup.rs.md` ← `pkg/ingestor/globalsort/kvgroup.rs`（任务 `1357-åæ-ingestor-globalsort-kvgroup-e5e42c98.md`）
-- [ ] `pkg/ingestor/globalsort/merge.rs.md` ← `pkg/ingestor/globalsort/merge.rs`（任务 `1359-åæ-ingestor-globalsort-merge-d17b6507.md`）
-- [ ] `pkg/ingestor/globalsort/merge_v2.rs.md` ← `pkg/ingestor/globalsort/merge_v2.rs`（任务 `1360-åæ-ingestor-globalsort-merge_v2-87795f12.md`）
-- [ ] `pkg/ingestor/globalsort/reader.rs.md` ← `pkg/ingestor/globalsort/reader.rs`（任务 `1361-åæ-ingestor-globalsort-reader-763b8a89.md`）
-- [ ] `pkg/ingestor/globalsort/split.rs.md` ← `pkg/ingestor/globalsort/split.rs`（任务 `1362-åæ-ingestor-globalsort-split-98cca3fa.md`）
-- [ ] `pkg/ingestor/globalsort/testutil.rs.md` ← `pkg/ingestor/globalsort/testutil.rs`（任务 `1363-åæ-ingestor-globalsort-testutil-268509f2.md`）
-- [ ] `pkg/ingestor/globalsort/util.rs.md` ← `pkg/ingestor/globalsort/util.rs`（任务 `1364-åæ-ingestor-globalsort-util-706e5f48.md`）
-- [ ] `pkg/ingestor/ingestcli/client.rs.md` ← `pkg/ingestor/ingestcli/client.rs`（任务 `1365-åæ-ingestor-ingestcli-client-cf5b570e.md`）
-- [ ] `pkg/ingestor/ingestcli/ingest_err.rs.md` ← `pkg/ingestor/ingestcli/ingest_err.rs`（任务 `1366-åæ-ingestor-ingestcli-ingest_err-5c847e59.md`）
-- [ ] `pkg/ingestor/ingestcli/interface.rs.md` ← `pkg/ingestor/ingestcli/interface.rs`（任务 `1367-åæ-ingestor-ingestcli-interface-428e0718.md`）
-- [ ] `pkg/ingestor/ingestcli/mock/client_mock.rs.md` ← `pkg/ingestor/ingestcli/mock/client_mock.rs`（任务 `1369-åæ-ingestcli-mock-client_mock-590239ff.md`）
-- [ ] `pkg/ingestor/ingestctrl/checksum.rs.md` ← `pkg/ingestor/ingestctrl/checksum.rs`（任务 `1371-åæ-ingestor-ingestctrl-checksum-bb10d098.md`）
-- [ ] `pkg/ingestor/ingestctrl/compress.rs.md` ← `pkg/ingestor/ingestctrl/compress.rs`（任务 `1372-åæ-ingestor-ingestctrl-compress-caec13bf.md`）
-- [ ] `pkg/ingestor/ingestctrl/disk_quota.rs.md` ← `pkg/ingestor/ingestctrl/disk_quota.rs`（任务 `1373-åæ-ingestor-ingestctrl-disk_quota-219ee635.md`）
-- [ ] `pkg/ingestor/ingestctrl/duplicate.rs.md` ← `pkg/ingestor/ingestctrl/duplicate.rs`（任务 `1374-åæ-ingestor-ingestctrl-duplicate-8f498918.md`）
-- [ ] `pkg/ingestor/ingestctrl/engine.rs.md` ← `pkg/ingestor/ingestctrl/engine.rs`（任务 `1375-åæ-ingestor-ingestctrl-engine-fd91886a.md`）
-- [ ] `pkg/ingestor/ingestctrl/engine_mgr.rs.md` ← `pkg/ingestor/ingestctrl/engine_mgr.rs`（任务 `1376-åæ-ingestor-ingestctrl-engine_mgr-66b73e3f.md`）
-- [ ] `pkg/ingestor/ingestctrl/import_pipeline.rs.md` ← `pkg/ingestor/ingestctrl/import_pipeline.rs`（任务 `1377-åæ-ingestor-ingestctrl-import_pipeline-526e33c6.md`）
-- [ ] `pkg/ingestor/ingestctrl/iterator.rs.md` ← `pkg/ingestor/ingestctrl/iterator.rs`（任务 `1378-åæ-ingestor-ingestctrl-iterator-d60bd31d.md`）
-- [ ] `pkg/ingestor/ingestctrl/job_worker.rs.md` ← `pkg/ingestor/ingestctrl/job_worker.rs`（任务 `1379-åæ-ingestor-ingestctrl-job_worker-625c469c.md`）
-- [ ] `pkg/ingestor/ingestctrl/local.rs.md` ← `pkg/ingestor/ingestctrl/local.rs`（任务 `1381-åæ-ingestor-ingestctrl-local-e92067fb.md`）
-- [ ] `pkg/ingestor/ingestctrl/local_freebsd.rs.md` ← `pkg/ingestor/ingestctrl/local_freebsd.rs`（任务 `1382-åæ-ingestor-ingestctrl-local_freebsd-1bb7a711.md`）
-- [ ] `pkg/ingestor/ingestctrl/local_unix.rs.md` ← `pkg/ingestor/ingestctrl/local_unix.rs`（任务 `1383-åæ-ingestor-ingestctrl-local_unix-bbf670af.md`）
-- [ ] `pkg/ingestor/ingestctrl/local_unix_generic.rs.md` ← `pkg/ingestor/ingestctrl/local_unix_generic.rs`（任务 `1384-åæ-ingestor-ingestctrl-local_unix_generic-c12af517.md`）
-- [ ] `pkg/ingestor/ingestctrl/local_windows.rs.md` ← `pkg/ingestor/ingestctrl/local_windows.rs`（任务 `1385-åæ-ingestor-ingestctrl-local_windows-c36eff77.md`）
-- [ ] `pkg/ingestor/ingestctrl/localhelper.rs.md` ← `pkg/ingestor/ingestctrl/localhelper.rs`（任务 `1386-åæ-ingestor-ingestctrl-localhelper-29883d99.md`）
-- [ ] `pkg/ingestor/ingestctrl/rate_limiter.rs.md` ← `pkg/ingestor/ingestctrl/rate_limiter.rs`（任务 `1387-åæ-ingestor-ingestctrl-rate_limiter-4979d89d.md`）
-- [ ] `pkg/ingestor/ingestctrl/rate_limiter_param.rs.md` ← `pkg/ingestor/ingestctrl/rate_limiter_param.rs`（任务 `1388-åæ-ingestor-ingestctrl-rate_limiter_param-3dca4b45.md`）
-- [ ] `pkg/ingestor/ingestctrl/region_job.rs.md` ← `pkg/ingestor/ingestctrl/region_job.rs`（任务 `1389-åæ-ingestor-ingestctrl-region_job-f67d6233.md`）
-- [ ] `pkg/ingestor/ingestctrl/tikv_mode.rs.md` ← `pkg/ingestor/ingestctrl/tikv_mode.rs`（任务 `1390-åæ-ingestor-ingestctrl-tikv_mode-d6e2e851.md`）
-- [ ] `pkg/ingestor/ingestmetric/metric.rs.md` ← `pkg/ingestor/ingestmetric/metric.rs`（任务 `1392-åæ-ingestor-ingestmetric-metric-87588c61.md`）
-- [ ] `pkg/ingestor/simplesst/byte_reader.rs.md` ← `pkg/ingestor/simplesst/byte_reader.rs`（任务 `1394-åæ-ingestor-simplesst-byte_reader-3eeb76d3.md`）
-- [ ] `pkg/ingestor/simplesst/codec.rs.md` ← `pkg/ingestor/simplesst/codec.rs`（任务 `1395-åæ-ingestor-simplesst-codec-f4358373.md`）
-- [ ] `pkg/ingestor/simplesst/concurrent_reader.rs.md` ← `pkg/ingestor/simplesst/concurrent_reader.rs`（任务 `1396-åæ-ingestor-simplesst-concurrent_reader-f5302fb8.md`）
-- [ ] `pkg/ingestor/simplesst/file.rs.md` ← `pkg/ingestor/simplesst/file.rs`（任务 `1397-åæ-ingestor-simplesst-file-1cd1545e.md`）
-- [ ] `pkg/ingestor/simplesst/iter.rs.md` ← `pkg/ingestor/simplesst/iter.rs`（任务 `1398-åæ-ingestor-simplesst-iter-e0a7e908.md`）
-- [ ] `pkg/ingestor/simplesst/kv_reader.rs.md` ← `pkg/ingestor/simplesst/kv_reader.rs`（任务 `1399-åæ-ingestor-simplesst-kv_reader-475e0fc2.md`）
-- [ ] `pkg/ingestor/simplesst/onefile_writer.rs.md` ← `pkg/ingestor/simplesst/onefile_writer.rs`（任务 `1401-åæ-ingestor-simplesst-onefile_writer-4f85aaea.md`）
-- [ ] `pkg/ingestor/simplesst/stat_reader.rs.md` ← `pkg/ingestor/simplesst/stat_reader.rs`（任务 `1402-åæ-ingestor-simplesst-stat_reader-01df047f.md`）
-- [ ] `pkg/ingestor/simplesst/util.rs.md` ← `pkg/ingestor/simplesst/util.rs`（任务 `1403-åæ-ingestor-simplesst-util-f93ad591.md`）
-- [ ] `pkg/ingestor/simplesst/writer.rs.md` ← `pkg/ingestor/simplesst/writer.rs`（任务 `1404-åæ-ingestor-simplesst-writer-5a1830a7.md`）
-- [ ] `pkg/ingestor/testutils/util.rs.md` ← `pkg/ingestor/testutils/util.rs`（任务 `1406-åæ-ingestor-testutils-util-5bfbb8b7.md`）
+- [ ] `pkg/ingestor/engineapi/engine.rs.md`
+- [ ] `pkg/ingestor/engineapi/ingest_data.rs.md`
+- [ ] `pkg/ingestor/errdef/errors.rs.md`
+- [ ] `pkg/ingestor/globalsort/engine.rs.md`
+- [ ] `pkg/ingestor/globalsort/engine_api.rs.md`
+- [ ] `pkg/ingestor/globalsort/kvgroup.rs.md`
+- [ ] `pkg/ingestor/globalsort/merge.rs.md`
+- [ ] `pkg/ingestor/globalsort/merge_v2.rs.md`
+- [ ] `pkg/ingestor/globalsort/reader.rs.md`
+- [ ] `pkg/ingestor/globalsort/split.rs.md`
+- [ ] `pkg/ingestor/globalsort/testutil.rs.md`
+- [ ] `pkg/ingestor/globalsort/util.rs.md`
+- [ ] `pkg/ingestor/ingestcli/client.rs.md`
+- [ ] `pkg/ingestor/ingestcli/ingest_err.rs.md`
+- [ ] `pkg/ingestor/ingestcli/interface.rs.md`
+- [ ] `pkg/ingestor/ingestcli/mock/client_mock.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/checksum.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/compress.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/disk_quota.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/duplicate.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/engine.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/engine_mgr.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/import_pipeline.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/iterator.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/job_worker.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/local.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/local_freebsd.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/local_unix.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/local_unix_generic.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/local_windows.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/localhelper.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/rate_limiter.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/rate_limiter_param.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/region_job.rs.md`
+- [ ] `pkg/ingestor/ingestctrl/tikv_mode.rs.md`
+- [ ] `pkg/ingestor/ingestmetric/metric.rs.md`
+- [ ] `pkg/ingestor/simplesst/byte_reader.rs.md`
+- [ ] `pkg/ingestor/simplesst/codec.rs.md`
+- [ ] `pkg/ingestor/simplesst/concurrent_reader.rs.md`
+- [ ] `pkg/ingestor/simplesst/file.rs.md`
+- [ ] `pkg/ingestor/simplesst/iter.rs.md`
+- [ ] `pkg/ingestor/simplesst/kv_reader.rs.md`
+- [ ] `pkg/ingestor/simplesst/onefile_writer.rs.md`
+- [ ] `pkg/ingestor/simplesst/stat_reader.rs.md`
+- [ ] `pkg/ingestor/simplesst/util.rs.md`
+- [ ] `pkg/ingestor/simplesst/writer.rs.md`
+- [ ] `pkg/ingestor/testutils/util.rs.md`
 
 ## pkg/keyspace
 
-- [ ] `pkg/keyspace/keyspace.rs.md` ← `pkg/keyspace/keyspace.rs`（任务 `1408-åæ-pkg-keyspace-keyspace-f0a5d683.md`）
-- [ ] `pkg/keyspace/username_policy.rs.md` ← `pkg/keyspace/username_policy.rs`（任务 `1410-åæ-pkg-keyspace-username_policy-6a262d93.md`）
+- [ ] `pkg/keyspace/keyspace.rs.md`
+- [ ] `pkg/keyspace/username_policy.rs.md`
 
 ## pkg/kv
 
-- [ ] `pkg/kv/assertion.rs.md` ← `pkg/kv/assertion.rs`（任务 `1411-åæ-pkg-kv-assertion-fcf41678.md`）
-- [ ] `pkg/kv/cachedb.rs.md` ← `pkg/kv/cachedb.rs`（任务 `1412-åæ-pkg-kv-cachedb-a5a4793c.md`）
-- [ ] `pkg/kv/checker.rs.md` ← `pkg/kv/checker.rs`（任务 `1413-åæ-pkg-kv-checker-e8c8a7ce.md`）
-- [ ] `pkg/kv/error.rs.md` ← `pkg/kv/error.rs`（任务 `1414-åæ-pkg-kv-error-d170ef8d.md`）
-- [ ] `pkg/kv/fault_injection.rs.md` ← `pkg/kv/fault_injection.rs`（任务 `1415-åæ-pkg-kv-fault_injection-39383274.md`）
-- [ ] `pkg/kv/iter.rs.md` ← `pkg/kv/iter.rs`（任务 `1416-åæ-pkg-kv-iter-c994868e.md`）
-- [ ] `pkg/kv/key.rs.md` ← `pkg/kv/key.rs`（任务 `1417-åæ-pkg-kv-key-3d9e5c63.md`）
-- [ ] `pkg/kv/keyflags.rs.md` ← `pkg/kv/keyflags.rs`（任务 `1418-åæ-pkg-kv-keyflags-acc7c3f0.md`）
-- [ ] `pkg/kv/kv.rs.md` ← `pkg/kv/kv.rs`（任务 `1419-åæ-pkg-kv-kv-6a1698f3.md`）
-- [ ] `pkg/kv/mpp.rs.md` ← `pkg/kv/mpp.rs`（任务 `1421-åæ-pkg-kv-mpp-b6f045d0.md`）
-- [ ] `pkg/kv/option.rs.md` ← `pkg/kv/option.rs`（任务 `1422-åæ-pkg-kv-option-d1d66a52.md`）
-- [ ] `pkg/kv/paging_resource_control.rs.md` ← `pkg/kv/paging_resource_control.rs`（任务 `1423-åæ-pkg-kv-paging_resource_control-670a1687.md`）
-- [ ] `pkg/kv/txn.rs.md` ← `pkg/kv/txn.rs`（任务 `1424-åæ-pkg-kv-txn-f63acd8a.md`）
-- [ ] `pkg/kv/txn_scope_var.rs.md` ← `pkg/kv/txn_scope_var.rs`（任务 `1425-åæ-pkg-kv-txn_scope_var-d2c42806.md`）
-- [ ] `pkg/kv/unistore.rs.md` ← `pkg/kv/unistore.rs`（任务 `1426-åæ-pkg-kv-unistore-20878d15.md`）
-- [ ] `pkg/kv/utils.rs.md` ← `pkg/kv/utils.rs`（任务 `1427-åæ-pkg-kv-utils-926f965a.md`）
-- [ ] `pkg/kv/variables.rs.md` ← `pkg/kv/variables.rs`（任务 `1428-åæ-pkg-kv-variables-99725244.md`）
-- [ ] `pkg/kv/version.rs.md` ← `pkg/kv/version.rs`（任务 `1429-åæ-pkg-kv-version-de5c9c74.md`）
+- [ ] `pkg/kv/assertion.rs.md`
+- [ ] `pkg/kv/cachedb.rs.md`
+- [ ] `pkg/kv/checker.rs.md`
+- [ ] `pkg/kv/error.rs.md`
+- [ ] `pkg/kv/fault_injection.rs.md`
+- [ ] `pkg/kv/iter.rs.md`
+- [ ] `pkg/kv/key.rs.md`
+- [ ] `pkg/kv/keyflags.rs.md`
+- [ ] `pkg/kv/kv.rs.md`
+- [ ] `pkg/kv/mpp.rs.md`
+- [ ] `pkg/kv/option.rs.md`
+- [ ] `pkg/kv/paging_resource_control.rs.md`
+- [ ] `pkg/kv/txn.rs.md`
+- [ ] `pkg/kv/txn_scope_var.rs.md`
+- [ ] `pkg/kv/unistore.rs.md`
+- [ ] `pkg/kv/utils.rs.md`
+- [ ] `pkg/kv/variables.rs.md`
+- [ ] `pkg/kv/version.rs.md`
 
 ## pkg/lightning
 
-- [ ] `pkg/lightning/backend/backend.rs.md` ← `pkg/lightning/backend/backend.rs`（任务 `1431-åæ-lightning-backend-backend-4b9235a1.md`）
-- [ ] `pkg/lightning/backend/encode/encode.rs.md` ← `pkg/lightning/backend/encode/encode.rs`（任务 `1432-åæ-backend-encode-encode-a4d71990.md`）
-- [ ] `pkg/lightning/backend/kv/allocator.rs.md` ← `pkg/lightning/backend/kv/allocator.rs`（任务 `1434-åæ-backend-kv-allocator-6e84d6d7.md`）
-- [ ] `pkg/lightning/backend/kv/base.rs.md` ← `pkg/lightning/backend/kv/base.rs`（任务 `1435-åæ-backend-kv-base-a27d91c0.md`）
-- [ ] `pkg/lightning/backend/kv/canonical.rs.md` ← `pkg/lightning/backend/kv/canonical.rs`（任务 `1436-åæ-backend-kv-canonical-56d80829.md`）
-- [ ] `pkg/lightning/backend/kv/context.rs.md` ← `pkg/lightning/backend/kv/context.rs`（任务 `1437-åæ-backend-kv-context-a77d75bf.md`）
-- [ ] `pkg/lightning/backend/kv/kv2sql.rs.md` ← `pkg/lightning/backend/kv/kv2sql.rs`（任务 `1438-åæ-backend-kv-kv2sql-31cc9f66.md`）
-- [ ] `pkg/lightning/backend/kv/session.rs.md` ← `pkg/lightning/backend/kv/session.rs`（任务 `1440-åæ-backend-kv-session-fceba8cd.md`）
-- [ ] `pkg/lightning/backend/kv/sql2kv.rs.md` ← `pkg/lightning/backend/kv/sql2kv.rs`（任务 `1441-åæ-backend-kv-sql2kv-d9595eab.md`）
-- [ ] `pkg/lightning/backend/tidb/tidb.rs.md` ← `pkg/lightning/backend/tidb/tidb.rs`（任务 `1444-åæ-backend-tidb-tidb-73015df4.md`）
-- [ ] `pkg/lightning/common/common.rs.md` ← `pkg/lightning/common/common.rs`（任务 `1445-åæ-lightning-common-common-9460330e.md`）
-- [ ] `pkg/lightning/common/conn.rs.md` ← `pkg/lightning/common/conn.rs`（任务 `1446-åæ-lightning-common-conn-b46d8d03.md`）
-- [ ] `pkg/lightning/common/dupdetect.rs.md` ← `pkg/lightning/common/dupdetect.rs`（任务 `1447-åæ-lightning-common-dupdetect-f42ee95b.md`）
-- [ ] `pkg/lightning/common/errors.rs.md` ← `pkg/lightning/common/errors.rs`（任务 `1448-åæ-lightning-common-errors-22b4b26d.md`）
-- [ ] `pkg/lightning/common/key_adapter.rs.md` ← `pkg/lightning/common/key_adapter.rs`（任务 `1449-åæ-lightning-common-key_adapter-79af8d57.md`）
-- [ ] `pkg/lightning/common/once_error.rs.md` ← `pkg/lightning/common/once_error.rs`（任务 `1451-åæ-lightning-common-once_error-f9cd5586.md`）
-- [ ] `pkg/lightning/common/pause.rs.md` ← `pkg/lightning/common/pause.rs`（任务 `1452-åæ-lightning-common-pause-b65365a9.md`）
-- [ ] `pkg/lightning/common/retry.rs.md` ← `pkg/lightning/common/retry.rs`（任务 `1453-åæ-lightning-common-retry-150ec8cb.md`）
-- [ ] `pkg/lightning/common/security.rs.md` ← `pkg/lightning/common/security.rs`（任务 `1454-åæ-lightning-common-security-ab9c0818.md`）
-- [ ] `pkg/lightning/common/storage.rs.md` ← `pkg/lightning/common/storage.rs`（任务 `1455-åæ-lightning-common-storage-5703d396.md`）
-- [ ] `pkg/lightning/common/storage_unix.rs.md` ← `pkg/lightning/common/storage_unix.rs`（任务 `1456-åæ-lightning-common-storage_unix-e7864464.md`）
-- [ ] `pkg/lightning/common/storage_windows.rs.md` ← `pkg/lightning/common/storage_windows.rs`（任务 `1457-åæ-lightning-common-storage_windows-837d302f.md`）
-- [ ] `pkg/lightning/common/util.rs.md` ← `pkg/lightning/common/util.rs`（任务 `1458-åæ-lightning-common-util-f56e96b7.md`）
-- [ ] `pkg/lightning/config/bytesize.rs.md` ← `pkg/lightning/config/bytesize.rs`（任务 `1459-åæ-lightning-config-bytesize-9c458d13.md`）
-- [ ] `pkg/lightning/config/config.rs.md` ← `pkg/lightning/config/config.rs`（任务 `1460-åæ-lightning-config-config-3a75b0c5.md`）
-- [ ] `pkg/lightning/config/configlist.rs.md` ← `pkg/lightning/config/configlist.rs`（任务 `1461-åæ-lightning-config-configlist-996e6b65.md`）
-- [ ] `pkg/lightning/config/const.rs.md` ← `pkg/lightning/config/const.rs`（任务 `1462-åæ-lightning-config-const-001e790c.md`）
-- [ ] `pkg/lightning/config/global.rs.md` ← `pkg/lightning/config/global.rs`（任务 `1463-åæ-lightning-config-global-cf9e993c.md`）
-- [ ] `pkg/lightning/config/toml_codec.rs.md` ← `pkg/lightning/config/toml_codec.rs`（任务 `1465-åæ-lightning-config-toml_codec-a85315a6.md`）
-- [ ] `pkg/lightning/duplicate/detector.rs.md` ← `pkg/lightning/duplicate/detector.rs`（任务 `1466-åæ-lightning-duplicate-detector-7cbc5a2b.md`）
-- [ ] `pkg/lightning/duplicate/internal.rs.md` ← `pkg/lightning/duplicate/internal.rs`（任务 `1467-åæ-lightning-duplicate-internal-463c8be8.md`）
-- [ ] `pkg/lightning/duplicate/worker.rs.md` ← `pkg/lightning/duplicate/worker.rs`（任务 `1469-åæ-lightning-duplicate-worker-bf962fdb.md`）
-- [ ] `pkg/lightning/importdef/tidb.rs.md` ← `pkg/lightning/importdef/tidb.rs`（任务 `1471-åæ-lightning-importdef-tidb-e0689635.md`）
-- [ ] `pkg/lightning/log/filter.rs.md` ← `pkg/lightning/log/filter.rs`（任务 `1472-åæ-lightning-log-filter-dcef7c78.md`）
-- [ ] `pkg/lightning/log/log.rs.md` ← `pkg/lightning/log/log.rs`（任务 `1474-åæ-lightning-log-log-44bd3eca.md`）
-- [ ] `pkg/lightning/log/testlogger.rs.md` ← `pkg/lightning/log/testlogger.rs`（任务 `1475-åæ-lightning-log-testlogger-013688c5.md`）
-- [ ] `pkg/lightning/manual/allocator.rs.md` ← `pkg/lightning/manual/allocator.rs`（任务 `1476-åæ-lightning-manual-allocator-8042c839.md`）
-- [ ] `pkg/lightning/manual/manual.rs.md` ← `pkg/lightning/manual/manual.rs`（任务 `1478-åæ-lightning-manual-manual-cfb4ccc9.md`）
-- [ ] `pkg/lightning/manual/manual_nocgo.rs.md` ← `pkg/lightning/manual/manual_nocgo.rs`（任务 `1479-åæ-lightning-manual-manual_nocgo-ee4362cc.md`）
-- [ ] `pkg/lightning/membuf/buffer.rs.md` ← `pkg/lightning/membuf/buffer.rs`（任务 `1480-åæ-lightning-membuf-buffer-978cfcfd.md`）
-- [ ] `pkg/lightning/membuf/limiter.rs.md` ← `pkg/lightning/membuf/limiter.rs`（任务 `1482-åæ-lightning-membuf-limiter-9754b14e.md`）
-- [ ] `pkg/lightning/metric/metric.rs.md` ← `pkg/lightning/metric/metric.rs`（任务 `1484-åæ-lightning-metric-metric-760b2477.md`）
-- [ ] `pkg/lightning/mydump/bytes.rs.md` ← `pkg/lightning/mydump/bytes.rs`（任务 `1485-åæ-lightning-mydump-bytes-f70a70c8.md`）
-- [ ] `pkg/lightning/mydump/charset_convertor.rs.md` ← `pkg/lightning/mydump/charset_convertor.rs`（任务 `1486-åæ-lightning-mydump-charset_convertor-8e2d7cde.md`）
-- [ ] `pkg/lightning/mydump/common.rs.md` ← `pkg/lightning/mydump/common.rs`（任务 `1487-åæ-lightning-mydump-common-e46c92a8.md`）
-- [ ] `pkg/lightning/mydump/csv_parser.rs.md` ← `pkg/lightning/mydump/csv_parser.rs`（任务 `1488-åæ-lightning-mydump-csv_parser-c0f62e0d.md`）
-- [ ] `pkg/lightning/mydump/loader.rs.md` ← `pkg/lightning/mydump/loader.rs`（任务 `1490-åæ-lightning-mydump-loader-0cb6fb65.md`）
-- [ ] `pkg/lightning/mydump/parser.rs.md` ← `pkg/lightning/mydump/parser.rs`（任务 `1491-åæ-lightning-mydump-parser-ea8b9251.md`）
-- [ ] `pkg/lightning/mydump/parser_generated.rs.md` ← `pkg/lightning/mydump/parser_generated.rs`（任务 `1492-åæ-lightning-mydump-parser_generated-959a5f55.md`）
-- [ ] `pkg/lightning/mydump/reader.rs.md` ← `pkg/lightning/mydump/reader.rs`（任务 `1493-åæ-lightning-mydump-reader-2bbd91f6.md`）
-- [ ] `pkg/lightning/mydump/region.rs.md` ← `pkg/lightning/mydump/region.rs`（任务 `1494-åæ-lightning-mydump-region-a69c06f1.md`）
-- [ ] `pkg/lightning/mydump/router.rs.md` ← `pkg/lightning/mydump/router.rs`（任务 `1495-åæ-lightning-mydump-router-0c38cd3d.md`）
-- [ ] `pkg/lightning/mydump/schema_import.rs.md` ← `pkg/lightning/mydump/schema_import.rs`（任务 `1496-åæ-lightning-mydump-schema_import-a8dbc625.md`）
-- [ ] `pkg/lightning/mydump/test_support.rs.md` ← `pkg/lightning/mydump/test_support.rs`（任务 `1497-åæ-lightning-mydump-test_support-a04fd748.md`）
-- [ ] `pkg/lightning/mydump/view_import.rs.md` ← `pkg/lightning/mydump/view_import.rs`（任务 `1498-åæ-lightning-mydump-view_import-3ba0d31a.md`）
-- [ ] `pkg/lightning/tikv/local_sst_writer.rs.md` ← `pkg/lightning/tikv/local_sst_writer.rs`（任务 `1500-åæ-lightning-tikv-local_sst_writer-faeb9502.md`）
-- [ ] `pkg/lightning/tikv/prop_collector.rs.md` ← `pkg/lightning/tikv/prop_collector.rs`（任务 `1501-åæ-lightning-tikv-prop_collector-09015533.md`）
-- [ ] `pkg/lightning/tikv/tikv.rs.md` ← `pkg/lightning/tikv/tikv.rs`（任务 `1502-åæ-lightning-tikv-tikv-ef7c1d10.md`）
-- [ ] `pkg/lightning/verification/checksum.rs.md` ← `pkg/lightning/verification/checksum.rs`（任务 `1503-åæ-lightning-verification-checksum-890fe1d8.md`）
-- [ ] `pkg/lightning/worker/worker.rs.md` ← `pkg/lightning/worker/worker.rs`（任务 `1506-åæ-lightning-worker-worker-168b48b8.md`）
+- [ ] `pkg/lightning/backend/backend.rs.md`
+- [ ] `pkg/lightning/backend/encode/encode.rs.md`
+- [ ] `pkg/lightning/backend/kv/allocator.rs.md`
+- [ ] `pkg/lightning/backend/kv/base.rs.md`
+- [ ] `pkg/lightning/backend/kv/canonical.rs.md`
+- [ ] `pkg/lightning/backend/kv/context.rs.md`
+- [ ] `pkg/lightning/backend/kv/kv2sql.rs.md`
+- [ ] `pkg/lightning/backend/kv/session.rs.md`
+- [ ] `pkg/lightning/backend/kv/sql2kv.rs.md`
+- [ ] `pkg/lightning/backend/tidb/tidb.rs.md`
+- [ ] `pkg/lightning/common/common.rs.md`
+- [ ] `pkg/lightning/common/conn.rs.md`
+- [ ] `pkg/lightning/common/dupdetect.rs.md`
+- [ ] `pkg/lightning/common/errors.rs.md`
+- [ ] `pkg/lightning/common/key_adapter.rs.md`
+- [ ] `pkg/lightning/common/once_error.rs.md`
+- [ ] `pkg/lightning/common/pause.rs.md`
+- [ ] `pkg/lightning/common/retry.rs.md`
+- [ ] `pkg/lightning/common/security.rs.md`
+- [ ] `pkg/lightning/common/storage.rs.md`
+- [ ] `pkg/lightning/common/storage_unix.rs.md`
+- [ ] `pkg/lightning/common/storage_windows.rs.md`
+- [ ] `pkg/lightning/common/util.rs.md`
+- [ ] `pkg/lightning/config/bytesize.rs.md`
+- [ ] `pkg/lightning/config/config.rs.md`
+- [ ] `pkg/lightning/config/configlist.rs.md`
+- [ ] `pkg/lightning/config/const.rs.md`
+- [ ] `pkg/lightning/config/global.rs.md`
+- [ ] `pkg/lightning/config/toml_codec.rs.md`
+- [ ] `pkg/lightning/duplicate/detector.rs.md`
+- [ ] `pkg/lightning/duplicate/internal.rs.md`
+- [ ] `pkg/lightning/duplicate/worker.rs.md`
+- [ ] `pkg/lightning/importdef/tidb.rs.md`
+- [ ] `pkg/lightning/log/filter.rs.md`
+- [ ] `pkg/lightning/log/log.rs.md`
+- [ ] `pkg/lightning/log/testlogger.rs.md`
+- [ ] `pkg/lightning/manual/allocator.rs.md`
+- [ ] `pkg/lightning/manual/manual.rs.md`
+- [ ] `pkg/lightning/manual/manual_nocgo.rs.md`
+- [ ] `pkg/lightning/membuf/buffer.rs.md`
+- [ ] `pkg/lightning/membuf/limiter.rs.md`
+- [ ] `pkg/lightning/metric/metric.rs.md`
+- [ ] `pkg/lightning/mydump/bytes.rs.md`
+- [ ] `pkg/lightning/mydump/charset_convertor.rs.md`
+- [ ] `pkg/lightning/mydump/common.rs.md`
+- [ ] `pkg/lightning/mydump/csv_parser.rs.md`
+- [ ] `pkg/lightning/mydump/loader.rs.md`
+- [ ] `pkg/lightning/mydump/parser.rs.md`
+- [ ] `pkg/lightning/mydump/parser_generated.rs.md`
+- [ ] `pkg/lightning/mydump/reader.rs.md`
+- [ ] `pkg/lightning/mydump/region.rs.md`
+- [ ] `pkg/lightning/mydump/router.rs.md`
+- [ ] `pkg/lightning/mydump/schema_import.rs.md`
+- [ ] `pkg/lightning/mydump/test_support.rs.md`
+- [ ] `pkg/lightning/mydump/view_import.rs.md`
+- [ ] `pkg/lightning/tikv/local_sst_writer.rs.md`
+- [ ] `pkg/lightning/tikv/prop_collector.rs.md`
+- [ ] `pkg/lightning/tikv/tikv.rs.md`
+- [ ] `pkg/lightning/verification/checksum.rs.md`
+- [ ] `pkg/lightning/worker/worker.rs.md`
 
 ## pkg/lock
 
-- [ ] `pkg/lock/context/lockcontext.rs.md` ← `pkg/lock/context/lockcontext.rs`（任务 `1508-åæ-lock-context-lockcontext-f42d262f.md`）
-- [ ] `pkg/lock/lock.rs.md` ← `pkg/lock/lock.rs`（任务 `1510-åæ-pkg-lock-lock-05799e03.md`）
+- [ ] `pkg/lock/context/lockcontext.rs.md`
+- [ ] `pkg/lock/lock.rs.md`
 
 ## pkg/meta
 
-- [ ] `pkg/meta/autoid/autoid.rs.md` ← `pkg/meta/autoid/autoid.rs`（任务 `1511-åæ-meta-autoid-autoid-fc74c39c.md`）
-- [ ] `pkg/meta/autoid/autoid_service.rs.md` ← `pkg/meta/autoid/autoid_service.rs`（任务 `1512-åæ-meta-autoid-autoid_service-8c4291d1.md`）
-- [ ] `pkg/meta/autoid/errors.rs.md` ← `pkg/meta/autoid/errors.rs`（任务 `1513-åæ-meta-autoid-errors-886f026b.md`）
-- [ ] `pkg/meta/autoid/memid.rs.md` ← `pkg/meta/autoid/memid.rs`（任务 `1515-åæ-meta-autoid-memid-6dff6576.md`）
-- [ ] `pkg/meta/harness.rs.md` ← `pkg/meta/harness.rs`（任务 `1516-åæ-pkg-meta-harness-46b872a2.md`）
-- [ ] `pkg/meta/meta.rs.md` ← `pkg/meta/meta.rs`（任务 `1518-åæ-pkg-meta-meta-2b90b72b.md`）
-- [ ] `pkg/meta/meta_autoid.rs.md` ← `pkg/meta/meta_autoid.rs`（任务 `1519-åæ-pkg-meta-meta_autoid-483dfa52.md`）
-- [ ] `pkg/meta/metabuild/context.rs.md` ← `pkg/meta/metabuild/context.rs`（任务 `1520-åæ-meta-metabuild-context-2011331c.md`）
-- [ ] `pkg/meta/metadef/db.rs.md` ← `pkg/meta/metadef/db.rs`（任务 `1522-åæ-meta-metadef-db-324b3c06.md`）
-- [ ] `pkg/meta/metadef/system.rs.md` ← `pkg/meta/metadef/system.rs`（任务 `1524-åæ-meta-metadef-system-6de5dcd7.md`）
-- [ ] `pkg/meta/metadef/system_tables_def.rs.md` ← `pkg/meta/metadef/system_tables_def.rs`（任务 `1525-åæ-meta-metadef-system_tables_def-7fef68dd.md`）
-- [ ] `pkg/meta/model/bdr.rs.md` ← `pkg/meta/model/bdr.rs`（任务 `1526-åæ-meta-model-bdr-3b77ff5e.md`）
-- [ ] `pkg/meta/model/column.rs.md` ← `pkg/meta/model/column.rs`（任务 `1527-åæ-meta-model-column-ee76e12a.md`）
-- [ ] `pkg/meta/model/db.rs.md` ← `pkg/meta/model/db.rs`（任务 `1528-åæ-meta-model-db-65fef8aa.md`）
-- [ ] `pkg/meta/model/engine_attribute.rs.md` ← `pkg/meta/model/engine_attribute.rs`（任务 `1529-åæ-meta-model-engine_attribute-2823378c.md`）
-- [ ] `pkg/meta/model/flags.rs.md` ← `pkg/meta/model/flags.rs`（任务 `1530-åæ-meta-model-flags-8f26be4f.md`）
-- [ ] `pkg/meta/model/index.rs.md` ← `pkg/meta/model/index.rs`（任务 `1531-åæ-meta-model-index-64753093.md`）
-- [ ] `pkg/meta/model/job.rs.md` ← `pkg/meta/model/job.rs`（任务 `1536-åæ-meta-model-job-efd5dcee.md`）
-- [ ] `pkg/meta/model/job_args.rs.md` ← `pkg/meta/model/job_args.rs`（任务 `1537-åæ-meta-model-job_args-0436dedd.md`）
-- [ ] `pkg/meta/model/masking_policy.rs.md` ← `pkg/meta/model/masking_policy.rs`（任务 `1539-åæ-meta-model-masking_policy-dfaa3ea4.md`）
-- [ ] `pkg/meta/model/metadata_codec.rs.md` ← `pkg/meta/model/metadata_codec.rs`（任务 `1540-åæ-meta-model-metadata_codec-04bb4671.md`）
-- [ ] `pkg/meta/model/placement.rs.md` ← `pkg/meta/model/placement.rs`（任务 `1541-åæ-meta-model-placement-1d07a696.md`）
-- [ ] `pkg/meta/model/reorg.rs.md` ← `pkg/meta/model/reorg.rs`（任务 `1542-åæ-meta-model-reorg-28c1f5cc.md`）
-- [ ] `pkg/meta/model/resource_group.rs.md` ← `pkg/meta/model/resource_group.rs`（任务 `1543-åæ-meta-model-resource_group-b9e90804.md`）
-- [ ] `pkg/meta/model/table.rs.md` ← `pkg/meta/model/table.rs`（任务 `1544-åæ-meta-model-table-a53a3073.md`）
-- [ ] `pkg/meta/model/table_mode.rs.md` ← `pkg/meta/model/table_mode.rs`（任务 `1545-åæ-meta-model-table_mode-19665536.md`）
-- [ ] `pkg/meta/reader.rs.md` ← `pkg/meta/reader.rs`（任务 `1546-åæ-pkg-meta-reader-012f357b.md`）
-- [ ] `pkg/meta/tidbvar/vars.rs.md` ← `pkg/meta/tidbvar/vars.rs`（任务 `1548-åæ-meta-tidbvar-vars-1d0b3e60.md`）
+- [ ] `pkg/meta/autoid/autoid.rs.md`
+- [ ] `pkg/meta/autoid/autoid_service.rs.md`
+- [ ] `pkg/meta/autoid/errors.rs.md`
+- [ ] `pkg/meta/autoid/memid.rs.md`
+- [ ] `pkg/meta/harness.rs.md`
+- [ ] `pkg/meta/meta.rs.md`
+- [ ] `pkg/meta/meta_autoid.rs.md`
+- [ ] `pkg/meta/metabuild/context.rs.md`
+- [ ] `pkg/meta/metadef/db.rs.md`
+- [ ] `pkg/meta/metadef/system.rs.md`
+- [ ] `pkg/meta/metadef/system_tables_def.rs.md`
+- [ ] `pkg/meta/model/bdr.rs.md`
+- [ ] `pkg/meta/model/column.rs.md`
+- [ ] `pkg/meta/model/db.rs.md`
+- [ ] `pkg/meta/model/engine_attribute.rs.md`
+- [ ] `pkg/meta/model/flags.rs.md`
+- [ ] `pkg/meta/model/index.rs.md`
+- [ ] `pkg/meta/model/job.rs.md`
+- [ ] `pkg/meta/model/job_args.rs.md`
+- [ ] `pkg/meta/model/masking_policy.rs.md`
+- [ ] `pkg/meta/model/metadata_codec.rs.md`
+- [ ] `pkg/meta/model/placement.rs.md`
+- [ ] `pkg/meta/model/reorg.rs.md`
+- [ ] `pkg/meta/model/resource_group.rs.md`
+- [ ] `pkg/meta/model/table.rs.md`
+- [ ] `pkg/meta/model/table_mode.rs.md`
+- [ ] `pkg/meta/reader.rs.md`
+- [ ] `pkg/meta/tidbvar/vars.rs.md`
 
 ## pkg/metaservice
 
-- [ ] `pkg/metaservice/dial.rs.md` ← `pkg/metaservice/dial.rs`（任务 `1549-åæ-pkg-metaservice-dial-958f78a9.md`）
-- [ ] `pkg/metaservice/etcd.rs.md` ← `pkg/metaservice/etcd.rs`（任务 `1550-åæ-pkg-metaservice-etcd-4e766397.md`）
-- [ ] `pkg/metaservice/metamanager.rs.md` ← `pkg/metaservice/metamanager.rs`（任务 `1552-åæ-pkg-metaservice-metamanager-129af88e.md`）
+- [ ] `pkg/metaservice/dial.rs.md`
+- [ ] `pkg/metaservice/etcd.rs.md`
+- [ ] `pkg/metaservice/metamanager.rs.md`
 
 ## pkg/metrics
 
-- [ ] `pkg/metrics/bindinfo.rs.md` ← `pkg/metrics/bindinfo.rs`（任务 `1553-åæ-pkg-metrics-bindinfo-c231916e.md`）
-- [ ] `pkg/metrics/br.rs.md` ← `pkg/metrics/br.rs`（任务 `1554-åæ-pkg-metrics-br-3b91233e.md`）
-- [ ] `pkg/metrics/channelz.rs.md` ← `pkg/metrics/channelz.rs`（任务 `1555-åæ-pkg-metrics-channelz-68df7280.md`）
-- [ ] `pkg/metrics/common/wrapper.rs.md` ← `pkg/metrics/common/wrapper.rs`（任务 `1557-åæ-metrics-common-wrapper-6487d141.md`）
-- [ ] `pkg/metrics/ddl.rs.md` ← `pkg/metrics/ddl.rs`（任务 `1558-åæ-pkg-metrics-ddl-f2311117.md`）
-- [ ] `pkg/metrics/distsql.rs.md` ← `pkg/metrics/distsql.rs`（任务 `1559-åæ-pkg-metrics-distsql-b99a074e.md`）
-- [ ] `pkg/metrics/domain.rs.md` ← `pkg/metrics/domain.rs`（任务 `1560-åæ-pkg-metrics-domain-f1235d46.md`）
-- [ ] `pkg/metrics/executor.rs.md` ← `pkg/metrics/executor.rs`（任务 `1561-åæ-pkg-metrics-executor-8a7f4e55.md`）
-- [ ] `pkg/metrics/external_workload.rs.md` ← `pkg/metrics/external_workload.rs`（任务 `1562-åæ-pkg-metrics-external_workload-72f3bbb4.md`）
-- [ ] `pkg/metrics/gc_worker.rs.md` ← `pkg/metrics/gc_worker.rs`（任务 `1563-åæ-pkg-metrics-gc_worker-244b4349.md`）
-- [ ] `pkg/metrics/globalsort.rs.md` ← `pkg/metrics/globalsort.rs`（任务 `1564-åæ-pkg-metrics-globalsort-674b8345.md`）
-- [ ] `pkg/metrics/import.rs.md` ← `pkg/metrics/import.rs`（任务 `1565-åæ-pkg-metrics-import-aeb947ae.md`）
-- [ ] `pkg/metrics/infoschema.rs.md` ← `pkg/metrics/infoschema.rs`（任务 `1566-åæ-pkg-metrics-infoschema-5dbb285d.md`）
-- [ ] `pkg/metrics/log_backup.rs.md` ← `pkg/metrics/log_backup.rs`（任务 `1568-åæ-pkg-metrics-log_backup-2b76125a.md`）
-- [ ] `pkg/metrics/memory.rs.md` ← `pkg/metrics/memory.rs`（任务 `1569-åæ-pkg-metrics-memory-78806bdd.md`）
-- [ ] `pkg/metrics/meta.rs.md` ← `pkg/metrics/meta.rs`（任务 `1570-åæ-pkg-metrics-meta-8244e44b.md`）
-- [ ] `pkg/metrics/metrics.rs.md` ← `pkg/metrics/metrics.rs`（任务 `1571-åæ-pkg-metrics-metrics-0d80de1d.md`）
-- [ ] `pkg/metrics/owner.rs.md` ← `pkg/metrics/owner.rs`（任务 `1572-åæ-pkg-metrics-owner-494e3e5c.md`）
-- [ ] `pkg/metrics/rawkv.rs.md` ← `pkg/metrics/rawkv.rs`（任务 `1573-åæ-pkg-metrics-rawkv-dd1e827f.md`）
-- [ ] `pkg/metrics/resource_group.rs.md` ← `pkg/metrics/resource_group.rs`（任务 `1574-åæ-pkg-metrics-resource_group-02f96a9b.md`）
-- [ ] `pkg/metrics/resourcemanager.rs.md` ← `pkg/metrics/resourcemanager.rs`（任务 `1575-åæ-pkg-metrics-resourcemanager-334c493a.md`）
-- [ ] `pkg/metrics/ru_v2.rs.md` ← `pkg/metrics/ru_v2.rs`（任务 `1576-åæ-pkg-metrics-ru_v2-865fe763.md`）
-- [ ] `pkg/metrics/server.rs.md` ← `pkg/metrics/server.rs`（任务 `1577-åæ-pkg-metrics-server-b4024876.md`）
-- [ ] `pkg/metrics/session.rs.md` ← `pkg/metrics/session.rs`（任务 `1578-åæ-pkg-metrics-session-77409fe5.md`）
-- [ ] `pkg/metrics/sli.rs.md` ← `pkg/metrics/sli.rs`（任务 `1579-åæ-pkg-metrics-sli-77dbb081.md`）
-- [ ] `pkg/metrics/stats.rs.md` ← `pkg/metrics/stats.rs`（任务 `1580-åæ-pkg-metrics-stats-3ac7d08a.md`）
-- [ ] `pkg/metrics/stmtsummary.rs.md` ← `pkg/metrics/stmtsummary.rs`（任务 `1581-åæ-pkg-metrics-stmtsummary-d600c99a.md`）
-- [ ] `pkg/metrics/telemetry.rs.md` ← `pkg/metrics/telemetry.rs`（任务 `1582-åæ-pkg-metrics-telemetry-bbf2ef9a.md`）
-- [ ] `pkg/metrics/tikv_client_metrics.rs.md` ← `pkg/metrics/tikv_client_metrics.rs`（任务 `1583-åæ-pkg-metrics-tikv_client_metrics-760bcb7e.md`）
-- [ ] `pkg/metrics/topsql.rs.md` ← `pkg/metrics/topsql.rs`（任务 `1584-åæ-pkg-metrics-topsql-70d08dd0.md`）
-- [ ] `pkg/metrics/ttl.rs.md` ← `pkg/metrics/ttl.rs`（任务 `1585-åæ-pkg-metrics-ttl-d86306a9.md`）
+- [ ] `pkg/metrics/bindinfo.rs.md`
+- [ ] `pkg/metrics/br.rs.md`
+- [ ] `pkg/metrics/channelz.rs.md`
+- [ ] `pkg/metrics/common/wrapper.rs.md`
+- [ ] `pkg/metrics/ddl.rs.md`
+- [ ] `pkg/metrics/distsql.rs.md`
+- [ ] `pkg/metrics/domain.rs.md`
+- [ ] `pkg/metrics/executor.rs.md`
+- [ ] `pkg/metrics/external_workload.rs.md`
+- [ ] `pkg/metrics/gc_worker.rs.md`
+- [ ] `pkg/metrics/globalsort.rs.md`
+- [ ] `pkg/metrics/import.rs.md`
+- [ ] `pkg/metrics/infoschema.rs.md`
+- [ ] `pkg/metrics/log_backup.rs.md`
+- [ ] `pkg/metrics/memory.rs.md`
+- [ ] `pkg/metrics/meta.rs.md`
+- [ ] `pkg/metrics/metrics.rs.md`
+- [ ] `pkg/metrics/owner.rs.md`
+- [ ] `pkg/metrics/rawkv.rs.md`
+- [ ] `pkg/metrics/resource_group.rs.md`
+- [ ] `pkg/metrics/resourcemanager.rs.md`
+- [ ] `pkg/metrics/ru_v2.rs.md`
+- [ ] `pkg/metrics/server.rs.md`
+- [ ] `pkg/metrics/session.rs.md`
+- [ ] `pkg/metrics/sli.rs.md`
+- [ ] `pkg/metrics/stats.rs.md`
+- [ ] `pkg/metrics/stmtsummary.rs.md`
+- [ ] `pkg/metrics/telemetry.rs.md`
+- [ ] `pkg/metrics/tikv_client_metrics.rs.md`
+- [ ] `pkg/metrics/topsql.rs.md`
+- [ ] `pkg/metrics/ttl.rs.md`
 
 ## pkg/objstore
 
-- [ ] `pkg/objstore/azblob.rs.md` ← `pkg/objstore/azblob.rs`（任务 `1586-åæ-pkg-objstore-azblob-37a2c987.md`）
-- [ ] `pkg/objstore/batch.rs.md` ← `pkg/objstore/batch.rs`（任务 `1587-åæ-pkg-objstore-batch-b1374c7c.md`）
-- [ ] `pkg/objstore/compress.rs.md` ← `pkg/objstore/compress.rs`（任务 `1588-åæ-pkg-objstore-compress-6e70483a.md`）
-- [ ] `pkg/objstore/compressedio/buffer.rs.md` ← `pkg/objstore/compressedio/buffer.rs`（任务 `1589-åæ-objstore-compressedio-buffer-98cd8f7b.md`）
-- [ ] `pkg/objstore/compressedio/def.rs.md` ← `pkg/objstore/compressedio/def.rs`（任务 `1590-åæ-objstore-compressedio-def-1aa1055d.md`）
-- [ ] `pkg/objstore/compressedio/reader.rs.md` ← `pkg/objstore/compressedio/reader.rs`（任务 `1592-åæ-objstore-compressedio-reader-cd4fc90c.md`）
-- [ ] `pkg/objstore/compressedio/writer.rs.md` ← `pkg/objstore/compressedio/writer.rs`（任务 `1593-åæ-objstore-compressedio-writer-b801f669.md`）
-- [ ] `pkg/objstore/flags.rs.md` ← `pkg/objstore/flags.rs`（任务 `1594-åæ-pkg-objstore-flags-bf9766e5.md`）
-- [ ] `pkg/objstore/gcs.rs.md` ← `pkg/objstore/gcs.rs`（任务 `1595-åæ-pkg-objstore-gcs-82427ca6.md`）
-- [ ] `pkg/objstore/gcs_extra.rs.md` ← `pkg/objstore/gcs_extra.rs`（任务 `1596-åæ-pkg-objstore-gcs_extra-ab64d8e6.md`）
-- [ ] `pkg/objstore/hdfs.rs.md` ← `pkg/objstore/hdfs.rs`（任务 `1597-åæ-pkg-objstore-hdfs-2e2ad335.md`）
-- [ ] `pkg/objstore/helper.rs.md` ← `pkg/objstore/helper.rs`（任务 `1598-åæ-pkg-objstore-helper-b48a4fa2.md`）
-- [ ] `pkg/objstore/local.rs.md` ← `pkg/objstore/local.rs`（任务 `1600-åæ-pkg-objstore-local-e4b6c84b.md`）
-- [ ] `pkg/objstore/local_unix.rs.md` ← `pkg/objstore/local_unix.rs`（任务 `1601-åæ-pkg-objstore-local_unix-dd6e1fb3.md`）
-- [ ] `pkg/objstore/local_windows.rs.md` ← `pkg/objstore/local_windows.rs`（任务 `1602-åæ-pkg-objstore-local_windows-b2732df8.md`）
-- [ ] `pkg/objstore/locking.rs.md` ← `pkg/objstore/locking.rs`（任务 `1603-åæ-pkg-objstore-locking-fcde0cfb.md`）
-- [ ] `pkg/objstore/memstore.rs.md` ← `pkg/objstore/memstore.rs`（任务 `1604-åæ-pkg-objstore-memstore-9541c811.md`）
-- [ ] `pkg/objstore/mockobjstore/objstore_mock.rs.md` ← `pkg/objstore/mockobjstore/objstore_mock.rs`（任务 `1606-åæ-objstore-mockobjstore-objstore_mock-50d629b8.md`）
-- [ ] `pkg/objstore/noop.rs.md` ← `pkg/objstore/noop.rs`（任务 `1607-åæ-pkg-objstore-noop-41ba1076.md`）
-- [ ] `pkg/objstore/objectio/interface.rs.md` ← `pkg/objstore/objectio/interface.rs`（任务 `1608-åæ-objstore-objectio-interface-40f4cef2.md`）
-- [ ] `pkg/objstore/objectio/writer.rs.md` ← `pkg/objstore/objectio/writer.rs`（任务 `1610-åæ-objstore-objectio-writer-6487c7c6.md`）
-- [ ] `pkg/objstore/ossstore/client.rs.md` ← `pkg/objstore/ossstore/client.rs`（任务 `1611-åæ-objstore-ossstore-client-4685d169.md`）
-- [ ] `pkg/objstore/ossstore/credential.rs.md` ← `pkg/objstore/ossstore/credential.rs`（任务 `1612-åæ-objstore-ossstore-credential-14627ae2.md`）
-- [ ] `pkg/objstore/ossstore/interface.rs.md` ← `pkg/objstore/ossstore/interface.rs`（任务 `1613-åæ-objstore-ossstore-interface-fd83f723.md`）
-- [ ] `pkg/objstore/ossstore/logger.rs.md` ← `pkg/objstore/ossstore/logger.rs`（任务 `1615-åæ-objstore-ossstore-logger-bd00e57a.md`）
-- [ ] `pkg/objstore/ossstore/mock/api_mock.rs.md` ← `pkg/objstore/ossstore/mock/api_mock.rs`（任务 `1616-åæ-ossstore-mock-api_mock-4d689284.md`）
-- [ ] `pkg/objstore/ossstore/mock/provider_mock.rs.md` ← `pkg/objstore/ossstore/mock/provider_mock.rs`（任务 `1618-åæ-ossstore-mock-provider_mock-406221fd.md`）
-- [ ] `pkg/objstore/ossstore/retry.rs.md` ← `pkg/objstore/ossstore/retry.rs`（任务 `1619-åæ-objstore-ossstore-retry-1241aaab.md`）
-- [ ] `pkg/objstore/ossstore/store.rs.md` ← `pkg/objstore/ossstore/store.rs`（任务 `1620-åæ-objstore-ossstore-store-0ba35d39.md`）
-- [ ] `pkg/objstore/parse.rs.md` ← `pkg/objstore/parse.rs`（任务 `1621-åæ-pkg-objstore-parse-09e7b775.md`）
-- [ ] `pkg/objstore/recording/recording.rs.md` ← `pkg/objstore/recording/recording.rs`（任务 `1623-åæ-objstore-recording-recording-e2211225.md`）
-- [ ] `pkg/objstore/s3like/interface.rs.md` ← `pkg/objstore/s3like/interface.rs`（任务 `1624-åæ-objstore-s3like-interface-0b43d33f.md`）
-- [ ] `pkg/objstore/s3like/io.rs.md` ← `pkg/objstore/s3like/io.rs`（任务 `1625-åæ-objstore-s3like-io-a4385a66.md`）
-- [ ] `pkg/objstore/s3like/metrics.rs.md` ← `pkg/objstore/s3like/metrics.rs`（任务 `1627-åæ-objstore-s3like-metrics-a9678526.md`）
-- [ ] `pkg/objstore/s3like/mock/client_mock.rs.md` ← `pkg/objstore/s3like/mock/client_mock.rs`（任务 `1628-åæ-s3like-mock-client_mock-e34b0395.md`）
-- [ ] `pkg/objstore/s3like/permission.rs.md` ← `pkg/objstore/s3like/permission.rs`（任务 `1630-åæ-objstore-s3like-permission-568868ea.md`）
-- [ ] `pkg/objstore/s3like/retry.rs.md` ← `pkg/objstore/s3like/retry.rs`（任务 `1631-åæ-objstore-s3like-retry-63cd9e02.md`）
-- [ ] `pkg/objstore/s3like/store.rs.md` ← `pkg/objstore/s3like/store.rs`（任务 `1632-åæ-objstore-s3like-store-7e625953.md`）
-- [ ] `pkg/objstore/s3store/client.rs.md` ← `pkg/objstore/s3store/client.rs`（任务 `1633-åæ-objstore-s3store-client-7794c6a4.md`）
-- [ ] `pkg/objstore/s3store/gcs_s3_signer.rs.md` ← `pkg/objstore/s3store/gcs_s3_signer.rs`（任务 `1634-åæ-objstore-s3store-gcs_s3_signer-053caa29.md`）
-- [ ] `pkg/objstore/s3store/interface.rs.md` ← `pkg/objstore/s3store/interface.rs`（任务 `1635-åæ-objstore-s3store-interface-449d4e3a.md`）
-- [ ] `pkg/objstore/s3store/ks3.rs.md` ← `pkg/objstore/s3store/ks3.rs`（任务 `1636-åæ-objstore-s3store-ks3-97497941.md`）
-- [ ] `pkg/objstore/s3store/logger.rs.md` ← `pkg/objstore/s3store/logger.rs`（任务 `1638-åæ-objstore-s3store-logger-ef7ebfcd.md`）
-- [ ] `pkg/objstore/s3store/mock/s3api_mock.rs.md` ← `pkg/objstore/s3store/mock/s3api_mock.rs`（任务 `1640-åæ-s3store-mock-s3api_mock-afe98a8f.md`）
-- [ ] `pkg/objstore/s3store/retry.rs.md` ← `pkg/objstore/s3store/retry.rs`（任务 `1641-åæ-objstore-s3store-retry-18e5b577.md`）
-- [ ] `pkg/objstore/s3store/store.rs.md` ← `pkg/objstore/s3store/store.rs`（任务 `1642-åæ-objstore-s3store-store-28a47849.md`）
-- [ ] `pkg/objstore/storage.rs.md` ← `pkg/objstore/storage.rs`（任务 `1643-åæ-pkg-objstore-storage-7ef97a5a.md`）
-- [ ] `pkg/objstore/storeapi/storage.rs.md` ← `pkg/objstore/storeapi/storage.rs`（任务 `1645-åæ-objstore-storeapi-storage-e295cfca.md`）
+- [ ] `pkg/objstore/azblob.rs.md`
+- [ ] `pkg/objstore/batch.rs.md`
+- [ ] `pkg/objstore/compress.rs.md`
+- [ ] `pkg/objstore/compressedio/buffer.rs.md`
+- [ ] `pkg/objstore/compressedio/def.rs.md`
+- [ ] `pkg/objstore/compressedio/reader.rs.md`
+- [ ] `pkg/objstore/compressedio/writer.rs.md`
+- [ ] `pkg/objstore/flags.rs.md`
+- [ ] `pkg/objstore/gcs.rs.md`
+- [ ] `pkg/objstore/gcs_extra.rs.md`
+- [ ] `pkg/objstore/hdfs.rs.md`
+- [ ] `pkg/objstore/helper.rs.md`
+- [ ] `pkg/objstore/local.rs.md`
+- [ ] `pkg/objstore/local_unix.rs.md`
+- [ ] `pkg/objstore/local_windows.rs.md`
+- [ ] `pkg/objstore/locking.rs.md`
+- [ ] `pkg/objstore/memstore.rs.md`
+- [ ] `pkg/objstore/mockobjstore/objstore_mock.rs.md`
+- [ ] `pkg/objstore/noop.rs.md`
+- [ ] `pkg/objstore/objectio/interface.rs.md`
+- [ ] `pkg/objstore/objectio/writer.rs.md`
+- [ ] `pkg/objstore/ossstore/client.rs.md`
+- [ ] `pkg/objstore/ossstore/credential.rs.md`
+- [ ] `pkg/objstore/ossstore/interface.rs.md`
+- [ ] `pkg/objstore/ossstore/logger.rs.md`
+- [ ] `pkg/objstore/ossstore/mock/api_mock.rs.md`
+- [ ] `pkg/objstore/ossstore/mock/provider_mock.rs.md`
+- [ ] `pkg/objstore/ossstore/retry.rs.md`
+- [ ] `pkg/objstore/ossstore/store.rs.md`
+- [ ] `pkg/objstore/parse.rs.md`
+- [ ] `pkg/objstore/recording/recording.rs.md`
+- [ ] `pkg/objstore/s3like/interface.rs.md`
+- [ ] `pkg/objstore/s3like/io.rs.md`
+- [ ] `pkg/objstore/s3like/metrics.rs.md`
+- [ ] `pkg/objstore/s3like/mock/client_mock.rs.md`
+- [ ] `pkg/objstore/s3like/permission.rs.md`
+- [ ] `pkg/objstore/s3like/retry.rs.md`
+- [ ] `pkg/objstore/s3like/store.rs.md`
+- [ ] `pkg/objstore/s3store/client.rs.md`
+- [ ] `pkg/objstore/s3store/gcs_s3_signer.rs.md`
+- [ ] `pkg/objstore/s3store/interface.rs.md`
+- [ ] `pkg/objstore/s3store/ks3.rs.md`
+- [ ] `pkg/objstore/s3store/logger.rs.md`
+- [ ] `pkg/objstore/s3store/mock/s3api_mock.rs.md`
+- [ ] `pkg/objstore/s3store/retry.rs.md`
+- [ ] `pkg/objstore/s3store/store.rs.md`
+- [ ] `pkg/objstore/storage.rs.md`
+- [ ] `pkg/objstore/storeapi/storage.rs.md`
 
 ## pkg/owner
 
-- [ ] `pkg/owner/manager.rs.md` ← `pkg/owner/manager.rs`（任务 `1647-åæ-pkg-owner-manager-107a8efe.md`）
-- [ ] `pkg/owner/mock.rs.md` ← `pkg/owner/mock.rs`（任务 `1648-åæ-pkg-owner-mock-bb6f6d1a.md`）
-- [ ] `pkg/owner/mock_owner_state.rs.md` ← `pkg/owner/mock_owner_state.rs`（任务 `1649-åæ-pkg-owner-mock_owner_state-cf94b567.md`）
+- [ ] `pkg/owner/manager.rs.md`
+- [ ] `pkg/owner/mock.rs.md`
+- [ ] `pkg/owner/mock_owner_state.rs.md`
 
 ## pkg/param
 
-- [ ] `pkg/param/binary_params.rs.md` ← `pkg/param/binary_params.rs`（任务 `1650-åæ-pkg-param-binary_params-d162d437.md`）
+- [ ] `pkg/param/binary_params.rs.md`
 
 ## pkg/parser
 
-- [ ] `pkg/parser/ast/ast.rs.md` ← `pkg/parser/ast/ast.rs`（任务 `1652-åæ-parser-ast-ast-c6cffb12.md`）
-- [ ] `pkg/parser/ast/base.rs.md` ← `pkg/parser/ast/base.rs`（任务 `1653-åæ-parser-ast-base-1a8c3efd.md`）
-- [ ] `pkg/parser/ast/ddl.rs.md` ← `pkg/parser/ast/ddl.rs`（任务 `1654-åæ-parser-ast-ddl-cac4ac8d.md`）
-- [ ] `pkg/parser/ast/dml.rs.md` ← `pkg/parser/ast/dml.rs`（任务 `1655-åæ-parser-ast-dml-85b2b5b2.md`）
-- [ ] `pkg/parser/ast/expressions.rs.md` ← `pkg/parser/ast/expressions.rs`（任务 `1656-åæ-parser-ast-expressions-41404409.md`）
-- [ ] `pkg/parser/ast/flag.rs.md` ← `pkg/parser/ast/flag.rs`（任务 `1657-åæ-parser-ast-flag-31110b38.md`）
-- [ ] `pkg/parser/ast/functions.rs.md` ← `pkg/parser/ast/functions.rs`（任务 `1658-åæ-parser-ast-functions-f15061e0.md`）
-- [ ] `pkg/parser/ast/integration.rs.md` ← `pkg/parser/ast/integration.rs`（任务 `1659-åæ-parser-ast-integration-7efc6248.md`）
-- [ ] `pkg/parser/ast/materialized.rs.md` ← `pkg/parser/ast/materialized.rs`（任务 `1661-åæ-parser-ast-materialized-12f3b998.md`）
-- [ ] `pkg/parser/ast/misc.rs.md` ← `pkg/parser/ast/misc.rs`（任务 `1662-åæ-parser-ast-misc-30c55ed9.md`）
-- [ ] `pkg/parser/ast/model.rs.md` ← `pkg/parser/ast/model.rs`（任务 `1663-åæ-parser-ast-model-a33bfed6.md`）
-- [ ] `pkg/parser/ast/node_flags.rs.md` ← `pkg/parser/ast/node_flags.rs`（任务 `1664-åæ-parser-ast-node_flags-b64b0db7.md`）
-- [ ] `pkg/parser/ast/procedure.rs.md` ← `pkg/parser/ast/procedure.rs`（任务 `1665-åæ-parser-ast-procedure-f3e79555.md`）
-- [ ] `pkg/parser/ast/sem.rs.md` ← `pkg/parser/ast/sem.rs`（任务 `1666-åæ-parser-ast-sem-38e3c2e6.md`）
-- [ ] `pkg/parser/ast/sql_restore.rs.md` ← `pkg/parser/ast/sql_restore.rs`（任务 `1667-åæ-parser-ast-sql_restore-1e0227be.md`）
-- [ ] `pkg/parser/ast/stats.rs.md` ← `pkg/parser/ast/stats.rs`（任务 `1668-åæ-parser-ast-stats-06c0dea5.md`）
-- [ ] `pkg/parser/ast/util.rs.md` ← `pkg/parser/ast/util.rs`（任务 `1669-åæ-parser-ast-util-83ac02a5.md`）
-- [ ] `pkg/parser/ast/walk.rs.md` ← `pkg/parser/ast/walk.rs`（任务 `1670-åæ-parser-ast-walk-35c3bc1b.md`）
-- [ ] `pkg/parser/auth/auth.rs.md` ← `pkg/parser/auth/auth.rs`（任务 `1671-åæ-parser-auth-auth-6aba809a.md`）
-- [ ] `pkg/parser/auth/caching_sha2.rs.md` ← `pkg/parser/auth/caching_sha2.rs`（任务 `1672-åæ-parser-auth-caching_sha2-f89de3da.md`）
-- [ ] `pkg/parser/auth/mysql_native_password.rs.md` ← `pkg/parser/auth/mysql_native_password.rs`（任务 `1674-åæ-parser-auth-mysql_native_password-03a21449.md`）
-- [ ] `pkg/parser/auth/tidb_sm3.rs.md` ← `pkg/parser/auth/tidb_sm3.rs`（任务 `1675-åæ-parser-auth-tidb_sm3-c6bcc6d2.md`）
-- [ ] `pkg/parser/charset/charset.rs.md` ← `pkg/parser/charset/charset.rs`（任务 `1676-åæ-parser-charset-charset-5b597f83.md`）
-- [ ] `pkg/parser/charset/encoding.rs.md` ← `pkg/parser/charset/encoding.rs`（任务 `1677-åæ-parser-charset-encoding-9f621bea.md`）
-- [ ] `pkg/parser/charset/encoding_ascii.rs.md` ← `pkg/parser/charset/encoding_ascii.rs`（任务 `1678-åæ-parser-charset-encoding_ascii-5db8c63a.md`）
-- [ ] `pkg/parser/charset/encoding_base.rs.md` ← `pkg/parser/charset/encoding_base.rs`（任务 `1679-åæ-parser-charset-encoding_base-1c609227.md`）
-- [ ] `pkg/parser/charset/encoding_bin.rs.md` ← `pkg/parser/charset/encoding_bin.rs`（任务 `1680-åæ-parser-charset-encoding_bin-6f8a8a96.md`）
-- [ ] `pkg/parser/charset/encoding_gb18030.rs.md` ← `pkg/parser/charset/encoding_gb18030.rs`（任务 `1681-åæ-parser-charset-encoding_gb18030-8593d7d2.md`）
-- [ ] `pkg/parser/charset/encoding_gb18030_data.rs.md` ← `pkg/parser/charset/encoding_gb18030_data.rs`（任务 `1682-åæ-parser-charset-encoding_gb18030_data-5dd1b8b1.md`）
-- [ ] `pkg/parser/charset/encoding_gbk.rs.md` ← `pkg/parser/charset/encoding_gbk.rs`（任务 `1683-åæ-parser-charset-encoding_gbk-00039715.md`）
-- [ ] `pkg/parser/charset/encoding_latin1.rs.md` ← `pkg/parser/charset/encoding_latin1.rs`（任务 `1684-åæ-parser-charset-encoding_latin1-1830a5d9.md`）
-- [ ] `pkg/parser/charset/encoding_table.rs.md` ← `pkg/parser/charset/encoding_table.rs`（任务 `1685-åæ-parser-charset-encoding_table-0e35eeb6.md`）
-- [ ] `pkg/parser/charset/encoding_utf8.rs.md` ← `pkg/parser/charset/encoding_utf8.rs`（任务 `1686-åæ-parser-charset-encoding_utf8-fb42c640.md`）
-- [ ] `pkg/parser/digester.rs.md` ← `pkg/parser/digester.rs`（任务 `1688-åæ-pkg-parser-digester-b851779e.md`）
-- [ ] `pkg/parser/duration/duration.rs.md` ← `pkg/parser/duration/duration.rs`（任务 `1689-åæ-parser-duration-duration-10646006.md`）
-- [ ] `pkg/parser/format/format.rs.md` ← `pkg/parser/format/format.rs`（任务 `1691-åæ-parser-format-format-9929a210.md`）
-- [ ] `pkg/parser/generate.rs.md` ← `pkg/parser/generate.rs`（任务 `1693-åæ-pkg-parser-generate-bf346c71.md`）
-- [ ] `pkg/parser/generated/hint_tables.rs.md` ← `pkg/parser/generated/hint_tables.rs`（任务 `1694-åæ-parser-generated-hint_tables-9278c6b7.md`）
-- [ ] `pkg/parser/generated/lexer_tokens.rs.md` ← `pkg/parser/generated/lexer_tokens.rs`（任务 `1695-åæ-parser-generated-lexer_tokens-16ac2aa9.md`）
-- [ ] `pkg/parser/generated/main_tables.rs.md` ← `pkg/parser/generated/main_tables.rs`（任务 `1696-åæ-parser-generated-main_tables-3d02a572.md`）
-- [ ] `pkg/parser/hintparser.rs.md` ← `pkg/parser/hintparser.rs`（任务 `1697-åæ-pkg-parser-hintparser-61927f10.md`）
-- [ ] `pkg/parser/hintparserimpl.rs.md` ← `pkg/parser/hintparserimpl.rs`（任务 `1698-åæ-pkg-parser-hintparserimpl-7bb505b3.md`）
-- [ ] `pkg/parser/keywords.rs.md` ← `pkg/parser/keywords.rs`（任务 `1699-åæ-pkg-parser-keywords-07907d5f.md`）
-- [ ] `pkg/parser/lexer.rs.md` ← `pkg/parser/lexer.rs`（任务 `1700-åæ-pkg-parser-lexer-499b75b8.md`）
-- [ ] `pkg/parser/misc.rs.md` ← `pkg/parser/misc.rs`（任务 `1702-åæ-pkg-parser-misc-93a49c98.md`）
-- [ ] `pkg/parser/mview_stmt_options.rs.md` ← `pkg/parser/mview_stmt_options.rs`（任务 `1703-åæ-pkg-parser-mview_stmt_options-6d4ef130.md`）
-- [ ] `pkg/parser/mysql/charset.rs.md` ← `pkg/parser/mysql/charset.rs`（任务 `1704-åæ-parser-mysql-charset-b6f19001.md`）
-- [ ] `pkg/parser/mysql/const.rs.md` ← `pkg/parser/mysql/const.rs`（任务 `1705-åæ-parser-mysql-const-ec2e6000.md`）
-- [ ] `pkg/parser/mysql/errcode.rs.md` ← `pkg/parser/mysql/errcode.rs`（任务 `1706-åæ-parser-mysql-errcode-1578da6e.md`）
-- [ ] `pkg/parser/mysql/errname.rs.md` ← `pkg/parser/mysql/errname.rs`（任务 `1707-åæ-parser-mysql-errname-aabde440.md`）
-- [ ] `pkg/parser/mysql/error.rs.md` ← `pkg/parser/mysql/error.rs`（任务 `1708-åæ-parser-mysql-error-c914731e.md`）
-- [ ] `pkg/parser/mysql/locale_format.rs.md` ← `pkg/parser/mysql/locale_format.rs`（任务 `1710-åæ-parser-mysql-locale_format-efcc35a6.md`）
-- [ ] `pkg/parser/mysql/privs.rs.md` ← `pkg/parser/mysql/privs.rs`（任务 `1711-åæ-parser-mysql-privs-79593e64.md`）
-- [ ] `pkg/parser/mysql/state.rs.md` ← `pkg/parser/mysql/state.rs`（任务 `1712-åæ-parser-mysql-state-53ba7602.md`）
-- [ ] `pkg/parser/mysql/type.rs.md` ← `pkg/parser/mysql/type.rs`（任务 `1713-åæ-parser-mysql-type-813a45ee.md`）
-- [ ] `pkg/parser/mysql/util.rs.md` ← `pkg/parser/mysql/util.rs`（任务 `1714-åæ-parser-mysql-util-bf7fc7b9.md`）
-- [ ] `pkg/parser/opcode/opcode.rs.md` ← `pkg/parser/opcode/opcode.rs`（任务 `1716-åæ-parser-opcode-opcode-81ca557a.md`）
-- [ ] `pkg/parser/parse-demo1.rs.md` ← `pkg/parser/parse-demo1.rs`（任务 `1717-åæ-pkg-parser-parse-demo1-8bd011a2.md`）
-- [ ] `pkg/parser/parser.rs.md` ← `pkg/parser/parser.rs`（任务 `1718-åæ-pkg-parser-parser-9ea30689.md`）
-- [ ] `pkg/parser/parser_actions/admin.rs.md` ← `pkg/parser/parser_actions/admin.rs`（任务 `1719-åæ-parser-parser_actions-admin-f2143594.md`）
-- [ ] `pkg/parser/parser_actions/ddl.rs.md` ← `pkg/parser/parser_actions/ddl.rs`（任务 `1720-åæ-parser-parser_actions-ddl-2c705bdc.md`）
-- [ ] `pkg/parser/parser_actions/dml.rs.md` ← `pkg/parser/parser_actions/dml.rs`（任务 `1721-åæ-parser-parser_actions-dml-733c97d4.md`）
-- [ ] `pkg/parser/parser_actions/expression.rs.md` ← `pkg/parser/parser_actions/expression.rs`（任务 `1722-åæ-parser-parser_actions-expression-b239511b.md`）
-- [ ] `pkg/parser/parser_actions/misc.rs.md` ← `pkg/parser/parser_actions/misc.rs`（任务 `1723-åæ-parser-parser_actions-misc-8a21a24d.md`）
-- [ ] `pkg/parser/parser_actions/mview.rs.md` ← `pkg/parser/parser_actions/mview.rs`（任务 `1725-åæ-parser-parser_actions-mview-2470fccd.md`）
-- [ ] `pkg/parser/parser_actions/query.rs.md` ← `pkg/parser/parser_actions/query.rs`（任务 `1726-åæ-parser-parser_actions-query-30a4d900.md`）
-- [ ] `pkg/parser/parser_actions/security.rs.md` ← `pkg/parser/parser_actions/security.rs`（任务 `1727-åæ-parser-parser_actions-security-10d0664d.md`）
-- [ ] `pkg/parser/parser_contract_cases.rs.md` ← `pkg/parser/parser_contract_cases.rs`（任务 `1728-åæ-pkg-parser-parser_contract_cases-cca753e8.md`）
-- [ ] `pkg/parser/parser_runtime.rs.md` ← `pkg/parser/parser_runtime.rs`（任务 `1729-åæ-pkg-parser-parser_runtime-6bafbb4a.md`）
-- [ ] `pkg/parser/parser_semantic_support.rs.md` ← `pkg/parser/parser_semantic_support.rs`（任务 `1730-åæ-pkg-parser-parser_semantic_support-ee1bfe66.md`）
-- [ ] `pkg/parser/parser_value.rs.md` ← `pkg/parser/parser_value.rs`（任务 `1731-åæ-pkg-parser-parser_value-3d20d8f5.md`）
-- [ ] `pkg/parser/parsergen/automaton.rs.md` ← `pkg/parser/parsergen/automaton.rs`（任务 `1732-åæ-parser-parsergen-automaton-d13752f4.md`）
-- [ ] `pkg/parser/parsergen/generate.rs.md` ← `pkg/parser/parsergen/generate.rs`（任务 `1733-åæ-parser-parsergen-generate-52bb8b23.md`）
-- [ ] `pkg/parser/parsergen/grammar.rs.md` ← `pkg/parser/parsergen/grammar.rs`（任务 `1734-åæ-parser-parsergen-grammar-889a1ca7.md`）
-- [ ] `pkg/parser/parsergen/main.rs.md` ← `pkg/parser/parsergen/main.rs`（任务 `1736-åæ-parser-parsergen-main-3f5bb4ac.md`）
-- [ ] `pkg/parser/parsergen/render.rs.md` ← `pkg/parser/parsergen/render.rs`（任务 `1737-åæ-parser-parsergen-render-dedeff29.md`）
-- [ ] `pkg/parser/parsergen/table.rs.md` ← `pkg/parser/parsergen/table.rs`（任务 `1738-åæ-parser-parsergen-table-462b2805.md`）
-- [ ] `pkg/parser/terror/terror.rs.md` ← `pkg/parser/terror/terror.rs`（任务 `1740-åæ-parser-terror-terror-9f4b75cc.md`）
-- [ ] `pkg/parser/test_driver/test_driver.rs.md` ← `pkg/parser/test_driver/test_driver.rs`（任务 `1742-åæ-parser-test_driver-test_driver-5f8b79bf.md`）
-- [ ] `pkg/parser/test_driver/test_driver_datum.rs.md` ← `pkg/parser/test_driver/test_driver_datum.rs`（任务 `1743-åæ-parser-test_driver-test_driver_datum-a1c013fb.md`）
-- [ ] `pkg/parser/test_driver/test_driver_helper.rs.md` ← `pkg/parser/test_driver/test_driver_helper.rs`（任务 `1744-åæ-parser-test_driver-test_driver_helper-bfc012d2.md`）
-- [ ] `pkg/parser/test_driver/test_driver_mydecimal.rs.md` ← `pkg/parser/test_driver/test_driver_mydecimal.rs`（任务 `1745-åæ-parser-test_driver-test_driver_mydecimal-cbf21287.md`）
-- [ ] `pkg/parser/tidb/features.rs.md` ← `pkg/parser/tidb/features.rs`（任务 `1746-åæ-parser-tidb-features-9191df8f.md`）
-- [ ] `pkg/parser/types/etc.rs.md` ← `pkg/parser/types/etc.rs`（任务 `1748-åæ-parser-types-etc-b21a4b16.md`）
-- [ ] `pkg/parser/types/eval_type.rs.md` ← `pkg/parser/types/eval_type.rs`（任务 `1749-åæ-parser-types-eval_type-7f3faa8a.md`）
-- [ ] `pkg/parser/types/field_type.rs.md` ← `pkg/parser/types/field_type.rs`（任务 `1750-åæ-parser-types-field_type-7f1d2686.md`）
-- [ ] `pkg/parser/util/escape.rs.md` ← `pkg/parser/util/escape.rs`（任务 `1752-åæ-parser-util-escape-ba6394e0.md`）
-- [ ] `pkg/parser/util/hash64.rs.md` ← `pkg/parser/util/hash64.rs`（任务 `1753-åæ-parser-util-hash64-d83bb011.md`）
-- [ ] `pkg/parser/yy_parser.rs.md` ← `pkg/parser/yy_parser.rs`（任务 `1755-åæ-pkg-parser-yy_parser-0f8d128e.md`）
+- [ ] `pkg/parser/ast/ast.rs.md`
+- [ ] `pkg/parser/ast/base.rs.md`
+- [ ] `pkg/parser/ast/ddl.rs.md`
+- [ ] `pkg/parser/ast/dml.rs.md`
+- [ ] `pkg/parser/ast/expressions.rs.md`
+- [ ] `pkg/parser/ast/flag.rs.md`
+- [ ] `pkg/parser/ast/functions.rs.md`
+- [ ] `pkg/parser/ast/integration.rs.md`
+- [ ] `pkg/parser/ast/materialized.rs.md`
+- [ ] `pkg/parser/ast/misc.rs.md`
+- [ ] `pkg/parser/ast/model.rs.md`
+- [ ] `pkg/parser/ast/node_flags.rs.md`
+- [ ] `pkg/parser/ast/procedure.rs.md`
+- [ ] `pkg/parser/ast/sem.rs.md`
+- [ ] `pkg/parser/ast/sql_restore.rs.md`
+- [ ] `pkg/parser/ast/stats.rs.md`
+- [ ] `pkg/parser/ast/util.rs.md`
+- [ ] `pkg/parser/ast/walk.rs.md`
+- [ ] `pkg/parser/auth/auth.rs.md`
+- [ ] `pkg/parser/auth/caching_sha2.rs.md`
+- [ ] `pkg/parser/auth/mysql_native_password.rs.md`
+- [ ] `pkg/parser/auth/tidb_sm3.rs.md`
+- [ ] `pkg/parser/charset/charset.rs.md`
+- [ ] `pkg/parser/charset/encoding.rs.md`
+- [ ] `pkg/parser/charset/encoding_ascii.rs.md`
+- [ ] `pkg/parser/charset/encoding_base.rs.md`
+- [ ] `pkg/parser/charset/encoding_bin.rs.md`
+- [ ] `pkg/parser/charset/encoding_gb18030.rs.md`
+- [ ] `pkg/parser/charset/encoding_gb18030_data.rs.md`
+- [ ] `pkg/parser/charset/encoding_gbk.rs.md`
+- [ ] `pkg/parser/charset/encoding_latin1.rs.md`
+- [ ] `pkg/parser/charset/encoding_table.rs.md`
+- [ ] `pkg/parser/charset/encoding_utf8.rs.md`
+- [ ] `pkg/parser/digester.rs.md`
+- [ ] `pkg/parser/duration/duration.rs.md`
+- [ ] `pkg/parser/format/format.rs.md`
+- [ ] `pkg/parser/generate.rs.md`
+- [ ] `pkg/parser/generated/hint_tables.rs.md`
+- [ ] `pkg/parser/generated/lexer_tokens.rs.md`
+- [ ] `pkg/parser/generated/main_tables.rs.md`
+- [ ] `pkg/parser/hintparser.rs.md`
+- [ ] `pkg/parser/hintparserimpl.rs.md`
+- [ ] `pkg/parser/keywords.rs.md`
+- [ ] `pkg/parser/lexer.rs.md`
+- [ ] `pkg/parser/misc.rs.md`
+- [ ] `pkg/parser/mview_stmt_options.rs.md`
+- [ ] `pkg/parser/mysql/charset.rs.md`
+- [ ] `pkg/parser/mysql/const.rs.md`
+- [ ] `pkg/parser/mysql/errcode.rs.md`
+- [ ] `pkg/parser/mysql/errname.rs.md`
+- [ ] `pkg/parser/mysql/error.rs.md`
+- [ ] `pkg/parser/mysql/locale_format.rs.md`
+- [ ] `pkg/parser/mysql/privs.rs.md`
+- [ ] `pkg/parser/mysql/state.rs.md`
+- [ ] `pkg/parser/mysql/type.rs.md`
+- [ ] `pkg/parser/mysql/util.rs.md`
+- [ ] `pkg/parser/opcode/opcode.rs.md`
+- [ ] `pkg/parser/parse-demo1.rs.md`
+- [ ] `pkg/parser/parser.rs.md`
+- [ ] `pkg/parser/parser_actions/admin.rs.md`
+- [ ] `pkg/parser/parser_actions/ddl.rs.md`
+- [ ] `pkg/parser/parser_actions/dml.rs.md`
+- [ ] `pkg/parser/parser_actions/expression.rs.md`
+- [ ] `pkg/parser/parser_actions/misc.rs.md`
+- [ ] `pkg/parser/parser_actions/mview.rs.md`
+- [ ] `pkg/parser/parser_actions/query.rs.md`
+- [ ] `pkg/parser/parser_actions/security.rs.md`
+- [ ] `pkg/parser/parser_contract_cases.rs.md`
+- [ ] `pkg/parser/parser_runtime.rs.md`
+- [ ] `pkg/parser/parser_semantic_support.rs.md`
+- [ ] `pkg/parser/parser_value.rs.md`
+- [ ] `pkg/parser/parsergen/automaton.rs.md`
+- [ ] `pkg/parser/parsergen/generate.rs.md`
+- [ ] `pkg/parser/parsergen/grammar.rs.md`
+- [ ] `pkg/parser/parsergen/main.rs.md`
+- [ ] `pkg/parser/parsergen/render.rs.md`
+- [ ] `pkg/parser/parsergen/table.rs.md`
+- [ ] `pkg/parser/terror/terror.rs.md`
+- [ ] `pkg/parser/test_driver/test_driver.rs.md`
+- [ ] `pkg/parser/test_driver/test_driver_datum.rs.md`
+- [ ] `pkg/parser/test_driver/test_driver_helper.rs.md`
+- [ ] `pkg/parser/test_driver/test_driver_mydecimal.rs.md`
+- [ ] `pkg/parser/tidb/features.rs.md`
+- [ ] `pkg/parser/types/etc.rs.md`
+- [ ] `pkg/parser/types/eval_type.rs.md`
+- [ ] `pkg/parser/types/field_type.rs.md`
+- [ ] `pkg/parser/util/escape.rs.md`
+- [ ] `pkg/parser/util/hash64.rs.md`
+- [ ] `pkg/parser/yy_parser.rs.md`
 
 ## pkg/planner
 
-- [ ] `pkg/planner/cardinality/cross_estimation.rs.md` ← `pkg/planner/cardinality/cross_estimation.rs`（任务 `1756-åæ-planner-cardinality-cross_estimation-e3ac62f0.md`）
-- [ ] `pkg/planner/cardinality/exponential.rs.md` ← `pkg/planner/cardinality/exponential.rs`（任务 `1757-åæ-planner-cardinality-exponential-c50509c9.md`）
-- [ ] `pkg/planner/cardinality/join.rs.md` ← `pkg/planner/cardinality/join.rs`（任务 `1758-åæ-planner-cardinality-join-bc5ff869.md`）
-- [ ] `pkg/planner/cardinality/ndv.rs.md` ← `pkg/planner/cardinality/ndv.rs`（任务 `1760-åæ-planner-cardinality-ndv-a2c17341.md`）
-- [ ] `pkg/planner/cardinality/pseudo.rs.md` ← `pkg/planner/cardinality/pseudo.rs`（任务 `1761-åæ-planner-cardinality-pseudo-976794c8.md`）
-- [ ] `pkg/planner/cardinality/row_count_column.rs.md` ← `pkg/planner/cardinality/row_count_column.rs`（任务 `1762-åæ-planner-cardinality-row_count_column-ce576ee9.md`）
-- [ ] `pkg/planner/cardinality/row_count_index.rs.md` ← `pkg/planner/cardinality/row_count_index.rs`（任务 `1763-åæ-planner-cardinality-row_count_index-4ae46e33.md`）
-- [ ] `pkg/planner/cardinality/row_size.rs.md` ← `pkg/planner/cardinality/row_size.rs`（任务 `1764-åæ-planner-cardinality-row_size-71d95314.md`）
-- [ ] `pkg/planner/cardinality/selectivity.rs.md` ← `pkg/planner/cardinality/selectivity.rs`（任务 `1765-åæ-planner-cardinality-selectivity-cbdd2956.md`）
-- [ ] `pkg/planner/cardinality/trace.rs.md` ← `pkg/planner/cardinality/trace.rs`（任务 `1766-åæ-planner-cardinality-trace-4957d339.md`）
-- [ ] `pkg/planner/cascades/base/base.rs.md` ← `pkg/planner/cascades/base/base.rs`（任务 `1767-åæ-cascades-base-base-0caab4d7.md`）
-- [ ] `pkg/planner/cascades/base/cascadesctx/cascades_ctx.rs.md` ← `pkg/planner/cascades/base/cascadesctx/cascades_ctx.rs`（任务 `1768-åæ-base-cascadesctx-cascades_ctx-db2ef08f.md`）
-- [ ] `pkg/planner/cascades/base/hash_equaler.rs.md` ← `pkg/planner/cascades/base/hash_equaler.rs`（任务 `1770-åæ-cascades-base-hash_equaler-ed14dc65.md`）
-- [ ] `pkg/planner/cascades/base/task_scheduler_base.rs.md` ← `pkg/planner/cascades/base/task_scheduler_base.rs`（任务 `1772-åæ-cascades-base-task_scheduler_base-1a99417f.md`）
-- [ ] `pkg/planner/cascades/base/task_stack_base.rs.md` ← `pkg/planner/cascades/base/task_stack_base.rs`（任务 `1773-åæ-cascades-base-task_stack_base-6378176c.md`）
-- [ ] `pkg/planner/cascades/cascades.rs.md` ← `pkg/planner/cascades/cascades.rs`（任务 `1774-åæ-planner-cascades-cascades-3509c9e2.md`）
-- [ ] `pkg/planner/cascades/impl/find_best_task_router.rs.md` ← `pkg/planner/cascades/impl/find_best_task_router.rs`（任务 `1775-åæ-cascades-impl-find_best_task_router-e7b04d7c.md`）
-- [ ] `pkg/planner/cascades/impl/impl_and_cost.rs.md` ← `pkg/planner/cascades/impl/impl_and_cost.rs`（任务 `1776-åæ-cascades-impl-impl_and_cost-290f97ce.md`）
-- [ ] `pkg/planner/cascades/memo/group.rs.md` ← `pkg/planner/cascades/memo/group.rs`（任务 `1779-åæ-cascades-memo-group-07aff0ac.md`）
-- [ ] `pkg/planner/cascades/memo/group_expr.rs.md` ← `pkg/planner/cascades/memo/group_expr.rs`（任务 `1780-åæ-cascades-memo-group_expr-425bd894.md`）
-- [ ] `pkg/planner/cascades/memo/group_id_generator.rs.md` ← `pkg/planner/cascades/memo/group_id_generator.rs`（任务 `1781-åæ-cascades-memo-group_id_generator-4450db23.md`）
-- [ ] `pkg/planner/cascades/memo/memo.rs.md` ← `pkg/planner/cascades/memo/memo.rs`（任务 `1783-åæ-cascades-memo-memo-0f4a3bc3.md`）
-- [ ] `pkg/planner/cascades/old/enforcer_rules.rs.md` ← `pkg/planner/cascades/old/enforcer_rules.rs`（任务 `1784-åæ-cascades-old-enforcer_rules-8002fdc0.md`）
-- [ ] `pkg/planner/cascades/old/implementation_rules.rs.md` ← `pkg/planner/cascades/old/implementation_rules.rs`（任务 `1785-åæ-cascades-old-implementation_rules-1c626419.md`）
-- [ ] `pkg/planner/cascades/old/optimize.rs.md` ← `pkg/planner/cascades/old/optimize.rs`（任务 `1787-åæ-cascades-old-optimize-21e94175.md`）
-- [ ] `pkg/planner/cascades/old/stringer.rs.md` ← `pkg/planner/cascades/old/stringer.rs`（任务 `1788-åæ-cascades-old-stringer-3dc845e9.md`）
-- [ ] `pkg/planner/cascades/old/transformation_rules.rs.md` ← `pkg/planner/cascades/old/transformation_rules.rs`（任务 `1789-åæ-cascades-old-transformation_rules-f43b6033.md`）
-- [ ] `pkg/planner/cascades/pattern/engine.rs.md` ← `pkg/planner/cascades/pattern/engine.rs`（任务 `1790-åæ-cascades-pattern-engine-762ae07b.md`）
-- [ ] `pkg/planner/cascades/pattern/pattern.rs.md` ← `pkg/planner/cascades/pattern/pattern.rs`（任务 `1792-åæ-cascades-pattern-pattern-b877d3ed.md`）
-- [ ] `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_base.rs.md` ← `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_base.rs`（任务 `1794-åæ-apply-decorrelateapply-xf_decorrelate_apply_base-a4884479.md`）
-- [ ] `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs.md` ← `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs`（任务 `1795-åæ-apply-decorrelateapply-xf_decorrelate_simple_apply-ba68fd44.md`）
-- [ ] `pkg/planner/cascades/rule/binder.rs.md` ← `pkg/planner/cascades/rule/binder.rs`（任务 `1796-åæ-cascades-rule-binder-fc26de72.md`）
-- [ ] `pkg/planner/cascades/rule/join/join_to_apply.rs.md` ← `pkg/planner/cascades/rule/join/join_to_apply.rs`（任务 `1797-åæ-rule-join-join_to_apply-4cf714ef.md`）
-- [ ] `pkg/planner/cascades/rule/rule.rs.md` ← `pkg/planner/cascades/rule/rule.rs`（任务 `1800-åæ-cascades-rule-rule-f984940e.md`）
-- [ ] `pkg/planner/cascades/rule/rule_type.rs.md` ← `pkg/planner/cascades/rule/rule_type.rs`（任务 `1801-åæ-cascades-rule-rule_type-012533ce.md`）
-- [ ] `pkg/planner/cascades/rule/ruleset/rule_set.rs.md` ← `pkg/planner/cascades/rule/ruleset/rule_set.rs`（任务 `1803-åæ-rule-ruleset-rule_set-6e7d8bd4.md`）
-- [ ] `pkg/planner/cascades/task/base.rs.md` ← `pkg/planner/cascades/task/base.rs`（任务 `1804-åæ-cascades-task-base-11736070.md`）
-- [ ] `pkg/planner/cascades/task/task.rs.md` ← `pkg/planner/cascades/task/task.rs`（任务 `1806-åæ-cascades-task-task-c6154826.md`）
-- [ ] `pkg/planner/cascades/task/task_apply_rule.rs.md` ← `pkg/planner/cascades/task/task_apply_rule.rs`（任务 `1807-åæ-cascades-task-task_apply_rule-d2e51b2f.md`）
-- [ ] `pkg/planner/cascades/task/task_opt_group.rs.md` ← `pkg/planner/cascades/task/task_opt_group.rs`（任务 `1808-åæ-cascades-task-task_opt_group-bbdee8bd.md`）
-- [ ] `pkg/planner/cascades/task/task_opt_group_expression.rs.md` ← `pkg/planner/cascades/task/task_opt_group_expression.rs`（任务 `1809-åæ-cascades-task-task_opt_group_expression-428a9a3a.md`）
-- [ ] `pkg/planner/cascades/task/task_scheduler.rs.md` ← `pkg/planner/cascades/task/task_scheduler.rs`（任务 `1810-åæ-cascades-task-task_scheduler-b97d703e.md`）
-- [ ] `pkg/planner/cascades/util/string_writer.rs.md` ← `pkg/planner/cascades/util/string_writer.rs`（任务 `1812-åæ-cascades-util-string_writer-6c859ccd.md`）
-- [ ] `pkg/planner/core/access/access_obj.rs.md` ← `pkg/planner/core/access/access_obj.rs`（任务 `1813-åæ-core-access-access_obj-8324ba4c.md`）
-- [ ] `pkg/planner/core/access_object.rs.md` ← `pkg/planner/core/access_object.rs`（任务 `1815-åæ-planner-core-access_object-92fc8774.md`）
-- [ ] `pkg/planner/core/base/misc_base.rs.md` ← `pkg/planner/core/base/misc_base.rs`（任务 `1818-åæ-core-base-misc_base-371fa104.md`）
-- [ ] `pkg/planner/core/base/plan_base.rs.md` ← `pkg/planner/core/base/plan_base.rs`（任务 `1819-åæ-core-base-plan_base-d5247691.md`）
-- [ ] `pkg/planner/core/base/rule_base.rs.md` ← `pkg/planner/core/base/rule_base.rs`（任务 `1820-åæ-core-base-rule_base-c9a438a8.md`）
-- [ ] `pkg/planner/core/base/task_base.rs.md` ← `pkg/planner/core/base/task_base.rs`（任务 `1821-åæ-core-base-task_base-19b08198.md`）
-- [ ] `pkg/planner/core/casetest/instanceplancache/support.rs.md` ← `pkg/planner/core/casetest/instanceplancache/support.rs`（任务 `1834-åæ-casetest-instanceplancache-support-54888124.md`）
-- [ ] `pkg/planner/core/columnar_index_utils.rs.md` ← `pkg/planner/core/columnar_index_utils.rs`（任务 `1852-åæ-planner-core-columnar_index_utils-49c5bff5.md`）
-- [ ] `pkg/planner/core/common_plans.rs.md` ← `pkg/planner/core/common_plans.rs`（任务 `1853-åæ-planner-core-common_plans-c936354c.md`）
-- [ ] `pkg/planner/core/constraint/exprs.rs.md` ← `pkg/planner/core/constraint/exprs.rs`（任务 `1854-åæ-core-constraint-exprs-37154936.md`）
-- [ ] `pkg/planner/core/core_init.rs.md` ← `pkg/planner/core/core_init.rs`（任务 `1856-åæ-planner-core-core_init-b709f001.md`）
-- [ ] `pkg/planner/core/cost/factors_thresholds.rs.md` ← `pkg/planner/core/cost/factors_thresholds.rs`（任务 `1857-åæ-core-cost-factors_thresholds-108c18d7.md`）
-- [ ] `pkg/planner/core/encode.rs.md` ← `pkg/planner/core/encode.rs`（任务 `1859-åæ-planner-core-encode-1a6e2270.md`）
-- [ ] `pkg/planner/core/exhaust_physical_plans.rs.md` ← `pkg/planner/core/exhaust_physical_plans.rs`（任务 `1860-åæ-planner-core-exhaust_physical_plans-46ef235c.md`）
-- [ ] `pkg/planner/core/expression_codec_fn.rs.md` ← `pkg/planner/core/expression_codec_fn.rs`（任务 `1861-åæ-planner-core-expression_codec_fn-2ad7bc0d.md`）
-- [ ] `pkg/planner/core/expression_rewriter.rs.md` ← `pkg/planner/core/expression_rewriter.rs`（任务 `1862-åæ-planner-core-expression_rewriter-73ad51a5.md`）
-- [ ] `pkg/planner/core/find_best_task.rs.md` ← `pkg/planner/core/find_best_task.rs`（任务 `1863-åæ-planner-core-find_best_task-af4aeb0f.md`）
-- [ ] `pkg/planner/core/flat_plan.rs.md` ← `pkg/planner/core/flat_plan.rs`（任务 `1864-åæ-planner-core-flat_plan-2147b735.md`）
-- [ ] `pkg/planner/core/fts_plan_builder.rs.md` ← `pkg/planner/core/fts_plan_builder.rs`（任务 `1865-åæ-planner-core-fts_plan_builder-f35c9a44.md`）
-- [ ] `pkg/planner/core/fts_resolve_index.rs.md` ← `pkg/planner/core/fts_resolve_index.rs`（任务 `1866-åæ-planner-core-fts_resolve_index-798e250e.md`）
-- [ ] `pkg/planner/core/fulltext_to_like.rs.md` ← `pkg/planner/core/fulltext_to_like.rs`（任务 `1867-åæ-planner-core-fulltext_to_like-bedd51d0.md`）
-- [ ] `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.rs.md` ← `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.rs`（任务 `1868-åæ-generator-hash64_equals-hash64_equals_generator-a17f2c6c.md`）
-- [ ] `pkg/planner/core/generator/plan_cache/plan_clone_generator.rs.md` ← `pkg/planner/core/generator/plan_cache/plan_clone_generator.rs`（任务 `1871-åæ-generator-plan_cache-plan_clone_generator-b36b7e4e.md`）
-- [ ] `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs.md` ← `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs`（任务 `1873-åæ-generator-shallow_ref-shallow_ref_generator-f0c5827a.md`）
-- [ ] `pkg/planner/core/hint_utils.rs.md` ← `pkg/planner/core/hint_utils.rs`（任务 `1874-åæ-planner-core-hint_utils-2ea4aec0.md`）
-- [ ] `pkg/planner/core/index_join_path.rs.md` ← `pkg/planner/core/index_join_path.rs`（任务 `1875-åæ-planner-core-index_join_path-fe2ad1e1.md`）
-- [ ] `pkg/planner/core/indexmerge_path.rs.md` ← `pkg/planner/core/indexmerge_path.rs`（任务 `1876-åæ-planner-core-indexmerge_path-9cf358f9.md`）
-- [ ] `pkg/planner/core/indexmerge_unfinished_path.rs.md` ← `pkg/planner/core/indexmerge_unfinished_path.rs`（任务 `1877-åæ-planner-core-indexmerge_unfinished_path-5170b837.md`）
-- [ ] `pkg/planner/core/initialize.rs.md` ← `pkg/planner/core/initialize.rs`（任务 `1878-åæ-planner-core-initialize-bf5541db.md`）
-- [ ] `pkg/planner/core/joinorder/conflict_detector.rs.md` ← `pkg/planner/core/joinorder/conflict_detector.rs`（任务 `1880-åæ-core-joinorder-conflict_detector-2c5a6cfd.md`）
-- [ ] `pkg/planner/core/joinorder/join_order.rs.md` ← `pkg/planner/core/joinorder/join_order.rs`（任务 `1881-åæ-core-joinorder-join_order-e8a9d57b.md`）
-- [ ] `pkg/planner/core/joinorder/ordered_leading.rs.md` ← `pkg/planner/core/joinorder/ordered_leading.rs`（任务 `1883-åæ-core-joinorder-ordered_leading-22e96647.md`）
-- [ ] `pkg/planner/core/joinorder/util.rs.md` ← `pkg/planner/core/joinorder/util.rs`（任务 `1884-åæ-core-joinorder-util-a2e86e52.md`）
-- [ ] `pkg/planner/core/logical_initialize.rs.md` ← `pkg/planner/core/logical_initialize.rs`（任务 `1886-åæ-planner-core-logical_initialize-b7ce5db9.md`）
-- [ ] `pkg/planner/core/logical_plan_builder.rs.md` ← `pkg/planner/core/logical_plan_builder.rs`（任务 `1887-åæ-planner-core-logical_plan_builder-60fc4fe8.md`）
-- [ ] `pkg/planner/core/logical_plan_builder_runtime.rs.md` ← `pkg/planner/core/logical_plan_builder_runtime.rs`（任务 `1888-åæ-planner-core-logical_plan_builder_runtime-d6d39df9.md`）
-- [ ] `pkg/planner/core/memtable_infoschema_extractor.rs.md` ← `pkg/planner/core/memtable_infoschema_extractor.rs`（任务 `1890-åæ-planner-core-memtable_infoschema_extractor-816f6478.md`）
-- [ ] `pkg/planner/core/memtable_predicate_extractor.rs.md` ← `pkg/planner/core/memtable_predicate_extractor.rs`（任务 `1891-åæ-planner-core-memtable_predicate_extractor-2ff7eb55.md`）
-- [ ] `pkg/planner/core/metrics/metrics.rs.md` ← `pkg/planner/core/metrics/metrics.rs`（任务 `1893-åæ-core-metrics-metrics-7e22041f.md`）
-- [ ] `pkg/planner/core/operator/baseimpl/plan.rs.md` ← `pkg/planner/core/operator/baseimpl/plan.rs`（任务 `1895-åæ-operator-baseimpl-plan-1558facc.md`）
-- [ ] `pkg/planner/core/operator/logicalop/base_logical_plan.rs.md` ← `pkg/planner/core/operator/logicalop/base_logical_plan.rs`（任务 `1896-åæ-operator-logicalop-base_logical_plan-73169ad9.md`）
-- [ ] `pkg/planner/core/operator/logicalop/expression_util.rs.md` ← `pkg/planner/core/operator/logicalop/expression_util.rs`（任务 `1897-åæ-operator-logicalop-expression_util-047e4640.md`）
-- [ ] `pkg/planner/core/operator/logicalop/hash64_equals_generated.rs.md` ← `pkg/planner/core/operator/logicalop/hash64_equals_generated.rs`（任务 `1898-åæ-operator-logicalop-hash64_equals_generated-40e6d48a.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_aggregation.rs.md` ← `pkg/planner/core/operator/logicalop/logical_aggregation.rs`（任务 `1900-åæ-operator-logicalop-logical_aggregation-83e224d0.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_apply.rs.md` ← `pkg/planner/core/operator/logicalop/logical_apply.rs`（任务 `1901-åæ-operator-logicalop-logical_apply-d66e9656.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_cte.rs.md` ← `pkg/planner/core/operator/logicalop/logical_cte.rs`（任务 `1902-åæ-operator-logicalop-logical_cte-ce38ec4a.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_cte_table.rs.md` ← `pkg/planner/core/operator/logicalop/logical_cte_table.rs`（任务 `1903-åæ-operator-logicalop-logical_cte_table-9976ef82.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_datasource.rs.md` ← `pkg/planner/core/operator/logicalop/logical_datasource.rs`（任务 `1904-åæ-operator-logicalop-logical_datasource-325f1e21.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_expand.rs.md` ← `pkg/planner/core/operator/logicalop/logical_expand.rs`（任务 `1905-åæ-operator-logicalop-logical_expand-4b6ede5e.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_index_scan.rs.md` ← `pkg/planner/core/operator/logicalop/logical_index_scan.rs`（任务 `1906-åæ-operator-logicalop-logical_index_scan-796a9160.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_join.rs.md` ← `pkg/planner/core/operator/logicalop/logical_join.rs`（任务 `1907-åæ-operator-logicalop-logical_join-ab17c158.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_limit.rs.md` ← `pkg/planner/core/operator/logicalop/logical_limit.rs`（任务 `1908-åæ-operator-logicalop-logical_limit-b801f511.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_lock.rs.md` ← `pkg/planner/core/operator/logicalop/logical_lock.rs`（任务 `1909-åæ-operator-logicalop-logical_lock-6087b426.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_max_one_row.rs.md` ← `pkg/planner/core/operator/logicalop/logical_max_one_row.rs`（任务 `1910-åæ-operator-logicalop-logical_max_one_row-712a4463.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_mem_table.rs.md` ← `pkg/planner/core/operator/logicalop/logical_mem_table.rs`（任务 `1911-åæ-operator-logicalop-logical_mem_table-66d6f747.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_mock.rs.md` ← `pkg/planner/core/operator/logicalop/logical_mock.rs`（任务 `1912-åæ-operator-logicalop-logical_mock-107d7fd9.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_partition_union_all.rs.md` ← `pkg/planner/core/operator/logicalop/logical_partition_union_all.rs`（任务 `1913-åæ-operator-logicalop-logical_partition_union_all-eb989674.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_plans_misc.rs.md` ← `pkg/planner/core/operator/logicalop/logical_plans_misc.rs`（任务 `1914-åæ-operator-logicalop-logical_plans_misc-034bbe9e.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_projection.rs.md` ← `pkg/planner/core/operator/logicalop/logical_projection.rs`（任务 `1915-åæ-operator-logicalop-logical_projection-b0258608.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_schema_producer.rs.md` ← `pkg/planner/core/operator/logicalop/logical_schema_producer.rs`（任务 `1916-åæ-operator-logicalop-logical_schema_producer-eb6e989e.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_selection.rs.md` ← `pkg/planner/core/operator/logicalop/logical_selection.rs`（任务 `1917-åæ-operator-logicalop-logical_selection-4a9f9ac7.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_sequence.rs.md` ← `pkg/planner/core/operator/logicalop/logical_sequence.rs`（任务 `1918-åæ-operator-logicalop-logical_sequence-aab54449.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_show.rs.md` ← `pkg/planner/core/operator/logicalop/logical_show.rs`（任务 `1919-åæ-operator-logicalop-logical_show-25d24a01.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_show_ddl_jobs.rs.md` ← `pkg/planner/core/operator/logicalop/logical_show_ddl_jobs.rs`（任务 `1920-åæ-operator-logicalop-logical_show_ddl_jobs-380fe42c.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_sort.rs.md` ← `pkg/planner/core/operator/logicalop/logical_sort.rs`（任务 `1921-åæ-operator-logicalop-logical_sort-5b906abb.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_table_dual.rs.md` ← `pkg/planner/core/operator/logicalop/logical_table_dual.rs`（任务 `1922-åæ-operator-logicalop-logical_table_dual-74e54e97.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_table_scan.rs.md` ← `pkg/planner/core/operator/logicalop/logical_table_scan.rs`（任务 `1923-åæ-operator-logicalop-logical_table_scan-4b950a89.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_tikv_single_gather.rs.md` ← `pkg/planner/core/operator/logicalop/logical_tikv_single_gather.rs`（任务 `1924-åæ-operator-logicalop-logical_tikv_single_gather-bf7ef7a4.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_top_n.rs.md` ← `pkg/planner/core/operator/logicalop/logical_top_n.rs`（任务 `1925-åæ-operator-logicalop-logical_top_n-2cc601e6.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_union_all.rs.md` ← `pkg/planner/core/operator/logicalop/logical_union_all.rs`（任务 `1926-åæ-operator-logicalop-logical_union_all-4827dd8e.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_union_scan.rs.md` ← `pkg/planner/core/operator/logicalop/logical_union_scan.rs`（任务 `1927-åæ-operator-logicalop-logical_union_scan-45f460ad.md`）
-- [ ] `pkg/planner/core/operator/logicalop/logical_window.rs.md` ← `pkg/planner/core/operator/logicalop/logical_window.rs`（任务 `1928-åæ-operator-logicalop-logical_window-4d32c96f.md`）
-- [ ] `pkg/planner/core/operator/logicalop/shallow_ref_generated.rs.md` ← `pkg/planner/core/operator/logicalop/shallow_ref_generated.rs`（任务 `1930-åæ-operator-logicalop-shallow_ref_generated-2f3a3f66.md`）
-- [ ] `pkg/planner/core/operator/physicalop/base_physical_agg.rs.md` ← `pkg/planner/core/operator/physicalop/base_physical_agg.rs`（任务 `1931-åæ-operator-physicalop-base_physical_agg-d4a0db39.md`）
-- [ ] `pkg/planner/core/operator/physicalop/base_physical_join.rs.md` ← `pkg/planner/core/operator/physicalop/base_physical_join.rs`（任务 `1932-åæ-operator-physicalop-base_physical_join-bf115d6b.md`）
-- [ ] `pkg/planner/core/operator/physicalop/base_physical_plan.rs.md` ← `pkg/planner/core/operator/physicalop/base_physical_plan.rs`（任务 `1933-åæ-operator-physicalop-base_physical_plan-e3a1b5ac.md`）
-- [ ] `pkg/planner/core/operator/physicalop/cache_snapshot.rs.md` ← `pkg/planner/core/operator/physicalop/cache_snapshot.rs`（任务 `1934-åæ-operator-physicalop-cache_snapshot-c6495f18.md`）
-- [ ] `pkg/planner/core/operator/physicalop/enforce.rs.md` ← `pkg/planner/core/operator/physicalop/enforce.rs`（任务 `1935-åæ-operator-physicalop-enforce-cd79ad56.md`）
-- [ ] `pkg/planner/core/operator/physicalop/foreign_key.rs.md` ← `pkg/planner/core/operator/physicalop/foreign_key.rs`（任务 `1936-åæ-operator-physicalop-foreign_key-d81df335.md`）
-- [ ] `pkg/planner/core/operator/physicalop/fragment.rs.md` ← `pkg/planner/core/operator/physicalop/fragment.rs`（任务 `1937-åæ-operator-physicalop-fragment-a7afa3a5.md`）
-- [ ] `pkg/planner/core/operator/physicalop/index_join_probe.rs.md` ← `pkg/planner/core/operator/physicalop/index_join_probe.rs`（任务 `1938-åæ-operator-physicalop-index_join_probe-68e44675.md`）
-- [ ] `pkg/planner/core/operator/physicalop/nominal_sort.rs.md` ← `pkg/planner/core/operator/physicalop/nominal_sort.rs`（任务 `1940-åæ-operator-physicalop-nominal_sort-90921dfe.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_apply.rs.md` ← `pkg/planner/core/operator/physicalop/physical_apply.rs`（任务 `1941-åæ-operator-physicalop-physical_apply-724ac09e.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_batch_point_get.rs.md` ← `pkg/planner/core/operator/physicalop/physical_batch_point_get.rs`（任务 `1942-åæ-operator-physicalop-physical_batch_point_get-a59c346e.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_common_plans.rs.md` ← `pkg/planner/core/operator/physicalop/physical_common_plans.rs`（任务 `1943-åæ-operator-physicalop-physical_common_plans-b8abce6e.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_cte.rs.md` ← `pkg/planner/core/operator/physicalop/physical_cte.rs`（任务 `1944-åæ-operator-physicalop-physical_cte-9e5788ce.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_cte_table.rs.md` ← `pkg/planner/core/operator/physicalop/physical_cte_table.rs`（任务 `1945-åæ-operator-physicalop-physical_cte_table-7096d7b5.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_delete.rs.md` ← `pkg/planner/core/operator/physicalop/physical_delete.rs`（任务 `1946-åæ-operator-physicalop-physical_delete-6c032583.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_exchange_receiver.rs.md` ← `pkg/planner/core/operator/physicalop/physical_exchange_receiver.rs`（任务 `1947-åæ-operator-physicalop-physical_exchange_receiver-2d1e3c6c.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_exchange_sender.rs.md` ← `pkg/planner/core/operator/physicalop/physical_exchange_sender.rs`（任务 `1948-åæ-operator-physicalop-physical_exchange_sender-1c6156d1.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_expand.rs.md` ← `pkg/planner/core/operator/physicalop/physical_expand.rs`（任务 `1949-åæ-operator-physicalop-physical_expand-d4c75b52.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_hash_agg.rs.md` ← `pkg/planner/core/operator/physicalop/physical_hash_agg.rs`（任务 `1950-åæ-operator-physicalop-physical_hash_agg-da468b44.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_hash_join.rs.md` ← `pkg/planner/core/operator/physicalop/physical_hash_join.rs`（任务 `1951-åæ-operator-physicalop-physical_hash_join-c6fa9c28.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_index_hash_join.rs.md` ← `pkg/planner/core/operator/physicalop/physical_index_hash_join.rs`（任务 `1952-åæ-operator-physicalop-physical_index_hash_join-3be8e326.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_index_join.rs.md` ← `pkg/planner/core/operator/physicalop/physical_index_join.rs`（任务 `1953-åæ-operator-physicalop-physical_index_join-67e8268f.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_index_merge_join.rs.md` ← `pkg/planner/core/operator/physicalop/physical_index_merge_join.rs`（任务 `1954-åæ-operator-physicalop-physical_index_merge_join-61ca04b2.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_index_reader.rs.md` ← `pkg/planner/core/operator/physicalop/physical_index_reader.rs`（任务 `1955-åæ-operator-physicalop-physical_index_reader-ad25ada2.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_index_scan.rs.md` ← `pkg/planner/core/operator/physicalop/physical_index_scan.rs`（任务 `1956-åæ-operator-physicalop-physical_index_scan-c616429f.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_indexlookup.rs.md` ← `pkg/planner/core/operator/physicalop/physical_indexlookup.rs`（任务 `1957-åæ-operator-physicalop-physical_indexlookup-173f8514.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_indexlookup_reader.rs.md` ← `pkg/planner/core/operator/physicalop/physical_indexlookup_reader.rs`（任务 `1958-åæ-operator-physicalop-physical_indexlookup_reader-c5e77c27.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_indexmerge_reader.rs.md` ← `pkg/planner/core/operator/physicalop/physical_indexmerge_reader.rs`（任务 `1959-åæ-operator-physicalop-physical_indexmerge_reader-d1f592f3.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_insert.rs.md` ← `pkg/planner/core/operator/physicalop/physical_insert.rs`（任务 `1960-åæ-operator-physicalop-physical_insert-5d0bf731.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_limit.rs.md` ← `pkg/planner/core/operator/physicalop/physical_limit.rs`（任务 `1961-åæ-operator-physicalop-physical_limit-c01e2f4b.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_lock.rs.md` ← `pkg/planner/core/operator/physicalop/physical_lock.rs`（任务 `1962-åæ-operator-physicalop-physical_lock-1b95c473.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_max_one_row.rs.md` ← `pkg/planner/core/operator/physicalop/physical_max_one_row.rs`（任务 `1963-åæ-operator-physicalop-physical_max_one_row-88581d1c.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_mem_table.rs.md` ← `pkg/planner/core/operator/physicalop/physical_mem_table.rs`（任务 `1964-åæ-operator-physicalop-physical_mem_table-0930341a.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_merge_join.rs.md` ← `pkg/planner/core/operator/physicalop/physical_merge_join.rs`（任务 `1965-åæ-operator-physicalop-physical_merge_join-7f690324.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_plan_misc.rs.md` ← `pkg/planner/core/operator/physicalop/physical_plan_misc.rs`（任务 `1966-åæ-operator-physicalop-physical_plan_misc-65316d52.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_projection.rs.md` ← `pkg/planner/core/operator/physicalop/physical_projection.rs`（任务 `1967-åæ-operator-physicalop-physical_projection-7c2afddf.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_schema_producer.rs.md` ← `pkg/planner/core/operator/physicalop/physical_schema_producer.rs`（任务 `1968-åæ-operator-physicalop-physical_schema_producer-815aa1a3.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_selection.rs.md` ← `pkg/planner/core/operator/physicalop/physical_selection.rs`（任务 `1969-åæ-operator-physicalop-physical_selection-c27188b0.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_sequence.rs.md` ← `pkg/planner/core/operator/physicalop/physical_sequence.rs`（任务 `1970-åæ-operator-physicalop-physical_sequence-ede404f2.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_show.rs.md` ← `pkg/planner/core/operator/physicalop/physical_show.rs`（任务 `1971-åæ-operator-physicalop-physical_show-f49f2490.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_shuffle.rs.md` ← `pkg/planner/core/operator/physicalop/physical_shuffle.rs`（任务 `1972-åæ-operator-physicalop-physical_shuffle-831263a2.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_sort.rs.md` ← `pkg/planner/core/operator/physicalop/physical_sort.rs`（任务 `1973-åæ-operator-physicalop-physical_sort-136b2ec9.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_stream_agg.rs.md` ← `pkg/planner/core/operator/physicalop/physical_stream_agg.rs`（任务 `1974-åæ-operator-physicalop-physical_stream_agg-1b8560ae.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_table_dual.rs.md` ← `pkg/planner/core/operator/physicalop/physical_table_dual.rs`（任务 `1975-åæ-operator-physicalop-physical_table_dual-b2b2c132.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_table_reader.rs.md` ← `pkg/planner/core/operator/physicalop/physical_table_reader.rs`（任务 `1976-åæ-operator-physicalop-physical_table_reader-9a89f690.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_table_sample.rs.md` ← `pkg/planner/core/operator/physicalop/physical_table_sample.rs`（任务 `1977-åæ-operator-physicalop-physical_table_sample-d7597a84.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_table_scan.rs.md` ← `pkg/planner/core/operator/physicalop/physical_table_scan.rs`（任务 `1978-åæ-operator-physicalop-physical_table_scan-d5f25056.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_topn.rs.md` ← `pkg/planner/core/operator/physicalop/physical_topn.rs`（任务 `1979-åæ-operator-physicalop-physical_topn-4a50243e.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_union_all.rs.md` ← `pkg/planner/core/operator/physicalop/physical_union_all.rs`（任务 `1980-åæ-operator-physicalop-physical_union_all-07895105.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_union_scan.rs.md` ← `pkg/planner/core/operator/physicalop/physical_union_scan.rs`（任务 `1981-åæ-operator-physicalop-physical_union_scan-a7a6de5e.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_utils.rs.md` ← `pkg/planner/core/operator/physicalop/physical_utils.rs`（任务 `1982-åæ-operator-physicalop-physical_utils-cdd8243a.md`）
-- [ ] `pkg/planner/core/operator/physicalop/physical_window.rs.md` ← `pkg/planner/core/operator/physicalop/physical_window.rs`（任务 `1983-åæ-operator-physicalop-physical_window-32d2a8fc.md`）
-- [ ] `pkg/planner/core/operator/physicalop/plan_clone_generated.rs.md` ← `pkg/planner/core/operator/physicalop/plan_clone_generated.rs`（任务 `1984-åæ-operator-physicalop-plan_clone_generated-470ac80d.md`）
-- [ ] `pkg/planner/core/operator/physicalop/task.rs.md` ← `pkg/planner/core/operator/physicalop/task.rs`（任务 `1985-åæ-operator-physicalop-task-dee1dc1f.md`）
-- [ ] `pkg/planner/core/operator/physicalop/task_base.rs.md` ← `pkg/planner/core/operator/physicalop/task_base.rs`（任务 `1986-åæ-operator-physicalop-task_base-e56642ab.md`）
-- [ ] `pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs.md` ← `pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs`（任务 `1987-åæ-operator-physicalop-tiflash_predicate_push_down-3e7a7c4a.md`）
-- [ ] `pkg/planner/core/optimizer.rs.md` ← `pkg/planner/core/optimizer.rs`（任务 `1988-åæ-planner-core-optimizer-08edc9e8.md`）
-- [ ] `pkg/planner/core/optimizer_runtime.rs.md` ← `pkg/planner/core/optimizer_runtime.rs`（任务 `1989-åæ-planner-core-optimizer_runtime-52a6866b.md`）
-- [ ] `pkg/planner/core/partidx/check_constraint.rs.md` ← `pkg/planner/core/partidx/check_constraint.rs`（任务 `1990-åæ-core-partidx-check_constraint-f57fa205.md`）
-- [ ] `pkg/planner/core/pb_to_plan.rs.md` ← `pkg/planner/core/pb_to_plan.rs`（任务 `1992-åæ-planner-core-pb_to_plan-1e14e781.md`）
-- [ ] `pkg/planner/core/plan.rs.md` ← `pkg/planner/core/plan.rs`（任务 `1993-åæ-planner-core-plan-e59411ad.md`）
-- [ ] `pkg/planner/core/plan_cache.rs.md` ← `pkg/planner/core/plan_cache.rs`（任务 `1994-åæ-planner-core-plan_cache-d79b5ca9.md`）
-- [ ] `pkg/planner/core/plan_cache_instance.rs.md` ← `pkg/planner/core/plan_cache_instance.rs`（任务 `1995-åæ-planner-core-plan_cache_instance-f3854e74.md`）
-- [ ] `pkg/planner/core/plan_cache_lru.rs.md` ← `pkg/planner/core/plan_cache_lru.rs`（任务 `1996-åæ-planner-core-plan_cache_lru-917a1717.md`）
-- [ ] `pkg/planner/core/plan_cache_param.rs.md` ← `pkg/planner/core/plan_cache_param.rs`（任务 `1997-åæ-planner-core-plan_cache_param-b975613c.md`）
-- [ ] `pkg/planner/core/plan_cache_rebuild.rs.md` ← `pkg/planner/core/plan_cache_rebuild.rs`（任务 `1998-åæ-planner-core-plan_cache_rebuild-6c7f7180.md`）
-- [ ] `pkg/planner/core/plan_cache_utils.rs.md` ← `pkg/planner/core/plan_cache_utils.rs`（任务 `1999-åæ-planner-core-plan_cache_utils-3deb7259.md`）
-- [ ] `pkg/planner/core/plan_cacheable_checker.rs.md` ← `pkg/planner/core/plan_cacheable_checker.rs`（任务 `2000-åæ-planner-core-plan_cacheable_checker-5cca43c2.md`）
-- [ ] `pkg/planner/core/plan_clone_utils.rs.md` ← `pkg/planner/core/plan_clone_utils.rs`（任务 `2001-åæ-planner-core-plan_clone_utils-c93798f8.md`）
-- [ ] `pkg/planner/core/plan_cost_ver1.rs.md` ← `pkg/planner/core/plan_cost_ver1.rs`（任务 `2002-åæ-planner-core-plan_cost_ver1-61cbada0.md`）
-- [ ] `pkg/planner/core/plan_cost_ver2.rs.md` ← `pkg/planner/core/plan_cost_ver2.rs`（任务 `2003-åæ-planner-core-plan_cost_ver2-daf2c696.md`）
-- [ ] `pkg/planner/core/planbuilder.rs.md` ← `pkg/planner/core/planbuilder.rs`（任务 `2004-åæ-planner-core-planbuilder-0a5f5469.md`）
-- [ ] `pkg/planner/core/planbuilder_runtime.rs.md` ← `pkg/planner/core/planbuilder_runtime.rs`（任务 `2005-åæ-planner-core-planbuilder_runtime-8953ddc0.md`）
-- [ ] `pkg/planner/core/point_get_plan.rs.md` ← `pkg/planner/core/point_get_plan.rs`（任务 `2006-åæ-planner-core-point_get_plan-a74d12d8.md`）
-- [ ] `pkg/planner/core/point_get_plan_runtime.rs.md` ← `pkg/planner/core/point_get_plan_runtime.rs`（任务 `2007-åæ-planner-core-point_get_plan_runtime-edfe976e.md`）
-- [ ] `pkg/planner/core/preprocess.rs.md` ← `pkg/planner/core/preprocess.rs`（任务 `2008-åæ-planner-core-preprocess-fd95cb07.md`）
-- [ ] `pkg/planner/core/property_cols_prune.rs.md` ← `pkg/planner/core/property_cols_prune.rs`（任务 `2009-åæ-planner-core-property_cols_prune-4f949925.md`）
-- [ ] `pkg/planner/core/recheck_cte.rs.md` ← `pkg/planner/core/recheck_cte.rs`（任务 `2010-åæ-planner-core-recheck_cte-e11958f8.md`）
-- [ ] `pkg/planner/core/resolve/resolve.rs.md` ← `pkg/planner/core/resolve/resolve.rs`（任务 `2012-åæ-core-resolve-resolve-9d532b91.md`）
-- [ ] `pkg/planner/core/resolve/result.rs.md` ← `pkg/planner/core/resolve/result.rs`（任务 `2013-åæ-core-resolve-result-67af8a3d.md`）
-- [ ] `pkg/planner/core/resolve_indices.rs.md` ← `pkg/planner/core/resolve_indices.rs`（任务 `2014-åæ-planner-core-resolve_indices-33a16fe4.md`）
-- [ ] `pkg/planner/core/rule/collect_column_stats_usage.rs.md` ← `pkg/planner/core/rule/collect_column_stats_usage.rs`（任务 `2015-åæ-core-rule-collect_column_stats_usage-ad91dfd3.md`）
-- [ ] `pkg/planner/core/rule/logical_rules.rs.md` ← `pkg/planner/core/rule/logical_rules.rs`（任务 `2017-åæ-core-rule-logical_rules-ffef35a6.md`）
-- [ ] `pkg/planner/core/rule/rule_build_key_info.rs.md` ← `pkg/planner/core/rule/rule_build_key_info.rs`（任务 `2018-åæ-core-rule-rule_build_key_info-61dc5780.md`）
-- [ ] `pkg/planner/core/rule/rule_collect_plan_stats.rs.md` ← `pkg/planner/core/rule/rule_collect_plan_stats.rs`（任务 `2019-åæ-core-rule-rule_collect_plan_stats-da4f1896.md`）
-- [ ] `pkg/planner/core/rule/rule_column_pruning.rs.md` ← `pkg/planner/core/rule/rule_column_pruning.rs`（任务 `2020-åæ-core-rule-rule_column_pruning-f72f41a9.md`）
-- [ ] `pkg/planner/core/rule/rule_constant_propagation.rs.md` ← `pkg/planner/core/rule/rule_constant_propagation.rs`（任务 `2021-åæ-core-rule-rule_constant_propagation-928b9a17.md`）
-- [ ] `pkg/planner/core/rule/rule_init.rs.md` ← `pkg/planner/core/rule/rule_init.rs`（任务 `2022-åæ-core-rule-rule_init-07bde200.md`）
-- [ ] `pkg/planner/core/rule/rule_join_key_type_cast.rs.md` ← `pkg/planner/core/rule/rule_join_key_type_cast.rs`（任务 `2023-åæ-core-rule-rule_join_key_type_cast-d9358afc.md`）
-- [ ] `pkg/planner/core/rule/rule_max_min_eliminate.rs.md` ← `pkg/planner/core/rule/rule_max_min_eliminate.rs`（任务 `2024-åæ-core-rule-rule_max_min_eliminate-1b760c56.md`）
-- [ ] `pkg/planner/core/rule/rule_order_aware_join_reorder.rs.md` ← `pkg/planner/core/rule/rule_order_aware_join_reorder.rs`（任务 `2025-åæ-core-rule-rule_order_aware_join_reorder-7b6bfc7e.md`）
-- [ ] `pkg/planner/core/rule/rule_outer_join_to_semi_join.rs.md` ← `pkg/planner/core/rule/rule_outer_join_to_semi_join.rs`（任务 `2026-åæ-core-rule-rule_outer_join_to_semi_join-52df4a64.md`）
-- [ ] `pkg/planner/core/rule/rule_partition_processor.rs.md` ← `pkg/planner/core/rule/rule_partition_processor.rs`（任务 `2027-åæ-core-rule-rule_partition_processor-d4df3943.md`）
-- [ ] `pkg/planner/core/rule/rule_predicate_simplification.rs.md` ← `pkg/planner/core/rule/rule_predicate_simplification.rs`（任务 `2028-åæ-core-rule-rule_predicate_simplification-cf68a842.md`）
-- [ ] `pkg/planner/core/rule/rule_prune_indexes.rs.md` ← `pkg/planner/core/rule/rule_prune_indexes.rs`（任务 `2029-åæ-core-rule-rule_prune_indexes-50bc6a57.md`）
-- [ ] `pkg/planner/core/rule/util/misc.rs.md` ← `pkg/planner/core/rule/util/misc.rs`（任务 `2031-åæ-rule-util-misc-9306cdf9.md`）
-- [ ] `pkg/planner/core/rule_aggregation_elimination.rs.md` ← `pkg/planner/core/rule_aggregation_elimination.rs`（任务 `2032-åæ-planner-core-rule_aggregation_elimination-f41ba499.md`）
-- [ ] `pkg/planner/core/rule_aggregation_push_down.rs.md` ← `pkg/planner/core/rule_aggregation_push_down.rs`（任务 `2033-åæ-planner-core-rule_aggregation_push_down-b6deb492.md`）
-- [ ] `pkg/planner/core/rule_aggregation_skew_rewrite.rs.md` ← `pkg/planner/core/rule_aggregation_skew_rewrite.rs`（任务 `2034-åæ-planner-core-rule_aggregation_skew_rewrite-8d415201.md`）
-- [ ] `pkg/planner/core/rule_correlate.rs.md` ← `pkg/planner/core/rule_correlate.rs`（任务 `2035-åæ-planner-core-rule_correlate-b3c1bba5.md`）
-- [ ] `pkg/planner/core/rule_decorrelate.rs.md` ← `pkg/planner/core/rule_decorrelate.rs`（任务 `2036-åæ-planner-core-rule_decorrelate-03ab647f.md`）
-- [ ] `pkg/planner/core/rule_derive_topn_from_window.rs.md` ← `pkg/planner/core/rule_derive_topn_from_window.rs`（任务 `2037-åæ-planner-core-rule_derive_topn_from_window-3ff6fe4c.md`）
-- [ ] `pkg/planner/core/rule_eliminate_empty_selection.rs.md` ← `pkg/planner/core/rule_eliminate_empty_selection.rs`（任务 `2038-åæ-planner-core-rule_eliminate_empty_selection-ca71fe8b.md`）
-- [ ] `pkg/planner/core/rule_eliminate_projection.rs.md` ← `pkg/planner/core/rule_eliminate_projection.rs`（任务 `2039-åæ-planner-core-rule_eliminate_projection-b7168abc.md`）
-- [ ] `pkg/planner/core/rule_eliminate_unionall_dual_item.rs.md` ← `pkg/planner/core/rule_eliminate_unionall_dual_item.rs`（任务 `2040-åæ-planner-core-rule_eliminate_unionall_dual_item-41d14b5f.md`）
-- [ ] `pkg/planner/core/rule_generate_column_substitute.rs.md` ← `pkg/planner/core/rule_generate_column_substitute.rs`（任务 `2041-åæ-planner-core-rule_generate_column_substitute-13578b28.md`）
-- [ ] `pkg/planner/core/rule_inject_extra_projection.rs.md` ← `pkg/planner/core/rule_inject_extra_projection.rs`（任务 `2042-åæ-planner-core-rule_inject_extra_projection-4c2511ba.md`）
-- [ ] `pkg/planner/core/rule_join_elimination.rs.md` ← `pkg/planner/core/rule_join_elimination.rs`（任务 `2043-åæ-planner-core-rule_join_elimination-ef116510.md`）
-- [ ] `pkg/planner/core/rule_join_reorder.rs.md` ← `pkg/planner/core/rule_join_reorder.rs`（任务 `2044-åæ-planner-core-rule_join_reorder-df6e932c.md`）
-- [ ] `pkg/planner/core/rule_join_reorder_dp.rs.md` ← `pkg/planner/core/rule_join_reorder_dp.rs`（任务 `2045-åæ-planner-core-rule_join_reorder_dp-a6799a99.md`）
-- [ ] `pkg/planner/core/rule_join_reorder_greedy.rs.md` ← `pkg/planner/core/rule_join_reorder_greedy.rs`（任务 `2046-åæ-planner-core-rule_join_reorder_greedy-4f3543fa.md`）
-- [ ] `pkg/planner/core/rule_join_reorder_projection_inline.rs.md` ← `pkg/planner/core/rule_join_reorder_projection_inline.rs`（任务 `2047-åæ-planner-core-rule_join_reorder_projection_inline-b93f232c.md`）
-- [ ] `pkg/planner/core/rule_predicate_push_down.rs.md` ← `pkg/planner/core/rule_predicate_push_down.rs`（任务 `2048-åæ-planner-core-rule_predicate_push_down-d6af9227.md`）
-- [ ] `pkg/planner/core/rule_push_down_sequence.rs.md` ← `pkg/planner/core/rule_push_down_sequence.rs`（任务 `2049-åæ-planner-core-rule_push_down_sequence-f4e17f3d.md`）
-- [ ] `pkg/planner/core/rule_resolve_grouping_expand.rs.md` ← `pkg/planner/core/rule_resolve_grouping_expand.rs`（任务 `2050-åæ-planner-core-rule_resolve_grouping_expand-6552aa3a.md`）
-- [ ] `pkg/planner/core/rule_result_reorder.rs.md` ← `pkg/planner/core/rule_result_reorder.rs`（任务 `2051-åæ-planner-core-rule_result_reorder-5ce5b5a6.md`）
-- [ ] `pkg/planner/core/rule_semi_join_rewrite.rs.md` ← `pkg/planner/core/rule_semi_join_rewrite.rs`（任务 `2052-åæ-planner-core-rule_semi_join_rewrite-dee5e448.md`）
-- [ ] `pkg/planner/core/rule_topn_push_down.rs.md` ← `pkg/planner/core/rule_topn_push_down.rs`（任务 `2053-åæ-planner-core-rule_topn_push_down-9f212422.md`）
-- [ ] `pkg/planner/core/runtime_filter_generator.rs.md` ← `pkg/planner/core/runtime_filter_generator.rs`（任务 `2054-åæ-planner-core-runtime_filter_generator-a58ce228.md`）
-- [ ] `pkg/planner/core/scalar_subq_expression.rs.md` ← `pkg/planner/core/scalar_subq_expression.rs`（任务 `2055-åæ-planner-core-scalar_subq_expression-ec7ab868.md`）
-- [ ] `pkg/planner/core/schema_table_key.rs.md` ← `pkg/planner/core/schema_table_key.rs`（任务 `2056-åæ-planner-core-schema_table_key-b6a2ded4.md`）
-- [ ] `pkg/planner/core/show_predicate_extractor.rs.md` ← `pkg/planner/core/show_predicate_extractor.rs`（任务 `2057-åæ-planner-core-show_predicate_extractor-38a0683d.md`）
-- [ ] `pkg/planner/core/stats.rs.md` ← `pkg/planner/core/stats.rs`（任务 `2058-åæ-planner-core-stats-de18c2f5.md`）
-- [ ] `pkg/planner/core/stats/stats.rs.md` ← `pkg/planner/core/stats/stats.rs`（任务 `2060-åæ-core-stats-stats-e0c4964d.md`）
-- [ ] `pkg/planner/core/stringer.rs.md` ← `pkg/planner/core/stringer.rs`（任务 `2061-åæ-planner-core-stringer-d6faf135.md`）
-- [ ] `pkg/planner/core/subquery_plan_builder.rs.md` ← `pkg/planner/core/subquery_plan_builder.rs`（任务 `2062-åæ-planner-core-subquery_plan_builder-31ffd51d.md`）
-- [ ] `pkg/planner/core/task.rs.md` ← `pkg/planner/core/task.rs`（任务 `2063-åæ-planner-core-task-edbf8972.md`）
-- [ ] `pkg/planner/core/telemetry.rs.md` ← `pkg/planner/core/telemetry.rs`（任务 `2064-åæ-planner-core-telemetry-158c2398.md`）
-- [ ] `pkg/planner/core/trace.rs.md` ← `pkg/planner/core/trace.rs`（任务 `2065-åæ-planner-core-trace-0963af73.md`）
-- [ ] `pkg/planner/core/util.rs.md` ← `pkg/planner/core/util.rs`（任务 `2066-åæ-planner-core-util-8484828d.md`）
-- [ ] `pkg/planner/extstore/extstore.rs.md` ← `pkg/planner/extstore/extstore.rs`（任务 `2067-åæ-planner-extstore-extstore-749c4305.md`）
-- [ ] `pkg/planner/funcdep/fd_graph.rs.md` ← `pkg/planner/funcdep/fd_graph.rs`（任务 `2070-åæ-planner-funcdep-fd_graph-b62555bc.md`）
-- [ ] `pkg/planner/implementation/base.rs.md` ← `pkg/planner/implementation/base.rs`（任务 `2072-åæ-planner-implementation-base-7a449d92.md`）
-- [ ] `pkg/planner/implementation/datasource.rs.md` ← `pkg/planner/implementation/datasource.rs`（任务 `2073-åæ-planner-implementation-datasource-823e4a66.md`）
-- [ ] `pkg/planner/implementation/join.rs.md` ← `pkg/planner/implementation/join.rs`（任务 `2074-åæ-planner-implementation-join-ac1544ae.md`）
-- [ ] `pkg/planner/implementation/simple_plans.rs.md` ← `pkg/planner/implementation/simple_plans.rs`（任务 `2076-åæ-planner-implementation-simple_plans-cf2bc08e.md`）
-- [ ] `pkg/planner/implementation/sort.rs.md` ← `pkg/planner/implementation/sort.rs`（任务 `2077-åæ-planner-implementation-sort-6833d593.md`）
-- [ ] `pkg/planner/indexadvisor/algorithm.rs.md` ← `pkg/planner/indexadvisor/algorithm.rs`（任务 `2078-åæ-planner-indexadvisor-algorithm-6ae10dbd.md`）
-- [ ] `pkg/planner/indexadvisor/indexadvisor.rs.md` ← `pkg/planner/indexadvisor/indexadvisor.rs`（任务 `2079-åæ-planner-indexadvisor-indexadvisor-0e5b976c.md`）
-- [ ] `pkg/planner/indexadvisor/model.rs.md` ← `pkg/planner/indexadvisor/model.rs`（任务 `2081-åæ-planner-indexadvisor-model-7092b657.md`）
-- [ ] `pkg/planner/indexadvisor/optimizer.rs.md` ← `pkg/planner/indexadvisor/optimizer.rs`（任务 `2082-åæ-planner-indexadvisor-optimizer-2b9989bd.md`）
-- [ ] `pkg/planner/indexadvisor/options.rs.md` ← `pkg/planner/indexadvisor/options.rs`（任务 `2083-åæ-planner-indexadvisor-options-1aabf732.md`）
-- [ ] `pkg/planner/indexadvisor/utils.rs.md` ← `pkg/planner/indexadvisor/utils.rs`（任务 `2084-åæ-planner-indexadvisor-utils-56220d3c.md`）
-- [ ] `pkg/planner/memo/expr_iterator.rs.md` ← `pkg/planner/memo/expr_iterator.rs`（任务 `2086-åæ-planner-memo-expr_iterator-668e9334.md`）
-- [ ] `pkg/planner/memo/group.rs.md` ← `pkg/planner/memo/group.rs`（任务 `2087-åæ-planner-memo-group-dcbdc491.md`）
-- [ ] `pkg/planner/memo/group_expr.rs.md` ← `pkg/planner/memo/group_expr.rs`（任务 `2088-åæ-planner-memo-group_expr-cc8a849d.md`）
-- [ ] `pkg/planner/memo/implementation.rs.md` ← `pkg/planner/memo/implementation.rs`（任务 `2089-åæ-planner-memo-implementation-b562d544.md`）
-- [ ] `pkg/planner/optimize.rs.md` ← `pkg/planner/optimize.rs`（任务 `2091-åæ-pkg-planner-optimize-f721183c.md`）
-- [ ] `pkg/planner/planctx/context.rs.md` ← `pkg/planner/planctx/context.rs`（任务 `2092-åæ-planner-planctx-context-f3791e7b.md`）
-- [ ] `pkg/planner/plannersession/context.rs.md` ← `pkg/planner/plannersession/context.rs`（任务 `2094-åæ-planner-plannersession-context-3b8c80c0.md`）
-- [ ] `pkg/planner/property/logical_property.rs.md` ← `pkg/planner/property/logical_property.rs`（任务 `2097-åæ-planner-property-logical_property-004dcb23.md`）
-- [ ] `pkg/planner/property/physical_property.rs.md` ← `pkg/planner/property/physical_property.rs`（任务 `2098-åæ-planner-property-physical_property-902bf67a.md`）
-- [ ] `pkg/planner/property/stats_info.rs.md` ← `pkg/planner/property/stats_info.rs`（任务 `2099-åæ-planner-property-stats_info-b3404be9.md`）
-- [ ] `pkg/planner/property/task_type.rs.md` ← `pkg/planner/property/task_type.rs`（任务 `2100-åæ-planner-property-task_type-dbf8d05f.md`）
-- [ ] `pkg/planner/util/byitem.rs.md` ← `pkg/planner/util/byitem.rs`（任务 `2101-åæ-planner-util-byitem-c89db3ad.md`）
-- [ ] `pkg/planner/util/column.rs.md` ← `pkg/planner/util/column.rs`（任务 `2102-åæ-planner-util-column-e0c46b9f.md`）
-- [ ] `pkg/planner/util/coretestsdk/mock.rs.md` ← `pkg/planner/util/coretestsdk/mock.rs`（任务 `2104-åæ-util-coretestsdk-mock-470f2300.md`）
-- [ ] `pkg/planner/util/coretestsdk/testkit.rs.md` ← `pkg/planner/util/coretestsdk/testkit.rs`（任务 `2105-åæ-util-coretestsdk-testkit-38bb3899.md`）
-- [ ] `pkg/planner/util/coreusage/cast_misc.rs.md` ← `pkg/planner/util/coreusage/cast_misc.rs`（任务 `2106-åæ-util-coreusage-cast_misc-52c3fd6f.md`）
-- [ ] `pkg/planner/util/coreusage/correlated_misc.rs.md` ← `pkg/planner/util/coreusage/correlated_misc.rs`（任务 `2107-åæ-util-coreusage-correlated_misc-55bb34b6.md`）
-- [ ] `pkg/planner/util/costusage/cost_misc.rs.md` ← `pkg/planner/util/costusage/cost_misc.rs`（任务 `2109-åæ-util-costusage-cost_misc-5b41dd46.md`）
-- [ ] `pkg/planner/util/domainmisc/info.rs.md` ← `pkg/planner/util/domainmisc/info.rs`（任务 `2111-åæ-util-domainmisc-info-01925cfa.md`）
-- [ ] `pkg/planner/util/explain_misc.rs.md` ← `pkg/planner/util/explain_misc.rs`（任务 `2113-åæ-planner-util-explain_misc-f2e417a7.md`）
-- [ ] `pkg/planner/util/expression.rs.md` ← `pkg/planner/util/expression.rs`（任务 `2114-åæ-planner-util-expression-bfdfd8c2.md`）
-- [ ] `pkg/planner/util/fixcontrol/get.rs.md` ← `pkg/planner/util/fixcontrol/get.rs`（任务 `2115-åæ-util-fixcontrol-get-4b496510.md`）
-- [ ] `pkg/planner/util/fixcontrol/set.rs.md` ← `pkg/planner/util/fixcontrol/set.rs`（任务 `2117-åæ-util-fixcontrol-set-420a669d.md`）
-- [ ] `pkg/planner/util/funcdep_misc.rs.md` ← `pkg/planner/util/funcdep_misc.rs`（任务 `2118-åæ-planner-util-funcdep_misc-24d083aa.md`）
-- [ ] `pkg/planner/util/handle_cols.rs.md` ← `pkg/planner/util/handle_cols.rs`（任务 `2119-åæ-planner-util-handle_cols-e2610281.md`）
-- [ ] `pkg/planner/util/misc.rs.md` ← `pkg/planner/util/misc.rs`（任务 `2121-åæ-planner-util-misc-c8f3f55d.md`）
-- [ ] `pkg/planner/util/null_misc.rs.md` ← `pkg/planner/util/null_misc.rs`（任务 `2122-åæ-planner-util-null_misc-d3e5ae20.md`）
-- [ ] `pkg/planner/util/null_misc_builtins.rs.md` ← `pkg/planner/util/null_misc_builtins.rs`（任务 `2123-åæ-planner-util-null_misc_builtins-ee3f84f1.md`）
-- [ ] `pkg/planner/util/partitionpruning/partition_prune.rs.md` ← `pkg/planner/util/partitionpruning/partition_prune.rs`（任务 `2125-åæ-util-partitionpruning-partition_prune-43775649.md`）
-- [ ] `pkg/planner/util/path.rs.md` ← `pkg/planner/util/path.rs`（任务 `2126-åæ-planner-util-path-5a606d6e.md`）
-- [ ] `pkg/planner/util/tablesampler/sample.rs.md` ← `pkg/planner/util/tablesampler/sample.rs`（任务 `2128-åæ-util-tablesampler-sample-df2cd007.md`）
-- [ ] `pkg/planner/util/utilfuncp/func_pointer_misc.rs.md` ← `pkg/planner/util/utilfuncp/func_pointer_misc.rs`（任务 `2129-åæ-util-utilfuncp-func_pointer_misc-c3ef7ffb.md`）
+- [ ] `pkg/planner/cardinality/cross_estimation.rs.md`
+- [ ] `pkg/planner/cardinality/exponential.rs.md`
+- [ ] `pkg/planner/cardinality/join.rs.md`
+- [ ] `pkg/planner/cardinality/ndv.rs.md`
+- [ ] `pkg/planner/cardinality/pseudo.rs.md`
+- [ ] `pkg/planner/cardinality/row_count_column.rs.md`
+- [ ] `pkg/planner/cardinality/row_count_index.rs.md`
+- [ ] `pkg/planner/cardinality/row_size.rs.md`
+- [ ] `pkg/planner/cardinality/selectivity.rs.md`
+- [ ] `pkg/planner/cardinality/trace.rs.md`
+- [ ] `pkg/planner/cascades/base/base.rs.md`
+- [ ] `pkg/planner/cascades/base/cascadesctx/cascades_ctx.rs.md`
+- [ ] `pkg/planner/cascades/base/hash_equaler.rs.md`
+- [ ] `pkg/planner/cascades/base/task_scheduler_base.rs.md`
+- [ ] `pkg/planner/cascades/base/task_stack_base.rs.md`
+- [ ] `pkg/planner/cascades/cascades.rs.md`
+- [ ] `pkg/planner/cascades/impl/find_best_task_router.rs.md`
+- [ ] `pkg/planner/cascades/impl/impl_and_cost.rs.md`
+- [ ] `pkg/planner/cascades/memo/group.rs.md`
+- [ ] `pkg/planner/cascades/memo/group_expr.rs.md`
+- [ ] `pkg/planner/cascades/memo/group_id_generator.rs.md`
+- [ ] `pkg/planner/cascades/memo/memo.rs.md`
+- [ ] `pkg/planner/cascades/old/enforcer_rules.rs.md`
+- [ ] `pkg/planner/cascades/old/implementation_rules.rs.md`
+- [ ] `pkg/planner/cascades/old/optimize.rs.md`
+- [ ] `pkg/planner/cascades/old/stringer.rs.md`
+- [ ] `pkg/planner/cascades/old/transformation_rules.rs.md`
+- [ ] `pkg/planner/cascades/pattern/engine.rs.md`
+- [ ] `pkg/planner/cascades/pattern/pattern.rs.md`
+- [ ] `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_base.rs.md`
+- [ ] `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs.md`
+- [ ] `pkg/planner/cascades/rule/binder.rs.md`
+- [ ] `pkg/planner/cascades/rule/join/join_to_apply.rs.md`
+- [ ] `pkg/planner/cascades/rule/rule.rs.md`
+- [ ] `pkg/planner/cascades/rule/rule_type.rs.md`
+- [ ] `pkg/planner/cascades/rule/ruleset/rule_set.rs.md`
+- [ ] `pkg/planner/cascades/task/base.rs.md`
+- [ ] `pkg/planner/cascades/task/task.rs.md`
+- [ ] `pkg/planner/cascades/task/task_apply_rule.rs.md`
+- [ ] `pkg/planner/cascades/task/task_opt_group.rs.md`
+- [ ] `pkg/planner/cascades/task/task_opt_group_expression.rs.md`
+- [ ] `pkg/planner/cascades/task/task_scheduler.rs.md`
+- [ ] `pkg/planner/cascades/util/string_writer.rs.md`
+- [ ] `pkg/planner/core/access/access_obj.rs.md`
+- [ ] `pkg/planner/core/access_object.rs.md`
+- [ ] `pkg/planner/core/base/misc_base.rs.md`
+- [ ] `pkg/planner/core/base/plan_base.rs.md`
+- [ ] `pkg/planner/core/base/rule_base.rs.md`
+- [ ] `pkg/planner/core/base/task_base.rs.md`
+- [ ] `pkg/planner/core/casetest/instanceplancache/support.rs.md`
+- [ ] `pkg/planner/core/columnar_index_utils.rs.md`
+- [ ] `pkg/planner/core/common_plans.rs.md`
+- [ ] `pkg/planner/core/constraint/exprs.rs.md`
+- [ ] `pkg/planner/core/core_init.rs.md`
+- [ ] `pkg/planner/core/cost/factors_thresholds.rs.md`
+- [ ] `pkg/planner/core/encode.rs.md`
+- [ ] `pkg/planner/core/exhaust_physical_plans.rs.md`
+- [ ] `pkg/planner/core/expression_codec_fn.rs.md`
+- [ ] `pkg/planner/core/expression_rewriter.rs.md`
+- [ ] `pkg/planner/core/find_best_task.rs.md`
+- [ ] `pkg/planner/core/flat_plan.rs.md`
+- [ ] `pkg/planner/core/fts_plan_builder.rs.md`
+- [ ] `pkg/planner/core/fts_resolve_index.rs.md`
+- [ ] `pkg/planner/core/fulltext_to_like.rs.md`
+- [ ] `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.rs.md`
+- [ ] `pkg/planner/core/generator/plan_cache/plan_clone_generator.rs.md`
+- [ ] `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs.md`
+- [ ] `pkg/planner/core/hint_utils.rs.md`
+- [ ] `pkg/planner/core/index_join_path.rs.md`
+- [ ] `pkg/planner/core/indexmerge_path.rs.md`
+- [ ] `pkg/planner/core/indexmerge_unfinished_path.rs.md`
+- [ ] `pkg/planner/core/initialize.rs.md`
+- [ ] `pkg/planner/core/joinorder/conflict_detector.rs.md`
+- [ ] `pkg/planner/core/joinorder/join_order.rs.md`
+- [ ] `pkg/planner/core/joinorder/ordered_leading.rs.md`
+- [ ] `pkg/planner/core/joinorder/util.rs.md`
+- [ ] `pkg/planner/core/logical_initialize.rs.md`
+- [ ] `pkg/planner/core/logical_plan_builder.rs.md`
+- [ ] `pkg/planner/core/logical_plan_builder_runtime.rs.md`
+- [ ] `pkg/planner/core/memtable_infoschema_extractor.rs.md`
+- [ ] `pkg/planner/core/memtable_predicate_extractor.rs.md`
+- [ ] `pkg/planner/core/metrics/metrics.rs.md`
+- [ ] `pkg/planner/core/operator/baseimpl/plan.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/base_logical_plan.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/expression_util.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/hash64_equals_generated.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_aggregation.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_apply.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_cte.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_cte_table.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_datasource.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_expand.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_index_scan.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_join.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_limit.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_lock.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_max_one_row.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_mem_table.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_mock.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_partition_union_all.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_plans_misc.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_projection.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_schema_producer.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_selection.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_sequence.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_show.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_show_ddl_jobs.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_sort.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_table_dual.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_table_scan.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_tikv_single_gather.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_top_n.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_union_all.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_union_scan.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/logical_window.rs.md`
+- [ ] `pkg/planner/core/operator/logicalop/shallow_ref_generated.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/base_physical_agg.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/base_physical_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/base_physical_plan.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/cache_snapshot.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/enforce.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/foreign_key.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/fragment.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/index_join_probe.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/nominal_sort.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_apply.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_batch_point_get.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_common_plans.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_cte.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_cte_table.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_delete.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_exchange_receiver.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_exchange_sender.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_expand.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_hash_agg.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_hash_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_index_hash_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_index_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_index_merge_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_index_reader.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_index_scan.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_indexlookup.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_indexlookup_reader.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_indexmerge_reader.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_insert.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_limit.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_lock.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_max_one_row.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_mem_table.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_merge_join.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_plan_misc.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_projection.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_schema_producer.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_selection.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_sequence.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_show.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_shuffle.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_sort.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_stream_agg.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_table_dual.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_table_reader.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_table_sample.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_table_scan.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_topn.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_union_all.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_union_scan.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_utils.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/physical_window.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/plan_clone_generated.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/task.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/task_base.rs.md`
+- [ ] `pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs.md`
+- [ ] `pkg/planner/core/optimizer.rs.md`
+- [ ] `pkg/planner/core/optimizer_runtime.rs.md`
+- [ ] `pkg/planner/core/partidx/check_constraint.rs.md`
+- [ ] `pkg/planner/core/pb_to_plan.rs.md`
+- [ ] `pkg/planner/core/plan.rs.md`
+- [ ] `pkg/planner/core/plan_cache.rs.md`
+- [ ] `pkg/planner/core/plan_cache_instance.rs.md`
+- [ ] `pkg/planner/core/plan_cache_lru.rs.md`
+- [ ] `pkg/planner/core/plan_cache_param.rs.md`
+- [ ] `pkg/planner/core/plan_cache_rebuild.rs.md`
+- [ ] `pkg/planner/core/plan_cache_utils.rs.md`
+- [ ] `pkg/planner/core/plan_cacheable_checker.rs.md`
+- [ ] `pkg/planner/core/plan_clone_utils.rs.md`
+- [ ] `pkg/planner/core/plan_cost_ver1.rs.md`
+- [ ] `pkg/planner/core/plan_cost_ver2.rs.md`
+- [ ] `pkg/planner/core/planbuilder.rs.md`
+- [ ] `pkg/planner/core/planbuilder_runtime.rs.md`
+- [ ] `pkg/planner/core/point_get_plan.rs.md`
+- [ ] `pkg/planner/core/point_get_plan_runtime.rs.md`
+- [ ] `pkg/planner/core/preprocess.rs.md`
+- [ ] `pkg/planner/core/property_cols_prune.rs.md`
+- [ ] `pkg/planner/core/recheck_cte.rs.md`
+- [ ] `pkg/planner/core/resolve/resolve.rs.md`
+- [ ] `pkg/planner/core/resolve/result.rs.md`
+- [ ] `pkg/planner/core/resolve_indices.rs.md`
+- [ ] `pkg/planner/core/rule/collect_column_stats_usage.rs.md`
+- [ ] `pkg/planner/core/rule/logical_rules.rs.md`
+- [ ] `pkg/planner/core/rule/rule_build_key_info.rs.md`
+- [ ] `pkg/planner/core/rule/rule_collect_plan_stats.rs.md`
+- [ ] `pkg/planner/core/rule/rule_column_pruning.rs.md`
+- [ ] `pkg/planner/core/rule/rule_constant_propagation.rs.md`
+- [ ] `pkg/planner/core/rule/rule_init.rs.md`
+- [ ] `pkg/planner/core/rule/rule_join_key_type_cast.rs.md`
+- [ ] `pkg/planner/core/rule/rule_max_min_eliminate.rs.md`
+- [ ] `pkg/planner/core/rule/rule_order_aware_join_reorder.rs.md`
+- [ ] `pkg/planner/core/rule/rule_outer_join_to_semi_join.rs.md`
+- [ ] `pkg/planner/core/rule/rule_partition_processor.rs.md`
+- [ ] `pkg/planner/core/rule/rule_predicate_simplification.rs.md`
+- [ ] `pkg/planner/core/rule/rule_prune_indexes.rs.md`
+- [ ] `pkg/planner/core/rule/util/misc.rs.md`
+- [ ] `pkg/planner/core/rule_aggregation_elimination.rs.md`
+- [ ] `pkg/planner/core/rule_aggregation_push_down.rs.md`
+- [ ] `pkg/planner/core/rule_aggregation_skew_rewrite.rs.md`
+- [ ] `pkg/planner/core/rule_correlate.rs.md`
+- [ ] `pkg/planner/core/rule_decorrelate.rs.md`
+- [ ] `pkg/planner/core/rule_derive_topn_from_window.rs.md`
+- [ ] `pkg/planner/core/rule_eliminate_empty_selection.rs.md`
+- [ ] `pkg/planner/core/rule_eliminate_projection.rs.md`
+- [ ] `pkg/planner/core/rule_eliminate_unionall_dual_item.rs.md`
+- [ ] `pkg/planner/core/rule_generate_column_substitute.rs.md`
+- [ ] `pkg/planner/core/rule_inject_extra_projection.rs.md`
+- [ ] `pkg/planner/core/rule_join_elimination.rs.md`
+- [ ] `pkg/planner/core/rule_join_reorder.rs.md`
+- [ ] `pkg/planner/core/rule_join_reorder_dp.rs.md`
+- [ ] `pkg/planner/core/rule_join_reorder_greedy.rs.md`
+- [ ] `pkg/planner/core/rule_join_reorder_projection_inline.rs.md`
+- [ ] `pkg/planner/core/rule_predicate_push_down.rs.md`
+- [ ] `pkg/planner/core/rule_push_down_sequence.rs.md`
+- [ ] `pkg/planner/core/rule_resolve_grouping_expand.rs.md`
+- [ ] `pkg/planner/core/rule_result_reorder.rs.md`
+- [ ] `pkg/planner/core/rule_semi_join_rewrite.rs.md`
+- [ ] `pkg/planner/core/rule_topn_push_down.rs.md`
+- [ ] `pkg/planner/core/runtime_filter_generator.rs.md`
+- [ ] `pkg/planner/core/scalar_subq_expression.rs.md`
+- [ ] `pkg/planner/core/schema_table_key.rs.md`
+- [ ] `pkg/planner/core/show_predicate_extractor.rs.md`
+- [ ] `pkg/planner/core/stats.rs.md`
+- [ ] `pkg/planner/core/stats/stats.rs.md`
+- [ ] `pkg/planner/core/stringer.rs.md`
+- [ ] `pkg/planner/core/subquery_plan_builder.rs.md`
+- [ ] `pkg/planner/core/task.rs.md`
+- [ ] `pkg/planner/core/telemetry.rs.md`
+- [ ] `pkg/planner/core/trace.rs.md`
+- [ ] `pkg/planner/core/util.rs.md`
+- [ ] `pkg/planner/extstore/extstore.rs.md`
+- [ ] `pkg/planner/funcdep/fd_graph.rs.md`
+- [ ] `pkg/planner/implementation/base.rs.md`
+- [ ] `pkg/planner/implementation/datasource.rs.md`
+- [ ] `pkg/planner/implementation/join.rs.md`
+- [ ] `pkg/planner/implementation/simple_plans.rs.md`
+- [ ] `pkg/planner/implementation/sort.rs.md`
+- [ ] `pkg/planner/indexadvisor/algorithm.rs.md`
+- [ ] `pkg/planner/indexadvisor/indexadvisor.rs.md`
+- [ ] `pkg/planner/indexadvisor/model.rs.md`
+- [ ] `pkg/planner/indexadvisor/optimizer.rs.md`
+- [ ] `pkg/planner/indexadvisor/options.rs.md`
+- [ ] `pkg/planner/indexadvisor/utils.rs.md`
+- [ ] `pkg/planner/memo/expr_iterator.rs.md`
+- [ ] `pkg/planner/memo/group.rs.md`
+- [ ] `pkg/planner/memo/group_expr.rs.md`
+- [ ] `pkg/planner/memo/implementation.rs.md`
+- [ ] `pkg/planner/optimize.rs.md`
+- [ ] `pkg/planner/planctx/context.rs.md`
+- [ ] `pkg/planner/plannersession/context.rs.md`
+- [ ] `pkg/planner/property/logical_property.rs.md`
+- [ ] `pkg/planner/property/physical_property.rs.md`
+- [ ] `pkg/planner/property/stats_info.rs.md`
+- [ ] `pkg/planner/property/task_type.rs.md`
+- [ ] `pkg/planner/util/byitem.rs.md`
+- [ ] `pkg/planner/util/column.rs.md`
+- [ ] `pkg/planner/util/coretestsdk/mock.rs.md`
+- [ ] `pkg/planner/util/coretestsdk/testkit.rs.md`
+- [ ] `pkg/planner/util/coreusage/cast_misc.rs.md`
+- [ ] `pkg/planner/util/coreusage/correlated_misc.rs.md`
+- [ ] `pkg/planner/util/costusage/cost_misc.rs.md`
+- [ ] `pkg/planner/util/domainmisc/info.rs.md`
+- [ ] `pkg/planner/util/explain_misc.rs.md`
+- [ ] `pkg/planner/util/expression.rs.md`
+- [ ] `pkg/planner/util/fixcontrol/get.rs.md`
+- [ ] `pkg/planner/util/fixcontrol/set.rs.md`
+- [ ] `pkg/planner/util/funcdep_misc.rs.md`
+- [ ] `pkg/planner/util/handle_cols.rs.md`
+- [ ] `pkg/planner/util/misc.rs.md`
+- [ ] `pkg/planner/util/null_misc.rs.md`
+- [ ] `pkg/planner/util/null_misc_builtins.rs.md`
+- [ ] `pkg/planner/util/partitionpruning/partition_prune.rs.md`
+- [ ] `pkg/planner/util/path.rs.md`
+- [ ] `pkg/planner/util/tablesampler/sample.rs.md`
+- [ ] `pkg/planner/util/utilfuncp/func_pointer_misc.rs.md`
 
 ## pkg/plugin
 
-- [ ] `pkg/plugin/audit.rs.md` ← `pkg/plugin/audit.rs`（任务 `2131-åæ-pkg-plugin-audit-638b1705.md`）
-- [ ] `pkg/plugin/conn_ip_example/conn_ip_example.rs.md` ← `pkg/plugin/conn_ip_example/conn_ip_example.rs`（任务 `2132-åæ-plugin-conn_ip_example-conn_ip_example-f7ee5b4e.md`）
-- [ ] `pkg/plugin/const.rs.md` ← `pkg/plugin/const.rs`（任务 `2134-åæ-pkg-plugin-const-f473118b.md`）
-- [ ] `pkg/plugin/errors.rs.md` ← `pkg/plugin/errors.rs`（任务 `2135-åæ-pkg-plugin-errors-df4a1857.md`）
-- [ ] `pkg/plugin/helper.rs.md` ← `pkg/plugin/helper.rs`（任务 `2136-åæ-pkg-plugin-helper-1086f8ed.md`）
-- [ ] `pkg/plugin/plugin.rs.md` ← `pkg/plugin/plugin.rs`（任务 `2138-åæ-pkg-plugin-plugin-400dd0e2.md`）
-- [ ] `pkg/plugin/spi.rs.md` ← `pkg/plugin/spi.rs`（任务 `2139-åæ-pkg-plugin-spi-43ac927f.md`）
+- [ ] `pkg/plugin/audit.rs.md`
+- [ ] `pkg/plugin/conn_ip_example/conn_ip_example.rs.md`
+- [ ] `pkg/plugin/const.rs.md`
+- [ ] `pkg/plugin/errors.rs.md`
+- [ ] `pkg/plugin/helper.rs.md`
+- [ ] `pkg/plugin/plugin.rs.md`
+- [ ] `pkg/plugin/spi.rs.md`
 
 ## pkg/privilege
 
-- [ ] `pkg/privilege/conn/conn.rs.md` ← `pkg/privilege/conn/conn.rs`（任务 `2140-åæ-privilege-conn-conn-17946f91.md`）
-- [ ] `pkg/privilege/privilege.rs.md` ← `pkg/privilege/privilege.rs`（任务 `2143-åæ-pkg-privilege-privilege-54db60ef.md`）
-- [ ] `pkg/privilege/privileges/cache.rs.md` ← `pkg/privilege/privileges/cache.rs`（任务 `2144-åæ-privilege-privileges-cache-3c8c972f.md`）
-- [ ] `pkg/privilege/privileges/errors.rs.md` ← `pkg/privilege/privileges/errors.rs`（任务 `2145-åæ-privilege-privileges-errors-ae7b8b05.md`）
-- [ ] `pkg/privilege/privileges/ldap/const.rs.md` ← `pkg/privilege/privileges/ldap/const.rs`（任务 `2146-åæ-privileges-ldap-const-0bab7c72.md`）
-- [ ] `pkg/privilege/privileges/ldap/ldap_common.rs.md` ← `pkg/privilege/privileges/ldap/ldap_common.rs`（任务 `2147-åæ-privileges-ldap-ldap_common-c7242e4d.md`）
-- [ ] `pkg/privilege/privileges/ldap/sasl.rs.md` ← `pkg/privilege/privileges/ldap/sasl.rs`（任务 `2149-åæ-privileges-ldap-sasl-00d20ca2.md`）
-- [ ] `pkg/privilege/privileges/ldap/simple.rs.md` ← `pkg/privilege/privileges/ldap/simple.rs`（任务 `2150-åæ-privileges-ldap-simple-3e6f5636.md`）
-- [ ] `pkg/privilege/privileges/privileges.rs.md` ← `pkg/privilege/privileges/privileges.rs`（任务 `2152-åæ-privilege-privileges-privileges-7cdd8777.md`）
-- [ ] `pkg/privilege/privileges/tidb_auth_token.rs.md` ← `pkg/privilege/privileges/tidb_auth_token.rs`（任务 `2153-åæ-privilege-privileges-tidb_auth_token-b6776574.md`）
-- [ ] `pkg/privilege/privileges/user_attributes_filter.rs.md` ← `pkg/privilege/privileges/user_attributes_filter.rs`（任务 `2154-åæ-privilege-privileges-user_attributes_filter-9b54aca3.md`）
+- [ ] `pkg/privilege/conn/conn.rs.md`
+- [ ] `pkg/privilege/privilege.rs.md`
+- [ ] `pkg/privilege/privileges/cache.rs.md`
+- [ ] `pkg/privilege/privileges/errors.rs.md`
+- [ ] `pkg/privilege/privileges/ldap/const.rs.md`
+- [ ] `pkg/privilege/privileges/ldap/ldap_common.rs.md`
+- [ ] `pkg/privilege/privileges/ldap/sasl.rs.md`
+- [ ] `pkg/privilege/privileges/ldap/simple.rs.md`
+- [ ] `pkg/privilege/privileges/privileges.rs.md`
+- [ ] `pkg/privilege/privileges/tidb_auth_token.rs.md`
+- [ ] `pkg/privilege/privileges/user_attributes_filter.rs.md`
 
 ## pkg/resourcegroup
 
-- [ ] `pkg/resourcegroup/checker.rs.md` ← `pkg/resourcegroup/checker.rs`（任务 `2155-åæ-pkg-resourcegroup-checker-aec8f0f4.md`）
-- [ ] `pkg/resourcegroup/runaway/checker.rs.md` ← `pkg/resourcegroup/runaway/checker.rs`（任务 `2157-åæ-resourcegroup-runaway-checker-8e4d9ce4.md`）
-- [ ] `pkg/resourcegroup/runaway/flusher.rs.md` ← `pkg/resourcegroup/runaway/flusher.rs`（任务 `2158-åæ-resourcegroup-runaway-flusher-a013f247.md`）
-- [ ] `pkg/resourcegroup/runaway/manager.rs.md` ← `pkg/resourcegroup/runaway/manager.rs`（任务 `2160-åæ-resourcegroup-runaway-manager-587fa3ac.md`）
-- [ ] `pkg/resourcegroup/runaway/record.rs.md` ← `pkg/resourcegroup/runaway/record.rs`（任务 `2161-åæ-resourcegroup-runaway-record-590c1700.md`）
-- [ ] `pkg/resourcegroup/runaway/syncer.rs.md` ← `pkg/resourcegroup/runaway/syncer.rs`（任务 `2162-åæ-resourcegroup-runaway-syncer-97370ec7.md`）
-- [ ] `pkg/resourcegroup/ruv2/model.rs.md` ← `pkg/resourcegroup/ruv2/model.rs`（任务 `2164-åæ-resourcegroup-ruv2-model-b59e4238.md`）
+- [ ] `pkg/resourcegroup/checker.rs.md`
+- [ ] `pkg/resourcegroup/runaway/checker.rs.md`
+- [ ] `pkg/resourcegroup/runaway/flusher.rs.md`
+- [ ] `pkg/resourcegroup/runaway/manager.rs.md`
+- [ ] `pkg/resourcegroup/runaway/record.rs.md`
+- [ ] `pkg/resourcegroup/runaway/syncer.rs.md`
+- [ ] `pkg/resourcegroup/ruv2/model.rs.md`
 
 ## pkg/resourcemanager
 
-- [ ] `pkg/resourcemanager/pool/basepool.rs.md` ← `pkg/resourcemanager/pool/basepool.rs`（任务 `2166-åæ-resourcemanager-pool-basepool-3142f0d5.md`）
-- [ ] `pkg/resourcemanager/pool/spool/option.rs.md` ← `pkg/resourcemanager/pool/spool/option.rs`（任务 `2169-åæ-pool-spool-option-3ab91dc5.md`）
-- [ ] `pkg/resourcemanager/pool/spool/spool.rs.md` ← `pkg/resourcemanager/pool/spool/spool.rs`（任务 `2170-åæ-pool-spool-spool-f6f087a3.md`）
-- [ ] `pkg/resourcemanager/pool/workerpool/workerpool.rs.md` ← `pkg/resourcemanager/pool/workerpool/workerpool.rs`（任务 `2172-åæ-pool-workerpool-workerpool-cb04ba80.md`）
-- [ ] `pkg/resourcemanager/poolmanager/task_manager.rs.md` ← `pkg/resourcemanager/poolmanager/task_manager.rs`（任务 `2174-åæ-resourcemanager-poolmanager-task_manager-2a86f281.md`）
-- [ ] `pkg/resourcemanager/poolmanager/task_manager_iterator.rs.md` ← `pkg/resourcemanager/poolmanager/task_manager_iterator.rs`（任务 `2175-åæ-resourcemanager-poolmanager-task_manager_iterator-032b9e5a.md`）
-- [ ] `pkg/resourcemanager/poolmanager/task_manager_scheduler.rs.md` ← `pkg/resourcemanager/poolmanager/task_manager_scheduler.rs`（任务 `2176-åæ-resourcemanager-poolmanager-task_manager_scheduler-599210fe.md`）
-- [ ] `pkg/resourcemanager/rm.rs.md` ← `pkg/resourcemanager/rm.rs`（任务 `2177-åæ-pkg-resourcemanager-rm-ba12a1ad.md`）
-- [ ] `pkg/resourcemanager/schedule.rs.md` ← `pkg/resourcemanager/schedule.rs`（任务 `2178-åæ-pkg-resourcemanager-schedule-6385ccfe.md`）
-- [ ] `pkg/resourcemanager/scheduler/cpu_scheduler.rs.md` ← `pkg/resourcemanager/scheduler/cpu_scheduler.rs`（任务 `2179-åæ-resourcemanager-scheduler-cpu_scheduler-9aaecf2f.md`）
-- [ ] `pkg/resourcemanager/scheduler/scheduler.rs.md` ← `pkg/resourcemanager/scheduler/scheduler.rs`（任务 `2181-åæ-resourcemanager-scheduler-scheduler-a5e1f7b4.md`）
-- [ ] `pkg/resourcemanager/util/mock_gpool.rs.md` ← `pkg/resourcemanager/util/mock_gpool.rs`（任务 `2183-åæ-resourcemanager-util-mock_gpool-5f24a68e.md`）
-- [ ] `pkg/resourcemanager/util/shard_pool_map.rs.md` ← `pkg/resourcemanager/util/shard_pool_map.rs`（任务 `2184-åæ-resourcemanager-util-shard_pool_map-fbc31c6b.md`）
-- [ ] `pkg/resourcemanager/util/util.rs.md` ← `pkg/resourcemanager/util/util.rs`（任务 `2185-åæ-resourcemanager-util-util-ca2c0fd8.md`）
+- [ ] `pkg/resourcemanager/pool/basepool.rs.md`
+- [ ] `pkg/resourcemanager/pool/spool/option.rs.md`
+- [ ] `pkg/resourcemanager/pool/spool/spool.rs.md`
+- [ ] `pkg/resourcemanager/pool/workerpool/workerpool.rs.md`
+- [ ] `pkg/resourcemanager/poolmanager/task_manager.rs.md`
+- [ ] `pkg/resourcemanager/poolmanager/task_manager_iterator.rs.md`
+- [ ] `pkg/resourcemanager/poolmanager/task_manager_scheduler.rs.md`
+- [ ] `pkg/resourcemanager/rm.rs.md`
+- [ ] `pkg/resourcemanager/schedule.rs.md`
+- [ ] `pkg/resourcemanager/scheduler/cpu_scheduler.rs.md`
+- [ ] `pkg/resourcemanager/scheduler/scheduler.rs.md`
+- [ ] `pkg/resourcemanager/util/mock_gpool.rs.md`
+- [ ] `pkg/resourcemanager/util/shard_pool_map.rs.md`
+- [ ] `pkg/resourcemanager/util/util.rs.md`
 
 ## pkg/server
 
-- [ ] `pkg/server/conn.rs.md` ← `pkg/server/conn.rs`（任务 `2186-åæ-pkg-server-conn-dab61191.md`）
-- [ ] `pkg/server/conn_stmt.rs.md` ← `pkg/server/conn_stmt.rs`（任务 `2187-åæ-pkg-server-conn_stmt-3df39954.md`）
-- [ ] `pkg/server/conn_stmt_params.rs.md` ← `pkg/server/conn_stmt_params.rs`（任务 `2188-åæ-pkg-server-conn_stmt_params-934b52a5.md`）
-- [ ] `pkg/server/driver.rs.md` ← `pkg/server/driver.rs`（任务 `2189-åæ-pkg-server-driver-19c89a6e.md`）
-- [ ] `pkg/server/driver_tidb.rs.md` ← `pkg/server/driver_tidb.rs`（任务 `2190-åæ-pkg-server-driver_tidb-e8773562.md`）
-- [ ] `pkg/server/err/error.rs.md` ← `pkg/server/err/error.rs`（任务 `2191-åæ-server-err-error-734471c2.md`）
-- [ ] `pkg/server/extension.rs.md` ← `pkg/server/extension.rs`（任务 `2193-åæ-pkg-server-extension-2ed7c8ef.md`）
-- [ ] `pkg/server/extract.rs.md` ← `pkg/server/extract.rs`（任务 `2194-åæ-pkg-server-extract-9eb3c398.md`）
-- [ ] `pkg/server/extract_runtime.rs.md` ← `pkg/server/extract_runtime.rs`（任务 `2195-åæ-pkg-server-extract_runtime-16986de3.md`）
-- [ ] `pkg/server/handler/auto_id_owner_handler.rs.md` ← `pkg/server/handler/auto_id_owner_handler.rs`（任务 `2196-åæ-server-handler-auto_id_owner_handler-97a5d204.md`）
-- [ ] `pkg/server/handler/extractorhandler/extractor.rs.md` ← `pkg/server/handler/extractorhandler/extractor.rs`（任务 `2197-åæ-handler-extractorhandler-extractor-e395c240.md`）
-- [ ] `pkg/server/handler/optimizor/optimize_trace.rs.md` ← `pkg/server/handler/optimizor/optimize_trace.rs`（任务 `2201-åæ-handler-optimizor-optimize_trace-d71f8515.md`）
-- [ ] `pkg/server/handler/optimizor/plan_replayer.rs.md` ← `pkg/server/handler/optimizor/plan_replayer.rs`（任务 `2202-åæ-handler-optimizor-plan_replayer-53846671.md`）
-- [ ] `pkg/server/handler/optimizor/statistics_handler.rs.md` ← `pkg/server/handler/optimizor/statistics_handler.rs`（任务 `2203-åæ-handler-optimizor-statistics_handler-082e33c5.md`）
-- [ ] `pkg/server/handler/tikv_handler.rs.md` ← `pkg/server/handler/tikv_handler.rs`（任务 `2204-åæ-server-handler-tikv_handler-6b323017.md`）
-- [ ] `pkg/server/handler/tikvhandler/dxf.rs.md` ← `pkg/server/handler/tikvhandler/dxf.rs`（任务 `2205-åæ-handler-tikvhandler-dxf-5f0fd6d9.md`）
-- [ ] `pkg/server/handler/tikvhandler/flash_replica.rs.md` ← `pkg/server/handler/tikvhandler/flash_replica.rs`（任务 `2206-åæ-handler-tikvhandler-flash_replica-c4585da0.md`）
-- [ ] `pkg/server/handler/tikvhandler/global_variables.rs.md` ← `pkg/server/handler/tikvhandler/global_variables.rs`（任务 `2207-åæ-handler-tikvhandler-global_variables-b785f37e.md`）
-- [ ] `pkg/server/handler/tikvhandler/tikv_handler.rs.md` ← `pkg/server/handler/tikvhandler/tikv_handler.rs`（任务 `2209-åæ-handler-tikvhandler-tikv_handler-eb09142e.md`）
-- [ ] `pkg/server/handler/ttlhandler/ttl.rs.md` ← `pkg/server/handler/ttlhandler/ttl.rs`（任务 `2211-åæ-handler-ttlhandler-ttl-7fba9ac8.md`）
-- [ ] `pkg/server/handler/upgrade_handler.rs.md` ← `pkg/server/handler/upgrade_handler.rs`（任务 `2212-åæ-server-handler-upgrade_handler-a7778505.md`）
-- [ ] `pkg/server/handler/util.rs.md` ← `pkg/server/handler/util.rs`（任务 `2213-åæ-server-handler-util-f12c2298.md`）
-- [ ] `pkg/server/http_handler.rs.md` ← `pkg/server/http_handler.rs`（任务 `2214-åæ-pkg-server-http_handler-08e826d4.md`）
-- [ ] `pkg/server/http_status.rs.md` ← `pkg/server/http_status.rs`（任务 `2215-åæ-pkg-server-http_status-e7df7027.md`）
-- [ ] `pkg/server/internal/advertisedstatus/checker.rs.md` ← `pkg/server/internal/advertisedstatus/checker.rs`（任务 `2216-åæ-internal-advertisedstatus-checker-44c7ca99.md`）
-- [ ] `pkg/server/internal/column/column.rs.md` ← `pkg/server/internal/column/column.rs`（任务 `2217-åæ-internal-column-column-2d991523.md`）
-- [ ] `pkg/server/internal/column/convert.rs.md` ← `pkg/server/internal/column/convert.rs`（任务 `2218-åæ-internal-column-convert-6a4f4222.md`）
-- [ ] `pkg/server/internal/dump/dump.rs.md` ← `pkg/server/internal/dump/dump.rs`（任务 `2220-åæ-internal-dump-dump-bc574cd9.md`）
-- [ ] `pkg/server/internal/handshake/handshake.rs.md` ← `pkg/server/internal/handshake/handshake.rs`（任务 `2222-åæ-internal-handshake-handshake-22cf1092.md`）
-- [ ] `pkg/server/internal/packetio.rs.md` ← `pkg/server/internal/packetio.rs`（任务 `2225-åæ-server-internal-packetio-85582516.md`）
-- [ ] `pkg/server/internal/parse/parse.rs.md` ← `pkg/server/internal/parse/parse.rs`（任务 `2227-åæ-internal-parse-parse-ee657c8b.md`）
-- [ ] `pkg/server/internal/resultset/cursor.rs.md` ← `pkg/server/internal/resultset/cursor.rs`（任务 `2228-åæ-internal-resultset-cursor-5c813ccd.md`）
-- [ ] `pkg/server/internal/resultset/resultset.rs.md` ← `pkg/server/internal/resultset/resultset.rs`（任务 `2230-åæ-internal-resultset-resultset-a0d3e9dd.md`）
-- [ ] `pkg/server/internal/testserverclient/server_client.rs.md` ← `pkg/server/internal/testserverclient/server_client.rs`（任务 `2232-åæ-internal-testserverclient-server_client-56c58e13.md`）
-- [ ] `pkg/server/internal/testutil/testutil.rs.md` ← `pkg/server/internal/testutil/testutil.rs`（任务 `2234-åæ-internal-testutil-testutil-bb7c71f9.md`）
-- [ ] `pkg/server/internal/util/buffered_read_conn.rs.md` ← `pkg/server/internal/util/buffered_read_conn.rs`（任务 `2235-åæ-internal-util-buffered_read_conn-15821d12.md`）
-- [ ] `pkg/server/internal/util/util.rs.md` ← `pkg/server/internal/util/util.rs`（任务 `2237-åæ-internal-util-util-a240037d.md`）
-- [ ] `pkg/server/metrics/metrics.rs.md` ← `pkg/server/metrics/metrics.rs`（任务 `2240-åæ-server-metrics-metrics-df9bb4b7.md`）
-- [ ] `pkg/server/mock_conn.rs.md` ← `pkg/server/mock_conn.rs`（任务 `2241-åæ-pkg-server-mock_conn-65d3ed89.md`）
-- [ ] `pkg/server/mysql_compat_test_support.rs.md` ← `pkg/server/mysql_compat_test_support.rs`（任务 `2242-åæ-pkg-server-mysql_compat_test_support-b60242a5.md`）
-- [ ] `pkg/server/pg_catalog.rs.md` ← `pkg/server/pg_catalog.rs`（任务 `2243-åæ-pkg-server-pg_catalog-784a98ad.md`）
-- [ ] `pkg/server/pg_catalog_query.rs.md` ← `pkg/server/pg_catalog_query.rs`（任务 `2244-åæ-pkg-server-pg_catalog_query-d0537ef9.md`）
-- [ ] `pkg/server/pg_conn.rs.md` ← `pkg/server/pg_conn.rs`（任务 `2245-åæ-pkg-server-pg_conn-75a6b4b6.md`）
-- [ ] `pkg/server/pg_extended.rs.md` ← `pkg/server/pg_extended.rs`（任务 `2246-åæ-pkg-server-pg_extended-c5d3824e.md`）
-- [ ] `pkg/server/pg_name.rs.md` ← `pkg/server/pg_name.rs`（任务 `2247-åæ-pkg-server-pg_name-48b1e237.md`）
-- [ ] `pkg/server/pg_oid.rs.md` ← `pkg/server/pg_oid.rs`（任务 `2248-åæ-pkg-server-pg_oid-6793aed2.md`）
-- [ ] `pkg/server/pg_protocol.rs.md` ← `pkg/server/pg_protocol.rs`（任务 `2249-åæ-pkg-server-pg_protocol-5ed93a37.md`）
-- [ ] `pkg/server/pg_result.rs.md` ← `pkg/server/pg_result.rs`（任务 `2250-åæ-pkg-server-pg_result-42991156.md`）
-- [ ] `pkg/server/pg_session.rs.md` ← `pkg/server/pg_session.rs`（任务 `2251-åæ-pkg-server-pg_session-d85762a6.md`）
-- [ ] `pkg/server/protocol_result.rs.md` ← `pkg/server/protocol_result.rs`（任务 `2252-åæ-pkg-server-protocol_result-8d5ceb5e.md`）
-- [ ] `pkg/server/protocol_result_test_support.rs.md` ← `pkg/server/protocol_result_test_support.rs`（任务 `2253-åæ-pkg-server-protocol_result_test_support-6ab4c8cc.md`）
-- [ ] `pkg/server/rpc_server.rs.md` ← `pkg/server/rpc_server.rs`（任务 `2254-åæ-pkg-server-rpc_server-a36346d4.md`）
-- [ ] `pkg/server/runtime.rs.md` ← `pkg/server/runtime.rs`（任务 `2255-åæ-pkg-server-runtime-81d7877f.md`）
-- [ ] `pkg/server/server.rs.md` ← `pkg/server/server.rs`（任务 `2256-åæ-pkg-server-server-762bb935.md`）
-- [ ] `pkg/server/standby.rs.md` ← `pkg/server/standby.rs`（任务 `2257-åæ-pkg-server-standby-24634d1b.md`）
-- [ ] `pkg/server/stat.rs.md` ← `pkg/server/stat.rs`（任务 `2258-åæ-pkg-server-stat-7497c0f9.md`）
-- [ ] `pkg/server/user_connections.rs.md` ← `pkg/server/user_connections.rs`（任务 `2259-åæ-pkg-server-user_connections-c3bf2e27.md`）
+- [ ] `pkg/server/conn.rs.md`
+- [ ] `pkg/server/conn_stmt.rs.md`
+- [ ] `pkg/server/conn_stmt_params.rs.md`
+- [ ] `pkg/server/driver.rs.md`
+- [ ] `pkg/server/driver_tidb.rs.md`
+- [ ] `pkg/server/err/error.rs.md`
+- [ ] `pkg/server/extension.rs.md`
+- [ ] `pkg/server/extract.rs.md`
+- [ ] `pkg/server/extract_runtime.rs.md`
+- [ ] `pkg/server/handler/auto_id_owner_handler.rs.md`
+- [ ] `pkg/server/handler/extractorhandler/extractor.rs.md`
+- [ ] `pkg/server/handler/optimizor/optimize_trace.rs.md`
+- [ ] `pkg/server/handler/optimizor/plan_replayer.rs.md`
+- [ ] `pkg/server/handler/optimizor/statistics_handler.rs.md`
+- [ ] `pkg/server/handler/tikv_handler.rs.md`
+- [ ] `pkg/server/handler/tikvhandler/dxf.rs.md`
+- [ ] `pkg/server/handler/tikvhandler/flash_replica.rs.md`
+- [ ] `pkg/server/handler/tikvhandler/global_variables.rs.md`
+- [ ] `pkg/server/handler/tikvhandler/tikv_handler.rs.md`
+- [ ] `pkg/server/handler/ttlhandler/ttl.rs.md`
+- [ ] `pkg/server/handler/upgrade_handler.rs.md`
+- [ ] `pkg/server/handler/util.rs.md`
+- [ ] `pkg/server/http_handler.rs.md`
+- [ ] `pkg/server/http_status.rs.md`
+- [ ] `pkg/server/internal/advertisedstatus/checker.rs.md`
+- [ ] `pkg/server/internal/column/column.rs.md`
+- [ ] `pkg/server/internal/column/convert.rs.md`
+- [ ] `pkg/server/internal/dump/dump.rs.md`
+- [ ] `pkg/server/internal/handshake/handshake.rs.md`
+- [ ] `pkg/server/internal/packetio.rs.md`
+- [ ] `pkg/server/internal/parse/parse.rs.md`
+- [ ] `pkg/server/internal/resultset/cursor.rs.md`
+- [ ] `pkg/server/internal/resultset/resultset.rs.md`
+- [ ] `pkg/server/internal/testserverclient/server_client.rs.md`
+- [ ] `pkg/server/internal/testutil/testutil.rs.md`
+- [ ] `pkg/server/internal/util/buffered_read_conn.rs.md`
+- [ ] `pkg/server/internal/util/util.rs.md`
+- [ ] `pkg/server/metrics/metrics.rs.md`
+- [ ] `pkg/server/mock_conn.rs.md`
+- [ ] `pkg/server/mysql_compat_test_support.rs.md`
+- [ ] `pkg/server/pg_catalog.rs.md`
+- [ ] `pkg/server/pg_catalog_query.rs.md`
+- [ ] `pkg/server/pg_conn.rs.md`
+- [ ] `pkg/server/pg_extended.rs.md`
+- [ ] `pkg/server/pg_name.rs.md`
+- [ ] `pkg/server/pg_oid.rs.md`
+- [ ] `pkg/server/pg_protocol.rs.md`
+- [ ] `pkg/server/pg_result.rs.md`
+- [ ] `pkg/server/pg_session.rs.md`
+- [ ] `pkg/server/protocol_result.rs.md`
+- [ ] `pkg/server/protocol_result_test_support.rs.md`
+- [ ] `pkg/server/rpc_server.rs.md`
+- [ ] `pkg/server/runtime.rs.md`
+- [ ] `pkg/server/server.rs.md`
+- [ ] `pkg/server/standby.rs.md`
+- [ ] `pkg/server/stat.rs.md`
+- [ ] `pkg/server/user_connections.rs.md`
 
 ## pkg/session
 
-- [ ] `pkg/session/advisory_locks.rs.md` ← `pkg/session/advisory_locks.rs`（任务 `2260-åæ-pkg-session-advisory_locks-7b4a5472.md`）
-- [ ] `pkg/session/bootstrap.rs.md` ← `pkg/session/bootstrap.rs`（任务 `2261-åæ-pkg-session-bootstrap-01ab083d.md`）
-- [ ] `pkg/session/contextimpl.rs.md` ← `pkg/session/contextimpl.rs`（任务 `2262-åæ-pkg-session-contextimpl-85fc8849.md`）
-- [ ] `pkg/session/cursor/state.rs.md` ← `pkg/session/cursor/state.rs`（任务 `2264-åæ-session-cursor-state-9ba2ff5c.md`）
-- [ ] `pkg/session/cursor/tracker.rs.md` ← `pkg/session/cursor/tracker.rs`（任务 `2265-åæ-session-cursor-tracker-c24b3730.md`）
-- [ ] `pkg/session/ddl_tables.rs.md` ← `pkg/session/ddl_tables.rs`（任务 `2266-åæ-pkg-session-ddl_tables-a19d06c7.md`）
-- [ ] `pkg/session/dml_runtime.rs.md` ← `pkg/session/dml_runtime.rs`（任务 `2267-åæ-pkg-session-dml_runtime-02873448.md`）
-- [ ] `pkg/session/fts_runtime.rs.md` ← `pkg/session/fts_runtime.rs`（任务 `2268-åæ-pkg-session-fts_runtime-dccf7a37.md`）
-- [ ] `pkg/session/global_init.rs.md` ← `pkg/session/global_init.rs`（任务 `2269-åæ-pkg-session-global_init-453cf4d2.md`）
-- [ ] `pkg/session/hint_runtime.rs.md` ← `pkg/session/hint_runtime.rs`（任务 `2270-åæ-pkg-session-hint_runtime-7cd0fe69.md`）
-- [ ] `pkg/session/metrics/metrics.rs.md` ← `pkg/session/metrics/metrics.rs`（任务 `2273-åæ-session-metrics-metrics-580d5f1a.md`）
-- [ ] `pkg/session/mock_bootstrap.rs.md` ← `pkg/session/mock_bootstrap.rs`（任务 `2274-åæ-pkg-session-mock_bootstrap-1b5085be.md`）
-- [ ] `pkg/session/nontransactional.rs.md` ← `pkg/session/nontransactional.rs`（任务 `2275-åæ-pkg-session-nontransactional-62cc48ca.md`）
-- [ ] `pkg/session/plan_cache_runtime.rs.md` ← `pkg/session/plan_cache_runtime.rs`（任务 `2276-åæ-pkg-session-plan_cache_runtime-b33f0bb3.md`）
-- [ ] `pkg/session/runtime.rs.md` ← `pkg/session/runtime.rs`（任务 `2277-åæ-pkg-session-runtime-e153305d.md`）
-- [ ] `pkg/session/runtime/admin.rs.md` ← `pkg/session/runtime/admin.rs`（任务 `2278-åæ-session-runtime-admin-46cc034a.md`）
-- [ ] `pkg/session/runtime/bootstrap_wait.rs.md` ← `pkg/session/runtime/bootstrap_wait.rs`（任务 `2279-åæ-session-runtime-bootstrap_wait-c63c0ea1.md`）
-- [ ] `pkg/session/runtime/canonical_table_reader.rs.md` ← `pkg/session/runtime/canonical_table_reader.rs`（任务 `2280-åæ-session-runtime-canonical_table_reader-598a7392.md`）
-- [ ] `pkg/session/runtime/control.rs.md` ← `pkg/session/runtime/control.rs`（任务 `2281-åæ-session-runtime-control-3dde4c28.md`）
-- [ ] `pkg/session/runtime/create_table_resources.rs.md` ← `pkg/session/runtime/create_table_resources.rs`（任务 `2282-åæ-session-runtime-create_table_resources-0bdae6db.md`）
-- [ ] `pkg/session/runtime/crossks_job_submit.rs.md` ← `pkg/session/runtime/crossks_job_submit.rs`（任务 `2283-åæ-session-runtime-crossks_job_submit-37cef6d3.md`）
-- [ ] `pkg/session/runtime/crossks_owner.rs.md` ← `pkg/session/runtime/crossks_owner.rs`（任务 `2284-åæ-session-runtime-crossks_owner-a9e8f740.md`）
-- [ ] `pkg/session/runtime/crossks_runtime.rs.md` ← `pkg/session/runtime/crossks_runtime.rs`（任务 `2285-åæ-session-runtime-crossks_runtime-5c22d8f8.md`）
-- [ ] `pkg/session/runtime/crossks_schema.rs.md` ← `pkg/session/runtime/crossks_schema.rs`（任务 `2286-åæ-session-runtime-crossks_schema-9c156c6d.md`）
-- [ ] `pkg/session/runtime/crossks_session_pool.rs.md` ← `pkg/session/runtime/crossks_session_pool.rs`（任务 `2287-åæ-session-runtime-crossks_session_pool-4aecfb36.md`）
-- [ ] `pkg/session/runtime/crossks_store.rs.md` ← `pkg/session/runtime/crossks_store.rs`（任务 `2288-åæ-session-runtime-crossks_store-ea6c1190.md`）
-- [ ] `pkg/session/runtime/ddl.rs.md` ← `pkg/session/runtime/ddl.rs`（任务 `2289-åæ-session-runtime-ddl-63f30ec5.md`）
-- [ ] `pkg/session/runtime/ddl_index_validation.rs.md` ← `pkg/session/runtime/ddl_index_validation.rs`（任务 `2290-åæ-session-runtime-ddl_index_validation-063ba786.md`）
-- [ ] `pkg/session/runtime/dispatch.rs.md` ← `pkg/session/runtime/dispatch.rs`（任务 `2291-åæ-session-runtime-dispatch-d1d9b9b0.md`）
-- [ ] `pkg/session/runtime/dml.rs.md` ← `pkg/session/runtime/dml.rs`（任务 `2292-åæ-session-runtime-dml-365be196.md`）
-- [ ] `pkg/session/runtime/dxf_session.rs.md` ← `pkg/session/runtime/dxf_session.rs`（任务 `2293-åæ-session-runtime-dxf_session-13167283.md`）
-- [ ] `pkg/session/runtime/explain_analyze.rs.md` ← `pkg/session/runtime/explain_analyze.rs`（任务 `2294-åæ-session-runtime-explain_analyze-121a7f7f.md`）
-- [ ] `pkg/session/runtime/explain_query.rs.md` ← `pkg/session/runtime/explain_query.rs`（任务 `2295-åæ-session-runtime-explain_query-12de4cb1.md`）
-- [ ] `pkg/session/runtime/explain_read.rs.md` ← `pkg/session/runtime/explain_read.rs`（任务 `2296-åæ-session-runtime-explain_read-50233b41.md`）
-- [ ] `pkg/session/runtime/explain_select.rs.md` ← `pkg/session/runtime/explain_select.rs`（任务 `2297-åæ-session-runtime-explain_select-a468fedc.md`）
-- [ ] `pkg/session/runtime/import_compression.rs.md` ← `pkg/session/runtime/import_compression.rs`（任务 `2298-åæ-session-runtime-import_compression-74daf4ed.md`）
-- [ ] `pkg/session/runtime/import_file.rs.md` ← `pkg/session/runtime/import_file.rs`（任务 `2299-åæ-session-runtime-import_file-47e0cd0b.md`）
-- [ ] `pkg/session/runtime/import_query.rs.md` ← `pkg/session/runtime/import_query.rs`（任务 `2300-åæ-session-runtime-import_query-e852b324.md`）
-- [ ] `pkg/session/runtime/import_sst.rs.md` ← `pkg/session/runtime/import_sst.rs`（任务 `2301-åæ-session-runtime-import_sst-674c80ea.md`）
-- [ ] `pkg/session/runtime/load_data.rs.md` ← `pkg/session/runtime/load_data.rs`（任务 `2302-åæ-session-runtime-load_data-ffd7d61f.md`）
-- [ ] `pkg/session/runtime/mlog.rs.md` ← `pkg/session/runtime/mlog.rs`（任务 `2303-åæ-session-runtime-mlog-b60c6470.md`）
-- [ ] `pkg/session/runtime/mlog_purge.rs.md` ← `pkg/session/runtime/mlog_purge.rs`（任务 `2304-åæ-session-runtime-mlog_purge-911522b8.md`）
-- [ ] `pkg/session/runtime/modify_column_backfill.rs.md` ← `pkg/session/runtime/modify_column_backfill.rs`（任务 `2305-åæ-session-runtime-modify_column_backfill-493c6949.md`）
-- [ ] `pkg/session/runtime/modify_column_cloud_executor.rs.md` ← `pkg/session/runtime/modify_column_cloud_executor.rs`（任务 `2306-åæ-session-runtime-modify_column_cloud_executor-753c0494.md`）
-- [ ] `pkg/session/runtime/modify_column_cloud_meta.rs.md` ← `pkg/session/runtime/modify_column_cloud_meta.rs`（任务 `2307-åæ-session-runtime-modify_column_cloud_meta-36df9be9.md`）
-- [ ] `pkg/session/runtime/modify_column_cloud_planner.rs.md` ← `pkg/session/runtime/modify_column_cloud_planner.rs`（任务 `2308-åæ-session-runtime-modify_column_cloud_planner-5f760e8a.md`）
-- [ ] `pkg/session/runtime/modify_column_cloud_store.rs.md` ← `pkg/session/runtime/modify_column_cloud_store.rs`（任务 `2309-åæ-session-runtime-modify_column_cloud_store-523f2bd6.md`）
-- [ ] `pkg/session/runtime/modify_column_dist_backfill.rs.md` ← `pkg/session/runtime/modify_column_dist_backfill.rs`（任务 `2310-åæ-session-runtime-modify_column_dist_backfill-5a9cf1cb.md`）
-- [ ] `pkg/session/runtime/modify_column_pipeline.rs.md` ← `pkg/session/runtime/modify_column_pipeline.rs`（任务 `2311-åæ-session-runtime-modify_column_pipeline-3bccb057.md`）
-- [ ] `pkg/session/runtime/mview_ddl.rs.md` ← `pkg/session/runtime/mview_ddl.rs`（任务 `2312-åæ-session-runtime-mview_ddl-f4cba69b.md`）
-- [ ] `pkg/session/runtime/normal_ddl_fixture.rs.md` ← `pkg/session/runtime/normal_ddl_fixture.rs`（任务 `2313-åæ-session-runtime-normal_ddl_fixture-72b7d869.md`）
-- [ ] `pkg/session/runtime/normal_ddl_service.rs.md` ← `pkg/session/runtime/normal_ddl_service.rs`（任务 `2314-åæ-session-runtime-normal_ddl_service-5e7cab73.md`）
-- [ ] `pkg/session/runtime/normal_ddl_submit.rs.md` ← `pkg/session/runtime/normal_ddl_submit.rs`（任务 `2315-åæ-session-runtime-normal_ddl_submit-0cb32aad.md`）
-- [ ] `pkg/session/runtime/paging.rs.md` ← `pkg/session/runtime/paging.rs`（任务 `2316-åæ-session-runtime-paging-4d737333.md`）
-- [ ] `pkg/session/runtime/planning.rs.md` ← `pkg/session/runtime/planning.rs`（任务 `2317-åæ-session-runtime-planning-ae6ac57a.md`）
-- [ ] `pkg/session/runtime/query.rs.md` ← `pkg/session/runtime/query.rs`（任务 `2318-åæ-session-runtime-query-ab53b480.md`）
-- [ ] `pkg/session/runtime/recovery.rs.md` ← `pkg/session/runtime/recovery.rs`（任务 `2319-åæ-session-runtime-recovery-cbbe02f3.md`）
-- [ ] `pkg/session/runtime/relational_scan.rs.md` ← `pkg/session/runtime/relational_scan.rs`（任务 `2320-åæ-session-runtime-relational_scan-c23ee65e.md`）
-- [ ] `pkg/session/runtime/relational_value.rs.md` ← `pkg/session/runtime/relational_value.rs`（任务 `2321-åæ-session-runtime-relational_value-b698dfb2.md`）
-- [ ] `pkg/session/runtime/row_codec.rs.md` ← `pkg/session/runtime/row_codec.rs`（任务 `2322-åæ-session-runtime-row_codec-0f8f8c5e.md`）
-- [ ] `pkg/session/runtime/scan_adapter_runtime.rs.md` ← `pkg/session/runtime/scan_adapter_runtime.rs`（任务 `2323-åæ-session-runtime-scan_adapter_runtime-66de4338.md`）
-- [ ] `pkg/session/runtime/schema_validation.rs.md` ← `pkg/session/runtime/schema_validation.rs`（任务 `2324-åæ-session-runtime-schema_validation-13383402.md`）
-- [ ] `pkg/session/runtime/select_into.rs.md` ← `pkg/session/runtime/select_into.rs`（任务 `2325-åæ-session-runtime-select_into-cf20a95b.md`）
-- [ ] `pkg/session/runtime/session.rs.md` ← `pkg/session/runtime/session.rs`（任务 `2326-åæ-session-runtime-session-534f5391.md`）
-- [ ] `pkg/session/runtime/session_factory.rs.md` ← `pkg/session/runtime/session_factory.rs`（任务 `2327-åæ-session-runtime-session_factory-42766227.md`）
-- [ ] `pkg/session/runtime/source.rs.md` ← `pkg/session/runtime/source.rs`（任务 `2328-åæ-session-runtime-source-231382bc.md`）
-- [ ] `pkg/session/runtime/statistics.rs.md` ← `pkg/session/runtime/statistics.rs`（任务 `2329-åæ-session-runtime-statistics-21150845.md`）
-- [ ] `pkg/session/runtime/system_query.rs.md` ← `pkg/session/runtime/system_query.rs`（任务 `2330-åæ-session-runtime-system_query-a1a5e9a3.md`）
-- [ ] `pkg/session/runtime/system_session.rs.md` ← `pkg/session/runtime/system_session.rs`（任务 `2331-åæ-session-runtime-system_session-606c15c2.md`）
-- [ ] `pkg/session/runtime/transaction.rs.md` ← `pkg/session/runtime/transaction.rs`（任务 `2332-åæ-session-runtime-transaction-9e7e1e07.md`）
-- [ ] `pkg/session/runtime/ttl_metadata.rs.md` ← `pkg/session/runtime/ttl_metadata.rs`（任务 `2333-åæ-session-runtime-ttl_metadata-f82c6c5c.md`）
-- [ ] `pkg/session/runtime/ttl_runtime.rs.md` ← `pkg/session/runtime/ttl_runtime.rs`（任务 `2334-åæ-session-runtime-ttl_runtime-06f7c3e5.md`）
-- [ ] `pkg/session/runtime/ttl_timer.rs.md` ← `pkg/session/runtime/ttl_timer.rs`（任务 `2335-åæ-session-runtime-ttl_timer-df12ed95.md`）
-- [ ] `pkg/session/runtime/ttl_timer_etcd.rs.md` ← `pkg/session/runtime/ttl_timer_etcd.rs`（任务 `2336-åæ-session-runtime-ttl_timer_etcd-4bf02381.md`）
-- [ ] `pkg/session/runtime/ttl_timer_store.rs.md` ← `pkg/session/runtime/ttl_timer_store.rs`（任务 `2337-åæ-session-runtime-ttl_timer_store-0fd5a86d.md`）
-- [ ] `pkg/session/runtime/ttl_worker_session.rs.md` ← `pkg/session/runtime/ttl_worker_session.rs`（任务 `2338-åæ-session-runtime-ttl_worker_session-3bad3b9a.md`）
-- [ ] `pkg/session/runtime/typed_adapter_bridge.rs.md` ← `pkg/session/runtime/typed_adapter_bridge.rs`（任务 `2339-åæ-session-runtime-typed_adapter_bridge-87f56ff6.md`）
-- [ ] `pkg/session/runtime/typed_analyze_executor.rs.md` ← `pkg/session/runtime/typed_analyze_executor.rs`（任务 `2340-åæ-session-runtime-typed_analyze_executor-91ca158e.md`）
-- [ ] `pkg/session/runtime/typed_dml_executor.rs.md` ← `pkg/session/runtime/typed_dml_executor.rs`（任务 `2341-åæ-session-runtime-typed_dml_executor-8ddd2666.md`）
-- [ ] `pkg/session/runtime/typed_fk_cascade_executor.rs.md` ← `pkg/session/runtime/typed_fk_cascade_executor.rs`（任务 `2342-åæ-session-runtime-typed_fk_cascade_executor-c362eb94.md`）
-- [ ] `pkg/session/runtime/typed_runaway_checker.rs.md` ← `pkg/session/runtime/typed_runaway_checker.rs`（任务 `2343-åæ-session-runtime-typed_runaway_checker-9b79a44a.md`）
-- [ ] `pkg/session/runtime_test/ddl.rs.md` ← `pkg/session/runtime_test/ddl.rs`（任务 `2344-åæ-session-runtime_test-ddl-abbf0aa5.md`）
-- [ ] `pkg/session/runtime_test/planning.rs.md` ← `pkg/session/runtime_test/planning.rs`（任务 `2345-åæ-session-runtime_test-planning-125a7db2.md`）
-- [ ] `pkg/session/runtime_test/query.rs.md` ← `pkg/session/runtime_test/query.rs`（任务 `2346-åæ-session-runtime_test-query-25e6dafe.md`）
-- [ ] `pkg/session/runtime_test/session.rs.md` ← `pkg/session/runtime_test/session.rs`（任务 `2347-åæ-session-runtime_test-session-052f62ef.md`）
-- [ ] `pkg/session/runtime_test/statistics.rs.md` ← `pkg/session/runtime_test/statistics.rs`（任务 `2348-åæ-session-runtime_test-statistics-080a3e8f.md`）
-- [ ] `pkg/session/runtime_test/storage.rs.md` ← `pkg/session/runtime_test/storage.rs`（任务 `2349-åæ-session-runtime_test-storage-0a120184.md`）
-- [ ] `pkg/session/runtime_test/typed_adapter_bridge.rs.md` ← `pkg/session/runtime_test/typed_adapter_bridge.rs`（任务 `2350-åæ-session-runtime_test-typed_adapter_bridge-90083669.md`）
-- [ ] `pkg/session/session.rs.md` ← `pkg/session/session.rs`（任务 `2351-åæ-pkg-session-session-38d34d96.md`）
-- [ ] `pkg/session/sessionapi/session.rs.md` ← `pkg/session/sessionapi/session.rs`（任务 `2353-åæ-session-sessionapi-session-080122af.md`）
-- [ ] `pkg/session/sessmgr/mdl.rs.md` ← `pkg/session/sessmgr/mdl.rs`（任务 `2355-åæ-session-sessmgr-mdl-e25f6dc4.md`）
-- [ ] `pkg/session/sessmgr/processinfo.rs.md` ← `pkg/session/sessmgr/processinfo.rs`（任务 `2356-åæ-session-sessmgr-processinfo-b95129d6.md`）
-- [ ] `pkg/session/starter_bootstrap_file.rs.md` ← `pkg/session/starter_bootstrap_file.rs`（任务 `2357-åæ-pkg-session-starter_bootstrap_file-2b41f000.md`）
-- [ ] `pkg/session/sync_upgrade.rs.md` ← `pkg/session/sync_upgrade.rs`（任务 `2358-åæ-pkg-session-sync_upgrade-c620877b.md`）
-- [ ] `pkg/session/syssession/pool.rs.md` ← `pkg/session/syssession/pool.rs`（任务 `2360-åæ-session-syssession-pool-36b390bd.md`）
-- [ ] `pkg/session/syssession/session.rs.md` ← `pkg/session/syssession/session.rs`（任务 `2361-åæ-session-syssession-session-3878e7d4.md`）
-- [ ] `pkg/session/syssession/session_test_util.rs.md` ← `pkg/session/syssession/session_test_util.rs`（任务 `2362-åæ-session-syssession-session_test_util-b688875d.md`）
-- [ ] `pkg/session/testutil.rs.md` ← `pkg/session/testutil.rs`（任务 `2363-åæ-pkg-session-testutil-4fc67004.md`）
-- [ ] `pkg/session/tidb.rs.md` ← `pkg/session/tidb.rs`（任务 `2364-åæ-pkg-session-tidb-3fe258d3.md`）
-- [ ] `pkg/session/txn.rs.md` ← `pkg/session/txn.rs`（任务 `2365-åæ-pkg-session-txn-b0a2bdeb.md`）
-- [ ] `pkg/session/txninfo/summary.rs.md` ← `pkg/session/txninfo/summary.rs`（任务 `2367-åæ-session-txninfo-summary-d8382d95.md`）
-- [ ] `pkg/session/txninfo/txn_info.rs.md` ← `pkg/session/txninfo/txn_info.rs`（任务 `2368-åæ-session-txninfo-txn_info-9ec21c80.md`）
-- [ ] `pkg/session/txnmanager.rs.md` ← `pkg/session/txnmanager.rs`（任务 `2369-åæ-pkg-session-txnmanager-0f60988e.md`）
-- [ ] `pkg/session/upgrade_def.rs.md` ← `pkg/session/upgrade_def.rs`（任务 `2370-åæ-pkg-session-upgrade_def-210f4d6a.md`）
-- [ ] `pkg/session/upgrade_run.rs.md` ← `pkg/session/upgrade_run.rs`（任务 `2371-åæ-pkg-session-upgrade_run-f467ae48.md`）
+- [ ] `pkg/session/advisory_locks.rs.md`
+- [ ] `pkg/session/bootstrap.rs.md`
+- [ ] `pkg/session/contextimpl.rs.md`
+- [ ] `pkg/session/cursor/state.rs.md`
+- [ ] `pkg/session/cursor/tracker.rs.md`
+- [ ] `pkg/session/ddl_tables.rs.md`
+- [ ] `pkg/session/dml_runtime.rs.md`
+- [ ] `pkg/session/fts_runtime.rs.md`
+- [ ] `pkg/session/global_init.rs.md`
+- [ ] `pkg/session/hint_runtime.rs.md`
+- [ ] `pkg/session/metrics/metrics.rs.md`
+- [ ] `pkg/session/mock_bootstrap.rs.md`
+- [ ] `pkg/session/nontransactional.rs.md`
+- [ ] `pkg/session/plan_cache_runtime.rs.md`
+- [ ] `pkg/session/runtime.rs.md`
+- [ ] `pkg/session/runtime/admin.rs.md`
+- [ ] `pkg/session/runtime/bootstrap_wait.rs.md`
+- [ ] `pkg/session/runtime/canonical_table_reader.rs.md`
+- [ ] `pkg/session/runtime/control.rs.md`
+- [ ] `pkg/session/runtime/create_table_resources.rs.md`
+- [ ] `pkg/session/runtime/crossks_job_submit.rs.md`
+- [ ] `pkg/session/runtime/crossks_owner.rs.md`
+- [ ] `pkg/session/runtime/crossks_runtime.rs.md`
+- [ ] `pkg/session/runtime/crossks_schema.rs.md`
+- [ ] `pkg/session/runtime/crossks_session_pool.rs.md`
+- [ ] `pkg/session/runtime/crossks_store.rs.md`
+- [ ] `pkg/session/runtime/ddl.rs.md`
+- [ ] `pkg/session/runtime/ddl_index_validation.rs.md`
+- [ ] `pkg/session/runtime/dispatch.rs.md`
+- [ ] `pkg/session/runtime/dml.rs.md`
+- [ ] `pkg/session/runtime/dxf_session.rs.md`
+- [ ] `pkg/session/runtime/explain_analyze.rs.md`
+- [ ] `pkg/session/runtime/explain_query.rs.md`
+- [ ] `pkg/session/runtime/explain_read.rs.md`
+- [ ] `pkg/session/runtime/explain_select.rs.md`
+- [ ] `pkg/session/runtime/import_compression.rs.md`
+- [ ] `pkg/session/runtime/import_file.rs.md`
+- [ ] `pkg/session/runtime/import_query.rs.md`
+- [ ] `pkg/session/runtime/import_sst.rs.md`
+- [ ] `pkg/session/runtime/load_data.rs.md`
+- [ ] `pkg/session/runtime/mlog.rs.md`
+- [ ] `pkg/session/runtime/mlog_purge.rs.md`
+- [ ] `pkg/session/runtime/modify_column_backfill.rs.md`
+- [ ] `pkg/session/runtime/modify_column_cloud_executor.rs.md`
+- [ ] `pkg/session/runtime/modify_column_cloud_meta.rs.md`
+- [ ] `pkg/session/runtime/modify_column_cloud_planner.rs.md`
+- [ ] `pkg/session/runtime/modify_column_cloud_store.rs.md`
+- [ ] `pkg/session/runtime/modify_column_dist_backfill.rs.md`
+- [ ] `pkg/session/runtime/modify_column_pipeline.rs.md`
+- [ ] `pkg/session/runtime/mview_ddl.rs.md`
+- [ ] `pkg/session/runtime/normal_ddl_fixture.rs.md`
+- [ ] `pkg/session/runtime/normal_ddl_service.rs.md`
+- [ ] `pkg/session/runtime/normal_ddl_submit.rs.md`
+- [ ] `pkg/session/runtime/paging.rs.md`
+- [ ] `pkg/session/runtime/planning.rs.md`
+- [ ] `pkg/session/runtime/query.rs.md`
+- [ ] `pkg/session/runtime/recovery.rs.md`
+- [ ] `pkg/session/runtime/relational_scan.rs.md`
+- [ ] `pkg/session/runtime/relational_value.rs.md`
+- [ ] `pkg/session/runtime/row_codec.rs.md`
+- [ ] `pkg/session/runtime/scan_adapter_runtime.rs.md`
+- [ ] `pkg/session/runtime/schema_validation.rs.md`
+- [ ] `pkg/session/runtime/select_into.rs.md`
+- [ ] `pkg/session/runtime/session.rs.md`
+- [ ] `pkg/session/runtime/session_factory.rs.md`
+- [ ] `pkg/session/runtime/source.rs.md`
+- [ ] `pkg/session/runtime/statistics.rs.md`
+- [ ] `pkg/session/runtime/system_query.rs.md`
+- [ ] `pkg/session/runtime/system_session.rs.md`
+- [ ] `pkg/session/runtime/transaction.rs.md`
+- [ ] `pkg/session/runtime/ttl_metadata.rs.md`
+- [ ] `pkg/session/runtime/ttl_runtime.rs.md`
+- [ ] `pkg/session/runtime/ttl_timer.rs.md`
+- [ ] `pkg/session/runtime/ttl_timer_etcd.rs.md`
+- [ ] `pkg/session/runtime/ttl_timer_store.rs.md`
+- [ ] `pkg/session/runtime/ttl_worker_session.rs.md`
+- [ ] `pkg/session/runtime/typed_adapter_bridge.rs.md`
+- [ ] `pkg/session/runtime/typed_analyze_executor.rs.md`
+- [ ] `pkg/session/runtime/typed_dml_executor.rs.md`
+- [ ] `pkg/session/runtime/typed_fk_cascade_executor.rs.md`
+- [ ] `pkg/session/runtime/typed_runaway_checker.rs.md`
+- [ ] `pkg/session/runtime_test/ddl.rs.md`
+- [ ] `pkg/session/runtime_test/planning.rs.md`
+- [ ] `pkg/session/runtime_test/query.rs.md`
+- [ ] `pkg/session/runtime_test/session.rs.md`
+- [ ] `pkg/session/runtime_test/statistics.rs.md`
+- [ ] `pkg/session/runtime_test/storage.rs.md`
+- [ ] `pkg/session/runtime_test/typed_adapter_bridge.rs.md`
+- [ ] `pkg/session/session.rs.md`
+- [ ] `pkg/session/sessionapi/session.rs.md`
+- [ ] `pkg/session/sessmgr/mdl.rs.md`
+- [ ] `pkg/session/sessmgr/processinfo.rs.md`
+- [ ] `pkg/session/starter_bootstrap_file.rs.md`
+- [ ] `pkg/session/sync_upgrade.rs.md`
+- [ ] `pkg/session/syssession/pool.rs.md`
+- [ ] `pkg/session/syssession/session.rs.md`
+- [ ] `pkg/session/syssession/session_test_util.rs.md`
+- [ ] `pkg/session/testutil.rs.md`
+- [ ] `pkg/session/tidb.rs.md`
+- [ ] `pkg/session/txn.rs.md`
+- [ ] `pkg/session/txninfo/summary.rs.md`
+- [ ] `pkg/session/txninfo/txn_info.rs.md`
+- [ ] `pkg/session/txnmanager.rs.md`
+- [ ] `pkg/session/upgrade_def.rs.md`
+- [ ] `pkg/session/upgrade_run.rs.md`
 
 ## pkg/sessionctx
 
-- [ ] `pkg/sessionctx/context.rs.md` ← `pkg/sessionctx/context.rs`（任务 `2372-åæ-pkg-sessionctx-context-f2e70285.md`）
-- [ ] `pkg/sessionctx/sessionstates/session_states.rs.md` ← `pkg/sessionctx/sessionstates/session_states.rs`（任务 `2375-åæ-sessionctx-sessionstates-session_states-d6d84dac.md`）
-- [ ] `pkg/sessionctx/sessionstates/session_token.rs.md` ← `pkg/sessionctx/sessionstates/session_token.rs`（任务 `2376-åæ-sessionctx-sessionstates-session_token-9791d3a4.md`）
-- [ ] `pkg/sessionctx/slowlogrule/rules.rs.md` ← `pkg/sessionctx/slowlogrule/rules.rs`（任务 `2378-åæ-sessionctx-slowlogrule-rules-a036da11.md`）
-- [ ] `pkg/sessionctx/stmtctx/stmtctx.rs.md` ← `pkg/sessionctx/stmtctx/stmtctx.rs`（任务 `2380-åæ-sessionctx-stmtctx-stmtctx-bea994b4.md`）
-- [ ] `pkg/sessionctx/sysproctrack/track.rs.md` ← `pkg/sessionctx/sysproctrack/track.rs`（任务 `2382-åæ-sessionctx-sysproctrack-track-bf11d62b.md`）
-- [ ] `pkg/sessionctx/vardef/runtime.rs.md` ← `pkg/sessionctx/vardef/runtime.rs`（任务 `2384-åæ-sessionctx-vardef-runtime-b9fc1b69.md`）
-- [ ] `pkg/sessionctx/vardef/sysvar.rs.md` ← `pkg/sessionctx/vardef/sysvar.rs`（任务 `2385-åæ-sessionctx-vardef-sysvar-8b79884c.md`）
-- [ ] `pkg/sessionctx/vardef/tidb_vars.rs.md` ← `pkg/sessionctx/vardef/tidb_vars.rs`（任务 `2386-åæ-sessionctx-vardef-tidb_vars-38f13086.md`）
-- [ ] `pkg/sessionctx/variable/embedding_vars.rs.md` ← `pkg/sessionctx/variable/embedding_vars.rs`（任务 `2387-åæ-sessionctx-variable-embedding_vars-b95714a0.md`）
-- [ ] `pkg/sessionctx/variable/error.rs.md` ← `pkg/sessionctx/variable/error.rs`（任务 `2388-åæ-sessionctx-variable-error-7ec80c2a.md`）
-- [ ] `pkg/sessionctx/variable/mock_globalaccessor.rs.md` ← `pkg/sessionctx/variable/mock_globalaccessor.rs`（任务 `2390-åæ-sessionctx-variable-mock_globalaccessor-1e97d6ef.md`）
-- [ ] `pkg/sessionctx/variable/nextgen.rs.md` ← `pkg/sessionctx/variable/nextgen.rs`（任务 `2391-åæ-sessionctx-variable-nextgen-88228f8b.md`）
-- [ ] `pkg/sessionctx/variable/noop.rs.md` ← `pkg/sessionctx/variable/noop.rs`（任务 `2392-åæ-sessionctx-variable-noop-fbcea759.md`）
-- [ ] `pkg/sessionctx/variable/removed.rs.md` ← `pkg/sessionctx/variable/removed.rs`（任务 `2393-åæ-sessionctx-variable-removed-8955d4a4.md`）
-- [ ] `pkg/sessionctx/variable/sequence_state.rs.md` ← `pkg/sessionctx/variable/sequence_state.rs`（任务 `2394-åæ-sessionctx-variable-sequence_state-63b1019f.md`）
-- [ ] `pkg/sessionctx/variable/session.rs.md` ← `pkg/sessionctx/variable/session.rs`（任务 `2395-åæ-sessionctx-variable-session-68847a86.md`）
-- [ ] `pkg/sessionctx/variable/setvar_affect.rs.md` ← `pkg/sessionctx/variable/setvar_affect.rs`（任务 `2396-åæ-sessionctx-variable-setvar_affect-7cf8ae5c.md`）
-- [ ] `pkg/sessionctx/variable/slow_log.rs.md` ← `pkg/sessionctx/variable/slow_log.rs`（任务 `2397-åæ-sessionctx-variable-slow_log-99cda66a.md`）
-- [ ] `pkg/sessionctx/variable/statusvar.rs.md` ← `pkg/sessionctx/variable/statusvar.rs`（任务 `2398-åæ-sessionctx-variable-statusvar-f817ba74.md`）
-- [ ] `pkg/sessionctx/variable/sysvar.rs.md` ← `pkg/sessionctx/variable/sysvar.rs`（任务 `2399-åæ-sessionctx-variable-sysvar-dd398f75.md`）
-- [ ] `pkg/sessionctx/variable/sysvar_builtins.rs.md` ← `pkg/sessionctx/variable/sysvar_builtins.rs`（任务 `2400-åæ-sessionctx-variable-sysvar_builtins-44b19a0b.md`）
-- [ ] `pkg/sessionctx/variable/tidb_vars.rs.md` ← `pkg/sessionctx/variable/tidb_vars.rs`（任务 `2401-åæ-sessionctx-variable-tidb_vars-0bced5c4.md`）
-- [ ] `pkg/sessionctx/variable/variable.rs.md` ← `pkg/sessionctx/variable/variable.rs`（任务 `2402-åæ-sessionctx-variable-variable-3402db16.md`）
-- [ ] `pkg/sessionctx/variable/varsutil.rs.md` ← `pkg/sessionctx/variable/varsutil.rs`（任务 `2403-åæ-sessionctx-variable-varsutil-2475f8c5.md`）
+- [ ] `pkg/sessionctx/context.rs.md`
+- [ ] `pkg/sessionctx/sessionstates/session_states.rs.md`
+- [ ] `pkg/sessionctx/sessionstates/session_token.rs.md`
+- [ ] `pkg/sessionctx/slowlogrule/rules.rs.md`
+- [ ] `pkg/sessionctx/stmtctx/stmtctx.rs.md`
+- [ ] `pkg/sessionctx/sysproctrack/track.rs.md`
+- [ ] `pkg/sessionctx/vardef/runtime.rs.md`
+- [ ] `pkg/sessionctx/vardef/sysvar.rs.md`
+- [ ] `pkg/sessionctx/vardef/tidb_vars.rs.md`
+- [ ] `pkg/sessionctx/variable/embedding_vars.rs.md`
+- [ ] `pkg/sessionctx/variable/error.rs.md`
+- [ ] `pkg/sessionctx/variable/mock_globalaccessor.rs.md`
+- [ ] `pkg/sessionctx/variable/nextgen.rs.md`
+- [ ] `pkg/sessionctx/variable/noop.rs.md`
+- [ ] `pkg/sessionctx/variable/removed.rs.md`
+- [ ] `pkg/sessionctx/variable/sequence_state.rs.md`
+- [ ] `pkg/sessionctx/variable/session.rs.md`
+- [ ] `pkg/sessionctx/variable/setvar_affect.rs.md`
+- [ ] `pkg/sessionctx/variable/slow_log.rs.md`
+- [ ] `pkg/sessionctx/variable/statusvar.rs.md`
+- [ ] `pkg/sessionctx/variable/sysvar.rs.md`
+- [ ] `pkg/sessionctx/variable/sysvar_builtins.rs.md`
+- [ ] `pkg/sessionctx/variable/tidb_vars.rs.md`
+- [ ] `pkg/sessionctx/variable/variable.rs.md`
+- [ ] `pkg/sessionctx/variable/varsutil.rs.md`
 
 ## pkg/sessiontxn
 
-- [ ] `pkg/sessiontxn/failpoint.rs.md` ← `pkg/sessiontxn/failpoint.rs`（任务 `2404-åæ-pkg-sessiontxn-failpoint-dcdec1f0.md`）
-- [ ] `pkg/sessiontxn/future.rs.md` ← `pkg/sessiontxn/future.rs`（任务 `2405-åæ-pkg-sessiontxn-future-cf073885.md`）
-- [ ] `pkg/sessiontxn/interface.rs.md` ← `pkg/sessiontxn/interface.rs`（任务 `2406-åæ-pkg-sessiontxn-interface-9ecab808.md`）
-- [ ] `pkg/sessiontxn/internal/txn.rs.md` ← `pkg/sessiontxn/internal/txn.rs`（任务 `2408-åæ-sessiontxn-internal-txn-aac22817.md`）
-- [ ] `pkg/sessiontxn/isolation/base.rs.md` ← `pkg/sessiontxn/isolation/base.rs`（任务 `2409-åæ-sessiontxn-isolation-base-75b427be.md`）
-- [ ] `pkg/sessiontxn/isolation/metrics/metrics.rs.md` ← `pkg/sessiontxn/isolation/metrics/metrics.rs`（任务 `2412-åæ-isolation-metrics-metrics-e136195f.md`）
-- [ ] `pkg/sessiontxn/isolation/optimistic.rs.md` ← `pkg/sessiontxn/isolation/optimistic.rs`（任务 `2413-åæ-sessiontxn-isolation-optimistic-327c9e43.md`）
-- [ ] `pkg/sessiontxn/isolation/readcommitted.rs.md` ← `pkg/sessiontxn/isolation/readcommitted.rs`（任务 `2414-åæ-sessiontxn-isolation-readcommitted-d8d61279.md`）
-- [ ] `pkg/sessiontxn/isolation/repeatable_read.rs.md` ← `pkg/sessiontxn/isolation/repeatable_read.rs`（任务 `2415-åæ-sessiontxn-isolation-repeatable_read-2f92ad3c.md`）
-- [ ] `pkg/sessiontxn/isolation/serializable.rs.md` ← `pkg/sessiontxn/isolation/serializable.rs`（任务 `2416-åæ-sessiontxn-isolation-serializable-ed6d8b02.md`）
-- [ ] `pkg/sessiontxn/staleread/errors.rs.md` ← `pkg/sessiontxn/staleread/errors.rs`（任务 `2418-åæ-sessiontxn-staleread-errors-048701bb.md`）
-- [ ] `pkg/sessiontxn/staleread/failpoint.rs.md` ← `pkg/sessiontxn/staleread/failpoint.rs`（任务 `2419-åæ-sessiontxn-staleread-failpoint-eadff2e7.md`）
-- [ ] `pkg/sessiontxn/staleread/processor.rs.md` ← `pkg/sessiontxn/staleread/processor.rs`（任务 `2421-åæ-sessiontxn-staleread-processor-27a751d9.md`）
-- [ ] `pkg/sessiontxn/staleread/provider.rs.md` ← `pkg/sessiontxn/staleread/provider.rs`（任务 `2422-åæ-sessiontxn-staleread-provider-9650392a.md`）
-- [ ] `pkg/sessiontxn/staleread/util.rs.md` ← `pkg/sessiontxn/staleread/util.rs`（任务 `2423-åæ-sessiontxn-staleread-util-f221b812.md`）
+- [ ] `pkg/sessiontxn/failpoint.rs.md`
+- [ ] `pkg/sessiontxn/future.rs.md`
+- [ ] `pkg/sessiontxn/interface.rs.md`
+- [ ] `pkg/sessiontxn/internal/txn.rs.md`
+- [ ] `pkg/sessiontxn/isolation/base.rs.md`
+- [ ] `pkg/sessiontxn/isolation/metrics/metrics.rs.md`
+- [ ] `pkg/sessiontxn/isolation/optimistic.rs.md`
+- [ ] `pkg/sessiontxn/isolation/readcommitted.rs.md`
+- [ ] `pkg/sessiontxn/isolation/repeatable_read.rs.md`
+- [ ] `pkg/sessiontxn/isolation/serializable.rs.md`
+- [ ] `pkg/sessiontxn/staleread/errors.rs.md`
+- [ ] `pkg/sessiontxn/staleread/failpoint.rs.md`
+- [ ] `pkg/sessiontxn/staleread/processor.rs.md`
+- [ ] `pkg/sessiontxn/staleread/provider.rs.md`
+- [ ] `pkg/sessiontxn/staleread/util.rs.md`
 
 ## pkg/standby
 
-- [ ] `pkg/standby/idle_watcher.rs.md` ← `pkg/standby/idle_watcher.rs`（任务 `2424-åæ-pkg-standby-idle_watcher-99e4f3d2.md`）
-- [ ] `pkg/standby/standby.rs.md` ← `pkg/standby/standby.rs`（任务 `2426-åæ-pkg-standby-standby-4b6a1cbb.md`）
+- [ ] `pkg/standby/idle_watcher.rs.md`
+- [ ] `pkg/standby/standby.rs.md`
 
 ## pkg/statistics
 
-- [ ] `pkg/statistics/analyze.rs.md` ← `pkg/statistics/analyze.rs`（任务 `2427-åæ-pkg-statistics-analyze-7f3c5714.md`）
-- [ ] `pkg/statistics/analyze_jobs.rs.md` ← `pkg/statistics/analyze_jobs.rs`（任务 `2428-åæ-pkg-statistics-analyze_jobs-fc725bea.md`）
-- [ ] `pkg/statistics/asyncload/async_load.rs.md` ← `pkg/statistics/asyncload/async_load.rs`（任务 `2429-åæ-statistics-asyncload-async_load-8344468e.md`）
-- [ ] `pkg/statistics/builder.rs.md` ← `pkg/statistics/builder.rs`（任务 `2431-åæ-pkg-statistics-builder-a28b87cd.md`）
-- [ ] `pkg/statistics/cmsketch.rs.md` ← `pkg/statistics/cmsketch.rs`（任务 `2432-åæ-pkg-statistics-cmsketch-24910e5b.md`）
-- [ ] `pkg/statistics/cmsketch_util.rs.md` ← `pkg/statistics/cmsketch_util.rs`（任务 `2433-åæ-pkg-statistics-cmsketch_util-c4c62af3.md`）
-- [ ] `pkg/statistics/column.rs.md` ← `pkg/statistics/column.rs`（任务 `2434-åæ-pkg-statistics-column-91b2f588.md`）
-- [ ] `pkg/statistics/constants.rs.md` ← `pkg/statistics/constants.rs`（任务 `2435-åæ-pkg-statistics-constants-4659bac8.md`）
-- [ ] `pkg/statistics/estimate.rs.md` ← `pkg/statistics/estimate.rs`（任务 `2436-åæ-pkg-statistics-estimate-5da99560.md`）
-- [ ] `pkg/statistics/fmsketch.rs.md` ← `pkg/statistics/fmsketch.rs`（任务 `2437-åæ-pkg-statistics-fmsketch-99401e60.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/autoanalyze.rs.md` ← `pkg/statistics/handle/autoanalyze/autoanalyze.rs`（任务 `2438-åæ-handle-autoanalyze-autoanalyze-eee9be98.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/exec/exec.rs.md` ← `pkg/statistics/handle/autoanalyze/exec/exec.rs`（任务 `2439-åæ-autoanalyze-exec-exec-5fbe83a2.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/analysis_job_factory.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/analysis_job_factory.rs`（任务 `2442-åæ-autoanalyze-priorityqueue-analysis_job_factory-a81feb6e.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/calculator.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/calculator.rs`（任务 `2443-åæ-autoanalyze-priorityqueue-calculator-3fbbd774.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/dynamic_partitioned_table_analysis_job.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/dynamic_partitioned_table_analysis_job.rs`（任务 `2445-åæ-autoanalyze-priorityqueue-dynamic_partitioned_table_analysis_job-e7dd0ae0.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/heap.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/heap.rs`（任务 `2446-åæ-autoanalyze-priorityqueue-heap-24bb4a13.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/interval.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/interval.rs`（任务 `2447-åæ-autoanalyze-priorityqueue-interval-87999e63.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/job.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/job.rs`（任务 `2449-åæ-autoanalyze-priorityqueue-job-9dcf4a60.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/non_partitioned_table_analysis_job.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/non_partitioned_table_analysis_job.rs`（任务 `2451-åæ-autoanalyze-priorityqueue-non_partitioned_table_analysis_job-006e9527.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/queue.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/queue.rs`（任务 `2452-åæ-autoanalyze-priorityqueue-queue-7d35a697.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.rs`（任务 `2453-åæ-autoanalyze-priorityqueue-queue_ddl_handler-02279a3a.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/static_partitioned_table_analysis_job.rs.md` ← `pkg/statistics/handle/autoanalyze/priorityqueue/static_partitioned_table_analysis_job.rs`（任务 `2454-åæ-autoanalyze-priorityqueue-static_partitioned_table_analysis_job-fd43b046.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/refresher/refresher.rs.md` ← `pkg/statistics/handle/autoanalyze/refresher/refresher.rs`（任务 `2456-åæ-autoanalyze-refresher-refresher-2ba85166.md`）
-- [ ] `pkg/statistics/handle/autoanalyze/refresher/worker.rs.md` ← `pkg/statistics/handle/autoanalyze/refresher/worker.rs`（任务 `2457-åæ-autoanalyze-refresher-worker-b847bd7e.md`）
-- [ ] `pkg/statistics/handle/bootstrap.rs.md` ← `pkg/statistics/handle/bootstrap.rs`（任务 `2458-åæ-statistics-handle-bootstrap-0f16e24f.md`）
-- [ ] `pkg/statistics/handle/cache/internal/inner.rs.md` ← `pkg/statistics/handle/cache/internal/inner.rs`（任务 `2459-åæ-cache-internal-inner-42ae52e3.md`）
-- [ ] `pkg/statistics/handle/cache/internal/lfu/key_set.rs.md` ← `pkg/statistics/handle/cache/internal/lfu/key_set.rs`（任务 `2460-åæ-internal-lfu-key_set-addd02c3.md`）
-- [ ] `pkg/statistics/handle/cache/internal/lfu/key_set_shard.rs.md` ← `pkg/statistics/handle/cache/internal/lfu/key_set_shard.rs`（任务 `2461-åæ-internal-lfu-key_set_shard-abead912.md`）
-- [ ] `pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs.md` ← `pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`（任务 `2462-åæ-internal-lfu-lfu_cache-f81bf1fa.md`）
-- [ ] `pkg/statistics/handle/cache/internal/mapcache/map_cache.rs.md` ← `pkg/statistics/handle/cache/internal/mapcache/map_cache.rs`（任务 `2466-åæ-internal-mapcache-map_cache-a2981131.md`）
-- [ ] `pkg/statistics/handle/cache/internal/testutil/testutil.rs.md` ← `pkg/statistics/handle/cache/internal/testutil/testutil.rs`（任务 `2468-åæ-internal-testutil-testutil-97cf4f10.md`）
-- [ ] `pkg/statistics/handle/cache/metrics/metrics.rs.md` ← `pkg/statistics/handle/cache/metrics/metrics.rs`（任务 `2471-åæ-cache-metrics-metrics-6076efb2.md`）
-- [ ] `pkg/statistics/handle/cache/stats_table_row_cache.rs.md` ← `pkg/statistics/handle/cache/stats_table_row_cache.rs`（任务 `2472-åæ-handle-cache-stats_table_row_cache-e3c16a68.md`）
-- [ ] `pkg/statistics/handle/cache/statscache.rs.md` ← `pkg/statistics/handle/cache/statscache.rs`（任务 `2473-åæ-handle-cache-statscache-3d82bc71.md`）
-- [ ] `pkg/statistics/handle/cache/statscacheinner.rs.md` ← `pkg/statistics/handle/cache/statscacheinner.rs`（任务 `2474-åæ-handle-cache-statscacheinner-466eb94a.md`）
-- [ ] `pkg/statistics/handle/ddl/ddl.rs.md` ← `pkg/statistics/handle/ddl/ddl.rs`（任务 `2475-åæ-handle-ddl-ddl-32cecada.md`）
-- [ ] `pkg/statistics/handle/ddl/subscriber.rs.md` ← `pkg/statistics/handle/ddl/subscriber.rs`（任务 `2477-åæ-handle-ddl-subscriber-e8864439.md`）
-- [ ] `pkg/statistics/handle/ddl/testutil/util.rs.md` ← `pkg/statistics/handle/ddl/testutil/util.rs`（任务 `2479-åæ-ddl-testutil-util-32d40009.md`）
-- [ ] `pkg/statistics/handle/globalstats/global_stats.rs.md` ← `pkg/statistics/handle/globalstats/global_stats.rs`（任务 `2480-åæ-handle-globalstats-global_stats-d071cbbf.md`）
-- [ ] `pkg/statistics/handle/globalstats/global_stats_async.rs.md` ← `pkg/statistics/handle/globalstats/global_stats_async.rs`（任务 `2481-åæ-handle-globalstats-global_stats_async-5d85bc55.md`）
-- [ ] `pkg/statistics/handle/globalstats/merge_worker.rs.md` ← `pkg/statistics/handle/globalstats/merge_worker.rs`（任务 `2483-åæ-handle-globalstats-merge_worker-131af5cd.md`）
-- [ ] `pkg/statistics/handle/globalstats/topn.rs.md` ← `pkg/statistics/handle/globalstats/topn.rs`（任务 `2484-åæ-handle-globalstats-topn-608964b1.md`）
-- [ ] `pkg/statistics/handle/handle.rs.md` ← `pkg/statistics/handle/handle.rs`（任务 `2485-åæ-statistics-handle-handle-8a242183.md`）
-- [ ] `pkg/statistics/handle/history/history_stats.rs.md` ← `pkg/statistics/handle/history/history_stats.rs`（任务 `2491-åæ-handle-history-history_stats-362eeabd.md`）
-- [ ] `pkg/statistics/handle/initstats/load_stats.rs.md` ← `pkg/statistics/handle/initstats/load_stats.rs`（任务 `2494-åæ-handle-initstats-load_stats-a799f98f.md`）
-- [ ] `pkg/statistics/handle/initstats/load_stats_page.rs.md` ← `pkg/statistics/handle/initstats/load_stats_page.rs`（任务 `2495-åæ-handle-initstats-load_stats_page-b5398076.md`）
-- [ ] `pkg/statistics/handle/internal/testutil.rs.md` ← `pkg/statistics/handle/internal/testutil.rs`（任务 `2497-åæ-handle-internal-testutil-236757f5.md`）
-- [ ] `pkg/statistics/handle/lockstats/lock_stats.rs.md` ← `pkg/statistics/handle/lockstats/lock_stats.rs`（任务 `2500-åæ-handle-lockstats-lock_stats-7ad321ee.md`）
-- [ ] `pkg/statistics/handle/lockstats/query_lock.rs.md` ← `pkg/statistics/handle/lockstats/query_lock.rs`（任务 `2501-åæ-handle-lockstats-query_lock-b1d5ffce.md`）
-- [ ] `pkg/statistics/handle/lockstats/unlock_stats.rs.md` ← `pkg/statistics/handle/lockstats/unlock_stats.rs`（任务 `2502-åæ-handle-lockstats-unlock_stats-bb595c23.md`）
-- [ ] `pkg/statistics/handle/logutil/logutil.rs.md` ← `pkg/statistics/handle/logutil/logutil.rs`（任务 `2504-åæ-handle-logutil-logutil-a70fa4c8.md`）
-- [ ] `pkg/statistics/handle/metrics/metrics.rs.md` ← `pkg/statistics/handle/metrics/metrics.rs`（任务 `2506-åæ-handle-metrics-metrics-e0d47e3a.md`）
-- [ ] `pkg/statistics/handle/restricted_sql.rs.md` ← `pkg/statistics/handle/restricted_sql.rs`（任务 `2507-åæ-statistics-handle-restricted_sql-b20be8eb.md`）
-- [ ] `pkg/statistics/handle/runtime_stats.rs.md` ← `pkg/statistics/handle/runtime_stats.rs`（任务 `2508-åæ-statistics-handle-runtime_stats-768ab36a.md`）
-- [ ] `pkg/statistics/handle/storage/gc.rs.md` ← `pkg/statistics/handle/storage/gc.rs`（任务 `2509-åæ-handle-storage-gc-d3df100a.md`）
-- [ ] `pkg/statistics/handle/storage/json.rs.md` ← `pkg/statistics/handle/storage/json.rs`（任务 `2510-åæ-handle-storage-json-20687e6b.md`）
-- [ ] `pkg/statistics/handle/storage/read.rs.md` ← `pkg/statistics/handle/storage/read.rs`（任务 `2512-åæ-handle-storage-read-389e43d7.md`）
-- [ ] `pkg/statistics/handle/storage/save.rs.md` ← `pkg/statistics/handle/storage/save.rs`（任务 `2513-åæ-handle-storage-save-091390e6.md`）
-- [ ] `pkg/statistics/handle/storage/stats_read_writer.rs.md` ← `pkg/statistics/handle/storage/stats_read_writer.rs`（任务 `2514-åæ-handle-storage-stats_read_writer-89680147.md`）
-- [ ] `pkg/statistics/handle/storage/update.rs.md` ← `pkg/statistics/handle/storage/update.rs`（任务 `2515-åæ-handle-storage-update-1836247d.md`）
-- [ ] `pkg/statistics/handle/syncload/stats_syncload.rs.md` ← `pkg/statistics/handle/syncload/stats_syncload.rs`（任务 `2517-åæ-handle-syncload-stats_syncload-26105444.md`）
-- [ ] `pkg/statistics/handle/types/interfaces.rs.md` ← `pkg/statistics/handle/types/interfaces.rs`（任务 `2518-åæ-handle-types-interfaces-b4bcaa1b.md`）
-- [ ] `pkg/statistics/handle/usage/collector/collector.rs.md` ← `pkg/statistics/handle/usage/collector/collector.rs`（任务 `2521-åæ-usage-collector-collector-0ec93661.md`）
-- [ ] `pkg/statistics/handle/usage/index_usage.rs.md` ← `pkg/statistics/handle/usage/index_usage.rs`（任务 `2523-åæ-handle-usage-index_usage-b7da2371.md`）
-- [ ] `pkg/statistics/handle/usage/indexusage/collector.rs.md` ← `pkg/statistics/handle/usage/indexusage/collector.rs`（任务 `2524-åæ-usage-indexusage-collector-8e7aa3e2.md`）
-- [ ] `pkg/statistics/handle/usage/predicate_column.rs.md` ← `pkg/statistics/handle/usage/predicate_column.rs`（任务 `2527-åæ-handle-usage-predicate_column-15646887.md`）
-- [ ] `pkg/statistics/handle/usage/predicatecolumn/predicate_column.rs.md` ← `pkg/statistics/handle/usage/predicatecolumn/predicate_column.rs`（任务 `2529-åæ-usage-predicatecolumn-predicate_column-8440e4de.md`）
-- [ ] `pkg/statistics/handle/usage/session_stats_collect.rs.md` ← `pkg/statistics/handle/usage/session_stats_collect.rs`（任务 `2530-åæ-handle-usage-session_stats_collect-1156f11a.md`）
-- [ ] `pkg/statistics/handle/util/auto_analyze_proc_id_generator.rs.md` ← `pkg/statistics/handle/util/auto_analyze_proc_id_generator.rs`（任务 `2531-åæ-handle-util-auto_analyze_proc_id_generator-a8cbc9d8.md`）
-- [ ] `pkg/statistics/handle/util/lease_getter.rs.md` ← `pkg/statistics/handle/util/lease_getter.rs`（任务 `2532-åæ-handle-util-lease_getter-ab4c9b9a.md`）
-- [ ] `pkg/statistics/handle/util/pool.rs.md` ← `pkg/statistics/handle/util/pool.rs`（任务 `2534-åæ-handle-util-pool-15496412.md`）
-- [ ] `pkg/statistics/handle/util/table_info.rs.md` ← `pkg/statistics/handle/util/table_info.rs`（任务 `2535-åæ-handle-util-table_info-64eae703.md`）
-- [ ] `pkg/statistics/handle/util/util.rs.md` ← `pkg/statistics/handle/util/util.rs`（任务 `2536-åæ-handle-util-util-e93627ae.md`）
-- [ ] `pkg/statistics/histogram.rs.md` ← `pkg/statistics/histogram.rs`（任务 `2537-åæ-pkg-statistics-histogram-f7d8b76b.md`）
-- [ ] `pkg/statistics/index.rs.md` ← `pkg/statistics/index.rs`（任务 `2538-åæ-pkg-statistics-index-acbe5791.md`）
-- [ ] `pkg/statistics/merge_global.rs.md` ← `pkg/statistics/merge_global.rs`（任务 `2540-åæ-pkg-statistics-merge_global-66d1f8d5.md`）
-- [ ] `pkg/statistics/row_sampler.rs.md` ← `pkg/statistics/row_sampler.rs`（任务 `2541-åæ-pkg-statistics-row_sampler-74191a6e.md`）
-- [ ] `pkg/statistics/runtime_stats_builder.rs.md` ← `pkg/statistics/runtime_stats_builder.rs`（任务 `2542-åæ-pkg-statistics-runtime_stats_builder-ed945a5a.md`）
-- [ ] `pkg/statistics/sample.rs.md` ← `pkg/statistics/sample.rs`（任务 `2543-åæ-pkg-statistics-sample-e2e230d0.md`）
-- [ ] `pkg/statistics/scalar.rs.md` ← `pkg/statistics/scalar.rs`（任务 `2544-åæ-pkg-statistics-scalar-89807388.md`）
-- [ ] `pkg/statistics/table.rs.md` ← `pkg/statistics/table.rs`（任务 `2545-åæ-pkg-statistics-table-c54d944a.md`）
-- [ ] `pkg/statistics/util/json_objects.rs.md` ← `pkg/statistics/util/json_objects.rs`（任务 `2546-åæ-statistics-util-json_objects-32c9c453.md`）
+- [ ] `pkg/statistics/analyze.rs.md`
+- [ ] `pkg/statistics/analyze_jobs.rs.md`
+- [ ] `pkg/statistics/asyncload/async_load.rs.md`
+- [ ] `pkg/statistics/builder.rs.md`
+- [ ] `pkg/statistics/cmsketch.rs.md`
+- [ ] `pkg/statistics/cmsketch_util.rs.md`
+- [ ] `pkg/statistics/column.rs.md`
+- [ ] `pkg/statistics/constants.rs.md`
+- [ ] `pkg/statistics/estimate.rs.md`
+- [ ] `pkg/statistics/fmsketch.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/autoanalyze.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/exec/exec.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/analysis_job_factory.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/calculator.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/dynamic_partitioned_table_analysis_job.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/heap.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/interval.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/job.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/non_partitioned_table_analysis_job.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/queue.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/priorityqueue/static_partitioned_table_analysis_job.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/refresher/refresher.rs.md`
+- [ ] `pkg/statistics/handle/autoanalyze/refresher/worker.rs.md`
+- [ ] `pkg/statistics/handle/bootstrap.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/inner.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/lfu/key_set.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/lfu/key_set_shard.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/mapcache/map_cache.rs.md`
+- [ ] `pkg/statistics/handle/cache/internal/testutil/testutil.rs.md`
+- [ ] `pkg/statistics/handle/cache/metrics/metrics.rs.md`
+- [ ] `pkg/statistics/handle/cache/stats_table_row_cache.rs.md`
+- [ ] `pkg/statistics/handle/cache/statscache.rs.md`
+- [ ] `pkg/statistics/handle/cache/statscacheinner.rs.md`
+- [ ] `pkg/statistics/handle/ddl/ddl.rs.md`
+- [ ] `pkg/statistics/handle/ddl/subscriber.rs.md`
+- [ ] `pkg/statistics/handle/ddl/testutil/util.rs.md`
+- [ ] `pkg/statistics/handle/globalstats/global_stats.rs.md`
+- [ ] `pkg/statistics/handle/globalstats/global_stats_async.rs.md`
+- [ ] `pkg/statistics/handle/globalstats/merge_worker.rs.md`
+- [ ] `pkg/statistics/handle/globalstats/topn.rs.md`
+- [ ] `pkg/statistics/handle/handle.rs.md`
+- [ ] `pkg/statistics/handle/history/history_stats.rs.md`
+- [ ] `pkg/statistics/handle/initstats/load_stats.rs.md`
+- [ ] `pkg/statistics/handle/initstats/load_stats_page.rs.md`
+- [ ] `pkg/statistics/handle/internal/testutil.rs.md`
+- [ ] `pkg/statistics/handle/lockstats/lock_stats.rs.md`
+- [ ] `pkg/statistics/handle/lockstats/query_lock.rs.md`
+- [ ] `pkg/statistics/handle/lockstats/unlock_stats.rs.md`
+- [ ] `pkg/statistics/handle/logutil/logutil.rs.md`
+- [ ] `pkg/statistics/handle/metrics/metrics.rs.md`
+- [ ] `pkg/statistics/handle/restricted_sql.rs.md`
+- [ ] `pkg/statistics/handle/runtime_stats.rs.md`
+- [ ] `pkg/statistics/handle/storage/gc.rs.md`
+- [ ] `pkg/statistics/handle/storage/json.rs.md`
+- [ ] `pkg/statistics/handle/storage/read.rs.md`
+- [ ] `pkg/statistics/handle/storage/save.rs.md`
+- [ ] `pkg/statistics/handle/storage/stats_read_writer.rs.md`
+- [ ] `pkg/statistics/handle/storage/update.rs.md`
+- [ ] `pkg/statistics/handle/syncload/stats_syncload.rs.md`
+- [ ] `pkg/statistics/handle/types/interfaces.rs.md`
+- [ ] `pkg/statistics/handle/usage/collector/collector.rs.md`
+- [ ] `pkg/statistics/handle/usage/index_usage.rs.md`
+- [ ] `pkg/statistics/handle/usage/indexusage/collector.rs.md`
+- [ ] `pkg/statistics/handle/usage/predicate_column.rs.md`
+- [ ] `pkg/statistics/handle/usage/predicatecolumn/predicate_column.rs.md`
+- [ ] `pkg/statistics/handle/usage/session_stats_collect.rs.md`
+- [ ] `pkg/statistics/handle/util/auto_analyze_proc_id_generator.rs.md`
+- [ ] `pkg/statistics/handle/util/lease_getter.rs.md`
+- [ ] `pkg/statistics/handle/util/pool.rs.md`
+- [ ] `pkg/statistics/handle/util/table_info.rs.md`
+- [ ] `pkg/statistics/handle/util/util.rs.md`
+- [ ] `pkg/statistics/histogram.rs.md`
+- [ ] `pkg/statistics/index.rs.md`
+- [ ] `pkg/statistics/merge_global.rs.md`
+- [ ] `pkg/statistics/row_sampler.rs.md`
+- [ ] `pkg/statistics/runtime_stats_builder.rs.md`
+- [ ] `pkg/statistics/sample.rs.md`
+- [ ] `pkg/statistics/scalar.rs.md`
+- [ ] `pkg/statistics/table.rs.md`
+- [ ] `pkg/statistics/util/json_objects.rs.md`
 
 ## pkg/store
 
-- [ ] `pkg/store/copr/batch_coprocessor.rs.md` ← `pkg/store/copr/batch_coprocessor.rs`（任务 `2548-åæ-store-copr-batch_coprocessor-1a489274.md`）
-- [ ] `pkg/store/copr/batch_request_sender.rs.md` ← `pkg/store/copr/batch_request_sender.rs`（任务 `2549-åæ-store-copr-batch_request_sender-38b3f327.md`）
-- [ ] `pkg/store/copr/coprocessor.rs.md` ← `pkg/store/copr/coprocessor.rs`（任务 `2551-åæ-store-copr-coprocessor-7ba89df4.md`）
-- [ ] `pkg/store/copr/coprocessor_cache.rs.md` ← `pkg/store/copr/coprocessor_cache.rs`（任务 `2552-åæ-store-copr-coprocessor_cache-b05ba37a.md`）
-- [ ] `pkg/store/copr/ema.rs.md` ← `pkg/store/copr/ema.rs`（任务 `2553-åæ-store-copr-ema-b75a4eca.md`）
-- [ ] `pkg/store/copr/key_ranges.rs.md` ← `pkg/store/copr/key_ranges.rs`（任务 `2554-åæ-store-copr-key_ranges-b1dfb500.md`）
-- [ ] `pkg/store/copr/metrics/metrics.rs.md` ← `pkg/store/copr/metrics/metrics.rs`（任务 `2557-åæ-copr-metrics-metrics-93c5ed7a.md`）
-- [ ] `pkg/store/copr/mpp.rs.md` ← `pkg/store/copr/mpp.rs`（任务 `2558-åæ-store-copr-mpp-b99c9f52.md`）
-- [ ] `pkg/store/copr/mpp_probe.rs.md` ← `pkg/store/copr/mpp_probe.rs`（任务 `2559-åæ-store-copr-mpp_probe-a08b2e8e.md`）
-- [ ] `pkg/store/copr/network_backend.rs.md` ← `pkg/store/copr/network_backend.rs`（任务 `2560-åæ-store-copr-network_backend-23d4d1fc.md`）
-- [ ] `pkg/store/copr/pool_task_details.rs.md` ← `pkg/store/copr/pool_task_details.rs`（任务 `2561-åæ-store-copr-pool_task_details-12ea35b6.md`）
-- [ ] `pkg/store/copr/range_diagnostics.rs.md` ← `pkg/store/copr/range_diagnostics.rs`（任务 `2562-åæ-store-copr-range_diagnostics-51897ae8.md`）
-- [ ] `pkg/store/copr/region_cache.rs.md` ← `pkg/store/copr/region_cache.rs`（任务 `2563-åæ-store-copr-region_cache-6d852b3f.md`）
-- [ ] `pkg/store/copr/store.rs.md` ← `pkg/store/copr/store.rs`（任务 `2564-åæ-store-copr-store-ee4df19f.md`）
-- [ ] `pkg/store/driver/backoff/backoff.rs.md` ← `pkg/store/driver/backoff/backoff.rs`（任务 `2565-åæ-driver-backoff-backoff-740f9ad3.md`）
-- [ ] `pkg/store/driver/client_runtime.rs.md` ← `pkg/store/driver/client_runtime.rs`（任务 `2567-åæ-store-driver-client_runtime-bb5d6c84.md`）
-- [ ] `pkg/store/driver/error/error.rs.md` ← `pkg/store/driver/error/error.rs`（任务 `2568-åæ-driver-error-error-e0c06a9f.md`）
-- [ ] `pkg/store/driver/kv_adapter.rs.md` ← `pkg/store/driver/kv_adapter.rs`（任务 `2570-åæ-store-driver-kv_adapter-9c711da6.md`）
-- [ ] `pkg/store/driver/options/options.rs.md` ← `pkg/store/driver/options/options.rs`（任务 `2573-åæ-driver-options-options-3a861d1d.md`）
-- [ ] `pkg/store/driver/read_pool_task_details.rs.md` ← `pkg/store/driver/read_pool_task_details.rs`（任务 `2574-åæ-store-driver-read_pool_task_details-7834c877.md`）
-- [ ] `pkg/store/driver/read_request.rs.md` ← `pkg/store/driver/read_request.rs`（任务 `2575-åæ-store-driver-read_request-d93743f9.md`）
-- [ ] `pkg/store/driver/region_split_config.rs.md` ← `pkg/store/driver/region_split_config.rs`（任务 `2576-åæ-store-driver-region_split_config-fc886774.md`）
-- [ ] `pkg/store/driver/runaway_adapter.rs.md` ← `pkg/store/driver/runaway_adapter.rs`（任务 `2577-åæ-store-driver-runaway_adapter-47897877.md`）
-- [ ] `pkg/store/driver/sst_import.rs.md` ← `pkg/store/driver/sst_import.rs`（任务 `2578-åæ-store-driver-sst_import-9e421e22.md`）
-- [ ] `pkg/store/driver/test_state.rs.md` ← `pkg/store/driver/test_state.rs`（任务 `2579-åæ-store-driver-test_state-c032bf4a.md`）
-- [ ] `pkg/store/driver/tikv_driver.rs.md` ← `pkg/store/driver/tikv_driver.rs`（任务 `2580-åæ-store-driver-tikv_driver-af4ff420.md`）
-- [ ] `pkg/store/driver/txn/batch_getter.rs.md` ← `pkg/store/driver/txn/batch_getter.rs`（任务 `2581-åæ-driver-txn-batch_getter-cb6d3dfc.md`）
-- [ ] `pkg/store/driver/txn/error.rs.md` ← `pkg/store/driver/txn/error.rs`（任务 `2582-åæ-driver-txn-error-41101139.md`）
-- [ ] `pkg/store/driver/txn/scanner.rs.md` ← `pkg/store/driver/txn/scanner.rs`（任务 `2584-åæ-driver-txn-scanner-55451b9a.md`）
-- [ ] `pkg/store/driver/txn/snapshot.rs.md` ← `pkg/store/driver/txn/snapshot.rs`（任务 `2585-åæ-driver-txn-snapshot-0a8caa39.md`）
-- [ ] `pkg/store/driver/txn/txn_driver.rs.md` ← `pkg/store/driver/txn/txn_driver.rs`（任务 `2586-åæ-driver-txn-txn_driver-1f7f7339.md`）
-- [ ] `pkg/store/driver/txn/union_iter.rs.md` ← `pkg/store/driver/txn/union_iter.rs`（任务 `2587-åæ-driver-txn-union_iter-1e99b2aa.md`）
-- [ ] `pkg/store/driver/txn/unionstore_driver.rs.md` ← `pkg/store/driver/txn/unionstore_driver.rs`（任务 `2588-åæ-driver-txn-unionstore_driver-5bec8653.md`）
-- [ ] `pkg/store/etcd.rs.md` ← `pkg/store/etcd.rs`（任务 `2589-åæ-pkg-store-etcd-001b6b64.md`）
-- [ ] `pkg/store/gcworker/gc_worker.rs.md` ← `pkg/store/gcworker/gc_worker.rs`（任务 `2590-åæ-store-gcworker-gc_worker-539ffd70.md`）
-- [ ] `pkg/store/helper/helper.rs.md` ← `pkg/store/helper/helper.rs`（任务 `2592-åæ-store-helper-helper-85bd7ceb.md`）
-- [ ] `pkg/store/mockstore/mockcopr/aggregate.rs.md` ← `pkg/store/mockstore/mockcopr/aggregate.rs`（任务 `2596-åæ-mockstore-mockcopr-aggregate-3d2e867a.md`）
-- [ ] `pkg/store/mockstore/mockcopr/analyze.rs.md` ← `pkg/store/mockstore/mockcopr/analyze.rs`（任务 `2597-åæ-mockstore-mockcopr-analyze-955d8246.md`）
-- [ ] `pkg/store/mockstore/mockcopr/checksum.rs.md` ← `pkg/store/mockstore/mockcopr/checksum.rs`（任务 `2598-åæ-mockstore-mockcopr-checksum-ea787696.md`）
-- [ ] `pkg/store/mockstore/mockcopr/cop_handler_dag.rs.md` ← `pkg/store/mockstore/mockcopr/cop_handler_dag.rs`（任务 `2599-åæ-mockstore-mockcopr-cop_handler_dag-e2f24c87.md`）
-- [ ] `pkg/store/mockstore/mockcopr/copr_handler.rs.md` ← `pkg/store/mockstore/mockcopr/copr_handler.rs`（任务 `2600-åæ-mockstore-mockcopr-copr_handler-c485aa97.md`）
-- [ ] `pkg/store/mockstore/mockcopr/executor.rs.md` ← `pkg/store/mockstore/mockcopr/executor.rs`（任务 `2601-åæ-mockstore-mockcopr-executor-b2328fec.md`）
-- [ ] `pkg/store/mockstore/mockcopr/rpc_copr.rs.md` ← `pkg/store/mockstore/mockcopr/rpc_copr.rs`（任务 `2603-åæ-mockstore-mockcopr-rpc_copr-a13c38aa.md`）
-- [ ] `pkg/store/mockstore/mockcopr/topn.rs.md` ← `pkg/store/mockstore/mockcopr/topn.rs`（任务 `2604-åæ-mockstore-mockcopr-topn-307ec480.md`）
-- [ ] `pkg/store/mockstore/mockstorage/canonical_storage.rs.md` ← `pkg/store/mockstore/mockstorage/canonical_storage.rs`（任务 `2605-åæ-mockstore-mockstorage-canonical_storage-2210c572.md`）
-- [ ] `pkg/store/mockstore/mockstorage/embedded_rpc.rs.md` ← `pkg/store/mockstore/mockstorage/embedded_rpc.rs`（任务 `2606-åæ-mockstore-mockstorage-embedded_rpc-58c899b6.md`）
-- [ ] `pkg/store/mockstore/mockstorage/storage.rs.md` ← `pkg/store/mockstore/mockstorage/storage.rs`（任务 `2608-åæ-mockstore-mockstorage-storage-c0eafaa0.md`）
-- [ ] `pkg/store/mockstore/mockstore.rs.md` ← `pkg/store/mockstore/mockstore.rs`（任务 `2609-åæ-store-mockstore-mockstore-a717f814.md`）
-- [ ] `pkg/store/mockstore/redirector.rs.md` ← `pkg/store/mockstore/redirector.rs`（任务 `2610-åæ-store-mockstore-redirector-ad718104.md`）
-- [ ] `pkg/store/mockstore/teststore/store.rs.md` ← `pkg/store/mockstore/teststore/store.rs`（任务 `2612-åæ-mockstore-teststore-store-815e580b.md`）
-- [ ] `pkg/store/mockstore/tikv.rs.md` ← `pkg/store/mockstore/tikv.rs`（任务 `2613-åæ-store-mockstore-tikv-92e22c51.md`）
-- [ ] `pkg/store/mockstore/unistore.rs.md` ← `pkg/store/mockstore/unistore.rs`（任务 `2614-åæ-store-mockstore-unistore-e0e67016.md`）
-- [ ] `pkg/store/mockstore/unistore/client/client.rs.md` ← `pkg/store/mockstore/unistore/client/client.rs`（任务 `2615-åæ-unistore-client-client-d7449983.md`）
-- [ ] `pkg/store/mockstore/unistore/cluster.rs.md` ← `pkg/store/mockstore/unistore/cluster.rs`（任务 `2617-åæ-mockstore-unistore-cluster-8c986014.md`）
-- [ ] `pkg/store/mockstore/unistore/config/config.rs.md` ← `pkg/store/mockstore/unistore/config/config.rs`（任务 `2618-åæ-unistore-config-config-66a74d59.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/analyze.rs.md` ← `pkg/store/mockstore/unistore/cophandler/analyze.rs`（任务 `2620-åæ-unistore-cophandler-analyze-23079f8e.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/closure_exec.rs.md` ← `pkg/store/mockstore/unistore/cophandler/closure_exec.rs`（任务 `2621-åæ-unistore-cophandler-closure_exec-1e57e861.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/cop_handler.rs.md` ← `pkg/store/mockstore/unistore/cophandler/cop_handler.rs`（任务 `2622-åæ-unistore-cophandler-cop_handler-056bbfc4.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/mpp.rs.md` ← `pkg/store/mockstore/unistore/cophandler/mpp.rs`（任务 `2624-åæ-unistore-cophandler-mpp-68c03737.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/mpp_exec.rs.md` ← `pkg/store/mockstore/unistore/cophandler/mpp_exec.rs`（任务 `2625-åæ-unistore-cophandler-mpp_exec-01d489f1.md`）
-- [ ] `pkg/store/mockstore/unistore/cophandler/topn.rs.md` ← `pkg/store/mockstore/unistore/cophandler/topn.rs`（任务 `2626-åæ-unistore-cophandler-topn-38a2f55e.md`）
-- [ ] `pkg/store/mockstore/unistore/lockstore/arena.rs.md` ← `pkg/store/mockstore/unistore/lockstore/arena.rs`（任务 `2628-åæ-unistore-lockstore-arena-257abe2f.md`）
-- [ ] `pkg/store/mockstore/unistore/lockstore/iterator.rs.md` ← `pkg/store/mockstore/unistore/lockstore/iterator.rs`（任务 `2629-åæ-unistore-lockstore-iterator-91623922.md`）
-- [ ] `pkg/store/mockstore/unistore/lockstore/load_dump.rs.md` ← `pkg/store/mockstore/unistore/lockstore/load_dump.rs`（任务 `2631-åæ-unistore-lockstore-load_dump-0b94da1e.md`）
-- [ ] `pkg/store/mockstore/unistore/lockstore/lockstore.rs.md` ← `pkg/store/mockstore/unistore/lockstore/lockstore.rs`（任务 `2632-åæ-unistore-lockstore-lockstore-e025be51.md`）
-- [ ] `pkg/store/mockstore/unistore/metrics/metrics.rs.md` ← `pkg/store/mockstore/unistore/metrics/metrics.rs`（任务 `2634-åæ-unistore-metrics-metrics-409473a6.md`）
-- [ ] `pkg/store/mockstore/unistore/mock.rs.md` ← `pkg/store/mockstore/unistore/mock.rs`（任务 `2635-åæ-mockstore-unistore-mock-c9cab2cb.md`）
-- [ ] `pkg/store/mockstore/unistore/pd.rs.md` ← `pkg/store/mockstore/unistore/pd.rs`（任务 `2636-åæ-mockstore-unistore-pd-d51fb4a1.md`）
-- [ ] `pkg/store/mockstore/unistore/pd/client.rs.md` ← `pkg/store/mockstore/unistore/pd/client.rs`（任务 `2637-åæ-unistore-pd-client-e77fe94a.md`）
-- [ ] `pkg/store/mockstore/unistore/raw_handler.rs.md` ← `pkg/store/mockstore/unistore/raw_handler.rs`（任务 `2639-åæ-mockstore-unistore-raw_handler-6136b70b.md`）
-- [ ] `pkg/store/mockstore/unistore/rpc.rs.md` ← `pkg/store/mockstore/unistore/rpc.rs`（任务 `2640-åæ-mockstore-unistore-rpc-632dbf09.md`）
-- [ ] `pkg/store/mockstore/unistore/server/server.rs.md` ← `pkg/store/mockstore/unistore/server/server.rs`（任务 `2642-åæ-unistore-server-server-a29744d8.md`）
-- [ ] `pkg/store/mockstore/unistore/testutil.rs.md` ← `pkg/store/mockstore/unistore/testutil.rs`（任务 `2643-åæ-mockstore-unistore-testutil-b6e48b1c.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs.md` ← `pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs`（任务 `2644-åæ-tikv-dbreader-db_reader-c670783e.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/deadlock.rs.md` ← `pkg/store/mockstore/unistore/tikv/deadlock.rs`（任务 `2646-åæ-unistore-tikv-deadlock-5bc91379.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/detector.rs.md` ← `pkg/store/mockstore/unistore/tikv/detector.rs`（任务 `2647-åæ-unistore-tikv-detector-42ca2ef2.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/inner_server.rs.md` ← `pkg/store/mockstore/unistore/tikv/inner_server.rs`（任务 `2648-åæ-unistore-tikv-inner_server-47516b3c.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/kverrors/errors.rs.md` ← `pkg/store/mockstore/unistore/tikv/kverrors/errors.rs`（任务 `2649-åæ-tikv-kverrors-errors-5fcc20a8.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mock_region.rs.md` ← `pkg/store/mockstore/unistore/tikv/mock_region.rs`（任务 `2652-åæ-unistore-tikv-mock_region-c72494c0.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc.rs`（任务 `2653-åæ-unistore-tikv-mvcc-298051d9.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/codec_adapter.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc/codec_adapter.rs`（任务 `2654-åæ-tikv-mvcc-codec_adapter-134d7508.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs`（任务 `2655-åæ-tikv-mvcc-db_writer-8460787b.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/lockstore_adapter.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc/lockstore_adapter.rs`（任务 `2657-åæ-tikv-mvcc-lockstore_adapter-8fd2c846.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs`（任务 `2658-åæ-tikv-mvcc-mvcc-894d615a.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs.md` ← `pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs`（任务 `2659-åæ-tikv-mvcc-tikv-c0dbb951.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/pberror/pberror.rs.md` ← `pkg/store/mockstore/unistore/tikv/pberror/pberror.rs`（任务 `2661-åæ-tikv-pberror-pberror-3b631d99.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/region.rs.md` ← `pkg/store/mockstore/unistore/tikv/region.rs`（任务 `2662-åæ-unistore-tikv-region-3d48d00b.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/server.rs.md` ← `pkg/store/mockstore/unistore/tikv/server.rs`（任务 `2663-åæ-unistore-tikv-server-7d7fb1d6.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/server_batch.rs.md` ← `pkg/store/mockstore/unistore/tikv/server_batch.rs`（任务 `2664-åæ-unistore-tikv-server_batch-65e452a2.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/util.rs.md` ← `pkg/store/mockstore/unistore/tikv/util.rs`（任务 `2665-åæ-unistore-tikv-util-f6e13124.md`）
-- [ ] `pkg/store/mockstore/unistore/tikv/write.rs.md` ← `pkg/store/mockstore/unistore/tikv/write.rs`（任务 `2666-åæ-unistore-tikv-write-1201b82e.md`）
-- [ ] `pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs.md` ← `pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs`（任务 `2668-åæ-util-lockwaiter-lockwaiter-a7882a2e.md`）
-- [ ] `pkg/store/pdtypes/api.rs.md` ← `pkg/store/pdtypes/api.rs`（任务 `2669-åæ-store-pdtypes-api-a5362a9c.md`）
-- [ ] `pkg/store/pdtypes/config.rs.md` ← `pkg/store/pdtypes/config.rs`（任务 `2670-åæ-store-pdtypes-config-5283e4f4.md`）
-- [ ] `pkg/store/pdtypes/placement.rs.md` ← `pkg/store/pdtypes/placement.rs`（任务 `2672-åæ-store-pdtypes-placement-f2f1b259.md`）
-- [ ] `pkg/store/pdtypes/region_tree.rs.md` ← `pkg/store/pdtypes/region_tree.rs`（任务 `2673-åæ-store-pdtypes-region_tree-816d7e69.md`）
-- [ ] `pkg/store/pdtypes/statistics.rs.md` ← `pkg/store/pdtypes/statistics.rs`（任务 `2674-åæ-store-pdtypes-statistics-ef1abd6d.md`）
-- [ ] `pkg/store/pdtypes/typeutil.rs.md` ← `pkg/store/pdtypes/typeutil.rs`（任务 `2675-åæ-store-pdtypes-typeutil-44285c39.md`）
-- [ ] `pkg/store/store.rs.md` ← `pkg/store/store.rs`（任务 `2676-åæ-pkg-store-store-79658a87.md`）
+- [ ] `pkg/store/copr/batch_coprocessor.rs.md`
+- [ ] `pkg/store/copr/batch_request_sender.rs.md`
+- [ ] `pkg/store/copr/coprocessor.rs.md`
+- [ ] `pkg/store/copr/coprocessor_cache.rs.md`
+- [ ] `pkg/store/copr/ema.rs.md`
+- [ ] `pkg/store/copr/key_ranges.rs.md`
+- [ ] `pkg/store/copr/metrics/metrics.rs.md`
+- [ ] `pkg/store/copr/mpp.rs.md`
+- [ ] `pkg/store/copr/mpp_probe.rs.md`
+- [ ] `pkg/store/copr/network_backend.rs.md`
+- [ ] `pkg/store/copr/pool_task_details.rs.md`
+- [ ] `pkg/store/copr/range_diagnostics.rs.md`
+- [ ] `pkg/store/copr/region_cache.rs.md`
+- [ ] `pkg/store/copr/store.rs.md`
+- [ ] `pkg/store/driver/backoff/backoff.rs.md`
+- [ ] `pkg/store/driver/client_runtime.rs.md`
+- [ ] `pkg/store/driver/error/error.rs.md`
+- [ ] `pkg/store/driver/kv_adapter.rs.md`
+- [ ] `pkg/store/driver/options/options.rs.md`
+- [ ] `pkg/store/driver/read_pool_task_details.rs.md`
+- [ ] `pkg/store/driver/read_request.rs.md`
+- [ ] `pkg/store/driver/region_split_config.rs.md`
+- [ ] `pkg/store/driver/runaway_adapter.rs.md`
+- [ ] `pkg/store/driver/sst_import.rs.md`
+- [ ] `pkg/store/driver/test_state.rs.md`
+- [ ] `pkg/store/driver/tikv_driver.rs.md`
+- [ ] `pkg/store/driver/txn/batch_getter.rs.md`
+- [ ] `pkg/store/driver/txn/error.rs.md`
+- [ ] `pkg/store/driver/txn/scanner.rs.md`
+- [ ] `pkg/store/driver/txn/snapshot.rs.md`
+- [ ] `pkg/store/driver/txn/txn_driver.rs.md`
+- [ ] `pkg/store/driver/txn/union_iter.rs.md`
+- [ ] `pkg/store/driver/txn/unionstore_driver.rs.md`
+- [ ] `pkg/store/etcd.rs.md`
+- [ ] `pkg/store/gcworker/gc_worker.rs.md`
+- [ ] `pkg/store/helper/helper.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/aggregate.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/analyze.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/checksum.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/cop_handler_dag.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/copr_handler.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/executor.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/rpc_copr.rs.md`
+- [ ] `pkg/store/mockstore/mockcopr/topn.rs.md`
+- [ ] `pkg/store/mockstore/mockstorage/canonical_storage.rs.md`
+- [ ] `pkg/store/mockstore/mockstorage/embedded_rpc.rs.md`
+- [ ] `pkg/store/mockstore/mockstorage/storage.rs.md`
+- [ ] `pkg/store/mockstore/mockstore.rs.md`
+- [ ] `pkg/store/mockstore/redirector.rs.md`
+- [ ] `pkg/store/mockstore/teststore/store.rs.md`
+- [ ] `pkg/store/mockstore/tikv.rs.md`
+- [ ] `pkg/store/mockstore/unistore.rs.md`
+- [ ] `pkg/store/mockstore/unistore/client/client.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cluster.rs.md`
+- [ ] `pkg/store/mockstore/unistore/config/config.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/analyze.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/closure_exec.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/cop_handler.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/mpp.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/mpp_exec.rs.md`
+- [ ] `pkg/store/mockstore/unistore/cophandler/topn.rs.md`
+- [ ] `pkg/store/mockstore/unistore/lockstore/arena.rs.md`
+- [ ] `pkg/store/mockstore/unistore/lockstore/iterator.rs.md`
+- [ ] `pkg/store/mockstore/unistore/lockstore/load_dump.rs.md`
+- [ ] `pkg/store/mockstore/unistore/lockstore/lockstore.rs.md`
+- [ ] `pkg/store/mockstore/unistore/metrics/metrics.rs.md`
+- [ ] `pkg/store/mockstore/unistore/mock.rs.md`
+- [ ] `pkg/store/mockstore/unistore/pd.rs.md`
+- [ ] `pkg/store/mockstore/unistore/pd/client.rs.md`
+- [ ] `pkg/store/mockstore/unistore/raw_handler.rs.md`
+- [ ] `pkg/store/mockstore/unistore/rpc.rs.md`
+- [ ] `pkg/store/mockstore/unistore/server/server.rs.md`
+- [ ] `pkg/store/mockstore/unistore/testutil.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/deadlock.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/detector.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/inner_server.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/kverrors/errors.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mock_region.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/codec_adapter.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/lockstore_adapter.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/pberror/pberror.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/region.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/server.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/server_batch.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/util.rs.md`
+- [ ] `pkg/store/mockstore/unistore/tikv/write.rs.md`
+- [ ] `pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs.md`
+- [ ] `pkg/store/pdtypes/api.rs.md`
+- [ ] `pkg/store/pdtypes/config.rs.md`
+- [ ] `pkg/store/pdtypes/placement.rs.md`
+- [ ] `pkg/store/pdtypes/region_tree.rs.md`
+- [ ] `pkg/store/pdtypes/statistics.rs.md`
+- [ ] `pkg/store/pdtypes/typeutil.rs.md`
+- [ ] `pkg/store/store.rs.md`
 
 ## pkg/structure
 
-- [ ] `pkg/structure/hash.rs.md` ← `pkg/structure/hash.rs`（任务 `2677-åæ-pkg-structure-hash-be69d567.md`）
-- [ ] `pkg/structure/list.rs.md` ← `pkg/structure/list.rs`（任务 `2679-åæ-pkg-structure-list-32a5a7c4.md`）
-- [ ] `pkg/structure/string.rs.md` ← `pkg/structure/string.rs`（任务 `2680-åæ-pkg-structure-string-587376c3.md`）
-- [ ] `pkg/structure/structure.rs.md` ← `pkg/structure/structure.rs`（任务 `2681-åæ-pkg-structure-structure-029d7ede.md`）
-- [ ] `pkg/structure/type.rs.md` ← `pkg/structure/type.rs`（任务 `2682-åæ-pkg-structure-type-364f3b7d.md`）
+- [ ] `pkg/structure/hash.rs.md`
+- [ ] `pkg/structure/list.rs.md`
+- [ ] `pkg/structure/string.rs.md`
+- [ ] `pkg/structure/structure.rs.md`
+- [ ] `pkg/structure/type.rs.md`
 
 ## pkg/table
 
-- [ ] `pkg/table/column.rs.md` ← `pkg/table/column.rs`（任务 `2683-åæ-pkg-table-column-d55ca160.md`）
-- [ ] `pkg/table/constraint.rs.md` ← `pkg/table/constraint.rs`（任务 `2684-åæ-pkg-table-constraint-82654bce.md`）
-- [ ] `pkg/table/index.rs.md` ← `pkg/table/index.rs`（任务 `2685-åæ-pkg-table-index-46aece7b.md`）
-- [ ] `pkg/table/mview_log.rs.md` ← `pkg/table/mview_log.rs`（任务 `2687-åæ-pkg-table-mview_log-9e65abdd.md`）
-- [ ] `pkg/table/raw_row.rs.md` ← `pkg/table/raw_row.rs`（任务 `2688-åæ-pkg-table-raw_row-3e3b837f.md`）
-- [ ] `pkg/table/table.rs.md` ← `pkg/table/table.rs`（任务 `2689-åæ-pkg-table-table-85d8e639.md`）
-- [ ] `pkg/table/tables/assertion.rs.md` ← `pkg/table/tables/assertion.rs`（任务 `2690-åæ-table-tables-assertion-e908d824.md`）
-- [ ] `pkg/table/tables/cache.rs.md` ← `pkg/table/tables/cache.rs`（任务 `2691-åæ-table-tables-cache-2b199f5d.md`）
-- [ ] `pkg/table/tables/canonical_partition.rs.md` ← `pkg/table/tables/canonical_partition.rs`（任务 `2692-åæ-table-tables-canonical_partition-a7f3bdc6.md`）
-- [ ] `pkg/table/tables/canonical_partition_expr.rs.md` ← `pkg/table/tables/canonical_partition_expr.rs`（任务 `2693-åæ-table-tables-canonical_partition_expr-a27eb8c2.md`）
-- [ ] `pkg/table/tables/index.rs.md` ← `pkg/table/tables/index.rs`（任务 `2694-åæ-table-tables-index-44e39b00.md`）
-- [ ] `pkg/table/tables/mutation_checker.rs.md` ← `pkg/table/tables/mutation_checker.rs`（任务 `2696-åæ-table-tables-mutation_checker-20a86eb2.md`）
-- [ ] `pkg/table/tables/partition.rs.md` ← `pkg/table/tables/partition.rs`（任务 `2697-åæ-table-tables-partition-40131a36.md`）
-- [ ] `pkg/table/tables/partition_expr.rs.md` ← `pkg/table/tables/partition_expr.rs`（任务 `2698-åæ-table-tables-partition_expr-f8dddeff.md`）
-- [ ] `pkg/table/tables/state_remote.rs.md` ← `pkg/table/tables/state_remote.rs`（任务 `2699-åæ-table-tables-state_remote-83f44557.md`）
-- [ ] `pkg/table/tables/tables.rs.md` ← `pkg/table/tables/tables.rs`（任务 `2700-åæ-table-tables-tables-dfba197d.md`）
-- [ ] `pkg/table/tables/testutil.rs.md` ← `pkg/table/tables/testutil.rs`（任务 `2701-åæ-table-tables-testutil-a6b7fcb8.md`）
-- [ ] `pkg/table/tables/testutil/indexcheck.rs.md` ← `pkg/table/tables/testutil/indexcheck.rs`（任务 `2702-åæ-tables-testutil-indexcheck-be44b03a.md`）
-- [ ] `pkg/table/tblctx/buffers.rs.md` ← `pkg/table/tblctx/buffers.rs`（任务 `2704-åæ-table-tblctx-buffers-0b99eee6.md`）
-- [ ] `pkg/table/tblctx/table.rs.md` ← `pkg/table/tblctx/table.rs`（任务 `2706-åæ-table-tblctx-table-5ae788cd.md`）
-- [ ] `pkg/table/tblsession/table.rs.md` ← `pkg/table/tblsession/table.rs`（任务 `2708-åæ-table-tblsession-table-51a2466b.md`）
-- [ ] `pkg/table/temptable/ddl.rs.md` ← `pkg/table/temptable/ddl.rs`（任务 `2709-åæ-table-temptable-ddl-411a7dea.md`）
-- [ ] `pkg/table/temptable/infoschema.rs.md` ← `pkg/table/temptable/infoschema.rs`（任务 `2710-åæ-table-temptable-infoschema-b8fe900f.md`）
-- [ ] `pkg/table/temptable/interceptor.rs.md` ← `pkg/table/temptable/interceptor.rs`（任务 `2711-åæ-table-temptable-interceptor-7cff6f15.md`）
+- [ ] `pkg/table/column.rs.md`
+- [ ] `pkg/table/constraint.rs.md`
+- [ ] `pkg/table/index.rs.md`
+- [ ] `pkg/table/mview_log.rs.md`
+- [ ] `pkg/table/raw_row.rs.md`
+- [ ] `pkg/table/table.rs.md`
+- [ ] `pkg/table/tables/assertion.rs.md`
+- [ ] `pkg/table/tables/cache.rs.md`
+- [ ] `pkg/table/tables/canonical_partition.rs.md`
+- [ ] `pkg/table/tables/canonical_partition_expr.rs.md`
+- [ ] `pkg/table/tables/index.rs.md`
+- [ ] `pkg/table/tables/mutation_checker.rs.md`
+- [ ] `pkg/table/tables/partition.rs.md`
+- [ ] `pkg/table/tables/partition_expr.rs.md`
+- [ ] `pkg/table/tables/state_remote.rs.md`
+- [ ] `pkg/table/tables/tables.rs.md`
+- [ ] `pkg/table/tables/testutil.rs.md`
+- [ ] `pkg/table/tables/testutil/indexcheck.rs.md`
+- [ ] `pkg/table/tblctx/buffers.rs.md`
+- [ ] `pkg/table/tblctx/table.rs.md`
+- [ ] `pkg/table/tblsession/table.rs.md`
+- [ ] `pkg/table/temptable/ddl.rs.md`
+- [ ] `pkg/table/temptable/infoschema.rs.md`
+- [ ] `pkg/table/temptable/interceptor.rs.md`
 
 ## pkg/tablecodec
 
-- [ ] `pkg/tablecodec/rowindexcodec/rowindexcodec.rs.md` ← `pkg/tablecodec/rowindexcodec/rowindexcodec.rs`（任务 `2715-åæ-tablecodec-rowindexcodec-rowindexcodec-83c2d43a.md`）
-- [ ] `pkg/tablecodec/tablecodec.rs.md` ← `pkg/tablecodec/tablecodec.rs`（任务 `2716-åæ-pkg-tablecodec-tablecodec-4184f2a8.md`）
+- [ ] `pkg/tablecodec/rowindexcodec/rowindexcodec.rs.md`
+- [ ] `pkg/tablecodec/tablecodec.rs.md`
 
 ## pkg/telemetry
 
-- [ ] `pkg/telemetry/data.rs.md` ← `pkg/telemetry/data.rs`（任务 `2717-åæ-pkg-telemetry-data-84c65ed1.md`）
-- [ ] `pkg/telemetry/data_feature_usage.rs.md` ← `pkg/telemetry/data_feature_usage.rs`（任务 `2718-åæ-pkg-telemetry-data_feature_usage-33d75eea.md`）
-- [ ] `pkg/telemetry/data_window.rs.md` ← `pkg/telemetry/data_window.rs`（任务 `2719-åæ-pkg-telemetry-data_window-4d4d8ba1.md`）
-- [ ] `pkg/telemetry/telemetry.rs.md` ← `pkg/telemetry/telemetry.rs`（任务 `2721-åæ-pkg-telemetry-telemetry-ce55be4f.md`）
-- [ ] `pkg/telemetry/ttl.rs.md` ← `pkg/telemetry/ttl.rs`（任务 `2722-åæ-pkg-telemetry-ttl-4997f6a1.md`）
+- [ ] `pkg/telemetry/data.rs.md`
+- [ ] `pkg/telemetry/data_feature_usage.rs.md`
+- [ ] `pkg/telemetry/data_window.rs.md`
+- [ ] `pkg/telemetry/telemetry.rs.md`
+- [ ] `pkg/telemetry/ttl.rs.md`
 
 ## pkg/testkit
 
-- [ ] `pkg/testkit/analyzehelper/helper.rs.md` ← `pkg/testkit/analyzehelper/helper.rs`（任务 `2723-åæ-testkit-analyzehelper-helper-bfee93bb.md`）
-- [ ] `pkg/testkit/asynctestkit.rs.md` ← `pkg/testkit/asynctestkit.rs`（任务 `2725-åæ-pkg-testkit-asynctestkit-1269796f.md`）
-- [ ] `pkg/testkit/db_driver.rs.md` ← `pkg/testkit/db_driver.rs`（任务 `2726-åæ-pkg-testkit-db_driver-c7c10677.md`）
-- [ ] `pkg/testkit/dbtestkit.rs.md` ← `pkg/testkit/dbtestkit.rs`（任务 `2727-åæ-pkg-testkit-dbtestkit-c72eb548.md`）
-- [ ] `pkg/testkit/ddlhelper/helper.rs.md` ← `pkg/testkit/ddlhelper/helper.rs`（任务 `2728-åæ-testkit-ddlhelper-helper-776d97ca.md`）
-- [ ] `pkg/testkit/external/util.rs.md` ← `pkg/testkit/external/util.rs`（任务 `2731-åæ-testkit-external-util-2d096698.md`）
-- [ ] `pkg/testkit/mocksessionmanager.rs.md` ← `pkg/testkit/mocksessionmanager.rs`（任务 `2733-åæ-pkg-testkit-mocksessionmanager-bea62f7d.md`）
-- [ ] `pkg/testkit/mockstore.rs.md` ← `pkg/testkit/mockstore.rs`（任务 `2734-åæ-pkg-testkit-mockstore-9b74b29e.md`）
-- [ ] `pkg/testkit/result.rs.md` ← `pkg/testkit/result.rs`（任务 `2735-åæ-pkg-testkit-result-3a207e20.md`）
-- [ ] `pkg/testkit/stats_fixture.rs.md` ← `pkg/testkit/stats_fixture.rs`（任务 `2736-åæ-pkg-testkit-stats_fixture-4412dd35.md`）
-- [ ] `pkg/testkit/stepped.rs.md` ← `pkg/testkit/stepped.rs`（任务 `2737-åæ-pkg-testkit-stepped-187ee208.md`）
-- [ ] `pkg/testkit/testenv/testenv.rs.md` ← `pkg/testkit/testenv/testenv.rs`（任务 `2739-åæ-testkit-testenv-testenv-2888c1ce.md`）
-- [ ] `pkg/testkit/testfailpoint/failpoint.rs.md` ← `pkg/testkit/testfailpoint/failpoint.rs`（任务 `2740-åæ-testkit-testfailpoint-failpoint-39fd527c.md`）
-- [ ] `pkg/testkit/testflag/flag.rs.md` ← `pkg/testkit/testflag/flag.rs`（任务 `2742-åæ-testkit-testflag-flag-bad3b6ac.md`）
-- [ ] `pkg/testkit/testfork/fork.rs.md` ← `pkg/testkit/testfork/fork.rs`（任务 `2744-åæ-testkit-testfork-fork-be90ea45.md`）
-- [ ] `pkg/testkit/testkit.rs.md` ← `pkg/testkit/testkit.rs`（任务 `2746-åæ-pkg-testkit-testkit-194cf831.md`）
-- [ ] `pkg/testkit/testmain/bench.rs.md` ← `pkg/testkit/testmain/bench.rs`（任务 `2747-åæ-testkit-testmain-bench-53d928f1.md`）
-- [ ] `pkg/testkit/testmain/wrapper.rs.md` ← `pkg/testkit/testmain/wrapper.rs`（任务 `2749-åæ-testkit-testmain-wrapper-6098714c.md`）
-- [ ] `pkg/testkit/testsetup/bridge.rs.md` ← `pkg/testkit/testsetup/bridge.rs`（任务 `2750-åæ-testkit-testsetup-bridge-b2ea8cc3.md`）
-- [ ] `pkg/testkit/testutil/handle.rs.md` ← `pkg/testkit/testutil/handle.rs`（任务 `2752-åæ-testkit-testutil-handle-a5dc3946.md`）
-- [ ] `pkg/testkit/testutil/loghook.rs.md` ← `pkg/testkit/testutil/loghook.rs`（任务 `2754-åæ-testkit-testutil-loghook-ea8f04e3.md`）
-- [ ] `pkg/testkit/testutil/require.rs.md` ← `pkg/testkit/testutil/require.rs`（任务 `2755-åæ-testkit-testutil-require-a5b06617.md`）
+- [ ] `pkg/testkit/analyzehelper/helper.rs.md`
+- [ ] `pkg/testkit/asynctestkit.rs.md`
+- [ ] `pkg/testkit/db_driver.rs.md`
+- [ ] `pkg/testkit/dbtestkit.rs.md`
+- [ ] `pkg/testkit/ddlhelper/helper.rs.md`
+- [ ] `pkg/testkit/external/util.rs.md`
+- [ ] `pkg/testkit/mocksessionmanager.rs.md`
+- [ ] `pkg/testkit/mockstore.rs.md`
+- [ ] `pkg/testkit/result.rs.md`
+- [ ] `pkg/testkit/stats_fixture.rs.md`
+- [ ] `pkg/testkit/stepped.rs.md`
+- [ ] `pkg/testkit/testenv/testenv.rs.md`
+- [ ] `pkg/testkit/testfailpoint/failpoint.rs.md`
+- [ ] `pkg/testkit/testflag/flag.rs.md`
+- [ ] `pkg/testkit/testfork/fork.rs.md`
+- [ ] `pkg/testkit/testkit.rs.md`
+- [ ] `pkg/testkit/testmain/bench.rs.md`
+- [ ] `pkg/testkit/testmain/wrapper.rs.md`
+- [ ] `pkg/testkit/testsetup/bridge.rs.md`
+- [ ] `pkg/testkit/testutil/handle.rs.md`
+- [ ] `pkg/testkit/testutil/loghook.rs.md`
+- [ ] `pkg/testkit/testutil/require.rs.md`
 
 ## pkg/tidbmanager
 
-- [ ] `pkg/tidbmanager/tidbmanager.rs.md` ← `pkg/tidbmanager/tidbmanager.rs`（任务 `2757-åæ-pkg-tidbmanager-tidbmanager-95de95c7.md`）
+- [ ] `pkg/tidbmanager/tidbmanager.rs.md`
 
 ## pkg/timer
 
-- [ ] `pkg/timer/api/client.rs.md` ← `pkg/timer/api/client.rs`（任务 `2758-åæ-timer-api-client-62353e6b.md`）
-- [ ] `pkg/timer/api/error.rs.md` ← `pkg/timer/api/error.rs`（任务 `2759-åæ-timer-api-error-54fa374b.md`）
-- [ ] `pkg/timer/api/hook.rs.md` ← `pkg/timer/api/hook.rs`（任务 `2760-åæ-timer-api-hook-e6355f7a.md`）
-- [ ] `pkg/timer/api/mem_store.rs.md` ← `pkg/timer/api/mem_store.rs`（任务 `2762-åæ-timer-api-mem_store-22296f8a.md`）
-- [ ] `pkg/timer/api/store.rs.md` ← `pkg/timer/api/store.rs`（任务 `2763-åæ-timer-api-store-4e7bbb03.md`）
-- [ ] `pkg/timer/api/timer.rs.md` ← `pkg/timer/api/timer.rs`（任务 `2764-åæ-timer-api-timer-a79c059b.md`）
-- [ ] `pkg/timer/metrics/metrics.rs.md` ← `pkg/timer/metrics/metrics.rs`（任务 `2767-åæ-timer-metrics-metrics-369960da.md`）
-- [ ] `pkg/timer/runtime/cache.rs.md` ← `pkg/timer/runtime/cache.rs`（任务 `2768-åæ-timer-runtime-cache-435cd51e.md`）
-- [ ] `pkg/timer/runtime/runtime.rs.md` ← `pkg/timer/runtime/runtime.rs`（任务 `2770-åæ-timer-runtime-runtime-2119ba5d.md`）
-- [ ] `pkg/timer/runtime/worker.rs.md` ← `pkg/timer/runtime/worker.rs`（任务 `2771-åæ-timer-runtime-worker-ff846ab9.md`）
-- [ ] `pkg/timer/tablestore/notifier.rs.md` ← `pkg/timer/tablestore/notifier.rs`（任务 `2773-åæ-timer-tablestore-notifier-405590d4.md`）
-- [ ] `pkg/timer/tablestore/sql.rs.md` ← `pkg/timer/tablestore/sql.rs`（任务 `2774-åæ-timer-tablestore-sql-2ef3be85.md`）
-- [ ] `pkg/timer/tablestore/store.rs.md` ← `pkg/timer/tablestore/store.rs`（任务 `2775-åæ-timer-tablestore-store-9e8895d0.md`）
+- [ ] `pkg/timer/api/client.rs.md`
+- [ ] `pkg/timer/api/error.rs.md`
+- [ ] `pkg/timer/api/hook.rs.md`
+- [ ] `pkg/timer/api/mem_store.rs.md`
+- [ ] `pkg/timer/api/store.rs.md`
+- [ ] `pkg/timer/api/timer.rs.md`
+- [ ] `pkg/timer/metrics/metrics.rs.md`
+- [ ] `pkg/timer/runtime/cache.rs.md`
+- [ ] `pkg/timer/runtime/runtime.rs.md`
+- [ ] `pkg/timer/runtime/worker.rs.md`
+- [ ] `pkg/timer/tablestore/notifier.rs.md`
+- [ ] `pkg/timer/tablestore/sql.rs.md`
+- [ ] `pkg/timer/tablestore/store.rs.md`
 
 ## pkg/ttl
 
-- [ ] `pkg/ttl/cache/base.rs.md` ← `pkg/ttl/cache/base.rs`（任务 `2776-åæ-ttl-cache-base-3bca15c4.md`）
-- [ ] `pkg/ttl/cache/infoschema.rs.md` ← `pkg/ttl/cache/infoschema.rs`（任务 `2777-åæ-ttl-cache-infoschema-b2191f7b.md`）
-- [ ] `pkg/ttl/cache/table.rs.md` ← `pkg/ttl/cache/table.rs`（任务 `2779-åæ-ttl-cache-table-4bf78409.md`）
-- [ ] `pkg/ttl/cache/task.rs.md` ← `pkg/ttl/cache/task.rs`（任务 `2780-åæ-ttl-cache-task-f95228cd.md`）
-- [ ] `pkg/ttl/cache/ttlstatus.rs.md` ← `pkg/ttl/cache/ttlstatus.rs`（任务 `2781-åæ-ttl-cache-ttlstatus-92787f2e.md`）
-- [ ] `pkg/ttl/client/command.rs.md` ← `pkg/ttl/client/command.rs`（任务 `2782-åæ-ttl-client-command-a87c2b9d.md`）
-- [ ] `pkg/ttl/client/notification.rs.md` ← `pkg/ttl/client/notification.rs`（任务 `2784-åæ-ttl-client-notification-0b0c5135.md`）
-- [ ] `pkg/ttl/metrics/metrics.rs.md` ← `pkg/ttl/metrics/metrics.rs`（任务 `2786-åæ-ttl-metrics-metrics-e05634d5.md`）
-- [ ] `pkg/ttl/session/session.rs.md` ← `pkg/ttl/session/session.rs`（任务 `2788-åæ-ttl-session-session-51b29be3.md`）
-- [ ] `pkg/ttl/sqlbuilder/sql.rs.md` ← `pkg/ttl/sqlbuilder/sql.rs`（任务 `2790-åæ-ttl-sqlbuilder-sql-3784acfb.md`）
-- [ ] `pkg/ttl/ttlworker/config.rs.md` ← `pkg/ttl/ttlworker/config.rs`（任务 `2791-åæ-ttl-ttlworker-config-8d8f2ae2.md`）
-- [ ] `pkg/ttl/ttlworker/del.rs.md` ← `pkg/ttl/ttlworker/del.rs`（任务 `2792-åæ-ttl-ttlworker-del-fe966d98.md`）
-- [ ] `pkg/ttl/ttlworker/job.rs.md` ← `pkg/ttl/ttlworker/job.rs`（任务 `2794-åæ-ttl-ttlworker-job-15d802f2.md`）
-- [ ] `pkg/ttl/ttlworker/job_manager.rs.md` ← `pkg/ttl/ttlworker/job_manager.rs`（任务 `2795-åæ-ttl-ttlworker-job_manager-fb57c3c3.md`）
-- [ ] `pkg/ttl/ttlworker/job_version_checker.rs.md` ← `pkg/ttl/ttlworker/job_version_checker.rs`（任务 `2796-åæ-ttl-ttlworker-job_version_checker-f1e81056.md`）
-- [ ] `pkg/ttl/ttlworker/persistent.rs.md` ← `pkg/ttl/ttlworker/persistent.rs`（任务 `2798-åæ-ttl-ttlworker-persistent-a9995ce1.md`）
-- [ ] `pkg/ttl/ttlworker/scan.rs.md` ← `pkg/ttl/ttlworker/scan.rs`（任务 `2799-åæ-ttl-ttlworker-scan-880a68f2.md`）
-- [ ] `pkg/ttl/ttlworker/session.rs.md` ← `pkg/ttl/ttlworker/session.rs`（任务 `2800-åæ-ttl-ttlworker-session-7cca79af.md`）
-- [ ] `pkg/ttl/ttlworker/task_manager.rs.md` ← `pkg/ttl/ttlworker/task_manager.rs`（任务 `2801-åæ-ttl-ttlworker-task_manager-fb034b05.md`）
-- [ ] `pkg/ttl/ttlworker/timer.rs.md` ← `pkg/ttl/ttlworker/timer.rs`（任务 `2802-åæ-ttl-ttlworker-timer-b768a07a.md`）
-- [ ] `pkg/ttl/ttlworker/timer_sync.rs.md` ← `pkg/ttl/ttlworker/timer_sync.rs`（任务 `2803-åæ-ttl-ttlworker-timer_sync-8b8aa092.md`）
-- [ ] `pkg/ttl/ttlworker/worker.rs.md` ← `pkg/ttl/ttlworker/worker.rs`（任务 `2804-åæ-ttl-ttlworker-worker-b0bc9239.md`）
+- [ ] `pkg/ttl/cache/base.rs.md`
+- [ ] `pkg/ttl/cache/infoschema.rs.md`
+- [ ] `pkg/ttl/cache/table.rs.md`
+- [ ] `pkg/ttl/cache/task.rs.md`
+- [ ] `pkg/ttl/cache/ttlstatus.rs.md`
+- [ ] `pkg/ttl/client/command.rs.md`
+- [ ] `pkg/ttl/client/notification.rs.md`
+- [ ] `pkg/ttl/metrics/metrics.rs.md`
+- [ ] `pkg/ttl/session/session.rs.md`
+- [ ] `pkg/ttl/sqlbuilder/sql.rs.md`
+- [ ] `pkg/ttl/ttlworker/config.rs.md`
+- [ ] `pkg/ttl/ttlworker/del.rs.md`
+- [ ] `pkg/ttl/ttlworker/job.rs.md`
+- [ ] `pkg/ttl/ttlworker/job_manager.rs.md`
+- [ ] `pkg/ttl/ttlworker/job_version_checker.rs.md`
+- [ ] `pkg/ttl/ttlworker/persistent.rs.md`
+- [ ] `pkg/ttl/ttlworker/scan.rs.md`
+- [ ] `pkg/ttl/ttlworker/session.rs.md`
+- [ ] `pkg/ttl/ttlworker/task_manager.rs.md`
+- [ ] `pkg/ttl/ttlworker/timer.rs.md`
+- [ ] `pkg/ttl/ttlworker/timer_sync.rs.md`
+- [ ] `pkg/ttl/ttlworker/worker.rs.md`
 
 ## pkg/types
 
-- [ ] `pkg/types/binary_literal.rs.md` ← `pkg/types/binary_literal.rs`（任务 `2805-åæ-pkg-types-binary_literal-9cc6da4a.md`）
-- [ ] `pkg/types/compare.rs.md` ← `pkg/types/compare.rs`（任务 `2806-åæ-pkg-types-compare-e987967d.md`）
-- [ ] `pkg/types/context.rs.md` ← `pkg/types/context.rs`（任务 `2807-åæ-pkg-types-context-fd1f870b.md`）
-- [ ] `pkg/types/convert.rs.md` ← `pkg/types/convert.rs`（任务 `2808-åæ-pkg-types-convert-5b88464d.md`）
-- [ ] `pkg/types/core_time.rs.md` ← `pkg/types/core_time.rs`（任务 `2809-åæ-pkg-types-core_time-883a052b.md`）
-- [ ] `pkg/types/datum.rs.md` ← `pkg/types/datum.rs`（任务 `2810-åæ-pkg-types-datum-ce17e9a7.md`）
-- [ ] `pkg/types/datum_eval.rs.md` ← `pkg/types/datum_eval.rs`（任务 `2811-åæ-pkg-types-datum_eval-e4ccb345.md`）
-- [ ] `pkg/types/enum.rs.md` ← `pkg/types/enum.rs`（任务 `2812-åæ-pkg-types-enum-f6da2ed3.md`）
-- [ ] `pkg/types/errors.rs.md` ← `pkg/types/errors.rs`（任务 `2813-åæ-pkg-types-errors-d650bc52.md`）
-- [ ] `pkg/types/etc.rs.md` ← `pkg/types/etc.rs`（任务 `2814-åæ-pkg-types-etc-9862a3fd.md`）
-- [ ] `pkg/types/eval_type.rs.md` ← `pkg/types/eval_type.rs`（任务 `2815-åæ-pkg-types-eval_type-4f905612.md`）
-- [ ] `pkg/types/explain_format.rs.md` ← `pkg/types/explain_format.rs`（任务 `2816-åæ-pkg-types-explain_format-d6bc8fee.md`）
-- [ ] `pkg/types/field_name.rs.md` ← `pkg/types/field_name.rs`（任务 `2817-åæ-pkg-types-field_name-077bc987.md`）
-- [ ] `pkg/types/field_type.rs.md` ← `pkg/types/field_type.rs`（任务 `2818-åæ-pkg-types-field_type-bd5ef11e.md`）
-- [ ] `pkg/types/field_type_builder.rs.md` ← `pkg/types/field_type_builder.rs`（任务 `2819-åæ-pkg-types-field_type_builder-8927fc9f.md`）
-- [ ] `pkg/types/fsp.rs.md` ← `pkg/types/fsp.rs`（任务 `2820-åæ-pkg-types-fsp-d3cee5fa.md`）
-- [ ] `pkg/types/helper.rs.md` ← `pkg/types/helper.rs`（任务 `2821-åæ-pkg-types-helper-da81ad70.md`）
-- [ ] `pkg/types/json_binary.rs.md` ← `pkg/types/json_binary.rs`（任务 `2834-åæ-pkg-types-json_binary-7f0de014.md`）
-- [ ] `pkg/types/json_binary_functions.rs.md` ← `pkg/types/json_binary_functions.rs`（任务 `2835-åæ-pkg-types-json_binary_functions-571eebe5.md`）
-- [ ] `pkg/types/json_constants.rs.md` ← `pkg/types/json_constants.rs`（任务 `2836-åæ-pkg-types-json_constants-b0d043bc.md`）
-- [ ] `pkg/types/json_path_expr.rs.md` ← `pkg/types/json_path_expr.rs`（任务 `2837-åæ-pkg-types-json_path_expr-81621c9e.md`）
-- [ ] `pkg/types/mydecimal.rs.md` ← `pkg/types/mydecimal.rs`（任务 `2839-åæ-pkg-types-mydecimal-db22ec3a.md`）
-- [ ] `pkg/types/overflow.rs.md` ← `pkg/types/overflow.rs`（任务 `2840-åæ-pkg-types-overflow-0c87c7db.md`）
-- [ ] `pkg/types/parser_driver/value_expr.rs.md` ← `pkg/types/parser_driver/value_expr.rs`（任务 `2842-åæ-types-parser_driver-value_expr-885a8245.md`）
-- [ ] `pkg/types/set.rs.md` ← `pkg/types/set.rs`（任务 `2843-åæ-pkg-types-set-ac7980ac.md`）
-- [ ] `pkg/types/string.rs.md` ← `pkg/types/string.rs`（任务 `2844-åæ-pkg-types-string-7cc5d0f5.md`）
-- [ ] `pkg/types/time.rs.md` ← `pkg/types/time.rs`（任务 `2845-åæ-pkg-types-time-c67dd7b8.md`）
-- [ ] `pkg/types/truncate.rs.md` ← `pkg/types/truncate.rs`（任务 `2846-åæ-pkg-types-truncate-c23754b5.md`）
-- [ ] `pkg/types/vector.rs.md` ← `pkg/types/vector.rs`（任务 `2847-åæ-pkg-types-vector-0f9c59f3.md`）
-- [ ] `pkg/types/vector_functions.rs.md` ← `pkg/types/vector_functions.rs`（任务 `2848-åæ-pkg-types-vector_functions-f73baadb.md`）
+- [ ] `pkg/types/binary_literal.rs.md`
+- [ ] `pkg/types/compare.rs.md`
+- [ ] `pkg/types/context.rs.md`
+- [ ] `pkg/types/convert.rs.md`
+- [ ] `pkg/types/core_time.rs.md`
+- [ ] `pkg/types/datum.rs.md`
+- [ ] `pkg/types/datum_eval.rs.md`
+- [ ] `pkg/types/enum.rs.md`
+- [ ] `pkg/types/errors.rs.md`
+- [ ] `pkg/types/etc.rs.md`
+- [ ] `pkg/types/eval_type.rs.md`
+- [ ] `pkg/types/explain_format.rs.md`
+- [ ] `pkg/types/field_name.rs.md`
+- [ ] `pkg/types/field_type.rs.md`
+- [ ] `pkg/types/field_type_builder.rs.md`
+- [ ] `pkg/types/fsp.rs.md`
+- [ ] `pkg/types/helper.rs.md`
+- [ ] `pkg/types/json_binary.rs.md`
+- [ ] `pkg/types/json_binary_functions.rs.md`
+- [ ] `pkg/types/json_constants.rs.md`
+- [ ] `pkg/types/json_path_expr.rs.md`
+- [ ] `pkg/types/mydecimal.rs.md`
+- [ ] `pkg/types/overflow.rs.md`
+- [ ] `pkg/types/parser_driver/value_expr.rs.md`
+- [ ] `pkg/types/set.rs.md`
+- [ ] `pkg/types/string.rs.md`
+- [ ] `pkg/types/time.rs.md`
+- [ ] `pkg/types/truncate.rs.md`
+- [ ] `pkg/types/vector.rs.md`
+- [ ] `pkg/types/vector_functions.rs.md`
 
 ## pkg/util
 
-- [ ] `pkg/util/admin/admin.rs.md` ← `pkg/util/admin/admin.rs`（任务 `2849-åæ-util-admin-admin-fde4a9a7.md`）
-- [ ] `pkg/util/arena/arena.rs.md` ← `pkg/util/arena/arena.rs`（任务 `2851-åæ-util-arena-arena-f9a8c511.md`）
-- [ ] `pkg/util/backoff/backoff.rs.md` ← `pkg/util/backoff/backoff.rs`（任务 `2853-åæ-util-backoff-backoff-9d02da0f.md`）
-- [ ] `pkg/util/benchdaily/bench_daily.rs.md` ← `pkg/util/benchdaily/bench_daily.rs`（任务 `2855-åæ-util-benchdaily-bench_daily-991e66e9.md`）
-- [ ] `pkg/util/bitmap/concurrent.rs.md` ← `pkg/util/bitmap/concurrent.rs`（任务 `2857-åæ-util-bitmap-concurrent-4cec0c71.md`）
-- [ ] `pkg/util/breakpoint/breakpoint.rs.md` ← `pkg/util/breakpoint/breakpoint.rs`（任务 `2859-åæ-util-breakpoint-breakpoint-94c0cdb0.md`）
-- [ ] `pkg/util/cdcutil/cdc.rs.md` ← `pkg/util/cdcutil/cdc.rs`（任务 `2861-åæ-util-cdcutil-cdc-74a74390.md`）
-- [ ] `pkg/util/cgmon/cgmon.rs.md` ← `pkg/util/cgmon/cgmon.rs`（任务 `2863-åæ-util-cgmon-cgmon-f88f357e.md`）
-- [ ] `pkg/util/cgroup/cgroup.rs.md` ← `pkg/util/cgroup/cgroup.rs`（任务 `2865-åæ-util-cgroup-cgroup-f01c031c.md`）
-- [ ] `pkg/util/cgroup/cgroup_cpu.rs.md` ← `pkg/util/cgroup/cgroup_cpu.rs`（任务 `2866-åæ-util-cgroup-cgroup_cpu-adeb5c3d.md`）
-- [ ] `pkg/util/cgroup/cgroup_cpu_linux.rs.md` ← `pkg/util/cgroup/cgroup_cpu_linux.rs`（任务 `2867-åæ-util-cgroup-cgroup_cpu_linux-1dbe0ddc.md`）
-- [ ] `pkg/util/cgroup/cgroup_cpu_unsupport.rs.md` ← `pkg/util/cgroup/cgroup_cpu_unsupport.rs`（任务 `2868-åæ-util-cgroup-cgroup_cpu_unsupport-854f2d00.md`）
-- [ ] `pkg/util/cgroup/cgroup_memory.rs.md` ← `pkg/util/cgroup/cgroup_memory.rs`（任务 `2869-åæ-util-cgroup-cgroup_memory-71482525.md`）
-- [ ] `pkg/util/cgroup/cgroup_memory_unsupport.rs.md` ← `pkg/util/cgroup/cgroup_memory_unsupport.rs`（任务 `2870-åæ-util-cgroup-cgroup_memory_unsupport-38aec54a.md`）
-- [ ] `pkg/util/channel/channel.rs.md` ← `pkg/util/channel/channel.rs`（任务 `2872-åæ-util-channel-channel-63935744.md`）
-- [ ] `pkg/util/checksum/checksum.rs.md` ← `pkg/util/checksum/checksum.rs`（任务 `2874-åæ-util-checksum-checksum-740c9a9b.md`）
-- [ ] `pkg/util/chunk/alloc.rs.md` ← `pkg/util/chunk/alloc.rs`（任务 `2876-åæ-util-chunk-alloc-03ea24a0.md`）
-- [ ] `pkg/util/chunk/chunk.rs.md` ← `pkg/util/chunk/chunk.rs`（任务 `2877-åæ-util-chunk-chunk-eefcccdd.md`）
-- [ ] `pkg/util/chunk/chunk_in_disk.rs.md` ← `pkg/util/chunk/chunk_in_disk.rs`（任务 `2878-åæ-util-chunk-chunk_in_disk-4fe44c6e.md`）
-- [ ] `pkg/util/chunk/chunk_util.rs.md` ← `pkg/util/chunk/chunk_util.rs`（任务 `2879-åæ-util-chunk-chunk_util-a291f25c.md`）
-- [ ] `pkg/util/chunk/codec.rs.md` ← `pkg/util/chunk/codec.rs`（任务 `2880-åæ-util-chunk-codec-a5eb282e.md`）
-- [ ] `pkg/util/chunk/column.rs.md` ← `pkg/util/chunk/column.rs`（任务 `2881-åæ-util-chunk-column-3442d65d.md`）
-- [ ] `pkg/util/chunk/compare.rs.md` ← `pkg/util/chunk/compare.rs`（任务 `2882-åæ-util-chunk-compare-1ebd6ceb.md`）
-- [ ] `pkg/util/chunk/iterator.rs.md` ← `pkg/util/chunk/iterator.rs`（任务 `2884-åæ-util-chunk-iterator-2b9b2b76.md`）
-- [ ] `pkg/util/chunk/list.rs.md` ← `pkg/util/chunk/list.rs`（任务 `2886-åæ-util-chunk-list-d5178da8.md`）
-- [ ] `pkg/util/chunk/mutrow.rs.md` ← `pkg/util/chunk/mutrow.rs`（任务 `2887-åæ-util-chunk-mutrow-c53d51f8.md`）
-- [ ] `pkg/util/chunk/pool.rs.md` ← `pkg/util/chunk/pool.rs`（任务 `2888-åæ-util-chunk-pool-71ffb986.md`）
-- [ ] `pkg/util/chunk/row.rs.md` ← `pkg/util/chunk/row.rs`（任务 `2889-åæ-util-chunk-row-7ab6d691.md`）
-- [ ] `pkg/util/chunk/row_container.rs.md` ← `pkg/util/chunk/row_container.rs`（任务 `2890-åæ-util-chunk-row_container-534e70b6.md`）
-- [ ] `pkg/util/chunk/row_container_reader.rs.md` ← `pkg/util/chunk/row_container_reader.rs`（任务 `2891-åæ-util-chunk-row_container_reader-121c5bc4.md`）
-- [ ] `pkg/util/chunk/row_in_disk.rs.md` ← `pkg/util/chunk/row_in_disk.rs`（任务 `2892-åæ-util-chunk-row_in_disk-186abdf7.md`）
-- [ ] `pkg/util/codec/bytes.rs.md` ← `pkg/util/codec/bytes.rs`（任务 `2893-åæ-util-codec-bytes-686197fa.md`）
-- [ ] `pkg/util/codec/codec.rs.md` ← `pkg/util/codec/codec.rs`（任务 `2894-åæ-util-codec-codec-1c58dcbc.md`）
-- [ ] `pkg/util/codec/decimal.rs.md` ← `pkg/util/codec/decimal.rs`（任务 `2895-åæ-util-codec-decimal-4cb88d26.md`）
-- [ ] `pkg/util/codec/float.rs.md` ← `pkg/util/codec/float.rs`（任务 `2896-åæ-util-codec-float-df0a173a.md`）
-- [ ] `pkg/util/codec/number.rs.md` ← `pkg/util/codec/number.rs`（任务 `2898-åæ-util-codec-number-54f17801.md`）
-- [ ] `pkg/util/collate/bin.rs.md` ← `pkg/util/collate/bin.rs`（任务 `2899-åæ-util-collate-bin-6b2e18fc.md`）
-- [ ] `pkg/util/collate/charset.rs.md` ← `pkg/util/collate/charset.rs`（任务 `2900-åæ-util-collate-charset-165b0ed4.md`）
-- [ ] `pkg/util/collate/collate.rs.md` ← `pkg/util/collate/collate.rs`（任务 `2901-åæ-util-collate-collate-7adf7d65.md`）
-- [ ] `pkg/util/collate/gb18030_bin.rs.md` ← `pkg/util/collate/gb18030_bin.rs`（任务 `2902-åæ-util-collate-gb18030_bin-f614e425.md`）
-- [ ] `pkg/util/collate/gb18030_chinese_ci.rs.md` ← `pkg/util/collate/gb18030_chinese_ci.rs`（任务 `2903-åæ-util-collate-gb18030_chinese_ci-16ae77cb.md`）
-- [ ] `pkg/util/collate/gbk_bin.rs.md` ← `pkg/util/collate/gbk_bin.rs`（任务 `2904-åæ-util-collate-gbk_bin-a7d6a39d.md`）
-- [ ] `pkg/util/collate/gbk_chinese_ci.rs.md` ← `pkg/util/collate/gbk_chinese_ci.rs`（任务 `2905-åæ-util-collate-gbk_chinese_ci-b88cb7c4.md`）
-- [ ] `pkg/util/collate/gbk_chinese_ci_data.rs.md` ← `pkg/util/collate/gbk_chinese_ci_data.rs`（任务 `2906-åæ-util-collate-gbk_chinese_ci_data-88174ae9.md`）
-- [ ] `pkg/util/collate/general_ci.rs.md` ← `pkg/util/collate/general_ci.rs`（任务 `2907-åæ-util-collate-general_ci-102963b8.md`）
-- [ ] `pkg/util/collate/pinyin_tidb_as_cs.rs.md` ← `pkg/util/collate/pinyin_tidb_as_cs.rs`（任务 `2909-åæ-util-collate-pinyin_tidb_as_cs-8adb8231.md`）
-- [ ] `pkg/util/collate/ucadata/data.rs.md` ← `pkg/util/collate/ucadata/data.rs`（任务 `2910-åæ-collate-ucadata-data-f9940a7e.md`）
-- [ ] `pkg/util/collate/ucadata/generator/bin.rs.md` ← `pkg/util/collate/ucadata/generator/bin.rs`（任务 `2911-åæ-ucadata-generator-bin-9cc5c4a7.md`）
-- [ ] `pkg/util/collate/ucadata/generator/magic.rs.md` ← `pkg/util/collate/ucadata/generator/magic.rs`（任务 `2913-åæ-ucadata-generator-magic-0a6d6276.md`）
-- [ ] `pkg/util/collate/ucadata/generator/main.rs.md` ← `pkg/util/collate/ucadata/generator/main.rs`（任务 `2914-åæ-ucadata-generator-main-81d3a629.md`）
-- [ ] `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.rs.md` ← `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.rs`（任务 `2916-åæ-collate-ucadata-unicode_0900_ai_ci_data_generated-f81a3cab.md`）
-- [ ] `pkg/util/collate/ucadata/unicode_ci_data_generated.rs.md` ← `pkg/util/collate/ucadata/unicode_ci_data_generated.rs`（任务 `2917-åæ-collate-ucadata-unicode_ci_data_generated-e058aeb3.md`）
-- [ ] `pkg/util/collate/ucaimpl/main.rs.md` ← `pkg/util/collate/ucaimpl/main.rs`（任务 `2919-åæ-collate-ucaimpl-main-94586fab.md`）
-- [ ] `pkg/util/collate/unicode_0400_ci_generated.rs.md` ← `pkg/util/collate/unicode_0400_ci_generated.rs`（任务 `2920-åæ-util-collate-unicode_0400_ci_generated-3ed99e88.md`）
-- [ ] `pkg/util/collate/unicode_0400_ci_impl.rs.md` ← `pkg/util/collate/unicode_0400_ci_impl.rs`（任务 `2921-åæ-util-collate-unicode_0400_ci_impl-ed682d60.md`）
-- [ ] `pkg/util/collate/unicode_0900_ai_ci_generated.rs.md` ← `pkg/util/collate/unicode_0900_ai_ci_generated.rs`（任务 `2922-åæ-util-collate-unicode_0900_ai_ci_generated-ae8300de.md`）
-- [ ] `pkg/util/collate/unicode_0900_ai_ci_impl.rs.md` ← `pkg/util/collate/unicode_0900_ai_ci_impl.rs`（任务 `2923-åæ-util-collate-unicode_0900_ai_ci_impl-a7742fa4.md`）
-- [ ] `pkg/util/column-mapping/column.rs.md` ← `pkg/util/column-mapping/column.rs`（任务 `2924-åæ-util-column-mapping-column-f7f941d4.md`）
-- [ ] `pkg/util/compress/gzip.rs.md` ← `pkg/util/compress/gzip.rs`（任务 `2926-åæ-util-compress-gzip-74556cf9.md`）
-- [ ] `pkg/util/config/config.rs.md` ← `pkg/util/config/config.rs`（任务 `2928-åæ-util-config-config-8513665b.md`）
-- [ ] `pkg/util/context/context.rs.md` ← `pkg/util/context/context.rs`（任务 `2930-åæ-util-context-context-a517825a.md`）
-- [ ] `pkg/util/context/plancache.rs.md` ← `pkg/util/context/plancache.rs`（任务 `2932-åæ-util-context-plancache-1391706e.md`）
-- [ ] `pkg/util/context/warn.rs.md` ← `pkg/util/context/warn.rs`（任务 `2933-åæ-util-context-warn-8ce018c4.md`）
-- [ ] `pkg/util/cpu/cpu.rs.md` ← `pkg/util/cpu/cpu.rs`（任务 `2934-åæ-util-cpu-cpu-f5ded8ac.md`）
-- [ ] `pkg/util/cpu_posix.rs.md` ← `pkg/util/cpu_posix.rs`（任务 `2936-åæ-pkg-util-cpu_posix-6801e04e.md`）
-- [ ] `pkg/util/cpu_windows.rs.md` ← `pkg/util/cpu_windows.rs`（任务 `2937-åæ-pkg-util-cpu_windows-3048aa15.md`）
-- [ ] `pkg/util/cpuprofile/cpuprofile.rs.md` ← `pkg/util/cpuprofile/cpuprofile.rs`（任务 `2938-åæ-util-cpuprofile-cpuprofile-c2419e39.md`）
-- [ ] `pkg/util/cpuprofile/pprof_api.rs.md` ← `pkg/util/cpuprofile/pprof_api.rs`（任务 `2940-åæ-util-cpuprofile-pprof_api-db0a3c08.md`）
-- [ ] `pkg/util/cpuprofile/testutil/util.rs.md` ← `pkg/util/cpuprofile/testutil/util.rs`（任务 `2942-åæ-cpuprofile-testutil-util-df4a215c.md`）
-- [ ] `pkg/util/cteutil/storage.rs.md` ← `pkg/util/cteutil/storage.rs`（任务 `2944-åæ-util-cteutil-storage-8baa4f11.md`）
-- [ ] `pkg/util/dbterror/ddl_terror.rs.md` ← `pkg/util/dbterror/ddl_terror.rs`（任务 `2945-åæ-util-dbterror-ddl_terror-26a22344.md`）
-- [ ] `pkg/util/dbterror/exeerrors/errors.rs.md` ← `pkg/util/dbterror/exeerrors/errors.rs`（任务 `2946-åæ-dbterror-exeerrors-errors-344095de.md`）
-- [ ] `pkg/util/dbterror/plannererrors/planner_terror.rs.md` ← `pkg/util/dbterror/plannererrors/planner_terror.rs`（任务 `2950-åæ-dbterror-plannererrors-planner_terror-ee570198.md`）
-- [ ] `pkg/util/dbterror/terror.rs.md` ← `pkg/util/dbterror/terror.rs`（任务 `2951-åæ-util-dbterror-terror-90d8090d.md`）
-- [ ] `pkg/util/dbutil/common.rs.md` ← `pkg/util/dbutil/common.rs`（任务 `2952-åæ-util-dbutil-common-d2dce461.md`）
-- [ ] `pkg/util/dbutil/dbutiltest/utils.rs.md` ← `pkg/util/dbutil/dbutiltest/utils.rs`（任务 `2954-åæ-dbutil-dbutiltest-utils-61fc22b6.md`）
-- [ ] `pkg/util/dbutil/index.rs.md` ← `pkg/util/dbutil/index.rs`（任务 `2955-åæ-util-dbutil-index-16c3c5db.md`）
-- [ ] `pkg/util/dbutil/interface.rs.md` ← `pkg/util/dbutil/interface.rs`（任务 `2956-åæ-util-dbutil-interface-1a3c6c1a.md`）
-- [ ] `pkg/util/dbutil/query.rs.md` ← `pkg/util/dbutil/query.rs`（任务 `2958-åæ-util-dbutil-query-b2579069.md`）
-- [ ] `pkg/util/dbutil/retry.rs.md` ← `pkg/util/dbutil/retry.rs`（任务 `2959-åæ-util-dbutil-retry-04279032.md`）
-- [ ] `pkg/util/dbutil/table.rs.md` ← `pkg/util/dbutil/table.rs`（任务 `2960-åæ-util-dbutil-table-8c807cb9.md`）
-- [ ] `pkg/util/dbutil/types.rs.md` ← `pkg/util/dbutil/types.rs`（任务 `2961-åæ-util-dbutil-types-8237e8fa.md`）
-- [ ] `pkg/util/dbutil/variable.rs.md` ← `pkg/util/dbutil/variable.rs`（任务 `2962-åæ-util-dbutil-variable-96bf20da.md`）
-- [ ] `pkg/util/ddl-checker/ddl_syncer.rs.md` ← `pkg/util/ddl-checker/ddl_syncer.rs`（任务 `2963-åæ-util-ddl-checker-ddl_syncer-f78d7c66.md`）
-- [ ] `pkg/util/ddl-checker/executable_checker.rs.md` ← `pkg/util/ddl-checker/executable_checker.rs`（任务 `2964-åæ-util-ddl-checker-executable_checker-63b12712.md`）
-- [ ] `pkg/util/deadlockhistory/deadlock_history.rs.md` ← `pkg/util/deadlockhistory/deadlock_history.rs`（任务 `2966-åæ-util-deadlockhistory-deadlock_history-96d64237.md`）
-- [ ] `pkg/util/deeptest/statictesthelper.rs.md` ← `pkg/util/deeptest/statictesthelper.rs`（任务 `2969-åæ-util-deeptest-statictesthelper-93b60e83.md`）
-- [ ] `pkg/util/disjointset/int_set.rs.md` ← `pkg/util/disjointset/int_set.rs`（任务 `2970-åæ-util-disjointset-int_set-35b5857e.md`）
-- [ ] `pkg/util/disjointset/set.rs.md` ← `pkg/util/disjointset/set.rs`（任务 `2972-åæ-util-disjointset-set-885aad1a.md`）
-- [ ] `pkg/util/disk/tempDir.rs.md` ← `pkg/util/disk/tempDir.rs`（任务 `2974-åæ-util-disk-tempDir-d8da177c.md`）
-- [ ] `pkg/util/disk/tracker.rs.md` ← `pkg/util/disk/tracker.rs`（任务 `2975-åæ-util-disk-tracker-4a957885.md`）
-- [ ] `pkg/util/disttask/idservice.rs.md` ← `pkg/util/disttask/idservice.rs`（任务 `2976-åæ-util-disttask-idservice-c808871a.md`）
-- [ ] `pkg/util/domainutil/repair_vars.rs.md` ← `pkg/util/domainutil/repair_vars.rs`（任务 `2979-åæ-util-domainutil-repair_vars-5dfbf4d8.md`）
-- [ ] `pkg/util/encrypt/aes.rs.md` ← `pkg/util/encrypt/aes.rs`（任务 `2980-åæ-util-encrypt-aes-1a6a6a92.md`）
-- [ ] `pkg/util/encrypt/aes_layer.rs.md` ← `pkg/util/encrypt/aes_layer.rs`（任务 `2981-åæ-util-encrypt-aes_layer-970c15f0.md`）
-- [ ] `pkg/util/encrypt/crypt.rs.md` ← `pkg/util/encrypt/crypt.rs`（任务 `2982-åæ-util-encrypt-crypt-a4cc4b60.md`）
-- [ ] `pkg/util/engine/engine.rs.md` ← `pkg/util/engine/engine.rs`（任务 `2984-åæ-util-engine-engine-9e6a6489.md`）
-- [ ] `pkg/util/errmsg/errmsg.rs.md` ← `pkg/util/errmsg/errmsg.rs`（任务 `2986-åæ-util-errmsg-errmsg-4a129303.md`）
-- [ ] `pkg/util/errors.rs.md` ← `pkg/util/errors.rs`（任务 `2988-åæ-pkg-util-errors-529338d5.md`）
-- [ ] `pkg/util/etcd.rs.md` ← `pkg/util/etcd.rs`（任务 `2989-åæ-pkg-util-etcd-54a08dc4.md`）
-- [ ] `pkg/util/etcd/etcd.rs.md` ← `pkg/util/etcd/etcd.rs`（任务 `2990-åæ-util-etcd-etcd-a99cc056.md`）
-- [ ] `pkg/util/execdetails/execdetails.rs.md` ← `pkg/util/execdetails/execdetails.rs`（任务 `2992-åæ-util-execdetails-execdetails-7d6a9e8a.md`）
-- [ ] `pkg/util/execdetails/runtime_stats.rs.md` ← `pkg/util/execdetails/runtime_stats.rs`（任务 `2998-åæ-util-execdetails-runtime_stats-0c885e3f.md`）
-- [ ] `pkg/util/execdetails/ruv2_metrics.rs.md` ← `pkg/util/execdetails/ruv2_metrics.rs`（任务 `2999-åæ-util-execdetails-ruv2_metrics-63dfd7bb.md`）
-- [ ] `pkg/util/execdetails/tiflash_execution_units.rs.md` ← `pkg/util/execdetails/tiflash_execution_units.rs`（任务 `3000-åæ-util-execdetails-tiflash_execution_units-c340a398.md`）
-- [ ] `pkg/util/execdetails/tiflash_stats.rs.md` ← `pkg/util/execdetails/tiflash_stats.rs`（任务 `3001-åæ-util-execdetails-tiflash_stats-35dd6aaa.md`）
-- [ ] `pkg/util/execdetails/util.rs.md` ← `pkg/util/execdetails/util.rs`（任务 `3002-åæ-util-execdetails-util-5aa9211b.md`）
-- [ ] `pkg/util/expensivequery/expensivequery.rs.md` ← `pkg/util/expensivequery/expensivequery.rs`（任务 `3003-åæ-util-expensivequery-expensivequery-68724e36.md`）
-- [ ] `pkg/util/extsort/disk_sorter.rs.md` ← `pkg/util/extsort/disk_sorter.rs`（任务 `3005-åæ-util-extsort-disk_sorter-97b4b933.md`）
-- [ ] `pkg/util/extsort/external_sorter.rs.md` ← `pkg/util/extsort/external_sorter.rs`（任务 `3006-åæ-util-extsort-external_sorter-f31f4f81.md`）
-- [ ] `pkg/util/fastrand/random.rs.md` ← `pkg/util/fastrand/random.rs`（任务 `3009-åæ-util-fastrand-random-81a1522e.md`）
-- [ ] `pkg/util/fastrand/runtime.rs.md` ← `pkg/util/fastrand/runtime.rs`（任务 `3010-åæ-util-fastrand-runtime-9e7a2c88.md`）
-- [ ] `pkg/util/filter/filter.rs.md` ← `pkg/util/filter/filter.rs`（任务 `3011-åæ-util-filter-filter-779bd72d.md`）
-- [ ] `pkg/util/filter/schema.rs.md` ← `pkg/util/filter/schema.rs`（任务 `3013-åæ-util-filter-schema-e8b5e255.md`）
-- [ ] `pkg/util/format/format.rs.md` ← `pkg/util/format/format.rs`（任务 `3014-åæ-util-format-format-7d2ce0d6.md`）
-- [ ] `pkg/util/gctuner/finalizer.rs.md` ← `pkg/util/gctuner/finalizer.rs`（任务 `3016-åæ-util-gctuner-finalizer-c8f4cc0e.md`）
-- [ ] `pkg/util/gctuner/mem.rs.md` ← `pkg/util/gctuner/mem.rs`（任务 `3018-åæ-util-gctuner-mem-059f6583.md`）
-- [ ] `pkg/util/gctuner/memory_limit_tuner.rs.md` ← `pkg/util/gctuner/memory_limit_tuner.rs`（任务 `3019-åæ-util-gctuner-memory_limit_tuner-5d04268f.md`）
-- [ ] `pkg/util/gctuner/tuner.rs.md` ← `pkg/util/gctuner/tuner.rs`（任务 `3020-åæ-util-gctuner-tuner-71e18388.md`）
-- [ ] `pkg/util/gcutil/gcutil.rs.md` ← `pkg/util/gcutil/gcutil.rs`（任务 `3021-åæ-util-gcutil-gcutil-72c42629.md`）
-- [ ] `pkg/util/generatedexpr/generated_expr.rs.md` ← `pkg/util/generatedexpr/generated_expr.rs`（任务 `3023-åæ-util-generatedexpr-generated_expr-ba645d08.md`）
-- [ ] `pkg/util/generic/bounded_min_heap.rs.md` ← `pkg/util/generic/bounded_min_heap.rs`（任务 `3025-åæ-util-generic-bounded_min_heap-9ea790cc.md`）
-- [ ] `pkg/util/generic/sync_map.rs.md` ← `pkg/util/generic/sync_map.rs`（任务 `3027-åæ-util-generic-sync_map-f11d4478.md`）
-- [ ] `pkg/util/globalconn/globalconn.rs.md` ← `pkg/util/globalconn/globalconn.rs`（任务 `3028-åæ-util-globalconn-globalconn-e641898c.md`）
-- [ ] `pkg/util/globalconn/pool.rs.md` ← `pkg/util/globalconn/pool.rs`（任务 `3030-åæ-util-globalconn-pool-9340260c.md`）
-- [ ] `pkg/util/gogc.rs.md` ← `pkg/util/gogc.rs`（任务 `3031-åæ-pkg-util-gogc-d0cd2bcc.md`）
-- [ ] `pkg/util/hack/hack.rs.md` ← `pkg/util/hack/hack.rs`（任务 `3032-åæ-util-hack-hack-e1c79523.md`）
-- [ ] `pkg/util/hack/map_abi.rs.md` ← `pkg/util/hack/map_abi.rs`（任务 `3034-åæ-util-hack-map_abi-7f2587c7.md`）
-- [ ] `pkg/util/hack/map_abi_go126.rs.md` ← `pkg/util/hack/map_abi_go126.rs`（任务 `3035-åæ-util-hack-map_abi_go126-065fbc2d.md`）
-- [ ] `pkg/util/hack/swiss_map.rs.md` ← `pkg/util/hack/swiss_map.rs`（任务 `3036-åæ-util-hack-swiss_map-50b230e6.md`）
-- [ ] `pkg/util/hint/hint.rs.md` ← `pkg/util/hint/hint.rs`（任务 `3037-åæ-util-hint-hint-c4d0f8bb.md`）
-- [ ] `pkg/util/hint/hint_processor.rs.md` ← `pkg/util/hint/hint_processor.rs`（任务 `3038-åæ-util-hint-hint_processor-f7d03ead.md`）
-- [ ] `pkg/util/hint/hint_query_block.rs.md` ← `pkg/util/hint/hint_query_block.rs`（任务 `3039-åæ-util-hint-hint_query_block-52640c5f.md`）
-- [ ] `pkg/util/httputil/http.rs.md` ← `pkg/util/httputil/http.rs`（任务 `3041-åæ-util-httputil-http-3c5523df.md`）
-- [ ] `pkg/util/id_generator.rs.md` ← `pkg/util/id_generator.rs`（任务 `3043-åæ-pkg-util-id_generator-e3a298cd.md`）
-- [ ] `pkg/util/importer/config.rs.md` ← `pkg/util/importer/config.rs`（任务 `3044-åæ-util-importer-config-a293b777.md`）
-- [ ] `pkg/util/importer/data.rs.md` ← `pkg/util/importer/data.rs`（任务 `3045-åæ-util-importer-data-6b7cf7ab.md`）
-- [ ] `pkg/util/importer/db.rs.md` ← `pkg/util/importer/db.rs`（任务 `3046-åæ-util-importer-db-a4175097.md`）
-- [ ] `pkg/util/importer/importer.rs.md` ← `pkg/util/importer/importer.rs`（任务 `3047-åæ-util-importer-importer-98317a25.md`）
-- [ ] `pkg/util/importer/job.rs.md` ← `pkg/util/importer/job.rs`（任务 `3048-åæ-util-importer-job-f9b5116b.md`）
-- [ ] `pkg/util/importer/parser.rs.md` ← `pkg/util/importer/parser.rs`（任务 `3050-åæ-util-importer-parser-2c512401.md`）
-- [ ] `pkg/util/importer/rand.rs.md` ← `pkg/util/importer/rand.rs`（任务 `3051-åæ-util-importer-rand-b29645a1.md`）
-- [ ] `pkg/util/injectfailpoint/random_retry.rs.md` ← `pkg/util/injectfailpoint/random_retry.rs`（任务 `3053-åæ-util-injectfailpoint-random_retry-db3d27a3.md`）
-- [ ] `pkg/util/intest/assert.rs.md` ← `pkg/util/intest/assert.rs`（任务 `3054-åæ-util-intest-assert-3f0b22cb.md`）
-- [ ] `pkg/util/intest/assert_common.rs.md` ← `pkg/util/intest/assert_common.rs`（任务 `3055-åæ-util-intest-assert_common-412d2369.md`）
-- [ ] `pkg/util/intest/in_unittest.rs.md` ← `pkg/util/intest/in_unittest.rs`（任务 `3056-åæ-util-intest-in_unittest-033ae7ea.md`）
-- [ ] `pkg/util/intest/no_assert.rs.md` ← `pkg/util/intest/no_assert.rs`（任务 `3058-åæ-util-intest-no_assert-19495edb.md`）
-- [ ] `pkg/util/intest/not_in_unittest.rs.md` ← `pkg/util/intest/not_in_unittest.rs`（任务 `3059-åæ-util-intest-not_in_unittest-f5cd9e4f.md`）
-- [ ] `pkg/util/intset/fast_int_set.rs.md` ← `pkg/util/intset/fast_int_set.rs`（任务 `3060-åæ-util-intset-fast_int_set-d53d86f6.md`）
-- [ ] `pkg/util/israce/israce.rs.md` ← `pkg/util/israce/israce.rs`（任务 `3062-åæ-util-israce-israce-1b84b758.md`）
-- [ ] `pkg/util/israce/norace.rs.md` ← `pkg/util/israce/norace.rs`（任务 `3064-åæ-util-israce-norace-54d6c201.md`）
-- [ ] `pkg/util/keydecoder/keydecoder.rs.md` ← `pkg/util/keydecoder/keydecoder.rs`（任务 `3065-åæ-util-keydecoder-keydecoder-8bc32a05.md`）
-- [ ] `pkg/util/kvcache/simple_lru.rs.md` ← `pkg/util/kvcache/simple_lru.rs`（任务 `3068-åæ-util-kvcache-simple_lru-68b68e49.md`）
-- [ ] `pkg/util/linter/constructor/constructorflag.rs.md` ← `pkg/util/linter/constructor/constructorflag.rs`（任务 `3070-åæ-linter-constructor-constructorflag-f52bcd1a.md`）
-- [ ] `pkg/util/logutil/consistency/reporter.rs.md` ← `pkg/util/logutil/consistency/reporter.rs`（任务 `3074-åæ-logutil-consistency-reporter-bb5c3aac.md`）
-- [ ] `pkg/util/logutil/general_logger.rs.md` ← `pkg/util/logutil/general_logger.rs`（任务 `3075-åæ-util-logutil-general_logger-d6c1a0b5.md`）
-- [ ] `pkg/util/logutil/hex.rs.md` ← `pkg/util/logutil/hex.rs`（任务 `3076-åæ-util-logutil-hex-ec2cf5ea.md`）
-- [ ] `pkg/util/logutil/log.rs.md` ← `pkg/util/logutil/log.rs`（任务 `3078-åæ-util-logutil-log-e56596ed.md`）
-- [ ] `pkg/util/logutil/slow_query_logger.rs.md` ← `pkg/util/logutil/slow_query_logger.rs`（任务 `3079-åæ-util-logutil-slow_query_logger-096de3ca.md`）
-- [ ] `pkg/util/logutil/test_main.rs.md` ← `pkg/util/logutil/test_main.rs`（任务 `3080-åæ-util-logutil-test_main-aa0959a8.md`）
-- [ ] `pkg/util/mathutil/exponential_average.rs.md` ← `pkg/util/mathutil/exponential_average.rs`（任务 `3081-åæ-util-mathutil-exponential_average-12ceccbd.md`）
-- [ ] `pkg/util/mathutil/math.rs.md` ← `pkg/util/mathutil/math.rs`（任务 `3083-åæ-util-mathutil-math-ccdbefb9.md`）
-- [ ] `pkg/util/mathutil/rand.rs.md` ← `pkg/util/mathutil/rand.rs`（任务 `3084-åæ-util-mathutil-rand-13a75bb5.md`）
-- [ ] `pkg/util/memory/action.rs.md` ← `pkg/util/memory/action.rs`（任务 `3085-åæ-util-memory-action-c7e17278.md`）
-- [ ] `pkg/util/memory/arbitrator.rs.md` ← `pkg/util/memory/arbitrator.rs`（任务 `3086-åæ-util-memory-arbitrator-b79a88cf.md`）
-- [ ] `pkg/util/memory/global_arbitrator.rs.md` ← `pkg/util/memory/global_arbitrator.rs`（任务 `3087-åæ-util-memory-global_arbitrator-14c1d770.md`）
-- [ ] `pkg/util/memory/heap_profile.rs.md` ← `pkg/util/memory/heap_profile.rs`（任务 `3088-åæ-util-memory-heap_profile-6fb18d25.md`）
-- [ ] `pkg/util/memory/meminfo.rs.md` ← `pkg/util/memory/meminfo.rs`（任务 `3090-åæ-util-memory-meminfo-ad87e28c.md`）
-- [ ] `pkg/util/memory/memstats.rs.md` ← `pkg/util/memory/memstats.rs`（任务 `3091-åæ-util-memory-memstats-40feb196.md`）
-- [ ] `pkg/util/memory/pool.rs.md` ← `pkg/util/memory/pool.rs`（任务 `3092-åæ-util-memory-pool-06eebb06.md`）
-- [ ] `pkg/util/memory/tracker.rs.md` ← `pkg/util/memory/tracker.rs`（任务 `3093-åæ-util-memory-tracker-2f42ef15.md`）
-- [ ] `pkg/util/memory/utils.rs.md` ← `pkg/util/memory/utils.rs`（任务 `3094-åæ-util-memory-utils-04150a41.md`）
-- [ ] `pkg/util/memoryusagealarm/memoryusagealarm.rs.md` ← `pkg/util/memoryusagealarm/memoryusagealarm.rs`（任务 `3096-åæ-util-memoryusagealarm-memoryusagealarm-388143c3.md`）
-- [ ] `pkg/util/metricsutil/common.rs.md` ← `pkg/util/metricsutil/common.rs`（任务 `3097-åæ-util-metricsutil-common-98860a47.md`）
-- [ ] `pkg/util/metricsutil/db_labels.rs.md` ← `pkg/util/metricsutil/db_labels.rs`（任务 `3098-åæ-util-metricsutil-db_labels-fde1ecea.md`）
-- [ ] `pkg/util/misc.rs.md` ← `pkg/util/misc.rs`（任务 `3100-åæ-pkg-util-misc-9ec45518.md`）
-- [ ] `pkg/util/mock/client.rs.md` ← `pkg/util/mock/client.rs`（任务 `3101-åæ-util-mock-client-a461e197.md`）
-- [ ] `pkg/util/mock/context.rs.md` ← `pkg/util/mock/context.rs`（任务 `3102-åæ-util-mock-context-15a25d61.md`）
-- [ ] `pkg/util/mock/fortest.rs.md` ← `pkg/util/mock/fortest.rs`（任务 `3103-åæ-util-mock-fortest-e65184ef.md`）
-- [ ] `pkg/util/mock/iter.rs.md` ← `pkg/util/mock/iter.rs`（任务 `3104-åæ-util-mock-iter-603698ef.md`）
-- [ ] `pkg/util/mock/metrics.rs.md` ← `pkg/util/mock/metrics.rs`（任务 `3106-åæ-util-mock-metrics-03393fd2.md`）
-- [ ] `pkg/util/mock/store.rs.md` ← `pkg/util/mock/store.rs`（任务 `3107-åæ-util-mock-store-c1d8d473.md`）
-- [ ] `pkg/util/mvmap/fnv.rs.md` ← `pkg/util/mvmap/fnv.rs`（任务 `3109-åæ-util-mvmap-fnv-b5a7d02d.md`）
-- [ ] `pkg/util/mvmap/mvmap.rs.md` ← `pkg/util/mvmap/mvmap.rs`（任务 `3111-åæ-util-mvmap-mvmap-948309be.md`）
-- [ ] `pkg/util/naming/naming.rs.md` ← `pkg/util/naming/naming.rs`（任务 `3113-åæ-util-naming-naming-f7ab4853.md`）
-- [ ] `pkg/util/nocopy/nocopy.rs.md` ← `pkg/util/nocopy/nocopy.rs`（任务 `3115-åæ-util-nocopy-nocopy-83cc1b00.md`）
-- [ ] `pkg/util/paging/paging.rs.md` ← `pkg/util/paging/paging.rs`（任务 `3117-åæ-util-paging-paging-00cab3bb.md`）
-- [ ] `pkg/util/parser/ast.rs.md` ← `pkg/util/parser/ast.rs`（任务 `3118-åæ-util-parser-ast-4cf4b9a5.md`）
-- [ ] `pkg/util/parser/parser.rs.md` ← `pkg/util/parser/parser.rs`（任务 `3120-åæ-util-parser-parser-6e5e427b.md`）
-- [ ] `pkg/util/partialjson/extract.rs.md` ← `pkg/util/partialjson/extract.rs`（任务 `3121-åæ-util-partialjson-extract-91ace77e.md`）
-- [ ] `pkg/util/password-validation/password_validation.rs.md` ← `pkg/util/password-validation/password_validation.rs`（任务 `3124-åæ-util-password-validation-password_validation-b8acdf58.md`）
-- [ ] `pkg/util/plancodec/binary_plan_decode.rs.md` ← `pkg/util/plancodec/binary_plan_decode.rs`（任务 `3125-åæ-util-plancodec-binary_plan_decode-f93679d6.md`）
-- [ ] `pkg/util/plancodec/codec.rs.md` ← `pkg/util/plancodec/codec.rs`（任务 `3127-åæ-util-plancodec-codec-75b3f079.md`）
-- [ ] `pkg/util/plancodec/go_quote_printable.rs.md` ← `pkg/util/plancodec/go_quote_printable.rs`（任务 `3128-åæ-util-plancodec-go_quote_printable-f5b575d1.md`）
-- [ ] `pkg/util/plancodec/id.rs.md` ← `pkg/util/plancodec/id.rs`（任务 `3129-åæ-util-plancodec-id-bb0cfda0.md`）
-- [ ] `pkg/util/ppcpuusage/cpuusages.rs.md` ← `pkg/util/ppcpuusage/cpuusages.rs`（任务 `3131-åæ-util-ppcpuusage-cpuusages-6214b1d4.md`）
-- [ ] `pkg/util/prefetch/reader.rs.md` ← `pkg/util/prefetch/reader.rs`（任务 `3134-åæ-util-prefetch-reader-9f1e43c2.md`）
-- [ ] `pkg/util/prefix_helper.rs.md` ← `pkg/util/prefix_helper.rs`（任务 `3135-åæ-pkg-util-prefix_helper-a6a575fa.md`）
-- [ ] `pkg/util/printer.rs.md` ← `pkg/util/printer.rs`（任务 `3136-åæ-pkg-util-printer-714ee79e.md`）
-- [ ] `pkg/util/printer/printer.rs.md` ← `pkg/util/printer/printer.rs`（任务 `3138-åæ-util-printer-printer-5fc58859.md`）
-- [ ] `pkg/util/profile/flamegraph.rs.md` ← `pkg/util/profile/flamegraph.rs`（任务 `3139-åæ-util-profile-flamegraph-69c639e5.md`）
-- [ ] `pkg/util/profile/profile.rs.md` ← `pkg/util/profile/profile.rs`（任务 `3141-åæ-util-profile-profile-c5f23f76.md`）
-- [ ] `pkg/util/promutil/factory.rs.md` ← `pkg/util/promutil/factory.rs`（任务 `3142-åæ-util-promutil-factory-a6889f24.md`）
-- [ ] `pkg/util/promutil/registry.rs.md` ← `pkg/util/promutil/registry.rs`（任务 `3144-åæ-util-promutil-registry-69a63220.md`）
-- [ ] `pkg/util/queue/queue.rs.md` ← `pkg/util/queue/queue.rs`（任务 `3146-åæ-util-queue-queue-c8d86e02.md`）
-- [ ] `pkg/util/ranger/checker.rs.md` ← `pkg/util/ranger/checker.rs`（任务 `3147-åæ-util-ranger-checker-f02ecbe7.md`）
-- [ ] `pkg/util/ranger/context/context.rs.md` ← `pkg/util/ranger/context/context.rs`（任务 `3148-åæ-ranger-context-context-63dcea60.md`）
-- [ ] `pkg/util/ranger/detacher.rs.md` ← `pkg/util/ranger/detacher.rs`（任务 `3150-åæ-util-ranger-detacher-7d196605.md`）
-- [ ] `pkg/util/ranger/points.rs.md` ← `pkg/util/ranger/points.rs`（任务 `3152-åæ-util-ranger-points-d8fbecd1.md`）
-- [ ] `pkg/util/ranger/ranger.rs.md` ← `pkg/util/ranger/ranger.rs`（任务 `3153-åæ-util-ranger-ranger-97803b0b.md`）
-- [ ] `pkg/util/ranger/types.rs.md` ← `pkg/util/ranger/types.rs`（任务 `3154-åæ-util-ranger-types-b0b81300.md`）
-- [ ] `pkg/util/redact/redact.rs.md` ← `pkg/util/redact/redact.rs`（任务 `3156-åæ-util-redact-redact-55109c32.md`）
-- [ ] `pkg/util/regexpr-router/regexpr_router.rs.md` ← `pkg/util/regexpr-router/regexpr_router.rs`（任务 `3158-åæ-util-regexpr-router-regexpr_router-21932196.md`）
-- [ ] `pkg/util/regionsplit/model_handle.rs.md` ← `pkg/util/regionsplit/model_handle.rs`（任务 `3160-åæ-util-regionsplit-model_handle-fdf4b063.md`）
-- [ ] `pkg/util/regionsplit/split_handle.rs.md` ← `pkg/util/regionsplit/split_handle.rs`（任务 `3161-åæ-util-regionsplit-split_handle-3fa11c4c.md`）
-- [ ] `pkg/util/replayer/replayer.rs.md` ← `pkg/util/replayer/replayer.rs`（任务 `3163-åæ-util-replayer-replayer-aad902e9.md`）
-- [ ] `pkg/util/resourcegrouptag/resource_group_tag.rs.md` ← `pkg/util/resourcegrouptag/resource_group_tag.rs`（任务 `3166-åæ-util-resourcegrouptag-resource_group_tag-b43dc5fb.md`）
-- [ ] `pkg/util/rlimit_other.rs.md` ← `pkg/util/rlimit_other.rs`（任务 `3167-åæ-pkg-util-rlimit_other-c5852f1e.md`）
-- [ ] `pkg/util/rlimit_windows.rs.md` ← `pkg/util/rlimit_windows.rs`（任务 `3168-åæ-pkg-util-rlimit_windows-cde97f37.md`）
-- [ ] `pkg/util/rowDecoder/decoder.rs.md` ← `pkg/util/rowDecoder/decoder.rs`（任务 `3169-åæ-util-rowDecoder-decoder-8a569d13.md`）
-- [ ] `pkg/util/rowcodec/common.rs.md` ← `pkg/util/rowcodec/common.rs`（任务 `3171-åæ-util-rowcodec-common-69ea9d2a.md`）
-- [ ] `pkg/util/rowcodec/decoder.rs.md` ← `pkg/util/rowcodec/decoder.rs`（任务 `3172-åæ-util-rowcodec-decoder-9e82ba59.md`）
-- [ ] `pkg/util/rowcodec/encoder.rs.md` ← `pkg/util/rowcodec/encoder.rs`（任务 `3173-åæ-util-rowcodec-encoder-ee65b9f6.md`）
-- [ ] `pkg/util/rowcodec/row.rs.md` ← `pkg/util/rowcodec/row.rs`（任务 `3175-åæ-util-rowcodec-row-96ab30ac.md`）
-- [ ] `pkg/util/schemacmp/charset_collation.rs.md` ← `pkg/util/schemacmp/charset_collation.rs`（任务 `3176-åæ-util-schemacmp-charset_collation-07b717d2.md`）
-- [ ] `pkg/util/schemacmp/lattice.rs.md` ← `pkg/util/schemacmp/lattice.rs`（任务 `3177-åæ-util-schemacmp-lattice-385a1115.md`）
-- [ ] `pkg/util/schemacmp/table.rs.md` ← `pkg/util/schemacmp/table.rs`（任务 `3179-åæ-util-schemacmp-table-b0514ba0.md`）
-- [ ] `pkg/util/schemacmp/type.rs.md` ← `pkg/util/schemacmp/type.rs`（任务 `3180-åæ-util-schemacmp-type-0c90d3d7.md`）
-- [ ] `pkg/util/schemacmp/util.rs.md` ← `pkg/util/schemacmp/util.rs`（任务 `3181-åæ-util-schemacmp-util-1d08770c.md`）
-- [ ] `pkg/util/security.rs.md` ← `pkg/util/security.rs`（任务 `3182-åæ-pkg-util-security-a6de765c.md`）
-- [ ] `pkg/util/selection/selection.rs.md` ← `pkg/util/selection/selection.rs`（任务 `3184-åæ-util-selection-selection-c6b936ef.md`）
-- [ ] `pkg/util/sem/compat/sem.rs.md` ← `pkg/util/sem/compat/sem.rs`（任务 `3186-åæ-sem-compat-sem-9605d8ea.md`）
-- [ ] `pkg/util/sem/compat/testhelper.rs.md` ← `pkg/util/sem/compat/testhelper.rs`（任务 `3187-åæ-sem-compat-testhelper-cf61cbe8.md`）
-- [ ] `pkg/util/sem/sem.rs.md` ← `pkg/util/sem/sem.rs`（任务 `3189-åæ-util-sem-sem-d29a301e.md`）
-- [ ] `pkg/util/sem/v2/config.rs.md` ← `pkg/util/sem/v2/config.rs`（任务 `3190-åæ-sem-v2-config-6173c4a9.md`）
-- [ ] `pkg/util/sem/v2/restricted_hint.rs.md` ← `pkg/util/sem/v2/restricted_hint.rs`（任务 `3192-åæ-sem-v2-restricted_hint-383f6bd2.md`）
-- [ ] `pkg/util/sem/v2/sem.rs.md` ← `pkg/util/sem/v2/sem.rs`（任务 `3193-åæ-sem-v2-sem-3ea002aa.md`）
-- [ ] `pkg/util/sem/v2/sql_rule.rs.md` ← `pkg/util/sem/v2/sql_rule.rs`（任务 `3194-åæ-sem-v2-sql_rule-74b3b73f.md`）
-- [ ] `pkg/util/sem/v2/testhelper.rs.md` ← `pkg/util/sem/v2/testhelper.rs`（任务 `3195-åæ-sem-v2-testhelper-54ed7b06.md`）
-- [ ] `pkg/util/serialization/common_util.rs.md` ← `pkg/util/serialization/common_util.rs`（任务 `3196-åæ-util-serialization-common_util-aa4e166d.md`）
-- [ ] `pkg/util/serialization/deserialization_util.rs.md` ← `pkg/util/serialization/deserialization_util.rs`（任务 `3197-åæ-util-serialization-deserialization_util-5c2aa72d.md`）
-- [ ] `pkg/util/serialization/serialization_util.rs.md` ← `pkg/util/serialization/serialization_util.rs`（任务 `3199-åæ-util-serialization-serialization_util-bceac63f.md`）
-- [ ] `pkg/util/servermemorylimit/servermemorylimit.rs.md` ← `pkg/util/servermemorylimit/servermemorylimit.rs`（任务 `3201-åæ-util-servermemorylimit-servermemorylimit-52d314ee.md`）
-- [ ] `pkg/util/service_url.rs.md` ← `pkg/util/service_url.rs`（任务 `3202-åæ-pkg-util-service_url-71cf46ea.md`）
-- [ ] `pkg/util/session_pool.rs.md` ← `pkg/util/session_pool.rs`（任务 `3203-åæ-pkg-util-session_pool-33287737.md`）
-- [ ] `pkg/util/set/float64_set.rs.md` ← `pkg/util/set/float64_set.rs`（任务 `3204-åæ-util-set-float64_set-78d39c16.md`）
-- [ ] `pkg/util/set/int_set.rs.md` ← `pkg/util/set/int_set.rs`（任务 `3205-åæ-util-set-int_set-aa35e36f.md`）
-- [ ] `pkg/util/set/set.rs.md` ← `pkg/util/set/set.rs`（任务 `3207-åæ-util-set-set-76bee010.md`）
-- [ ] `pkg/util/set/set_with_memory_usage.rs.md` ← `pkg/util/set/set_with_memory_usage.rs`（任务 `3208-åæ-util-set-set_with_memory_usage-189be38e.md`）
-- [ ] `pkg/util/set/string_set.rs.md` ← `pkg/util/set/string_set.rs`（任务 `3209-åæ-util-set-string_set-ea115e5f.md`）
-- [ ] `pkg/util/signal/exit.rs.md` ← `pkg/util/signal/exit.rs`（任务 `3210-åæ-util-signal-exit-2f34e252.md`）
-- [ ] `pkg/util/signal/signal_posix.rs.md` ← `pkg/util/signal/signal_posix.rs`（任务 `3212-åæ-util-signal-signal_posix-a781bef6.md`）
-- [ ] `pkg/util/signal/signal_wasm.rs.md` ← `pkg/util/signal/signal_wasm.rs`（任务 `3213-åæ-util-signal-signal_wasm-bb3468b3.md`）
-- [ ] `pkg/util/signal/signal_windows.rs.md` ← `pkg/util/signal/signal_windows.rs`（任务 `3214-åæ-util-signal-signal_windows-9d2ad81e.md`）
-- [ ] `pkg/util/size/size.rs.md` ← `pkg/util/size/size.rs`（任务 `3216-åæ-util-size-size-9da352d7.md`）
-- [ ] `pkg/util/skip/skip.rs.md` ← `pkg/util/skip/skip.rs`（任务 `3218-åæ-util-skip-skip-4eacc7ba.md`）
-- [ ] `pkg/util/sli/sli.rs.md` ← `pkg/util/sli/sli.rs`（任务 `3220-åæ-util-sli-sli-b338e16d.md`）
-- [ ] `pkg/util/slice/slice.rs.md` ← `pkg/util/slice/slice.rs`（任务 `3222-åæ-util-slice-slice-4604d349.md`）
-- [ ] `pkg/util/split.rs.md` ← `pkg/util/split.rs`（任务 `3223-åæ-pkg-util-split-5ce5544a.md`）
-- [ ] `pkg/util/sqlescape/utils.rs.md` ← `pkg/util/sqlescape/utils.rs`（任务 `3225-åæ-util-sqlescape-utils-08a66251.md`）
-- [ ] `pkg/util/sqlexec/mock/mock.rs.md` ← `pkg/util/sqlexec/mock/mock.rs`（任务 `3228-åæ-sqlexec-mock-mock-95eafc62.md`）
-- [ ] `pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs.md` ← `pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs`（任务 `3229-åæ-sqlexec-mock-restricted_sql_executor_mock-c521481f.md`）
-- [ ] `pkg/util/sqlexec/restricted_sql_executor.rs.md` ← `pkg/util/sqlexec/restricted_sql_executor.rs`（任务 `3230-åæ-util-sqlexec-restricted_sql_executor-7e579935.md`）
-- [ ] `pkg/util/sqlexec/simple_record_set.rs.md` ← `pkg/util/sqlexec/simple_record_set.rs`（任务 `3231-åæ-util-sqlexec-simple_record_set-fef11b28.md`）
-- [ ] `pkg/util/sqlkiller/sqlkiller.rs.md` ← `pkg/util/sqlkiller/sqlkiller.rs`（任务 `3233-åæ-util-sqlkiller-sqlkiller-2891e699.md`）
-- [ ] `pkg/util/stmtsummary/evicted.rs.md` ← `pkg/util/stmtsummary/evicted.rs`（任务 `3234-åæ-util-stmtsummary-evicted-8022a5d0.md`）
-- [ ] `pkg/util/stmtsummary/reader.rs.md` ← `pkg/util/stmtsummary/reader.rs`（任务 `3236-åæ-util-stmtsummary-reader-504b729b.md`）
-- [ ] `pkg/util/stmtsummary/statement_summary.rs.md` ← `pkg/util/stmtsummary/statement_summary.rs`（任务 `3237-åæ-util-stmtsummary-statement_summary-bf37ec0a.md`）
-- [ ] `pkg/util/stmtsummary/v2/column.rs.md` ← `pkg/util/stmtsummary/v2/column.rs`（任务 `3238-åæ-stmtsummary-v2-column-f79e58e0.md`）
-- [ ] `pkg/util/stmtsummary/v2/logger.rs.md` ← `pkg/util/stmtsummary/v2/logger.rs`（任务 `3240-åæ-stmtsummary-v2-logger-5c8523c8.md`）
-- [ ] `pkg/util/stmtsummary/v2/reader.rs.md` ← `pkg/util/stmtsummary/v2/reader.rs`（任务 `3241-åæ-stmtsummary-v2-reader-7a2d26a0.md`）
-- [ ] `pkg/util/stmtsummary/v2/record.rs.md` ← `pkg/util/stmtsummary/v2/record.rs`（任务 `3242-åæ-stmtsummary-v2-record-3b218e48.md`）
-- [ ] `pkg/util/stmtsummary/v2/stmtsummary.rs.md` ← `pkg/util/stmtsummary/v2/stmtsummary.rs`（任务 `3243-åæ-stmtsummary-v2-stmtsummary-410e5ba6.md`）
-- [ ] `pkg/util/stringutil/string_util.rs.md` ← `pkg/util/stringutil/string_util.rs`（任务 `3245-åæ-util-stringutil-string_util-2f310ae9.md`）
-- [ ] `pkg/util/syncutil/mutex_deadlock.rs.md` ← `pkg/util/syncutil/mutex_deadlock.rs`（任务 `3247-åæ-util-syncutil-mutex_deadlock-0e34ec9b.md`）
-- [ ] `pkg/util/syncutil/mutex_sync.rs.md` ← `pkg/util/syncutil/mutex_sync.rs`（任务 `3248-åæ-util-syncutil-mutex_sync-b535306c.md`）
-- [ ] `pkg/util/sys/linux/sys_linux.rs.md` ← `pkg/util/sys/linux/sys_linux.rs`（任务 `3250-åæ-sys-linux-sys_linux-644e5384.md`）
-- [ ] `pkg/util/sys/linux/sys_other.rs.md` ← `pkg/util/sys/linux/sys_other.rs`（任务 `3251-åæ-sys-linux-sys_other-a3fdb832.md`）
-- [ ] `pkg/util/sys/linux/sys_windows.rs.md` ← `pkg/util/sys/linux/sys_windows.rs`（任务 `3252-åæ-sys-linux-sys_windows-bf8dab04.md`）
-- [ ] `pkg/util/sys/storage/sys_other.rs.md` ← `pkg/util/sys/storage/sys_other.rs`（任务 `3254-åæ-sys-storage-sys_other-3a91080f.md`）
-- [ ] `pkg/util/sys/storage/sys_posix.rs.md` ← `pkg/util/sys/storage/sys_posix.rs`（任务 `3255-åæ-sys-storage-sys_posix-e898c69a.md`）
-- [ ] `pkg/util/sys/storage/sys_windows.rs.md` ← `pkg/util/sys/storage/sys_windows.rs`（任务 `3256-åæ-sys-storage-sys_windows-049a321c.md`）
-- [ ] `pkg/util/systimemon/systime_mon.rs.md` ← `pkg/util/systimemon/systime_mon.rs`（任务 `3258-åæ-util-systimemon-systime_mon-6600e615.md`）
-- [ ] `pkg/util/table-filter/column_filter.rs.md` ← `pkg/util/table-filter/column_filter.rs`（任务 `3259-åæ-util-table-filter-column_filter-f7da358f.md`）
-- [ ] `pkg/util/table-filter/compat.rs.md` ← `pkg/util/table-filter/compat.rs`（任务 `3260-åæ-util-table-filter-compat-b9b65479.md`）
-- [ ] `pkg/util/table-filter/matchers.rs.md` ← `pkg/util/table-filter/matchers.rs`（任务 `3262-åæ-util-table-filter-matchers-ebe2a41a.md`）
-- [ ] `pkg/util/table-filter/parser.rs.md` ← `pkg/util/table-filter/parser.rs`（任务 `3263-åæ-util-table-filter-parser-89e82de2.md`）
-- [ ] `pkg/util/table-filter/table_filter.rs.md` ← `pkg/util/table-filter/table_filter.rs`（任务 `3264-åæ-util-table-filter-table_filter-f072066f.md`）
-- [ ] `pkg/util/table-router/go_regex.rs.md` ← `pkg/util/table-router/go_regex.rs`（任务 `3265-åæ-util-table-router-go_regex-b913debe.md`）
-- [ ] `pkg/util/table-router/router.rs.md` ← `pkg/util/table-router/router.rs`（任务 `3267-åæ-util-table-router-router-e4ad0395.md`）
-- [ ] `pkg/util/table-rule-selector/trie_selector.rs.md` ← `pkg/util/table-rule-selector/trie_selector.rs`（任务 `3269-åæ-util-table-rule-selector-trie_selector-84c2e6ac.md`）
-- [ ] `pkg/util/tableutil/tableutil.rs.md` ← `pkg/util/tableutil/tableutil.rs`（任务 `3271-åæ-util-tableutil-tableutil-23fd7407.md`）
-- [ ] `pkg/util/texttree/texttree.rs.md` ← `pkg/util/texttree/texttree.rs`（任务 `3273-åæ-util-texttree-texttree-8866312a.md`）
-- [ ] `pkg/util/tiflash/tiflash_replica_read.rs.md` ← `pkg/util/tiflash/tiflash_replica_read.rs`（任务 `3275-åæ-util-tiflash-tiflash_replica_read-74e257dd.md`）
-- [ ] `pkg/util/tiflashcompute/dispatch_policy.rs.md` ← `pkg/util/tiflashcompute/dispatch_policy.rs`（任务 `3276-åæ-util-tiflashcompute-dispatch_policy-17dcf26c.md`）
-- [ ] `pkg/util/tiflashcompute/topo_fetcher.rs.md` ← `pkg/util/tiflashcompute/topo_fetcher.rs`（任务 `3278-åæ-util-tiflashcompute-topo_fetcher-6b34a86f.md`）
-- [ ] `pkg/util/tikvutil/tikvutil.rs.md` ← `pkg/util/tikvutil/tikvutil.rs`（任务 `3280-åæ-util-tikvutil-tikvutil-c833935e.md`）
-- [ ] `pkg/util/timeutil/errors.rs.md` ← `pkg/util/timeutil/errors.rs`（任务 `3281-åæ-util-timeutil-errors-dec85eb1.md`）
-- [ ] `pkg/util/timeutil/time.rs.md` ← `pkg/util/timeutil/time.rs`（任务 `3283-åæ-util-timeutil-time-22bde34c.md`）
-- [ ] `pkg/util/timeutil/time_zone.rs.md` ← `pkg/util/timeutil/time_zone.rs`（任务 `3284-åæ-util-timeutil-time_zone-7caef3f8.md`）
-- [ ] `pkg/util/tls/tls.rs.md` ← `pkg/util/tls/tls.rs`（任务 `3286-åæ-util-tls-tls-4349db79.md`）
-- [ ] `pkg/util/tokenlimiter.rs.md` ← `pkg/util/tokenlimiter.rs`（任务 `3287-åæ-pkg-util-tokenlimiter-a00101c8.md`）
-- [ ] `pkg/util/topsql/collector/cpu.rs.md` ← `pkg/util/topsql/collector/cpu.rs`（任务 `3288-åæ-topsql-collector-cpu-2babd69e.md`）
-- [ ] `pkg/util/topsql/collector/mock/mock.rs.md` ← `pkg/util/topsql/collector/mock/mock.rs`（任务 `3291-åæ-collector-mock-mock-66fd6caf.md`）
-- [ ] `pkg/util/topsql/reporter/datamodel.rs.md` ← `pkg/util/topsql/reporter/datamodel.rs`（任务 `3294-åæ-topsql-reporter-datamodel-02d90874.md`）
-- [ ] `pkg/util/topsql/reporter/datasink.rs.md` ← `pkg/util/topsql/reporter/datasink.rs`（任务 `3295-åæ-topsql-reporter-datasink-3d610fca.md`）
-- [ ] `pkg/util/topsql/reporter/metrics/metrics.rs.md` ← `pkg/util/topsql/reporter/metrics/metrics.rs`（任务 `3298-åæ-reporter-metrics-metrics-99a688f9.md`）
-- [ ] `pkg/util/topsql/reporter/mock/pubsub.rs.md` ← `pkg/util/topsql/reporter/mock/pubsub.rs`（任务 `3301-åæ-reporter-mock-pubsub-0a80528c.md`）
-- [ ] `pkg/util/topsql/reporter/mock/server.rs.md` ← `pkg/util/topsql/reporter/mock/server.rs`（任务 `3302-åæ-reporter-mock-server-d5c21f72.md`）
-- [ ] `pkg/util/topsql/reporter/pubsub.rs.md` ← `pkg/util/topsql/reporter/pubsub.rs`（任务 `3303-åæ-topsql-reporter-pubsub-d4e3ef78.md`）
-- [ ] `pkg/util/topsql/reporter/report_ticker.rs.md` ← `pkg/util/topsql/reporter/report_ticker.rs`（任务 `3304-åæ-topsql-reporter-report_ticker-48cfb2aa.md`）
-- [ ] `pkg/util/topsql/reporter/reporter.rs.md` ← `pkg/util/topsql/reporter/reporter.rs`（任务 `3305-åæ-topsql-reporter-reporter-b56793a7.md`）
-- [ ] `pkg/util/topsql/reporter/ru_datamodel.rs.md` ← `pkg/util/topsql/reporter/ru_datamodel.rs`（任务 `3306-åæ-topsql-reporter-ru_datamodel-3b904646.md`）
-- [ ] `pkg/util/topsql/reporter/ru_window_aggregator.rs.md` ← `pkg/util/topsql/reporter/ru_window_aggregator.rs`（任务 `3307-åæ-topsql-reporter-ru_window_aggregator-074c87de.md`）
-- [ ] `pkg/util/topsql/reporter/single_target.rs.md` ← `pkg/util/topsql/reporter/single_target.rs`（任务 `3308-åæ-topsql-reporter-single_target-8293684b.md`）
-- [ ] `pkg/util/topsql/state/state.rs.md` ← `pkg/util/topsql/state/state.rs`（任务 `3310-åæ-topsql-state-state-a3cea876.md`）
-- [ ] `pkg/util/topsql/state/test_util.rs.md` ← `pkg/util/topsql/state/test_util.rs`（任务 `3311-åæ-topsql-state-test_util-87d96953.md`）
-- [ ] `pkg/util/topsql/stmtstats/aggregator.rs.md` ← `pkg/util/topsql/stmtstats/aggregator.rs`（任务 `3312-åæ-topsql-stmtstats-aggregator-6bb4122c.md`）
-- [ ] `pkg/util/topsql/stmtstats/kv_exec_count.rs.md` ← `pkg/util/topsql/stmtstats/kv_exec_count.rs`（任务 `3313-åæ-topsql-stmtstats-kv_exec_count-3ed17ea1.md`）
-- [ ] `pkg/util/topsql/stmtstats/rustats.rs.md` ← `pkg/util/topsql/stmtstats/rustats.rs`（任务 `3315-åæ-topsql-stmtstats-rustats-e1f9f473.md`）
-- [ ] `pkg/util/topsql/stmtstats/stmtstats.rs.md` ← `pkg/util/topsql/stmtstats/stmtstats.rs`（任务 `3316-åæ-topsql-stmtstats-stmtstats-16b4b1b1.md`）
-- [ ] `pkg/util/topsql/stmtstats/test_guard.rs.md` ← `pkg/util/topsql/stmtstats/test_guard.rs`（任务 `3317-åæ-topsql-stmtstats-test_guard-0d3f5259.md`）
-- [ ] `pkg/util/topsql/stmtstats/test_support.rs.md` ← `pkg/util/topsql/stmtstats/test_support.rs`（任务 `3318-åæ-topsql-stmtstats-test_support-1f96c4e2.md`）
-- [ ] `pkg/util/topsql/topsql.rs.md` ← `pkg/util/topsql/topsql.rs`（任务 `3319-åæ-util-topsql-topsql-5fcee321.md`）
-- [ ] `pkg/util/traceevent/adapter.rs.md` ← `pkg/util/traceevent/adapter.rs`（任务 `3320-åæ-util-traceevent-adapter-c60fa6c2.md`）
-- [ ] `pkg/util/traceevent/flightrecorder.rs.md` ← `pkg/util/traceevent/flightrecorder.rs`（任务 `3321-åæ-util-traceevent-flightrecorder-d9954b60.md`）
-- [ ] `pkg/util/traceevent/traceevent.rs.md` ← `pkg/util/traceevent/traceevent.rs`（任务 `3323-åæ-util-traceevent-traceevent-1e670339.md`）
-- [ ] `pkg/util/tracing/opt_trace.rs.md` ← `pkg/util/tracing/opt_trace.rs`（任务 `3325-åæ-util-tracing-opt_trace-21bcc500.md`）
-- [ ] `pkg/util/tracing/util.rs.md` ← `pkg/util/tracing/util.rs`（任务 `3326-åæ-util-tracing-util-3e28ff61.md`）
-- [ ] `pkg/util/trxevents/trx_events.rs.md` ← `pkg/util/trxevents/trx_events.rs`（任务 `3328-åæ-util-trxevents-trx_events-9c700ec5.md`）
-- [ ] `pkg/util/urls.rs.md` ← `pkg/util/urls.rs`（任务 `3329-åæ-pkg-util-urls-e3c58cce.md`）
-- [ ] `pkg/util/util.rs.md` ← `pkg/util/util.rs`（任务 `3330-åæ-pkg-util-util-05fc8320.md`）
-- [ ] `pkg/util/versioninfo/versioninfo.rs.md` ← `pkg/util/versioninfo/versioninfo.rs`（任务 `3332-åæ-util-versioninfo-versioninfo-615a2662.md`）
-- [ ] `pkg/util/vitess/vitess_hash.rs.md` ← `pkg/util/vitess/vitess_hash.rs`（任务 `3334-åæ-util-vitess-vitess_hash-bc931775.md`）
-- [ ] `pkg/util/wait_group_wrapper.rs.md` ← `pkg/util/wait_group_wrapper.rs`（任务 `3335-åæ-pkg-util-wait_group_wrapper-4b117158.md`）
-- [ ] `pkg/util/watcher/event.rs.md` ← `pkg/util/watcher/event.rs`（任务 `3336-åæ-util-watcher-event-4316bb5e.md`）
-- [ ] `pkg/util/watcher/watcher.rs.md` ← `pkg/util/watcher/watcher.rs`（任务 `3338-åæ-util-watcher-watcher-7968c47b.md`）
-- [ ] `pkg/util/worker_pool.rs.md` ← `pkg/util/worker_pool.rs`（任务 `3339-åæ-pkg-util-worker_pool-b8e37b17.md`）
-- [ ] `pkg/util/workloadrepo/const.rs.md` ← `pkg/util/workloadrepo/const.rs`（任务 `3340-åæ-util-workloadrepo-const-81f7f5d3.md`）
-- [ ] `pkg/util/workloadrepo/housekeeper.rs.md` ← `pkg/util/workloadrepo/housekeeper.rs`（任务 `3341-åæ-util-workloadrepo-housekeeper-e3e9baf4.md`）
-- [ ] `pkg/util/workloadrepo/sampling.rs.md` ← `pkg/util/workloadrepo/sampling.rs`（任务 `3343-åæ-util-workloadrepo-sampling-723f0b5f.md`）
-- [ ] `pkg/util/workloadrepo/snapshot.rs.md` ← `pkg/util/workloadrepo/snapshot.rs`（任务 `3344-åæ-util-workloadrepo-snapshot-24b51e78.md`）
-- [ ] `pkg/util/workloadrepo/table.rs.md` ← `pkg/util/workloadrepo/table.rs`（任务 `3345-åæ-util-workloadrepo-table-b9af7727.md`）
-- [ ] `pkg/util/workloadrepo/utils.rs.md` ← `pkg/util/workloadrepo/utils.rs`（任务 `3346-åæ-util-workloadrepo-utils-4fc67ba7.md`）
-- [ ] `pkg/util/workloadrepo/worker.rs.md` ← `pkg/util/workloadrepo/worker.rs`（任务 `3347-åæ-util-workloadrepo-worker-35265e84.md`）
-- [ ] `pkg/util/zeropool/pool.rs.md` ← `pkg/util/zeropool/pool.rs`（任务 `3349-åæ-util-zeropool-pool-c7878746.md`）
+- [ ] `pkg/util/admin/admin.rs.md`
+- [ ] `pkg/util/arena/arena.rs.md`
+- [ ] `pkg/util/backoff/backoff.rs.md`
+- [ ] `pkg/util/benchdaily/bench_daily.rs.md`
+- [ ] `pkg/util/bitmap/concurrent.rs.md`
+- [ ] `pkg/util/breakpoint/breakpoint.rs.md`
+- [ ] `pkg/util/cdcutil/cdc.rs.md`
+- [ ] `pkg/util/cgmon/cgmon.rs.md`
+- [ ] `pkg/util/cgroup/cgroup.rs.md`
+- [ ] `pkg/util/cgroup/cgroup_cpu.rs.md`
+- [ ] `pkg/util/cgroup/cgroup_cpu_linux.rs.md`
+- [ ] `pkg/util/cgroup/cgroup_cpu_unsupport.rs.md`
+- [ ] `pkg/util/cgroup/cgroup_memory.rs.md`
+- [ ] `pkg/util/cgroup/cgroup_memory_unsupport.rs.md`
+- [ ] `pkg/util/channel/channel.rs.md`
+- [ ] `pkg/util/checksum/checksum.rs.md`
+- [ ] `pkg/util/chunk/alloc.rs.md`
+- [ ] `pkg/util/chunk/chunk.rs.md`
+- [ ] `pkg/util/chunk/chunk_in_disk.rs.md`
+- [ ] `pkg/util/chunk/chunk_util.rs.md`
+- [ ] `pkg/util/chunk/codec.rs.md`
+- [ ] `pkg/util/chunk/column.rs.md`
+- [ ] `pkg/util/chunk/compare.rs.md`
+- [ ] `pkg/util/chunk/iterator.rs.md`
+- [ ] `pkg/util/chunk/list.rs.md`
+- [ ] `pkg/util/chunk/mutrow.rs.md`
+- [ ] `pkg/util/chunk/pool.rs.md`
+- [ ] `pkg/util/chunk/row.rs.md`
+- [ ] `pkg/util/chunk/row_container.rs.md`
+- [ ] `pkg/util/chunk/row_container_reader.rs.md`
+- [ ] `pkg/util/chunk/row_in_disk.rs.md`
+- [ ] `pkg/util/codec/bytes.rs.md`
+- [ ] `pkg/util/codec/codec.rs.md`
+- [ ] `pkg/util/codec/decimal.rs.md`
+- [ ] `pkg/util/codec/float.rs.md`
+- [ ] `pkg/util/codec/number.rs.md`
+- [ ] `pkg/util/collate/bin.rs.md`
+- [ ] `pkg/util/collate/charset.rs.md`
+- [ ] `pkg/util/collate/collate.rs.md`
+- [ ] `pkg/util/collate/gb18030_bin.rs.md`
+- [ ] `pkg/util/collate/gb18030_chinese_ci.rs.md`
+- [ ] `pkg/util/collate/gbk_bin.rs.md`
+- [ ] `pkg/util/collate/gbk_chinese_ci.rs.md`
+- [ ] `pkg/util/collate/gbk_chinese_ci_data.rs.md`
+- [ ] `pkg/util/collate/general_ci.rs.md`
+- [ ] `pkg/util/collate/pinyin_tidb_as_cs.rs.md`
+- [ ] `pkg/util/collate/ucadata/data.rs.md`
+- [ ] `pkg/util/collate/ucadata/generator/bin.rs.md`
+- [ ] `pkg/util/collate/ucadata/generator/magic.rs.md`
+- [ ] `pkg/util/collate/ucadata/generator/main.rs.md`
+- [ ] `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.rs.md`
+- [ ] `pkg/util/collate/ucadata/unicode_ci_data_generated.rs.md`
+- [ ] `pkg/util/collate/ucaimpl/main.rs.md`
+- [ ] `pkg/util/collate/unicode_0400_ci_generated.rs.md`
+- [ ] `pkg/util/collate/unicode_0400_ci_impl.rs.md`
+- [ ] `pkg/util/collate/unicode_0900_ai_ci_generated.rs.md`
+- [ ] `pkg/util/collate/unicode_0900_ai_ci_impl.rs.md`
+- [ ] `pkg/util/column-mapping/column.rs.md`
+- [ ] `pkg/util/compress/gzip.rs.md`
+- [ ] `pkg/util/config/config.rs.md`
+- [ ] `pkg/util/context/context.rs.md`
+- [ ] `pkg/util/context/plancache.rs.md`
+- [ ] `pkg/util/context/warn.rs.md`
+- [ ] `pkg/util/cpu/cpu.rs.md`
+- [ ] `pkg/util/cpu_posix.rs.md`
+- [ ] `pkg/util/cpu_windows.rs.md`
+- [ ] `pkg/util/cpuprofile/cpuprofile.rs.md`
+- [ ] `pkg/util/cpuprofile/pprof_api.rs.md`
+- [ ] `pkg/util/cpuprofile/testutil/util.rs.md`
+- [ ] `pkg/util/cteutil/storage.rs.md`
+- [ ] `pkg/util/dbterror/ddl_terror.rs.md`
+- [ ] `pkg/util/dbterror/exeerrors/errors.rs.md`
+- [ ] `pkg/util/dbterror/plannererrors/planner_terror.rs.md`
+- [ ] `pkg/util/dbterror/terror.rs.md`
+- [ ] `pkg/util/dbutil/common.rs.md`
+- [ ] `pkg/util/dbutil/dbutiltest/utils.rs.md`
+- [ ] `pkg/util/dbutil/index.rs.md`
+- [ ] `pkg/util/dbutil/interface.rs.md`
+- [ ] `pkg/util/dbutil/query.rs.md`
+- [ ] `pkg/util/dbutil/retry.rs.md`
+- [ ] `pkg/util/dbutil/table.rs.md`
+- [ ] `pkg/util/dbutil/types.rs.md`
+- [ ] `pkg/util/dbutil/variable.rs.md`
+- [ ] `pkg/util/ddl-checker/ddl_syncer.rs.md`
+- [ ] `pkg/util/ddl-checker/executable_checker.rs.md`
+- [ ] `pkg/util/deadlockhistory/deadlock_history.rs.md`
+- [ ] `pkg/util/deeptest/statictesthelper.rs.md`
+- [ ] `pkg/util/disjointset/int_set.rs.md`
+- [ ] `pkg/util/disjointset/set.rs.md`
+- [ ] `pkg/util/disk/tempDir.rs.md`
+- [ ] `pkg/util/disk/tracker.rs.md`
+- [ ] `pkg/util/disttask/idservice.rs.md`
+- [ ] `pkg/util/domainutil/repair_vars.rs.md`
+- [ ] `pkg/util/encrypt/aes.rs.md`
+- [ ] `pkg/util/encrypt/aes_layer.rs.md`
+- [ ] `pkg/util/encrypt/crypt.rs.md`
+- [ ] `pkg/util/engine/engine.rs.md`
+- [ ] `pkg/util/errmsg/errmsg.rs.md`
+- [ ] `pkg/util/errors.rs.md`
+- [ ] `pkg/util/etcd.rs.md`
+- [ ] `pkg/util/etcd/etcd.rs.md`
+- [ ] `pkg/util/execdetails/execdetails.rs.md`
+- [ ] `pkg/util/execdetails/runtime_stats.rs.md`
+- [ ] `pkg/util/execdetails/ruv2_metrics.rs.md`
+- [ ] `pkg/util/execdetails/tiflash_execution_units.rs.md`
+- [ ] `pkg/util/execdetails/tiflash_stats.rs.md`
+- [ ] `pkg/util/execdetails/util.rs.md`
+- [ ] `pkg/util/expensivequery/expensivequery.rs.md`
+- [ ] `pkg/util/extsort/disk_sorter.rs.md`
+- [ ] `pkg/util/extsort/external_sorter.rs.md`
+- [ ] `pkg/util/fastrand/random.rs.md`
+- [ ] `pkg/util/fastrand/runtime.rs.md`
+- [ ] `pkg/util/filter/filter.rs.md`
+- [ ] `pkg/util/filter/schema.rs.md`
+- [ ] `pkg/util/format/format.rs.md`
+- [ ] `pkg/util/gctuner/finalizer.rs.md`
+- [ ] `pkg/util/gctuner/mem.rs.md`
+- [ ] `pkg/util/gctuner/memory_limit_tuner.rs.md`
+- [ ] `pkg/util/gctuner/tuner.rs.md`
+- [ ] `pkg/util/gcutil/gcutil.rs.md`
+- [ ] `pkg/util/generatedexpr/generated_expr.rs.md`
+- [ ] `pkg/util/generic/bounded_min_heap.rs.md`
+- [ ] `pkg/util/generic/sync_map.rs.md`
+- [ ] `pkg/util/globalconn/globalconn.rs.md`
+- [ ] `pkg/util/globalconn/pool.rs.md`
+- [ ] `pkg/util/gogc.rs.md`
+- [ ] `pkg/util/hack/hack.rs.md`
+- [ ] `pkg/util/hack/map_abi.rs.md`
+- [ ] `pkg/util/hack/map_abi_go126.rs.md`
+- [ ] `pkg/util/hack/swiss_map.rs.md`
+- [ ] `pkg/util/hint/hint.rs.md`
+- [ ] `pkg/util/hint/hint_processor.rs.md`
+- [ ] `pkg/util/hint/hint_query_block.rs.md`
+- [ ] `pkg/util/httputil/http.rs.md`
+- [ ] `pkg/util/id_generator.rs.md`
+- [ ] `pkg/util/importer/config.rs.md`
+- [ ] `pkg/util/importer/data.rs.md`
+- [ ] `pkg/util/importer/db.rs.md`
+- [ ] `pkg/util/importer/importer.rs.md`
+- [ ] `pkg/util/importer/job.rs.md`
+- [ ] `pkg/util/importer/parser.rs.md`
+- [ ] `pkg/util/importer/rand.rs.md`
+- [ ] `pkg/util/injectfailpoint/random_retry.rs.md`
+- [ ] `pkg/util/intest/assert.rs.md`
+- [ ] `pkg/util/intest/assert_common.rs.md`
+- [ ] `pkg/util/intest/in_unittest.rs.md`
+- [ ] `pkg/util/intest/no_assert.rs.md`
+- [ ] `pkg/util/intest/not_in_unittest.rs.md`
+- [ ] `pkg/util/intset/fast_int_set.rs.md`
+- [ ] `pkg/util/israce/israce.rs.md`
+- [ ] `pkg/util/israce/norace.rs.md`
+- [ ] `pkg/util/keydecoder/keydecoder.rs.md`
+- [ ] `pkg/util/kvcache/simple_lru.rs.md`
+- [ ] `pkg/util/linter/constructor/constructorflag.rs.md`
+- [ ] `pkg/util/logutil/consistency/reporter.rs.md`
+- [ ] `pkg/util/logutil/general_logger.rs.md`
+- [ ] `pkg/util/logutil/hex.rs.md`
+- [ ] `pkg/util/logutil/log.rs.md`
+- [ ] `pkg/util/logutil/slow_query_logger.rs.md`
+- [ ] `pkg/util/logutil/test_main.rs.md`
+- [ ] `pkg/util/mathutil/exponential_average.rs.md`
+- [ ] `pkg/util/mathutil/math.rs.md`
+- [ ] `pkg/util/mathutil/rand.rs.md`
+- [ ] `pkg/util/memory/action.rs.md`
+- [ ] `pkg/util/memory/arbitrator.rs.md`
+- [ ] `pkg/util/memory/global_arbitrator.rs.md`
+- [ ] `pkg/util/memory/heap_profile.rs.md`
+- [ ] `pkg/util/memory/meminfo.rs.md`
+- [ ] `pkg/util/memory/memstats.rs.md`
+- [ ] `pkg/util/memory/pool.rs.md`
+- [ ] `pkg/util/memory/tracker.rs.md`
+- [ ] `pkg/util/memory/utils.rs.md`
+- [ ] `pkg/util/memoryusagealarm/memoryusagealarm.rs.md`
+- [ ] `pkg/util/metricsutil/common.rs.md`
+- [ ] `pkg/util/metricsutil/db_labels.rs.md`
+- [ ] `pkg/util/misc.rs.md`
+- [ ] `pkg/util/mock/client.rs.md`
+- [ ] `pkg/util/mock/context.rs.md`
+- [ ] `pkg/util/mock/fortest.rs.md`
+- [ ] `pkg/util/mock/iter.rs.md`
+- [ ] `pkg/util/mock/metrics.rs.md`
+- [ ] `pkg/util/mock/store.rs.md`
+- [ ] `pkg/util/mvmap/fnv.rs.md`
+- [ ] `pkg/util/mvmap/mvmap.rs.md`
+- [ ] `pkg/util/naming/naming.rs.md`
+- [ ] `pkg/util/nocopy/nocopy.rs.md`
+- [ ] `pkg/util/paging/paging.rs.md`
+- [ ] `pkg/util/parser/ast.rs.md`
+- [ ] `pkg/util/parser/parser.rs.md`
+- [ ] `pkg/util/partialjson/extract.rs.md`
+- [ ] `pkg/util/password-validation/password_validation.rs.md`
+- [ ] `pkg/util/plancodec/binary_plan_decode.rs.md`
+- [ ] `pkg/util/plancodec/codec.rs.md`
+- [ ] `pkg/util/plancodec/go_quote_printable.rs.md`
+- [ ] `pkg/util/plancodec/id.rs.md`
+- [ ] `pkg/util/ppcpuusage/cpuusages.rs.md`
+- [ ] `pkg/util/prefetch/reader.rs.md`
+- [ ] `pkg/util/prefix_helper.rs.md`
+- [ ] `pkg/util/printer.rs.md`
+- [ ] `pkg/util/printer/printer.rs.md`
+- [ ] `pkg/util/profile/flamegraph.rs.md`
+- [ ] `pkg/util/profile/profile.rs.md`
+- [ ] `pkg/util/promutil/factory.rs.md`
+- [ ] `pkg/util/promutil/registry.rs.md`
+- [ ] `pkg/util/queue/queue.rs.md`
+- [ ] `pkg/util/ranger/checker.rs.md`
+- [ ] `pkg/util/ranger/context/context.rs.md`
+- [ ] `pkg/util/ranger/detacher.rs.md`
+- [ ] `pkg/util/ranger/points.rs.md`
+- [ ] `pkg/util/ranger/ranger.rs.md`
+- [ ] `pkg/util/ranger/types.rs.md`
+- [ ] `pkg/util/redact/redact.rs.md`
+- [ ] `pkg/util/regexpr-router/regexpr_router.rs.md`
+- [ ] `pkg/util/regionsplit/model_handle.rs.md`
+- [ ] `pkg/util/regionsplit/split_handle.rs.md`
+- [ ] `pkg/util/replayer/replayer.rs.md`
+- [ ] `pkg/util/resourcegrouptag/resource_group_tag.rs.md`
+- [ ] `pkg/util/rlimit_other.rs.md`
+- [ ] `pkg/util/rlimit_windows.rs.md`
+- [ ] `pkg/util/rowDecoder/decoder.rs.md`
+- [ ] `pkg/util/rowcodec/common.rs.md`
+- [ ] `pkg/util/rowcodec/decoder.rs.md`
+- [ ] `pkg/util/rowcodec/encoder.rs.md`
+- [ ] `pkg/util/rowcodec/row.rs.md`
+- [ ] `pkg/util/schemacmp/charset_collation.rs.md`
+- [ ] `pkg/util/schemacmp/lattice.rs.md`
+- [ ] `pkg/util/schemacmp/table.rs.md`
+- [ ] `pkg/util/schemacmp/type.rs.md`
+- [ ] `pkg/util/schemacmp/util.rs.md`
+- [ ] `pkg/util/security.rs.md`
+- [ ] `pkg/util/selection/selection.rs.md`
+- [ ] `pkg/util/sem/compat/sem.rs.md`
+- [ ] `pkg/util/sem/compat/testhelper.rs.md`
+- [ ] `pkg/util/sem/sem.rs.md`
+- [ ] `pkg/util/sem/v2/config.rs.md`
+- [ ] `pkg/util/sem/v2/restricted_hint.rs.md`
+- [ ] `pkg/util/sem/v2/sem.rs.md`
+- [ ] `pkg/util/sem/v2/sql_rule.rs.md`
+- [ ] `pkg/util/sem/v2/testhelper.rs.md`
+- [ ] `pkg/util/serialization/common_util.rs.md`
+- [ ] `pkg/util/serialization/deserialization_util.rs.md`
+- [ ] `pkg/util/serialization/serialization_util.rs.md`
+- [ ] `pkg/util/servermemorylimit/servermemorylimit.rs.md`
+- [ ] `pkg/util/service_url.rs.md`
+- [ ] `pkg/util/session_pool.rs.md`
+- [ ] `pkg/util/set/float64_set.rs.md`
+- [ ] `pkg/util/set/int_set.rs.md`
+- [ ] `pkg/util/set/set.rs.md`
+- [ ] `pkg/util/set/set_with_memory_usage.rs.md`
+- [ ] `pkg/util/set/string_set.rs.md`
+- [ ] `pkg/util/signal/exit.rs.md`
+- [ ] `pkg/util/signal/signal_posix.rs.md`
+- [ ] `pkg/util/signal/signal_wasm.rs.md`
+- [ ] `pkg/util/signal/signal_windows.rs.md`
+- [ ] `pkg/util/size/size.rs.md`
+- [ ] `pkg/util/skip/skip.rs.md`
+- [ ] `pkg/util/sli/sli.rs.md`
+- [ ] `pkg/util/slice/slice.rs.md`
+- [ ] `pkg/util/split.rs.md`
+- [ ] `pkg/util/sqlescape/utils.rs.md`
+- [ ] `pkg/util/sqlexec/mock/mock.rs.md`
+- [ ] `pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs.md`
+- [ ] `pkg/util/sqlexec/restricted_sql_executor.rs.md`
+- [ ] `pkg/util/sqlexec/simple_record_set.rs.md`
+- [ ] `pkg/util/sqlkiller/sqlkiller.rs.md`
+- [ ] `pkg/util/stmtsummary/evicted.rs.md`
+- [ ] `pkg/util/stmtsummary/reader.rs.md`
+- [ ] `pkg/util/stmtsummary/statement_summary.rs.md`
+- [ ] `pkg/util/stmtsummary/v2/column.rs.md`
+- [ ] `pkg/util/stmtsummary/v2/logger.rs.md`
+- [ ] `pkg/util/stmtsummary/v2/reader.rs.md`
+- [ ] `pkg/util/stmtsummary/v2/record.rs.md`
+- [ ] `pkg/util/stmtsummary/v2/stmtsummary.rs.md`
+- [ ] `pkg/util/stringutil/string_util.rs.md`
+- [ ] `pkg/util/syncutil/mutex_deadlock.rs.md`
+- [ ] `pkg/util/syncutil/mutex_sync.rs.md`
+- [ ] `pkg/util/sys/linux/sys_linux.rs.md`
+- [ ] `pkg/util/sys/linux/sys_other.rs.md`
+- [ ] `pkg/util/sys/linux/sys_windows.rs.md`
+- [ ] `pkg/util/sys/storage/sys_other.rs.md`
+- [ ] `pkg/util/sys/storage/sys_posix.rs.md`
+- [ ] `pkg/util/sys/storage/sys_windows.rs.md`
+- [ ] `pkg/util/systimemon/systime_mon.rs.md`
+- [ ] `pkg/util/table-filter/column_filter.rs.md`
+- [ ] `pkg/util/table-filter/compat.rs.md`
+- [ ] `pkg/util/table-filter/matchers.rs.md`
+- [ ] `pkg/util/table-filter/parser.rs.md`
+- [ ] `pkg/util/table-filter/table_filter.rs.md`
+- [ ] `pkg/util/table-router/go_regex.rs.md`
+- [ ] `pkg/util/table-router/router.rs.md`
+- [ ] `pkg/util/table-rule-selector/trie_selector.rs.md`
+- [ ] `pkg/util/tableutil/tableutil.rs.md`
+- [ ] `pkg/util/texttree/texttree.rs.md`
+- [ ] `pkg/util/tiflash/tiflash_replica_read.rs.md`
+- [ ] `pkg/util/tiflashcompute/dispatch_policy.rs.md`
+- [ ] `pkg/util/tiflashcompute/topo_fetcher.rs.md`
+- [ ] `pkg/util/tikvutil/tikvutil.rs.md`
+- [ ] `pkg/util/timeutil/errors.rs.md`
+- [ ] `pkg/util/timeutil/time.rs.md`
+- [ ] `pkg/util/timeutil/time_zone.rs.md`
+- [ ] `pkg/util/tls/tls.rs.md`
+- [ ] `pkg/util/tokenlimiter.rs.md`
+- [ ] `pkg/util/topsql/collector/cpu.rs.md`
+- [ ] `pkg/util/topsql/collector/mock/mock.rs.md`
+- [ ] `pkg/util/topsql/reporter/datamodel.rs.md`
+- [ ] `pkg/util/topsql/reporter/datasink.rs.md`
+- [ ] `pkg/util/topsql/reporter/metrics/metrics.rs.md`
+- [ ] `pkg/util/topsql/reporter/mock/pubsub.rs.md`
+- [ ] `pkg/util/topsql/reporter/mock/server.rs.md`
+- [ ] `pkg/util/topsql/reporter/pubsub.rs.md`
+- [ ] `pkg/util/topsql/reporter/report_ticker.rs.md`
+- [ ] `pkg/util/topsql/reporter/reporter.rs.md`
+- [ ] `pkg/util/topsql/reporter/ru_datamodel.rs.md`
+- [ ] `pkg/util/topsql/reporter/ru_window_aggregator.rs.md`
+- [ ] `pkg/util/topsql/reporter/single_target.rs.md`
+- [ ] `pkg/util/topsql/state/state.rs.md`
+- [ ] `pkg/util/topsql/state/test_util.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/aggregator.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/kv_exec_count.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/rustats.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/stmtstats.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/test_guard.rs.md`
+- [ ] `pkg/util/topsql/stmtstats/test_support.rs.md`
+- [ ] `pkg/util/topsql/topsql.rs.md`
+- [ ] `pkg/util/traceevent/adapter.rs.md`
+- [ ] `pkg/util/traceevent/flightrecorder.rs.md`
+- [ ] `pkg/util/traceevent/traceevent.rs.md`
+- [ ] `pkg/util/tracing/opt_trace.rs.md`
+- [ ] `pkg/util/tracing/util.rs.md`
+- [ ] `pkg/util/trxevents/trx_events.rs.md`
+- [ ] `pkg/util/urls.rs.md`
+- [ ] `pkg/util/util.rs.md`
+- [ ] `pkg/util/versioninfo/versioninfo.rs.md`
+- [ ] `pkg/util/vitess/vitess_hash.rs.md`
+- [ ] `pkg/util/wait_group_wrapper.rs.md`
+- [ ] `pkg/util/watcher/event.rs.md`
+- [ ] `pkg/util/watcher/watcher.rs.md`
+- [ ] `pkg/util/worker_pool.rs.md`
+- [ ] `pkg/util/workloadrepo/const.rs.md`
+- [ ] `pkg/util/workloadrepo/housekeeper.rs.md`
+- [ ] `pkg/util/workloadrepo/sampling.rs.md`
+- [ ] `pkg/util/workloadrepo/snapshot.rs.md`
+- [ ] `pkg/util/workloadrepo/table.rs.md`
+- [ ] `pkg/util/workloadrepo/utils.rs.md`
+- [ ] `pkg/util/workloadrepo/worker.rs.md`
+- [ ] `pkg/util/zeropool/pool.rs.md`
 
 ## pkg/workloadlearning
 
-- [ ] `pkg/workloadlearning/cache.rs.md` ← `pkg/workloadlearning/cache.rs`（任务 `3350-åæ-pkg-workloadlearning-cache-2e2fa3e4.md`）
-- [ ] `pkg/workloadlearning/handle.rs.md` ← `pkg/workloadlearning/handle.rs`（任务 `3351-åæ-pkg-workloadlearning-handle-85482112.md`）
-- [ ] `pkg/workloadlearning/metrics.rs.md` ← `pkg/workloadlearning/metrics.rs`（任务 `3353-åæ-pkg-workloadlearning-metrics-59432bac.md`）
+- [ ] `pkg/workloadlearning/cache.rs.md`
+- [ ] `pkg/workloadlearning/handle.rs.md`
+- [ ] `pkg/workloadlearning/metrics.rs.md`
 
 ## tools/check
 
-- [ ] `tools/check/longtests.rs.md` ← `tools/check/longtests.rs`（任务 `3356-åæ-tools-check-longtests-745f9c2a.md`）
-- [ ] `tools/check/ut.rs.md` ← `tools/check/ut.rs`（任务 `3358-åæ-tools-check-ut-e49d6cf1.md`）
-- [ ] `tools/check/xprog/xprog.rs.md` ← `tools/check/xprog/xprog.rs`（任务 `3362-åæ-check-xprog-xprog-3b0c6ab2.md`）
+- [ ] `tools/check/longtests.rs.md`
+- [ ] `tools/check/ut.rs.md`
+- [ ] `tools/check/xprog/xprog.rs.md`
 
 ## tools/dashboard-linter
 
-- [ ] `tools/dashboard-linter/main.rs.md` ← `tools/dashboard-linter/main.rs`（任务 `3364-åæ-tools-dashboard-linter-main-0bff3d04.md`）
+- [ ] `tools/dashboard-linter/main.rs.md`
 
 ## tools/fake-oauth
 
-- [ ] `tools/fake-oauth/main.rs.md` ← `tools/fake-oauth/main.rs`（任务 `3367-åæ-tools-fake-oauth-main-9c009bb7.md`）
+- [ ] `tools/fake-oauth/main.rs.md`
 
 ## tools/gen-parquet
 
-- [ ] `tools/gen-parquet/main.rs.md` ← `tools/gen-parquet/main.rs`（任务 `3370-åæ-tools-gen-parquet-main-7ba25b88.md`）
+- [ ] `tools/gen-parquet/main.rs.md`
 
 ## tools/patch-go
 
-- [ ] `tools/patch-go/check.rs.md` ← `tools/patch-go/check.rs`（任务 `3372-åæ-tools-patch-go-check-3dc14d74.md`）
-- [ ] `tools/patch-go/main.rs.md` ← `tools/patch-go/main.rs`（任务 `3374-åæ-tools-patch-go-main-3024bee7.md`）
+- [ ] `tools/patch-go/check.rs.md`
+- [ ] `tools/patch-go/main.rs.md`
 
 ## tools/tazel
 
-- [ ] `tools/tazel/ast.rs.md` ← `tools/tazel/ast.rs`（任务 `3376-åæ-tools-tazel-ast-31ca0417.md`）
-- [ ] `tools/tazel/main.rs.md` ← `tools/tazel/main.rs`（任务 `3379-åæ-tools-tazel-main-ea3ab5da.md`）
-- [ ] `tools/tazel/util.rs.md` ← `tools/tazel/util.rs`（任务 `3381-åæ-tools-tazel-util-9018dda6.md`）
+- [ ] `tools/tazel/ast.rs.md`
+- [ ] `tools/tazel/main.rs.md`
+- [ ] `tools/tazel/util.rs.md`
