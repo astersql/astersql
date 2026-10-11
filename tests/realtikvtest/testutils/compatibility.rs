@@ -218,6 +218,10 @@ pub fn InitConcurrentDDLTest(
 }
 
 impl CompatibilityContext {
+    pub(crate) fn worker_count(&self) -> usize {
+        self.handles.len()
+    }
+
     /// Start start the compatibility tests (Go method on `*CompatibilityContext`).
     pub fn Start(&mut self, ctx: &SuiteContext) {
         self.executor.clear();

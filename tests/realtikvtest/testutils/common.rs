@@ -230,6 +230,10 @@ impl TkPool {
     pub(crate) fn put(&self, tk: testkit::TestKit) {
         self.free.lock().unwrap().push(tk);
     }
+
+    pub(crate) fn available(&self) -> usize {
+        self.free.lock().unwrap().len()
+    }
 }
 
 /// SuiteContext wraps test context for add index.

@@ -77,8 +77,8 @@ use crate::stubs::{
 use crate::workload::{deleteStr, genColval, insertStr, isSkippedError, updateStr};
 use crate::{
     AddIndexMultiCols, AddIndexNonUnique, AddIndexPK, AddIndexUnique, AssertExternalField,
-    CompatibilityContext, InitCompCtxParams, InitTest, RemoveAllObjects, SuiteContext,
-    TestNonUnique, TestOneColFrame, TestOneIndexFrame, TestTwoColsFrame,
+    CompatibilityContext, InitCompCtxParams, InitTest, RemoveAllObjects, TestNonUnique,
+    TestOneColFrame, TestOneIndexFrame, TestTwoColsFrame,
 };
 use astersql_tests_realtikvtest::stubs::{TestCtx, reset_test_globals as reset_parent};
 
@@ -113,32 +113,6 @@ fn run_contract(contract: fn(&astersql_tests_realtikvtest::stubs::Storage)) {
     let t = TestCtx::new();
     let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
     contract(&store);
-}
-
-fn init_comp_ctx_with_store(
-    t: &TestCtx,
-    store: &astersql_tests_realtikvtest::stubs::Storage,
-) -> SuiteContext {
-    let mut ctx = InitTestWithStore(t, store.clone());
-    InitCompCtxParams(&mut ctx);
-    ctx
-}
-
-fn init_concurrent_ddl_with_store(
-    t: &TestCtx,
-    store: &astersql_tests_realtikvtest::stubs::Storage,
-    col_iids: Vec<Vec<i32>>,
-    col_jids: Vec<Vec<i32>>,
-) -> SuiteContext {
-    let ctx = init_comp_ctx_with_store(t, store);
-    if let Some(comp) = &ctx.CompCtx {
-        let mut comp = comp.write().unwrap();
-        comp.IsConcurrentDDL = true;
-        comp.tType = TestNonUnique;
-        comp.colIIDs = col_iids;
-        comp.colJIDs = col_jids;
-    }
-    ctx
 }
 
 #[test]
@@ -204,6 +178,54 @@ fn reused_fixture_resets_normal_boundary_state() {
     );
     assert_eq!(reset.tableNum, 3);
     assert_eq!(reset.rowNum, 64);
+}
+
+#[test]
+fn error_and_resource_fixture_is_fully_reset() {
+    let _isolation = ContractIsolation::new();
+    let t = TestCtx::new();
+    let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
+    let polluted = InitTestWithStore(&t, store.clone());
+
+    polluted
+        .tk
+        .set_exec_handler(|_| Err("polluted handler".into()));
+    polluted.cancel();
+    set_classic_for_test(false);
+    failpoint::Enable(
+        "github.com/pingcap/tidb/pkg/ddl/mockHighLoadForAddIndex",
+        "return",
+    )
+    .unwrap();
+
+    let mut reset = ResetTestWithStore(&t, store, true);
+    InitCompCtxParams(&mut reset);
+    let pool = reset.tkPool.as_ref().unwrap();
+    let available_before = pool.available();
+    let comp = reset.CompCtx.as_ref().unwrap().clone();
+    {
+        let mut state = comp.write().unwrap();
+        state.IsConcurrentDDL = true;
+        state.tType = TestNonUnique;
+        state.colIIDs = vec![vec![1], vec![1], vec![1]];
+        state.colJIDs = vec![vec![], vec![], vec![]];
+    }
+    CompatibilityContext::start_on(&comp, &reset);
+    CompatibilityContext::stop_on(&comp, &reset).unwrap();
+
+    assert_eq!(comp.read().unwrap().worker_count(), 0);
+    assert_eq!(pool.available(), available_before + 3);
+    assert!(!reset.done());
+    assert!(kerneltype::IsClassic());
+    assert!(!failpoint::is_enabled(
+        "github.com/pingcap/tidb/pkg/ddl/mockHighLoadForAddIndex"
+    ));
+    reset.tk.MustExec("use addindex;");
+
+    let server = fakestorage::Server::new();
+    server.put_objects("bucket", vec!["o1".into(), "o2".into()]);
+    RemoveAllObjects(&t, &server, "bucket");
+    assert!(server.objects("bucket").is_empty());
 }
 
 #[test]
@@ -525,7 +547,7 @@ fn run_contract_error_paths(store: &astersql_tests_realtikvtest::stubs::Storage)
     assert!(err.unwrap_err().contains("1062"));
 
     // Non-unique failure must panic via require.NoError — exercise via catch_unwind.
-    let ctx = InitTestWithStore(&t, store.clone());
+    let ctx = ResetTestWithStore(&t, store.clone(), true);
     ctx.tk.set_exec_handler(|sql| {
         if sql.contains("add index") {
             Err("boom".into())
@@ -574,12 +596,15 @@ fn run_contract_resource_cleanup(store: &astersql_tests_realtikvtest::stubs::Sto
     }
 
     // Concurrent DDL start/stop returns kits to pool.
-    let ctx = init_concurrent_ddl_with_store(
-        &t,
-        store,
-        vec![vec![1], vec![1], vec![1]],
-        vec![vec![], vec![], vec![]],
-    );
+    let mut ctx = ResetTestWithStore(&t, store.clone(), true);
+    InitCompCtxParams(&mut ctx);
+    if let Some(comp) = &ctx.CompCtx {
+        let mut comp = comp.write().unwrap();
+        comp.IsConcurrentDDL = true;
+        comp.tType = TestNonUnique;
+        comp.colIIDs = vec![vec![1], vec![1], vec![1]];
+        comp.colJIDs = vec![vec![], vec![], vec![]];
+    }
     let comp = ctx.CompCtx.as_ref().unwrap().clone();
     CompatibilityContext::start_on(&comp, &ctx);
     CompatibilityContext::stop_on(&comp, &ctx).unwrap();
@@ -596,7 +621,7 @@ fn run_contract_resource_cleanup(store: &astersql_tests_realtikvtest::stubs::Sto
     assert_eq!(server.objects("bucket").len(), 0);
 
     // InitCompCtxParams resets flags
-    let mut ctx = InitTestWithStore(&t, store.clone());
+    let mut ctx = ResetTestWithStore(&t, store.clone(), true);
     InitCompCtxParams(&mut ctx);
     let g = ctx.CompCtx.as_ref().unwrap().read().unwrap();
     assert!(!g.IsConcurrentDDL);
