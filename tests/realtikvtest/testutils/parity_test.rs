@@ -82,6 +82,39 @@ use crate::{
 };
 use astersql_tests_realtikvtest::stubs::{TestCtx, reset_test_globals as reset_parent};
 
+const CONTRACT_TEST_IDENTITIES: [&str; 4] = [
+    "contract_normal_paths",
+    "contract_boundary",
+    "contract_error_paths",
+    "contract_resource_cleanup",
+];
+
+struct ContractIsolation;
+
+impl ContractIsolation {
+    fn new() -> Self {
+        reset_parent();
+        crate::stubs::reset_test_globals();
+        set_failpoint_hold_ms_for_test(0);
+        Self
+    }
+}
+
+impl Drop for ContractIsolation {
+    fn drop(&mut self) {
+        reset_parent();
+        crate::stubs::reset_test_globals();
+        set_failpoint_hold_ms_for_test(0);
+    }
+}
+
+fn run_contract(contract: fn(&astersql_tests_realtikvtest::stubs::Storage)) {
+    let _isolation = ContractIsolation::new();
+    let t = TestCtx::new();
+    let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
+    contract(&store);
+}
+
 fn init_comp_ctx_with_store(
     t: &TestCtx,
     store: &astersql_tests_realtikvtest::stubs::Storage,
@@ -110,12 +143,36 @@ fn init_concurrent_ddl_with_store(
 
 #[test]
 fn go_rust_public_contract_matches() {
-    let t = TestCtx::new();
-    let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
-    contract_normal_paths(&store);
-    contract_boundary(&store);
-    contract_error_paths(&store);
-    contract_resource_cleanup(&store);
+    assert_eq!(CONTRACT_TEST_IDENTITIES.len(), 4);
+    assert!(
+        CONTRACT_TEST_IDENTITIES
+            .iter()
+            .all(|identity| identity.starts_with("contract_"))
+    );
+    let mut identities = CONTRACT_TEST_IDENTITIES.to_vec();
+    identities.sort_unstable();
+    identities.dedup();
+    assert_eq!(identities.len(), CONTRACT_TEST_IDENTITIES.len());
+}
+
+#[test]
+fn contract_normal_paths() {
+    run_contract(run_contract_normal_paths);
+}
+
+#[test]
+fn contract_boundary() {
+    run_contract(run_contract_boundary);
+}
+
+#[test]
+fn contract_error_paths() {
+    run_contract(run_contract_error_paths);
+}
+
+#[test]
+fn contract_resource_cleanup() {
+    run_contract(run_contract_resource_cleanup);
 }
 
 #[test]
@@ -145,9 +202,7 @@ fn compatibility_public_start_stop_methods_execute() {
 }
 
 /// Normal: InitTest SQL fixture, DDL SQL shape, frames, GCS cleanup, genColval.
-fn contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
-    reset_parent();
-    crate::stubs::reset_test_globals();
+fn run_contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
@@ -289,9 +344,7 @@ fn contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
 
 /// Boundary: next-gen skips fast reorg; unique+partition composite; multi-schema DDL suffix;
 /// AssertExternalField empty/nil; failpoint list.
-fn contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
-    reset_parent();
-    crate::stubs::reset_test_globals();
+fn run_contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     set_classic_for_test(false);
     set_failpoint_hold_ms_for_test(0);
 
@@ -417,9 +470,7 @@ fn contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
 }
 
 /// Error: Duplicate entry accepted for unique/PK; RemoveAllObjects list error; unexpected delete.
-fn contract_error_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
-    reset_parent();
-    crate::stubs::reset_test_globals();
+fn run_contract_error_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
@@ -469,9 +520,7 @@ fn contract_error_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
 
 /// Resource cleanup: workload start/stop cancels workers; CompCtx start/stop returns kits;
 /// GCS objects removed; result sets closed on workload SQL.
-fn contract_resource_cleanup(store: &astersql_tests_realtikvtest::stubs::Storage) {
-    reset_parent();
-    crate::stubs::reset_test_globals();
+fn run_contract_resource_cleanup(store: &astersql_tests_realtikvtest::stubs::Storage) {
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
