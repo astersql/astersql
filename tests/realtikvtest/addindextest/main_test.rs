@@ -74,11 +74,34 @@ fn test_main_configures_and_runs_realtikv_harness() {
 }
 
 fn test_full_mode_command_line_entrypoint() {
-    for flag in ["-full-mode", "--full-mode=true", "--full-mode=false"] {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([flag, "test_configuration_at_process_entry", "--exact"])
-            .output()
-            .unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let (probes, list_output) = std::thread::scope(|scope| {
+        let list_executable = executable.clone();
+        let list_probe = scope.spawn(move || {
+            std::process::Command::new(list_executable)
+                .args(["--full-mode", "--list"])
+                .output()
+                .unwrap()
+        });
+        let probes = ["-full-mode", "--full-mode=true", "--full-mode=false"]
+            .into_iter()
+            .map(|flag| {
+                let executable = executable.clone();
+                scope.spawn(move || {
+                    let output = std::process::Command::new(executable)
+                        .args([flag, "test_configuration_at_process_entry", "--exact"])
+                        .output()
+                        .unwrap();
+                    (flag, output)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|probe| probe.join().unwrap())
+            .collect::<Vec<_>>();
+        (probes, list_probe.join().unwrap())
+    });
+    for (flag, output) in probes {
         assert!(
             output.status.success(),
             "{flag}: {} {}",
@@ -86,17 +109,13 @@ fn test_full_mode_command_line_entrypoint() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--full-mode", "--list"])
-        .output()
-        .unwrap();
     assert!(
-        output.status.success(),
+        list_output.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&list_output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&list_output.stdout)
             .contains("test_main_configures_and_runs_realtikv_harness")
     );
 }

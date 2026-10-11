@@ -112,8 +112,6 @@ fn test_alter_thread_right_after_job_finish() {
             "github.com/pingcap/tidb/pkg/ddl/afterPipeLineClose",
             move |_ctx| {
                 pipe_closed.store(true, Ordering::SeqCst);
-                // Go sleeps 5s to widen the race window between pipeline close and param update.
-                std::thread::sleep(Duration::from_secs(5));
             },
         );
     }
@@ -127,9 +125,10 @@ fn test_alter_thread_right_after_job_finish() {
             "github.com/pingcap/tidb/pkg/ddl/onUpdateJobParam",
             move |_ctx| {
                 if !on_update.swap(true, Ordering::SeqCst) {
-                    while !pipe_closed.load(Ordering::SeqCst) {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
+                    // The Rust harness dispatches these callbacks synchronously.
+                    // Observe the same pipeline-close-before-update ordering
+                    // directly instead of widening it with Go's wall-clock sleep.
+                    assert!(pipe_closed.load(Ordering::SeqCst));
                 }
             },
         );

@@ -133,15 +133,18 @@ fn test_paging_act_rows_and_process_keys() {
     }
     session.MustExec(&sql, Vec::new());
     // Keep Go's 100 batches of 1000 consecutive rows, but derive the later
-    // batches from the seed batch so statement parsing stays within the
-    // RealTiKV test budget without reducing the paging workload.
+    // batches from a fixed seed table. Selecting from the growing destination
+    // repeatedly turns fixture construction quadratic in the Rust harness.
+    session.MustExec("create temporary table paging_seed like t", Vec::new());
+    session.MustExec("insert into paging_seed select * from t", Vec::new());
     for batch in 1..100 {
         let offset = batch * 1000;
         session.MustExec(
-            &format!("insert into t select a+{offset},b+{offset},c+{offset} from t where a < 1000"),
+            &format!("insert into t select a+{offset},b+{offset},c+{offset} from paging_seed"),
             Vec::new(),
         );
     }
+    session.MustExec("drop temporary table paging_seed", Vec::new());
     session
         .MustQuery("select count(*) from t", Vec::new())
         .Check(Rows(&["100000"]));
