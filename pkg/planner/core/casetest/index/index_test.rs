@@ -311,15 +311,76 @@ fn prepare_range_derivation_fixture(tk: &mut TestKit) {
     tk.MustExec("set @@session.tidb_regard_null_as_point=false", Vec::new());
 }
 
+fn run_range_derivation_cases(
+    store: Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    suite: &astersql_testkit::testdata::TestData,
+    cascades: bool,
+) {
+    let (input, output) = suite
+        .LoadTestCasesByName("TestRangeDerivation", cascades)
+        .unwrap_or_else(|error| panic!("load TestRangeDerivation ({cascades}): {error}"));
+    let input = input.as_array().expect("suite input must be an array");
+    let output = output.as_array().expect("suite output must be an array");
+    assert_eq!(
+        input.len(),
+        output.len(),
+        "TestRangeDerivation input/output length"
+    );
+
+    std::thread::scope(|scope| {
+        for (sql, expected) in input.iter().zip(output) {
+            let store = store.clone();
+            scope.spawn(move || {
+                let mut tk = TestKit::new(store);
+                tk.MustExec("use test", Vec::new());
+                tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner = {}",
+                        if cascades { 1 } else { 0 }
+                    ),
+                    Vec::new(),
+                );
+                tk.MustExec("set @@tidb_opt_fix_control = '54337:ON'", Vec::new());
+                tk.MustExec("set @@session.tidb_regard_null_as_point=false", Vec::new());
+                let sql = sql.as_str().expect("suite SQL must be text");
+                let actual_plan = tk
+                    .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
+                    .Rows()
+                    .into_iter()
+                    .map(|row| row.join(" "))
+                    .collect::<Vec<_>>();
+                let expected_plan = expected
+                    .get("Plan")
+                    .and_then(|value| value.as_array())
+                    .expect("TestRangeDerivation golden case lacks Plan")
+                    .iter()
+                    .map(|row| {
+                        row.as_str()
+                            .expect("TestRangeDerivation Plan row is not text")
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual_plan, expected_plan, "sql={sql}");
+            });
+        }
+    });
+}
+
 #[test]
 fn test_range_derivation() {
     let suite = load_suite("index_range");
-    run_suite_cases(
-        &suite,
-        "TestRangeDerivation",
-        false,
-        prepare_range_derivation_fixture,
-    );
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    prepare_range_derivation_fixture(&mut setup_tk);
+    drop(setup_tk);
+
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let store = store.clone();
+            let suite = &suite;
+            scope.spawn(move || run_range_derivation_cases(store, suite, cascades));
+        }
+    });
 }
 
 fn prepare_range_intersection_fixture(tk: &mut TestKit) {
