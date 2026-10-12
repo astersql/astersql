@@ -46,26 +46,6 @@ fn assert_error_group<T: ErrorGroup>(_: &T) {}
 /// 编译期约束：类型实现 [`HackedStr`]。
 fn assert_hacked_str<T: HackedStr>(_: &T) {}
 
-/// Compile-time inventory for `go doc -all .` at source commit 306e305bcf41.
-///
-/// The source surface is 38 module functions, 26 exported concrete methods,
-/// and 12 exported types. Go's variadics map to `&[ErrorArg]`, nil maps to
-/// `Option`, and error ownership maps to `SharedError`. Go formatter methods
-/// map to `Display`/`Debug`; JSON methods map to serde. `StackTraceAware`'s
-/// runtime marker maps to `HasStack` plus the explicit `StackTraceCarrier`
-/// trait used for Rust cause-chain discovery.
-///
-/// Source test-intent matrix (the Rust files consolidate table-driven cases):
-///
-/// - `errors_test.go` (22): core, wrap, group/join, and std-interop tests.
-/// - `format_test.go` (6): format test.
-/// - `stack_test.go` (10): stack and adaptor tests.
-/// - `normalize_test.go` (11): normalize identity and generation tests.
-/// - `join_test.go` (3): group/join test.
-/// - `example_test.go` (12): example test, one Rust test per example.
-/// - `bench_test.go` (3): the three Criterion functions in `benches/errors.rs`.
-/// - `terror_test.go` (8 suite cases): normalize tests plus parser terror tests.
-///
 /// 在固定 Go 源提交上盘点全部公开符号，运行时逐一触及以防映射遗漏。
 #[test]
 fn errors_api_parity_test() {

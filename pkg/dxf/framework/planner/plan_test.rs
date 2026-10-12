@@ -16,36 +16,7 @@
 // PhysicalPlan 单元测试。
 //
 // 验证按 step 过滤处理器、保持插入顺序生成 subtask meta，并对照 Go 侧
-// TestPhysicalPlan 的行为（参考字符串常量 `_GO_PLAN_TEST_REFERENCE`）。
-
-// TestPhysicalPlan 对应 Go 测试：添加一个 processor，并确认指定 step 能调用 pipeline 生成 subtask meta。
-/// 保留的 Go 原测试草稿，便于对照迁移语义，不参与编译执行。
-const _GO_PLAN_TEST_REFERENCE: &str = r###"
-#[test]
-pub fn test_physical_plan() {
-    let ctrl = gomock::NewController(testing::T);
-    defer! {
-        // Go defer ctrl.Finish() 用于校验 mock 期望；只保留资源收尾位置。
-        ctrl.Finish();
-    }
-    let mock_pipeline_spec = mock::NewMockPipelineSpec(ctrl);
-
-    let mut plan = planner::PhysicalPlan::default();
-    let plan_ctx = planner::PlanCtx::default();
-    plan.AddProcessor(planner::ProcessorSpec {
-        Pipeline: mock_pipeline_spec,
-        Step: 1,
-        ..Default::default()
-    });
-    mock_pipeline_spec
-        .EXPECT()
-        .ToSubtaskMeta(gomock::Any())
-        .Return(vec![b"mock".to_vec()], None);
-    let (subtask_metas, err) = plan.ToSubtaskMetas(plan_ctx, 1);
-    require::NoError(err);
-    require::Equal(vec![b"mock".to_vec()], subtask_metas);
-}
-"###;
+// TestPhysicalPlan 的行为。
 
 use crate::{PhysicalPlan, PipelineSpec, PlanCtx, ProcessorSpec};
 

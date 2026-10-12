@@ -17,67 +17,6 @@
 //
 // 用可记录调用参数的假 TaskCreator，验证 `run_with_target_scope` 会先拿到
 // 逻辑计划 meta，再把 key/type/slots/scope/ExtraParams 原样转发给创建边界。
-// `_GO_PLANNER_TEST_REFERENCE` 保留 Go 原测试形状供对照。
-
-/// Go 侧 Planner 测试草稿（含 mock store / session），不参与编译执行。
-const _GO_PLANNER_TEST_REFERENCE: &str = r###"
-#[test]
-fn test_planner() {
-    // Go 测试用 gomock.NewController 管理 mock 生命周期，并在 defer ctrl.Finish() 中校验 EXPECT 是否全部命中。
-    let ctrl = gomock::NewController(testing::T);
-    defer!(ctrl.Finish());
-
-    // 原测试把 context 标记为 InternalDistTask，确保创建任务时走分布式任务内部来源。
-    let mut ctx = context::Background();
-    ctx = util::WithInternalSourceType(ctx, kv::InternalDistTask);
-
-    // testkit.CreateMockStore/NewTestKit 提供内存 store 和 session；只保留 fixture 连接形状。
-    let store = testkit::CreateMockStore(testing::T);
-    let gtk = testkit::NewTestKit(testing::T, store);
-    let pool = pools::NewResourcePool(
-        || -> Result<pools::Resource, errors::Error> { Ok(gtk.Session()) },
-        1,
-        1,
-        time::Second,
-    );
-    // pool.Close 对应 Go 的 defer 收尾，避免测试结束后泄漏 session resource。
-    defer!(pool.Close());
-
-    let mgr = storage::NewTaskManager(pool);
-    storage::SetTaskManager(mgr.clone());
-    let p = planner::Planner {};
-    let p_ctx = planner::PlanCtx {
-        Ctx: ctx,
-        SessionCtx: gtk.Session(),
-        TaskKey: "1".to_string(),
-        TaskType: "example",
-        ThreadCnt: 1,
-        ..Default::default()
-    };
-
-    // mock LogicalPlan 同时提供任务 meta 和 ExtraParams；这里是 Planner.Run 的核心输入。
-    let mock_logical_plan = mock::NewMockLogicalPlan(ctrl);
-    mock_logical_plan
-        .EXPECT()
-        .ToTaskMeta()
-        .Return(Vec::from("mock"), None);
-    mock_logical_plan
-        .EXPECT()
-        .GetTaskExtraParams()
-        .Return(proto::ExtraParams {
-            ManualRecovery: true,
-            ..Default::default()
-        });
-
-    let (task_id, err) = p.Run(p_ctx, mock_logical_plan, &mgr);
-    require::NoError(testing::T, err);
-    let (task, err) = mgr.GetTaskByID(ctx, task_id);
-    require::NoError(testing::T, err);
-    require::EqualValues(testing::T, 1, task.RequiredSlots);
-    require::EqualValues(testing::T, "example", task.Type);
-    require::True(testing::T, task.ExtraParams.ManualRecovery);
-}
-"###;
 
 use std::sync::Mutex;
 
