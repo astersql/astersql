@@ -635,7 +635,7 @@ fn uri_san_wildcards_match_only_whole_non_empty_path_segments() {
     assert!(!checkCertSAN(
         &privilege,
         &uri_cert("https://domain.com/bar/baz"),
-        &required_uri("spiffe://domain.com/bar/*"),
+        &required_uri(concat!("spiffe://domain.com/bar/", "*")),
     ));
     assert!(!checkCertSAN(
         &privilege,
@@ -1579,7 +1579,7 @@ fn TestGrantCreateTmpTables() {
 fn TestSkipGrantTable() {
     // With SkipWithGrant, every privilege/verification check trivially
     // succeeds and no cache is even consulted (mirrors Go's `--skip-grant-tables`,
-    // which this test exercises across BACKUP_ADMIN/RELOAD/mysql.*/... grants).
+    // which this test exercises across BACKUP_ADMIN, RELOAD, and mysql schema grants).
     set_skip_with_grant(true);
     let _guard = DeferCleanup(|| set_skip_with_grant(false));
 
