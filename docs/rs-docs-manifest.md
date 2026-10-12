@@ -706,7 +706,7 @@
 
 ## pkg/errctx
 
-- [ ] [`pkg/errctx/context.rs.md`](../pkg/errctx/context.rs.md)
+- [x] [`pkg/errctx/context.rs.md`](../pkg/errctx/context.rs.md)
 
 ## pkg/errno
 
@@ -721,8 +721,8 @@
 - [x] [`pkg/errors/group.rs.md`](../pkg/errors/group.rs.md)
 - [x] [`pkg/errors/join.rs.md`](../pkg/errors/join.rs.md)
 - [x] [`pkg/errors/normalize.rs.md`](../pkg/errors/normalize.rs.md) @todo Go 用 runtime.Caller，Rust 用 #[track_caller]/Location::caller；快速路径都不记录位置。Go 无法取位置时写 <unknown>/-1，Rust 当前没有该失败分支。
-- [ ] [`pkg/errors/stack.rs.md`](../pkg/errors/stack.rs.md)
-- [ ] [`pkg/errors/wrap.rs.md`](../pkg/errors/wrap.rs.md)
+- [x] [`pkg/errors/stack.rs.md`](../pkg/errors/stack.rs.md) @todo 可能需要和go实现对比一下
+- [x] [`pkg/errors/wrap.rs.md`](../pkg/errors/wrap.rs.md)
 
 ## pkg/executor
 
