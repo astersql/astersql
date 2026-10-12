@@ -147,6 +147,13 @@ pub trait Database: Send + Sync + 'static {
         None
     }
 
+    /// Make the next process-local lock wait observe its configured timeout as elapsed.
+    fn expire_next_lock_wait_for_test(&self) -> TestResult {
+        Err(TestError::new(
+            "database does not expose deterministic lock-wait expiry",
+        ))
+    }
+
     /// 执行非查询语句。
     fn execute(&self, sql: &str, arguments: &[DbValue]) -> TestResult<ExecutionResult>;
     /// Execute a statement as an internal session request.

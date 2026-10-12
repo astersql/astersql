@@ -1552,6 +1552,7 @@ fn run_case(test_name: &str, case: Case) {
                         "select * from share_t where a=1 for share",
                         "select * from share_t for share",
                     ] {
+                        tk.Session().ExpireNextLockWaitForTest();
                         tk.MustGetErrMsg(
                             sql,
                             "[tikv:1205]Lock wait timeout exceeded; try restarting transaction",

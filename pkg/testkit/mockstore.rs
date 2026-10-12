@@ -366,6 +366,9 @@ enum SessionRequest {
     ExpirePessimisticLocks {
         response: mpsc::SyncSender<()>,
     },
+    ExpireNextLockWait {
+        response: mpsc::SyncSender<()>,
+    },
     SetPessimisticLockTtl {
         ttl: std::time::Duration,
         response: mpsc::SyncSender<()>,
@@ -810,6 +813,10 @@ impl AnalyzeSessionDatabase {
                         session.ExpirePessimisticLocksForTest();
                         let _ = response.send(());
                     }
+                    SessionRequest::ExpireNextLockWait { response } => {
+                        session.ExpireNextLockWaitForTest();
+                        let _ = response.send(());
+                    }
                     SessionRequest::SetPessimisticLockTtl { ttl, response } => {
                         session.SetPessimisticLockTTLForTest(ttl);
                         let _ = response.send(());
@@ -1169,6 +1176,11 @@ impl AnalyzeSessionDatabase {
         self.send_test_request(|response| SessionRequest::ExpirePessimisticLocks { response })
     }
 
+    /// Make this session's next process-local lock wait time out immediately.
+    pub fn expire_next_lock_wait_for_test(&self) -> TestResult {
+        self.send_test_request(|response| SessionRequest::ExpireNextLockWait { response })
+    }
+
     /// Override this session's managed pessimistic lock TTL.
     pub fn set_pessimistic_lock_ttl_for_test(&self, ttl: std::time::Duration) -> TestResult {
         self.send_test_request(|response| SessionRequest::SetPessimisticLockTtl { ttl, response })
@@ -1362,6 +1374,10 @@ impl Drop for AnalyzeSessionDatabase {
 impl Database for AnalyzeSessionDatabase {
     fn connection_id_for_test(&self) -> Option<u64> {
         Some(self.connection_id)
+    }
+
+    fn expire_next_lock_wait_for_test(&self) -> TestResult {
+        AnalyzeSessionDatabase::expire_next_lock_wait_for_test(self)
     }
 
     fn execute(&self, sql: &str, arguments: &[DbValue]) -> TestResult<ExecutionResult> {

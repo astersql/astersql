@@ -215,6 +215,13 @@ impl ConcreteSession {
         );
     }
 
+    /// Make the next process-local lock wait observe its configured timeout as
+    /// already elapsed. This preserves the timeout value and error path while
+    /// allowing deterministic tests to avoid wall-clock sleeps.
+    pub fn ExpireNextLockWaitForTest(&self) {
+        self.state.borrow_mut().lock_wait_timeout_elapsed_for_test = true;
+    }
+
     pub(super) fn end_expired_pessimistic_transaction(&self) -> SessionResult<()> {
         let expired = {
             let mut state = self.state.borrow_mut();
@@ -605,9 +612,19 @@ impl ConcreteSession {
             )
         };
         let started = Instant::now();
+        let timeout_elapsed_for_test = {
+            let mut state = self.state.borrow_mut();
+            std::mem::take(&mut state.lock_wait_timeout_elapsed_for_test)
+        };
         let deadline = max_execution
             .map(|max_execution| started + max_execution.min(lock_timeout))
-            .unwrap_or(started + lock_timeout);
+            .unwrap_or_else(|| {
+                if timeout_elapsed_for_test {
+                    started
+                } else {
+                    started + lock_timeout
+                }
+            });
         let (mutex, available) = &*RUNTIME_ROW_LOCKS;
         let mut state = mutex
             .lock()

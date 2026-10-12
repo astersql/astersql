@@ -84,6 +84,13 @@ pub struct TestDiskTracker {
 }
 
 impl TestSession {
+    /// Make the next process-local lock wait observe its configured timeout as elapsed.
+    pub fn ExpireNextLockWaitForTest(&self) {
+        self.database
+            .expire_next_lock_wait_for_test()
+            .expect("database does not expose deterministic lock-wait expiry");
+    }
+
     /// Parse, build and optimize one SELECT on this session and return its real root plan ID.
     pub fn OptimizeRootPlanIDForTest(&self, sql: &str) -> TestResult<i32> {
         self.database.optimize_root_plan_id_for_test(sql)
