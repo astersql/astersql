@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 54 的测试从 4.979 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据并通过 RustCodeGraph 定位重复的通用 Domain/统计表初始化。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存 after、测试数量与耗时证据；共享性能锁与 10 个 Cargo 槽位长时间被其他任务占用，待回归。
+- [x] 完成 diff 自审和 `cargo fmt --all`；Ready lint 因性能锁独占规则与槽位耗尽未运行，待回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.979s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 在槽位 1（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`）中精确选中 1 项，五次均功能通过但性能越线：`1.930015s`、`1.894687s`、`1.861966s`、`1.887907s`、`1.858549s`，最大 `1.930015s`，脚本退出码 1。
+- RustCodeGraph 显示 Go `TestKeepingJoinKeys` 与 Rust 测试的两种 planner 模式、三条 SQL 及计划断言完整对齐；`CreatePlannerTestStoreAndDomain` 仍使用生产 Domain、事务 KV、DDL、会话和优化器，仅跳过 planner casetest 无关的统计系统表启动。
+- after 阶段在槽位 8（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`）完成 `cargo fmt --all` 和精确 no-run 预热，两者退出码均为 0；随后性能锁排队 690 秒未取得。重试时 10 个槽位全部有其他任务 owner，本任务未越过共享规则运行 after 或 lint。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：仅将目标测试的 `CreateMockStoreAndDomain` 替换为现有 `CreatePlannerTestStoreAndDomain`。依据：调用链和函数契约证明后者保留全部 planner 真实边界，仅消除与本测试无关的启动；没有删减 case、SQL、planner 模式或断言。日期/作者：2026-10-12 / Codex。
+- 决策：由于 after/lint 只因其他并行任务占用共享槽位和性能锁而无法合规运行，使用任务协议允许的 `已完成，待回归验证` 状态，保留本文件供回归。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已完成最小热路修改：目标测试改用 planner 专用真实夹具，Go 对齐的两种 planner 模式、三条 SQL 和全部计划断言未变。
+- before 正确性 5/5 通过但最大耗时 `1.930015s`；after 已编译预热但因共享性能锁/槽位持续被其他任务占用而未运行，因此不声称 `<0.500s` 门槛已证明。
+- 回归时必须使用本文件的原 after 命令补齐 5 个 sample，然后运行 `make lint`；任一 sample `>=0.500s`、失败、超时或零测试都需继续优化。

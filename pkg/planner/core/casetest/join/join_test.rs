@@ -489,7 +489,7 @@ fn test_keeping_join_keys_sysvar_metadata_matches_go() {
 #[test]
 fn test_keeping_join_keys_runs_go_plan_contract() {
     for cascades in [false, true] {
-        let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+        let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
         let mut tk = astersql_testkit::TestKit::new(store);
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
