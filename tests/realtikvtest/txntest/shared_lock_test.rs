@@ -736,10 +736,17 @@ fn test_shared_lock_child_table_conflict() {
 fn test_shared_lock_cascade_update_explicit_pessimistic_transaction() {
     let _serial = serial_guard();
     let _config = allow_foreign_key_check_in_shared_lock_for_test();
+    let (store, first_tk, database) =
+        prepare("test_shared_lock_cascade_update_explicit_pessimistic_txn");
+    let mut first_tk = Some(first_tk);
     for constraint_check in ["ON", "OFF"] {
-        let (_store, mut tk, _database) = prepare(&format!(
-            "test_shared_lock_cascade_update_explicit_pessimistic_txn_{constraint_check}"
-        ));
+        // Match the Go subtests: share one store, but use a fresh session for
+        // each constraint-check mode.
+        let mut tk = first_tk.take().unwrap_or_else(|| {
+            let mut tk = NewTestKit(store.clone());
+            tk.MustExec(&format!("use `{database}`"), Vec::new());
+            tk
+        });
         tk.MustExec("set @@global.tidb_enable_foreign_key=1", Vec::new());
         tk.MustExec("set @@foreign_key_checks=1", Vec::new());
         tk.MustExec("set @@tidb_foreign_key_check_in_shared_lock=ON", Vec::new());
