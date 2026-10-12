@@ -32,6 +32,8 @@ use crate::checkpoint::{
     saveCheckpointMetadata, walkCheckpointFile,
 };
 use crate::external_storage::newExternalCheckpointStorage;
+#[cfg(test)]
+use crate::external_storage::newExternalCheckpointStorageForTest;
 use crate::stubs::{CipherInfo, Context, File, GlobalTimer, Result, Storage};
 
 /// 备份 checkpoint 的分组键；当前 Append 使用空串，与 Go 一致。
@@ -72,6 +74,10 @@ pub fn StartCheckpointBackupRunnerForTest(
     tick: Duration,
     timer: Arc<dyn GlobalTimer>,
 ) -> Result<CheckpointRunner<BackupKeyType, BackupValueType>> {
+    #[cfg(test)]
+    let checkpointStorage =
+        newExternalCheckpointStorageForTest(ctx, storage, Some(timer), flushPathForBackup())?;
+    #[cfg(not(test))]
     let checkpointStorage =
         newExternalCheckpointStorage(ctx, storage, Some(timer), flushPathForBackup())?;
     let runner = newCheckpointRunner(checkpointStorage, cipher, valueMarshalerForBackup);

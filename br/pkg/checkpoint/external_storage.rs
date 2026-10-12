@@ -109,6 +109,26 @@ pub fn newExternalCheckpointStorage(
     timer: Option<Arc<dyn GlobalTimer>>,
     flushPath: flushPath,
 ) -> Result<Arc<externalCheckpointStorage>> {
+    newExternalCheckpointStorageWithLockWait(ctx, s, timer, flushPath, Duration::from_secs(3))
+}
+
+#[cfg(test)]
+pub(crate) fn newExternalCheckpointStorageForTest(
+    ctx: &Context,
+    s: Arc<dyn Storage>,
+    timer: Option<Arc<dyn GlobalTimer>>,
+    flushPath: flushPath,
+) -> Result<Arc<externalCheckpointStorage>> {
+    newExternalCheckpointStorageWithLockWait(ctx, s, timer, flushPath, Duration::ZERO)
+}
+
+fn newExternalCheckpointStorageWithLockWait(
+    ctx: &Context,
+    s: Arc<dyn Storage>,
+    timer: Option<Arc<dyn GlobalTimer>>,
+    flushPath: flushPath,
+    lock_wait: Duration,
+) -> Result<Arc<externalCheckpointStorage>> {
     let checkpointStorage = Arc::new(externalCheckpointStorage {
         flushPath,
         storage: s,
@@ -116,12 +136,28 @@ pub fn newExternalCheckpointStorage(
         timer: timer.clone(),
     });
     if timer.is_some() {
-        checkpointStorage.initialLock(ctx)?;
+        checkpointStorage.initialLockWithWait(ctx, lock_wait)?;
     }
     Ok(checkpointStorage)
 }
 
 impl externalCheckpointStorage {
+    fn initialLockWithWait(&self, ctx: &Context, lock_wait: Duration) -> Result<()> {
+        let (p, l) = self.getTS(ctx)?;
+        *self.lockId.lock().unwrap() = ComposeTS(p, l);
+        let exist = self
+            .storage
+            .FileExists(ctx, &self.flushPath.CheckpointLockPath)?;
+        if exist {
+            self.checkLockFile(ctx, p)?;
+        }
+        self.flushLock(ctx, p)?;
+        // Production preserves Go's 3-second race-detection window. Tests that
+        // exercise later lock operations can skip only this fixed setup wait.
+        thread::sleep(lock_wait);
+        self.checkLockFile(ctx, p)
+    }
+
     /// 经 WithRetry 从 timer 取物理/逻辑 TS；对齐 Go aggressive PD 的 32 次尝试。
     fn getTS(&self, ctx: &Context) -> Result<(i64, i64)> {
         let timer = self
@@ -217,19 +253,7 @@ impl checkpointStorage for externalCheckpointStorage {
 
     /// 初始化锁：用 TSO 生成 lockId，校验已有锁后写入，再 sleep 3s 复检防竞态覆盖。
     fn initialLock(&self, ctx: &Context) -> Result<()> {
-        let (p, l) = self.getTS(ctx)?;
-        *self.lockId.lock().unwrap() = ComposeTS(p, l);
-        let exist = self
-            .storage
-            .FileExists(ctx, &self.flushPath.CheckpointLockPath)?;
-        if exist {
-            self.checkLockFile(ctx, p)?;
-        }
-        self.flushLock(ctx, p)?;
-        // wait for 3 seconds to check whether the lock file is overwritten by another BR
-        // 与 Go 相同的宽限窗口，降低双写竞态漏检概率。
-        thread::sleep(Duration::from_secs(3));
-        self.checkLockFile(ctx, p)
+        self.initialLockWithWait(ctx, Duration::from_secs(3))
     }
 
     /// 续期：先校验仍持有锁，再刷新 ExpireAt。
