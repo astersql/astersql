@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 143 的测试从 3.148 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -85,20 +85,25 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，动态取得 Cargo 槽位 5 与仓库级性能锁。
+- [x] 尝试 before；编译预热被无关的共享工作区未完成修改阻断，报告精确记录为零样本。
+- [ ] 完成保持语义的最小优化；回归基线完成前无性能证据支持修改。
+- [ ] 保存 after、测试数量与耗时证据；待无关编译阻断消失后回归。
+- [x] 自审并更新为“已完成，待回归验证”；保留任务文件供后续回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.148s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 取得性能锁后，`before` 在 `cargo nextest --no-run` 预热阶段失败：共享工作区中无关的 `pkg/testkit/mockstore.rs` 并行修改新增 `SessionRequest::ExecutePreparedQuery` 后，另一个 `match request` 未覆盖该变体，rustc 报 `E0004`（当时位于 `pkg/testkit/mockstore.rs:741`）。该文件已有其他未提交改动，本任务未修改或回滚它。
+- `target/rust-performance/task-0143-before.tsv` 只有表头，有效测试数和样本数均为 0；因此它不是性能完成证据，五次数据必须待回归。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不越权修复或暂存 `pkg/testkit/mockstore.rs` 的并行任务改动，也不把零样本当作通过；按任务协议改为“已完成，待回归验证”并保留任务文件。理由：阻断与本 benchmark 的调用链和代码均无关，且目标文件属于共享工作区中的其他未完成工作。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- Ready 性能验证已尝试，但在任何样本执行前被无关 Rust 编译错误阻断；任务状态为“已完成，待回归验证”，未达到五次 `<=0.499s` 硬门槛。
+- 实际 Cargo 槽位：`5`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`。命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0143-before.tsv -- --locked --package astersql --bench errors -E 'binary_id(=astersql::bench/errors) & test(=BenchmarkByArgsHackedStrFreeze/FastGenByArgs/type-hacked/count-4/strlen-1024)'`；退出码 `1`，有效测试 `0`，失败/超时样本 `0/0`，五次耗时：未产生。
+- 本任务没有修改 Rust 源码、测试、Cargo manifest 或锁文件；`cargo fmt --all`、`after` 和 `make lint` 因无本任务代码改动且编译阻断而未运行。自审确认 `plan.md` 未改，未删减 benchmark case、输入规模、断言或真实依赖，也未改动其他任务的工作区文件。
