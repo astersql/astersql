@@ -97,7 +97,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain,
+};
 use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_tests_realtikvtest_pessimistictest::serial_guard;
 
@@ -111,6 +113,18 @@ const MAX_EXECUTION_TIME: &str =
 
 fn fixture(name: &str) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
     let (store, _domain) = CreateMockStoreAndDomain();
+    fixture_from_store(store, name)
+}
+
+fn planner_fixture(name: &str) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    fixture_from_store(store, name)
+}
+
+fn fixture_from_store(
+    store: Arc<AnalyzeStatsStore>,
+    name: &str,
+) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
     let database = format!("pess_parity_{name}");
     let mut setup = NewTestKit(store.clone());
     setup.MustExec(&format!("drop database if exists `{database}`"), Vec::new());
@@ -319,7 +333,7 @@ fn commit_and_rollback_text_and_binary_are_safe_after_lock_expiry() {
 #[test]
 fn for_share_promotion_matches_all_four_variable_combinations() {
     let _serial = serial_guard();
-    let (store, mut setup, database) = fixture("for_share_matrix");
+    let (store, mut setup, database) = planner_fixture("for_share_matrix");
     setup.MustExec("create table t(a int primary key, b int)", Vec::new());
     setup.MustExec("insert into t values (1,10)", Vec::new());
     let mut contender = session(store.clone(), &database);
@@ -355,6 +369,7 @@ fn for_share_promotion_matches_all_four_variable_combinations() {
                 "select * from t where a=1 for share",
                 "select * from t for share",
             ] {
+                contender.Session().ExpireNextLockWaitForTest();
                 assert_exact_error(contender.QueryToErr(sql), LOCK_TIMEOUT);
             }
         } else if noop {
