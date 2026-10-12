@@ -16,6 +16,7 @@ legacy-tasks = ["task-1414"]
 "astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
 "astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
 "astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../../../../statistics/handle" }
 "astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
 "astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }

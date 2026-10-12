@@ -22,7 +22,7 @@
 
 use astersql_domain::Domain;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::TestData;
 use std::sync::Arc;
 
@@ -130,31 +130,40 @@ fn assert_plan_case(tk: &TestKit, suite: &TestData, name: &str, index: usize, ca
 
 /// 创建 mock store + Domain，并返回绑定其上的 TestKit。
 fn new_testkit() -> (Arc<Domain>, TestKit) {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
     (domain, TestKit::new(store))
 }
 
 fn prepare_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
+    struct PersistAnalyzeOptionsGuard(bool);
+    impl Drop for PersistAnalyzeOptionsGuard {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(self.0);
+        }
+    }
+
     tk.MustExec("use test", Vec::new());
     tk.MustExec("create table d1_t(d1_k int, value int)", Vec::new());
     tk.MustExec("insert into d1_t values(1,2),(2,3)", Vec::new());
-    tk.MustExec("analyze table d1_t all columns", Vec::new());
     tk.MustExec(
         "create table d2_t(d2_k decimal(10,2), value int)",
         Vec::new(),
     );
     tk.MustExec("insert into d2_t values(10.11,2),(10.12,3)", Vec::new());
-    tk.MustExec("analyze table d2_t all columns", Vec::new());
     tk.MustExec("create table d3_t(d3_k date, value int)", Vec::new());
     tk.MustExec(
         "insert into d3_t values(date'2010-01-01',2),(date'2010-01-02',3)",
         Vec::new(),
     );
-    tk.MustExec("analyze table d3_t all columns", Vec::new());
     tk.MustExec("create table fact_t(d1_k int, d2_k decimal(10,2), d3_k date, col1 int, col2 int, col3 int)", Vec::new());
-    tk.MustExec("insert into fact_t values(1,10.11,date'2010-01-01',1,2,3),(1,10.11,date'2010-01-02',1,2,3),(1,10.12,date'2010-01-01',1,2,3),(1,10.12,date'2010-01-02',1,2,3)", Vec::new());
-    tk.MustExec("insert into fact_t values(2,10.11,date'2010-01-01',1,2,3),(2,10.11,date'2010-01-02',1,2,3),(2,10.12,date'2010-01-01',1,2,3),(2,10.12,date'2010-01-02',1,2,3)", Vec::new());
-    tk.MustExec("analyze table fact_t all columns", Vec::new());
+    tk.MustExec("insert into fact_t values(1,10.11,date'2010-01-01',1,2,3),(1,10.11,date'2010-01-02',1,2,3),(1,10.12,date'2010-01-01',1,2,3),(1,10.12,date'2010-01-02',1,2,3),(2,10.11,date'2010-01-01',1,2,3),(2,10.11,date'2010-01-02',1,2,3),(2,10.12,date'2010-01-01',1,2,3),(2,10.12,date'2010-01-02',1,2,3)", Vec::new());
+    let _persist_analyze_options =
+        PersistAnalyzeOptionsGuard(astersql_sessionctx_vardef::PersistAnalyzeOptions.Load());
+    astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(false);
+    tk.MustExec(
+        "analyze table d1_t, d2_t, d3_t, fact_t all columns",
+        Vec::new(),
+    );
     domain
         .set_tiflash_replica_for_test("test", "d1_t", 1, true)
         .expect("set d1_t TiFlash replica");

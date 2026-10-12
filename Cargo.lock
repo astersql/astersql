@@ -6863,6 +6863,7 @@ dependencies = [
  "astersql-domain",
  "astersql-meta-model",
  "astersql-parser-ast",
+ "astersql-sessionctx-vardef",
  "astersql-statistics-handle",
  "astersql-testkit",
  "astersql-testkit-testmain",
