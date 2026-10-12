@@ -923,6 +923,9 @@ fn test_restriction_with_connection_pool() {
 // 中文注释会提示它依赖哪些前置条件。
 // 保持这层拆分可以让后续定位回归更直接。
 fn test_replication_writer() {
+    const WRITES_BEFORE_READ_ONLY: usize = 20;
+    const WRITES_AFTER_READ_ONLY: usize = 60;
+
     let cluster = {
         let suite = create_read_only_suite();
         suite
@@ -939,30 +942,30 @@ fn test_replication_writer() {
             .expect("create table must succeed");
 
         let mut conn = suite.rdb.conn().expect("acquire replica connection");
-        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (phase_tx, phase_rx) = mpsc::sync_channel(0);
+        let (progress_tx, progress_rx) = mpsc::sync_channel(0);
         let (stop_tx, stop_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut started = false;
-            loop {
-                if stop_rx.try_recv().is_ok() {
-                    conn.close().expect("replica connection must close");
-                    return;
+            let write_batch = |count| {
+                for _ in 0..count {
+                    let value = NEXT_INSERT_VALUE.fetch_add(1, Ordering::Relaxed);
+                    conn.exec_context(&format!("insert into t values ({value})"))
+                        .expect("replica writer must remain writable");
                 }
-                thread::sleep(Duration::from_millis(50));
-                let value = NEXT_INSERT_VALUE.fetch_add(1, Ordering::Relaxed);
-                conn.exec_context(&format!("insert into t values ({value})"))
-                    .expect("replica writer must remain writable");
-                if !started {
-                    started = true;
-                    started_tx.send(()).expect("report first replica write");
-                }
-            }
+            };
+
+            write_batch(WRITES_BEFORE_READ_ONLY);
+            progress_tx.send(()).expect("report pre-switch writes");
+            phase_rx.recv().expect("start post-switch writes");
+            write_batch(WRITES_AFTER_READ_ONLY);
+            progress_tx.send(()).expect("report post-switch writes");
+            stop_rx.recv().expect("stop replica writer");
+            conn.close().expect("replica connection must close");
         });
 
-        started_rx
+        progress_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("replica writer must start");
-        thread::sleep(Duration::from_secs(1));
+            .expect("replica writer must complete pre-switch writes");
         suite
             .db
             .exec("set global tidb_restricted_read_only=1")
@@ -978,7 +981,10 @@ fn test_replication_writer() {
             .iter()
             .filter(|record| record.role == Role::ReplicaWriter && record.succeeded)
             .count();
-        thread::sleep(Duration::from_secs(3));
+        phase_tx.send(()).expect("start post-switch writes");
+        progress_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replica writer must complete post-switch writes");
         stop_tx.send(()).expect("stop replica writer");
         worker.join().expect("replica worker must not panic");
         let state = suite.cluster.state.lock().expect("cluster mutex poisoned");
