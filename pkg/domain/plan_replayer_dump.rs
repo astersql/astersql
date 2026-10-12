@@ -11,6 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Plan Replayer dump 包内容组织与写入。
 //
@@ -18,124 +19,6 @@
 // 按固定目录布局写入归档（对齐 Go 侧 zip）。并提供从 SQL 文本抽取表引用
 //（忽略 CTE）的轻量解析，供 capture/dump 组装依赖表集合。
 
-// limitations under the License.
-
-// plan replayer dump zip 包的组织、表名抽取、schema/stats/variables/bindings/explain/debug trace 写入流程。
-//
-// PlanReplayerSQLMetaFile indicates sql meta path for plan replayer
-// pub const PlanReplayerSQLMetaFile: &str = "sql_meta.toml";
-// PlanReplayerConfigFile indicates config file path for plan replayer
-// pub const PlanReplayerConfigFile: &str = "config.toml";
-// PlanReplayerMetaFile meta file path for plan replayer
-// pub const PlanReplayerMetaFile: &str = "meta.txt";
-// PlanReplayerVariablesFile indicates for session variables file path for plan replayer
-// pub const PlanReplayerVariablesFile: &str = "variables.toml";
-// PlanReplayerTiFlashReplicasFile indicates for table tiflash replica file path for plan replayer
-// pub const PlanReplayerTiFlashReplicasFile: &str = "table_tiflash_replica.txt";
-// PlanReplayerSessionBindingFile indicates session binding file path for plan replayer
-// pub const PlanReplayerSessionBindingFile: &str = "session_bindings.sql";
-// PlanReplayerGlobalBindingFile indicates global binding file path for plan replayer
-// pub const PlanReplayerGlobalBindingFile: &str = "global_bindings.sql";
-// PlanReplayerSchemaMetaFile indicates the schema meta
-// pub const PlanReplayerSchemaMetaFile: &str = "schema_meta.txt";
-// PlanReplayerErrorMessageFile is the file name for error messages
-// pub const PlanReplayerErrorMessageFile: &str = "errors.txt";
-//
-// PlanReplayerSQLMetaStartTS indicates the startTS in plan replayer sql meta
-// pub const PlanReplayerSQLMetaStartTS: &str = "startTS";
-// PlanReplayerTaskMetaIsCapture indicates whether this task is capture task
-// pub const PlanReplayerTaskMetaIsCapture: &str = "isCapture";
-// PlanReplayerTaskMetaIsContinues indicates whether this task is continues task
-// pub const PlanReplayerTaskMetaIsContinues: &str = "isContinues";
-// PlanReplayerTaskMetaSQLDigest indicates the sql digest of this task
-// pub const PlanReplayerTaskMetaSQLDigest: &str = "sqlDigest";
-// PlanReplayerTaskMetaPlanDigest indicates the plan digest of this task
-// pub const PlanReplayerTaskMetaPlanDigest: &str = "planDigest";
-// PlanReplayerTaskEnableHistoricalStats indicates whether the task is using historical stats
-// pub const PlanReplayerTaskEnableHistoricalStats: &str = "enableHistoricalStats";
-// PlanReplayerHistoricalStatsTS indicates the expected TS of the historical stats if it's specified by the user.
-// pub const PlanReplayerHistoricalStatsTS: &str = "historicalStatsTS";
-//
-// tableNamePair 对应 Go 结构体：记录库名、表名以及该名称是否为 view。
-// #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-// pub struct tableNamePair {
-//     pub DBName: String,
-//     pub TableName: String,
-//     pub IsView: bool,
-// }
-//
-// tableNameExtractor 对应 Go 的 AST Visitor：从语句中提取普通表、视图和 CTE 名称。
-// pub struct tableNameExtractor {
-//     pub ctx: context::Context,
-//     pub executor: sqlexec::RestrictedSQLExecutor,
-//     pub is: infoschema::InfoSchema,
-//     pub curDB: ast::CIStr,
-//     pub names: std::collections::HashMap<tableNamePair, ()>,
-//     pub cteNames: std::collections::HashMap<String, ()>,
-//     pub err: Option<errors::Error>,
-// }
-//
-// impl tableNameExtractor {
-// getTablesAndViews 对应 Go 方法：过滤掉 CTE，并递归补充外键引用表。
-//     pub fn getTablesAndViews(&mut self) -> Result<std::collections::HashMap<tableNamePair, ()>, errors::Error> {
-//         let mut r = std::collections::HashMap::new();
-//         for tablePair in self.names.keys() {
-//             if tablePair.IsView {
-//                 r.insert(tablePair.clone(), ());
-//                 continue;
-//             }
-// CTE 名称不应作为真实表写入 dump。
-//             if !self.cteNames.contains_key(&tablePair.TableName) {
-//                 r.insert(tablePair.clone(), ());
-//             }
-//             findFK(self.is.clone(), &tablePair.DBName, &tablePair.TableName, &mut r)?;
-//         }
-//         Ok(r)
-//     }
-//
-// handleIsView 对应 Go 方法：识别 view 后解析 view SQL，继续提取其底层表。
-//     pub fn handleIsView(&mut self, t: &ast::TableName) -> Result<bool, errors::Error> {
-//         let mut schema = t.Schema.clone();
-//         if schema.L.is_empty() {
-//             schema = self.curDB.clone();
-//         }
-//         let table = t.Name.clone();
-//         let isView = infoschema::TableIsView(self.is.clone(), schema.clone(), table.clone());
-//         if !isView {
-//             return Ok(false);
-//         }
-//         let viewTbl = self.is.TableByName(context::Background(), schema, table)?;
-//         let sql = viewTbl.Meta().View.SelectStmt;
-//         let node = self.executor.ParseWithParams(self.ctx.clone(), &sql)?;
-//         node.Accept(self);
-//         Ok(true)
-//     }
-// }
-//
-// findFK 对应 Go 函数：发现外键引用表，并用 tableMap 防止循环外键导致无限递归。
-// pub fn findFK(
-//     is: infoschema::InfoSchema,
-//     dbName: &str,
-//     tableName: &str,
-//     tableMap: &mut std::collections::HashMap<tableNamePair, ()>,
-// ) -> Result<(), errors::Error> {
-//     let tblInfo = is.TableByName(context::Background(), ast::NewCIStr(dbName), ast::NewCIStr(tableName))?;
-//     for fk in tblInfo.Meta().ForeignKeys {
-//         let key = tableNamePair {
-//             DBName: fk.RefSchema.L,
-//             TableName: fk.RefTable.L,
-//             IsView: false,
-//         };
-//         if tableMap.contains_key(&key) {
-// 已访问过的表直接跳过，保持 Go 中避免循环外键递归的保护。
-//             continue;
-//         }
-//         tableMap.insert(key.clone(), ());
-//         findFK(is.clone(), &key.DBName, &key.TableName, tableMap)?;
-//     }
-//     Ok(())
-// }
-// */
 use crate::plan_replayer::{PlanReplayerDumpTask, PlanReplayerStatusRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};

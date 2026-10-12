@@ -18,52 +18,6 @@
 // Runaway 用于检测并限制长时间/高消耗的失控查询。本文件提供配置结构、
 // 控制器与管理器 trait，以及启动 controller 后发布二者的初始化顺序。
 
-// impl Domain {
-// initResourceGroupsController 对应 Go 的方法：根据 PD client 初始化资源组控制器。
-//     pub fn initResourceGroupsController(
-//         &mut self,
-//         ctx: context::Context,
-//         pdClient: Option<pd::Client>,
-//         uniqueID: u64,
-//     ) -> Result<(), errors::Error> {
-//         if pdClient.is_none() {
-//             logutil::BgLogger().Warn("cannot setup up resource controller, not using tikv storage");
-// Go 对 unistore 不支持 resource controller 的场景返回 nil，这里保持静默成功。
-//             return Ok(());
-//         }
-//
-//         let mut keyspaceID = constants::NullKeyspaceID;
-//         if let Some(codec) = self.Store().GetCodec() {
-//             keyspaceID = codec.GetKeyspaceID() as u32;
-//         }
-//
-// NewResourceGroupController 会依赖 PD 与 keyspace；只保留外部依赖调用形状。
-//         let control = rmclient::NewResourceGroupController(
-//             ctx.clone(),
-//             uniqueID,
-//             pdClient.unwrap(),
-//             None,
-//             keyspaceID,
-//             rmclient::WithMaxWaitDuration(runaway::MaxWaitDuration),
-//         )?;
-//         control.Start(ctx.clone());
-//
-//         let serverInfo = infosync::GetServerInfo()?;
-//         let serverAddr = net::JoinHostPort(&serverInfo.IP, &serverInfo.Port.to_string());
-//         self.runawayManager = runaway::NewRunawayManager(
-//             control.clone(),
-//             serverAddr,
-//             self.sysSessionPool.clone(),
-//             self.exit.clone(),
-//             self.infoCache.clone(),
-//             self.ddl.clone(),
-//         );
-//         self.SetResourceGroupsController(control.clone());
-//         tikv::SetResourceControlInterceptor(control);
-//         Ok(())
-//     }
-// }
-// */
 use std::net::IpAddr;
 use std::sync::Arc;
 

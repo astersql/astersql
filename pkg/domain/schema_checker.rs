@@ -11,6 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Schema（元数据）版本合法性检查器。
 //
@@ -18,105 +19,6 @@
 // Validator 可能返回 Success / Fail / Unknown：Unknown 时按退避重试，
 // 超过次数则视为 schema 过期（InfoSchemaExpired）。
 
-// limitations under the License.
-
-// SchemaChecker is used for checking schema-validity.
-// 对应 Go 的 SchemaChecker：嵌入 Validator，并记录事务开始时的 schema 版本和相关表。
-// pub struct SchemaChecker {
-//     pub Validator: Box<dyn validatorapi::Validator>,
-//     pub schemaVer: i64,
-//     pub relatedTableIDs: Vec<i64>,
-//     pub needCheckSchemaByDelta: bool,
-// }
-//
-// intSchemaVer 对应 Go 的 int64 别名，用来适配 tikv.SchemaVer 接口。
-// pub type intSchemaVer = i64;
-//
-// SchemaMetaVersion 对应 Go 的同名方法：把 intSchemaVer 暴露为 schema meta version。
-// pub fn SchemaMetaVersion(i: intSchemaVer) -> i64 {
-//     i as i64
-// }
-//
-// SchemaOutOfDateRetryInterval is the backoff time before retrying.
-// Go 中这是 atomic.Duration，Load 后用于 ResultUnknown 的 sleep 退避。
-// pub static SchemaOutOfDateRetryInterval: atomicutil::Duration =
-//     atomicutil::NewDuration(time::Millisecond * 500);
-//
-// SchemaOutOfDateRetryTimes is the max retry count when the schema is out of date.
-// Go 中这是 atomic.Int32，允许测试或配置在运行期调整重试次数。
-// pub static SchemaOutOfDateRetryTimes: atomicutil::Int32 = atomicutil::NewInt32(10);
-//
-// NewSchemaChecker creates a new schema checker.
-// 对应 Go 构造函数：只保存调用方传入的 Validator、schema 版本和相关表 ID。
-// pub fn NewSchemaChecker(
-//     validator: Box<dyn validatorapi::Validator>,
-//     schemaVer: i64,
-//     relatedTableIDs: Vec<i64>,
-//     needCheckSchemaByDelta: bool,
-// ) -> Box<SchemaChecker> {
-//     Box::new(SchemaChecker {
-//         Validator: validator,
-//         schemaVer,
-//         relatedTableIDs,
-//         needCheckSchemaByDelta,
-//     })
-// }
-//
-// impl SchemaChecker {
-// Check checks the validity of the schema version.
-// Go 这里把记录在结构体内的 schemaVer 包成 intSchemaVer，再委托给 CheckBySchemaVer。
-//     pub fn Check(
-//         &mut self,
-//         txnTS: u64,
-//     ) -> Result<Option<Box<transaction::RelatedSchemaChange>>, errors::Error> {
-//         self.CheckBySchemaVer(txnTS, self.schemaVer as intSchemaVer)
-//     }
-//
-// CheckBySchemaVer checks if the schema version valid or not at txnTS.
-// 保留 Go 的 ResultSucc/ResultFail/ResultUnknown 三分支语义，以及最终过期错误。
-//     pub fn CheckBySchemaVer(
-//         &mut self,
-//         txnTS: u64,
-//         startSchemaVer: impl tikv::SchemaVer,
-//     ) -> Result<Option<Box<transaction::RelatedSchemaChange>>, errors::Error> {
-//         let schemaOutOfDateRetryInterval = SchemaOutOfDateRetryInterval.Load();
-//         let schemaOutOfDateRetryTimes = SchemaOutOfDateRetryTimes.Load() as i32;
-//
-//         for _ in 0..schemaOutOfDateRetryTimes {
-//             let (relatedChange, checkResult) = self.Validator.Check(
-//                 txnTS,
-//                 startSchemaVer.SchemaMetaVersion(),
-//                 self.relatedTableIDs.clone(),
-//                 self.needCheckSchemaByDelta,
-//             );
-//
-//             match checkResult {
-//                 validatorapi::ResultSucc => {
-// schema 已确认有效，Go 返回 nil, nil。
-//                     return Ok(None);
-//                 }
-//                 validatorapi::ResultFail => {
-// schema 明确变更：记录 changed 指标，并把相关变更连同 ErrInfoSchemaChanged 返回。
-//                     metrics::SchemaLeaseErrorCounter
-//                         .WithLabelValues("changed")
-//                         .Inc();
-//                     return Err(ErrInfoSchemaChanged.with_related_change(relatedChange));
-//                 }
-//                 validatorapi::ResultUnknown => {
-//                     time::Sleep(schemaOutOfDateRetryInterval);
-//                 }
-//                 _ => {}
-//             }
-//         }
-//
-// 超过重试次数仍未知，沿用 Go 的 outdated 指标和 ErrInfoSchemaExpired。
-//         metrics::SchemaLeaseErrorCounter
-//             .WithLabelValues("outdated")
-//             .Inc();
-//         Err(ErrInfoSchemaExpired)
-//     }
-// }
-// */
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
