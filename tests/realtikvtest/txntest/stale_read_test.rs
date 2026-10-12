@@ -2335,8 +2335,13 @@ fn TestPlanCacheWithStaleReadByBinaryProto() {
 #[test]
 fn TestStalePrepare() {
     let _serial = serial_guard();
-    let mut tk = fixture("stale_prepare");
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
+    let mut tk = NewTestKit(store);
+    tk.MustExec("create database `stale_stale_prepare`", Vec::new());
+    tk.MustExec("use `stale_stale_prepare`", Vec::new());
     tk.MustExec("create table t (id int primary key)", Vec::new());
+    const MOCK_STALE_TSO: &str =
+        "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO";
     let binary = tk
         .Prepare("select * from t as of timestamp now(3)-interval 100000 microsecond order by id");
     tk.MustExec(
@@ -2344,10 +2349,16 @@ fn TestStalePrepare() {
          'select * from t as of timestamp now(3)-interval 100000 microsecond order by id'",
         Vec::new(),
     );
+    // Go waits 200 ms after every commit so each dynamic AS OF timestamp is
+    // newer than that commit. Mock-store commits advance the oracle logically,
+    // so reserve one physical second once: all 20 commits stay below the
+    // injected `now - 100 ms` snapshot while both protocols still reevaluate
+    // the expression on every execution.
+    let stale_now = current_ts(&mut tk) + (1_000_u64 << 18);
+    let now = testfailpoint::enable(MOCK_STALE_TSO, &format!("40*return({stale_now})"));
     let mut expected = Vec::new();
     for id in 0..20 {
         tk.MustExec("insert into t values (?)", vec![DbValue::from(id as i64)]);
-        std::thread::sleep(Duration::from_millis(150));
         expected.push(vec![id.to_string()]);
         let binary_rows = binary
             .query(&[])
@@ -2360,6 +2371,11 @@ fn TestStalePrepare() {
             "iteration {id}: both prepared protocols must see every committed row"
         );
     }
+    assert!(
+        testfailpoint::eval_string(MOCK_STALE_TSO).is_none(),
+        "all 40 prepared executions must evaluate dynamic AS OF"
+    );
+    drop(now);
 }
 
 #[test]
