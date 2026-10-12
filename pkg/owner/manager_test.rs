@@ -18,11 +18,14 @@
 // 通过 `go run etcdhelper/main.go` 拉起进程内 etcd，覆盖与 Go `manager_test.go` 对齐的场景。
 
 use std::collections::HashSet;
+use std::fs;
 use std::io::{BufRead, BufReader};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use etcd_client::{Client, ConnectOptions, DeleteOptions};
 use owner::{
@@ -48,43 +51,108 @@ async fn test_distributed_lock_retries_transient_errors() {
 /// 进程内嵌入式 etcd 的 endpoint 与子进程句柄。
 struct EmbeddedEtcd {
     endpoint: String,
-    _child: Mutex<Child>,
+    _child: Option<Mutex<Child>>,
 }
 
 static EMBEDDED_ETCD: OnceLock<EmbeddedEtcd> = OnceLock::new();
 
-/// 懒启动 go etcd_helper，读取 READY 行得到 endpoint。
+/// 跨 nextest 的独立测试进程复用真实嵌入式 etcd，避免每个 case 都重复启动服务。
 fn embedded_etcd() -> &'static EmbeddedEtcd {
-    EMBEDDED_ETCD.get_or_init(|| {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let repo_root = manifest_dir
-            .ancestors()
-            .find(|path| path.join("go.mod").is_file())
-            .expect("find repository root containing go.mod");
-        let helper = manifest_dir.join("etcdhelper/main.go");
-        let mut child = Command::new("go")
-            .arg("run")
-            .arg(helper)
-            .current_dir(repo_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("start embedded-etcd helper");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .expect("read embedded-etcd readiness");
-        let endpoint = line
-            .trim()
-            .strip_prefix("READY ")
-            .unwrap_or_else(|| panic!("embedded-etcd startup failed: {line}"))
-            .to_owned();
-        EmbeddedEtcd {
+    EMBEDDED_ETCD.get_or_init(start_or_reuse_embedded_etcd)
+}
+
+fn start_or_reuse_embedded_etcd() -> EmbeddedEtcd {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .ancestors()
+        .find(|path| path.join("go.mod").is_file())
+        .expect("find repository root containing go.mod");
+    let shared_dir = repo_root.join("target/rust-performance/owner-etcd");
+    fs::create_dir_all(&shared_dir).expect("create shared embedded-etcd directory");
+
+    if let Some(endpoint) = live_shared_endpoint(&shared_dir) {
+        return EmbeddedEtcd {
             endpoint,
-            _child: Mutex::new(child),
+            _child: None,
+        };
+    }
+
+    let startup_lock = SharedStartupLock::acquire(&shared_dir);
+    if let Some(endpoint) = live_shared_endpoint(&shared_dir) {
+        drop(startup_lock);
+        return EmbeddedEtcd {
+            endpoint,
+            _child: None,
+        };
+    }
+
+    let helper = manifest_dir.join("etcdhelper/main.go");
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "{ cat; sleep 30; } | go run \"$1\"",
+            "owner-etcd",
+        ])
+        .arg(helper)
+        .current_dir(repo_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start shared embedded-etcd helper");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .expect("read embedded-etcd readiness");
+    let endpoint = line
+        .trim()
+        .strip_prefix("READY ")
+        .unwrap_or_else(|| panic!("embedded-etcd startup failed: {line}"))
+        .to_owned();
+    fs::write(shared_dir.join("endpoint"), &endpoint)
+        .expect("publish shared embedded-etcd endpoint");
+    drop(startup_lock);
+    EmbeddedEtcd {
+        endpoint,
+        _child: Some(Mutex::new(child)),
+    }
+}
+
+fn live_shared_endpoint(shared_dir: &Path) -> Option<String> {
+    let endpoint = fs::read_to_string(shared_dir.join("endpoint")).ok()?;
+    let endpoint = endpoint.trim().to_owned();
+    let address = endpoint.strip_prefix("http://")?;
+    TcpStream::connect_timeout(&address.parse().ok()?, Duration::from_millis(100))
+        .ok()
+        .map(|_| endpoint)
+}
+
+struct SharedStartupLock(PathBuf);
+
+impl SharedStartupLock {
+    fn acquire(shared_dir: &Path) -> Self {
+        let path = shared_dir.join("startup.lock");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for shared embedded-etcd startup lock"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("create shared embedded-etcd startup lock: {error}"),
+            }
         }
-    })
+    }
+}
+
+impl Drop for SharedStartupLock {
+    fn drop(&mut self) {
+        fs::remove_dir(&self.0).expect("remove shared embedded-etcd startup lock");
+    }
 }
 
 /// 连接嵌入式 etcd。

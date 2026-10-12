@@ -75,6 +75,9 @@ func run() error {
 	}
 
 	fmt.Printf("READY http://%s\n", etcd.Clients[0].Addr().String())
+	if err := os.Stdout.Close(); err != nil {
+		return fmt.Errorf("close embedded-etcd readiness stream: %w", err)
+	}
 
 	parentClosed := make(chan struct{})
 	go func() {
