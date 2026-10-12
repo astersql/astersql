@@ -15,20 +15,13 @@
 
 //! CommonHandle secondary-index ordering parity tests.
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
 
-fn new_testkit(cascades: bool) -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+fn new_testkit() -> TestKit {
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
-    tk.MustExec(
-        &format!(
-            "set @@tidb_enable_cascades_planner = {}",
-            if cascades { "on" } else { "off" }
-        ),
-        Vec::new(),
-    );
     tk
 }
 
@@ -62,12 +55,20 @@ fn assert_not_ordered_without_sort(tk: &TestKit, sql: &str, case: &str) {
 /// Executable equivalent of Go `TestCommonHandleIndexOrdering` in both planner modes.
 #[test]
 fn test_common_handle_index_ordering() {
+    let mut tk = new_testkit();
+    tk.MustExec("drop table if exists t_ch", Vec::new());
+    tk.MustExec("create table t_ch(a1 varchar(64),a2 int,b int,c int,d int,primary key(a1,a2) clustered,key ic(d),key ic_overlap(d,a1),key ic_multi(b,d),unique key uic(c))", Vec::new());
+    tk.MustExec(
+        "insert into t_ch values ('x',1,10,1,0),('y',2,20,2,0),('a',3,10,3,0),('m',4,30,4,1)",
+        Vec::new(),
+    );
+
     for cascades in [false, true] {
-        let mut tk = new_testkit(cascades);
-        tk.MustExec("drop table if exists t_ch", Vec::new());
-        tk.MustExec("create table t_ch(a1 varchar(64),a2 int,b int,c int,d int,primary key(a1,a2) clustered,key ic(d),key ic_overlap(d,a1),key ic_multi(b,d),unique key uic(c))", Vec::new());
         tk.MustExec(
-            "insert into t_ch values ('x',1,10,1,0),('y',2,20,2,0),('a',3,10,3,0),('m',4,30,4,1)",
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { "on" } else { "off" }
+            ),
             Vec::new(),
         );
 
@@ -127,12 +128,14 @@ fn test_common_handle_index_ordering() {
             "case 6",
         );
 
-        tk.MustExec("drop table if exists t_prefix", Vec::new());
-        tk.MustExec("create table t_prefix(p1 varchar(64),p2 int,c int,primary key(p1(2),p2) clustered,key ic_p(c))", Vec::new());
-        tk.MustExec(
-            "insert into t_prefix values ('abz',1,0),('abc',2,0),('axy',3,0)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_prefix", Vec::new());
+            tk.MustExec("create table t_prefix(p1 varchar(64),p2 int,c int,primary key(p1(2),p2) clustered,key ic_p(c))", Vec::new());
+            tk.MustExec(
+                "insert into t_prefix values ('abz',1,0),('abc',2,0),('axy',3,0)",
+                Vec::new(),
+            );
+        }
         assert_not_ordered_without_sort(
             &tk,
             "explain format='plan_tree' select * from t_prefix use index(ic_p) where c=0 order by p1,p2 limit 100",
@@ -144,9 +147,11 @@ fn test_common_handle_index_ordering() {
         )
         .Check(Rows(&["abc 2 0", "abz 1 0", "axy 3 0"]));
 
-        tk.MustExec("drop table if exists t_varchar_pk", Vec::new());
-        tk.MustExec("create table t_varchar_pk(pk varchar(64) primary key clustered,c int,d int,key ic_vc(c))", Vec::new());
-        tk.MustExec("insert into t_varchar_pk values ('banana',0,1),('apple',0,2),('cherry',0,3),('date',1,4)", Vec::new());
+        if !cascades {
+            tk.MustExec("drop table if exists t_varchar_pk", Vec::new());
+            tk.MustExec("create table t_varchar_pk(pk varchar(64) primary key clustered,c int,d int,key ic_vc(c))", Vec::new());
+            tk.MustExec("insert into t_varchar_pk values ('banana',0,1),('apple',0,2),('cherry',0,3),('date',1,4)", Vec::new());
+        }
         assert_ordered_without_topn(
             &tk,
             "explain format='plan_tree' select * from t_varchar_pk use index(ic_vc) where c=0 order by pk limit 100",
@@ -158,12 +163,14 @@ fn test_common_handle_index_ordering() {
         )
         .Check(Rows(&["apple 0 2", "banana 0 1", "cherry 0 3"]));
 
-        tk.MustExec("drop table if exists t_binary_pk", Vec::new());
-        tk.MustExec("create table t_binary_pk(pk varbinary(64) primary key clustered,c int,d int,key ic_bin(c))", Vec::new());
-        tk.MustExec(
-            "insert into t_binary_pk values (x'CC',0,1),(x'AA',0,2),(x'DD',0,3),(x'BB',1,4)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_binary_pk", Vec::new());
+            tk.MustExec("create table t_binary_pk(pk varbinary(64) primary key clustered,c int,d int,key ic_bin(c))", Vec::new());
+            tk.MustExec(
+                "insert into t_binary_pk values (x'CC',0,1),(x'AA',0,2),(x'DD',0,3),(x'BB',1,4)",
+                Vec::new(),
+            );
+        }
         assert_ordered_without_topn(
             &tk,
             "explain format='plan_tree' select * from t_binary_pk use index(ic_bin) where c=0 order by pk limit 100",
@@ -191,12 +198,14 @@ fn test_common_handle_index_ordering() {
             ["2", "1", "3"]
         );
 
-        tk.MustExec("drop table if exists t_int_varchar_pk", Vec::new());
-        tk.MustExec("create table t_int_varchar_pk(pk1 int,pk2 varchar(64),c int,key ic_iv(c),primary key(pk1,pk2) clustered)", Vec::new());
-        tk.MustExec(
-            "insert into t_int_varchar_pk values (1,'b',0),(1,'a',0),(2,'a',0),(3,'x',1)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_int_varchar_pk", Vec::new());
+            tk.MustExec("create table t_int_varchar_pk(pk1 int,pk2 varchar(64),c int,key ic_iv(c),primary key(pk1,pk2) clustered)", Vec::new());
+            tk.MustExec(
+                "insert into t_int_varchar_pk values (1,'b',0),(1,'a',0),(2,'a',0),(3,'x',1)",
+                Vec::new(),
+            );
+        }
         assert_ordered_without_topn(
             &tk,
             "explain format='plan_tree' select * from t_int_varchar_pk use index(ic_iv) where c=0 order by pk1,pk2 limit 100",

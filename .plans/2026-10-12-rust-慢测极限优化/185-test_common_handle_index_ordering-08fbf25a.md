@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 185 的测试从 2.688 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存最终 after、测试数量与耗时证据；性能锁被无子进程的活会话长时间持有，留待回归。
+- [x] 自审、更新状态并提交；“已完成，待回归验证”按协议保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.688s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 在槽位 7（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`）精确选中 1 项，5 次均功能通过但越线：`4.681989 / 3.984068 / 2.068131 / 4.070876 / 3.993941s`，最大 `4.681989s`。
+- 第一版优化改用真实 planner fixture 并并行创建两套独立 Domain；在槽位 3（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`）的 after 仍越线：`0.704802 / 2.344660 / 1.043389 / 3.263118 / 0.688702s`，最大 `3.263118s`，每次均精确 1 项且功能通过。
+- 最终优化使用一套真实 planner fixture 和一个 TestKit；表与数据只初始化一次，`off/on` 两种 planner 模式仍各自完整执行 10 个 case 及全部计划/结果断言。
+- 最终代码已在槽位 5（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`）通过 `cargo fmt --all` 和精确 `cargo nextest ... --no-run`；但仓库性能锁由任务 99 登记的 PID 88011 长时间持有，该 PID 是仍存活但无子进程的 `zsh`，按规则不得删除其锁。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：使用 `CreatePlannerTestStoreAndDomain`，仅跳过与 planner casetest 无关的统计系统表 bootstrap；仍使用 production Domain、事务 KV、DDL、会话和优化器。依据：同包 `dual_test.rs` 的已有实现与该 fixture 注释。日期/作者：2026-10-13 / Codex。
+- 决策：不删减 Rust 现有 `off/on` 双 planner 覆盖，虽然当前 Go `RunTestUnderCascades` 只执行 `off`。两轮断言只读取不变数据，因此在同一真实会话中切换 planner 变量，避免重复 Domain/DDL 初始化。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已完成保持语义的最小优化，仅修改 `rule_common_handle_ordering_test.rs`；未删减 case、SQL、数据、planner 模式或断言。
+- 验证命令：`cargo fmt --all`（退出 0）；`cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest-rule --lib -E 'binary_id(=astersql-planner-core-casetest-rule) & test(=rule_common_handle_ordering_test::test_common_handle_index_ordering)'`（退出 0）。
+- 未验证：最终代码的五次 `after` 严格计时与 `make lint`；原因是无关任务长时间持有仓库性能锁，而持有 PID 仍存活，不可擅自清理。
+- 回归时须在性能锁下重跑任务文件的精确 after 命令，确认 5 次均 `<=0.499s`，再运行 Ready `make lint`。
