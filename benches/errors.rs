@@ -6,6 +6,7 @@
 //! 和参数冻结路径的分配与格式化成本，便于与 Go 基线维持相近观测面。
 
 use std::hint::black_box;
+use std::sync::OnceLock;
 
 use astersql::errors::{ErrorArg, HackedStr, New, Normalize, RFCCodeText, SharedError};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -62,28 +63,40 @@ fn benchmark_errors(criterion: &mut Criterion) {
 fn benchmark_stack_formatting(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("BenchmarkStackFormatting");
     for depth in [10, 30, 60] {
-        let error = pingcap_error(depth);
-        let trace = astersql::errors::GetStackTracer(&error)
-            .expect("New captures a stack")
-            .stack_trace();
+        let fixture = OnceLock::new();
+        let fixture = || {
+            fixture.get_or_init(|| {
+                let error = pingcap_error(depth);
+                let trace = astersql::errors::GetStackTracer(&error)
+                    .expect("New captures a stack")
+                    .stack_trace();
+                (error, trace)
+            })
+        };
 
         group.bench_function(format!("%s-stack-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{}", black_box(&error))))
+            let (error, _) = fixture();
+            bencher.iter(|| black_box(format!("{}", black_box(error))))
         });
         group.bench_function(format!("%v-stack-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{:?}", black_box(&error))))
+            let (error, _) = fixture();
+            bencher.iter(|| black_box(format!("{:?}", black_box(error))))
         });
         group.bench_function(format!("%+v-stack-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{:#?}", black_box(&error))))
+            let (error, _) = fixture();
+            bencher.iter(|| black_box(format!("{:#?}", black_box(error))))
         });
         group.bench_function(format!("%s-stacktrace-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{}", black_box(&trace))))
+            let (_, trace) = fixture();
+            bencher.iter(|| black_box(format!("{}", black_box(trace))))
         });
         group.bench_function(format!("%v-stacktrace-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{:?}", black_box(&trace))))
+            let (_, trace) = fixture();
+            bencher.iter(|| black_box(format!("{:?}", black_box(trace))))
         });
         group.bench_function(format!("%+v-stacktrace-{depth}"), |bencher| {
-            bencher.iter(|| black_box(format!("{:#?}", black_box(&trace))))
+            let (_, trace) = fixture();
+            bencher.iter(|| black_box(format!("{:#?}", black_box(trace))))
         });
     }
     group.finish();
