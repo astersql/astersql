@@ -205,9 +205,13 @@ fi
 nextest_args=("$@")
 
 printf 'kind\trun\tcrate\tbinary\ttest\tduration_seconds\tstatus\ttest_count\tmax_seconds\tcategory\n' >"$output"
-printf 'Warming selected tests (compilation only)...\n'
+printf 'Warming selected tests (compilation and one unmeasured execution)...\n'
 if ! cargo nextest run --profile perf-audit --no-run "${nextest_args[@]}"; then
   printf 'Compilation warmup failed; partial report: %s\n' "$output" >&2
+  exit 1
+fi
+if ! cargo nextest run --profile perf-audit "${nextest_args[@]}"; then
+  printf 'Execution warmup failed; partial report: %s\n' "$output" >&2
   exit 1
 fi
 
