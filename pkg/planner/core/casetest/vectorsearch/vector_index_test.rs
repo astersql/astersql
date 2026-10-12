@@ -946,16 +946,27 @@ fn test_vector_search_with_pk_auto_matches_go_golden() {
 /// 对应 Go `TestVectorSearchWithPKForceTiKV`：强制 TiKV 后逐条比对 golden。
 #[test]
 fn test_vector_search_with_pk_force_tikv_matches_go_golden() {
-    run_under_cascades(|domain, tk, cascades| {
-        setup_vector_search_with_pk(domain, tk);
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    setup_vector_search_with_pk(&domain, &mut setup_tk);
+    for cascades in [false, true] {
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { 1 } else { 0 }
+            ),
+            Vec::new(),
+        );
         tk.MustExec("set @@tidb_isolation_read_engines = 'tikv'", Vec::new());
         let engines = tk
             .MustQuery("select @@tidb_isolation_read_engines", Vec::new())
             .Rows()[0][0]
             .clone();
         assert_eq!(engines, "tikv");
-        assert_ann_suite(tk, "TestVectorSearchWithPKForceTiKV", cascades);
-    });
+        assert_ann_suite(&mut tk, "TestVectorSearchWithPKForceTiKV", cascades);
+    }
 }
 
 /// 对应 Go `TestVectorSearchHeavyFunction`：两种规划器模式覆盖全部
