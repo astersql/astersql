@@ -2424,7 +2424,7 @@ fn TestStaleReadNoBackoff() {
     astersql_config::update_global(|config| {
         config.labels = HashMap::from([("zone".to_owned(), "us-east-1a".to_owned())]);
     });
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
     let mut tk = NewTestKit(store.clone());
     tk.MustExec("create database `stale_no_backoff`", Vec::new());
     tk.MustExec("use `stale_no_backoff`", Vec::new());
@@ -2432,7 +2432,6 @@ fn TestStaleReadNoBackoff() {
     tk.MustExec("insert into t values (1)", Vec::new());
     tk.MustExec("set @@tidb_read_staleness='-1'", Vec::new());
     tk.MustExec("set @@tidb_replica_read='closest-replicas'", Vec::new());
-    std::thread::sleep(Duration::from_secs(1));
     const STORE_SEND_RESULT: &str = "tikvclient/tikvStoreSendReqResult";
     let guard = testfailpoint::enable(STORE_SEND_RESULT, r#"1*return("data_is_not_ready")"#);
     store
