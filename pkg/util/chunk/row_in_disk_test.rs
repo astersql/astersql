@@ -156,18 +156,24 @@ fn testDataInDiskByRows(concurrency: usize) {
         let disk = Arc::clone(&disk);
         let expected = Arc::clone(&expected);
         workers.push(thread::spawn(move || {
+            let mut chunk = None;
             for (ordinal, expected) in expected.iter().enumerate() {
-                let row = disk
-                    .GetRow(RowPtr {
-                        ChkIdx: (ordinal / 1000) as u32,
-                        RowIdx: (ordinal % 1000) as u32,
-                    })
+                let (_, next_chunk) = disk
+                    .GetRowAndAppendToChunk(
+                        RowPtr {
+                            ChkIdx: (ordinal / 1000) as u32,
+                            RowIdx: (ordinal % 1000) as u32,
+                        },
+                        chunk,
+                    )
                     .unwrap();
+                let row = next_chunk.GetRow(next_chunk.NumRows() - 1);
                 assert_eq!(row.GetString(0), expected.0);
                 assert_eq!(row.IsNull(1), expected.1);
                 assert_eq!(row.IsNull(2), expected.2);
                 assert_eq!(row.GetInt64(3), expected.3);
                 assert_eq!((!row.IsNull(4)).then(|| row.GetJSON(4)), expected.4);
+                chunk = Some(next_chunk);
             }
         }));
     }
