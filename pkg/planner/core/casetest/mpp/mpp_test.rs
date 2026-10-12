@@ -101,7 +101,12 @@ fn suite_cases(data: &TestData, name: &str, cascades: bool) -> Vec<String> {
     sqls
 }
 
-fn assert_plan_case(tk: &TestKit, suite: &TestData, name: &str, index: usize, cascades: bool) {
+fn expected_plan_case(
+    suite: &TestData,
+    name: &str,
+    index: usize,
+    cascades: bool,
+) -> (String, Vec<String>) {
     let (input, output) = suite
         .LoadTestCasesByName(name, cascades)
         .unwrap_or_else(|error| panic!("load {name}: {error}"));
@@ -119,8 +124,13 @@ fn assert_plan_case(tk: &TestKit, suite: &TestData, name: &str, index: usize, ca
         .iter()
         .map(|row| row.as_str().expect("golden plan row").to_owned())
         .collect::<Vec<_>>();
+    (sql.to_owned(), expected)
+}
+
+fn assert_plan_case(tk: &TestKit, suite: &TestData, name: &str, index: usize, cascades: bool) {
+    let (sql, expected) = expected_plan_case(suite, name, index, cascades);
     let actual = tk
-        .MustQuery(sql, Vec::new())
+        .MustQuery(&sql, Vec::new())
         .Rows()
         .into_iter()
         .map(|row| row.join(" "))
@@ -183,6 +193,38 @@ fn prepare_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
     );
 }
 
+fn prepare_scalar_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
+    struct PersistAnalyzeOptionsGuard(bool);
+    impl Drop for PersistAnalyzeOptionsGuard {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(self.0);
+        }
+    }
+
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table d1_t(d1_k int, value int)", Vec::new());
+    tk.MustExec("create table fact_t(d1_k int, d2_k decimal(10,2), d3_k date, col1 int, col2 int, col3 int)", Vec::new());
+    tk.MustExec("begin", Vec::new());
+    tk.MustExec("insert into d1_t values(1,2),(2,3)", Vec::new());
+    tk.MustExec("insert into fact_t values(1,10.11,date'2010-01-01',1,2,3),(1,10.11,date'2010-01-02',1,2,3),(1,10.12,date'2010-01-01',1,2,3),(1,10.12,date'2010-01-02',1,2,3),(2,10.11,date'2010-01-01',1,2,3),(2,10.11,date'2010-01-02',1,2,3),(2,10.12,date'2010-01-01',1,2,3),(2,10.12,date'2010-01-02',1,2,3)", Vec::new());
+    tk.MustExec("commit", Vec::new());
+    let _persist_analyze_options =
+        PersistAnalyzeOptionsGuard(astersql_sessionctx_vardef::PersistAnalyzeOptions.Load());
+    astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(false);
+    tk.MustExec("analyze table d1_t, fact_t all columns", Vec::new());
+    domain
+        .set_tiflash_replica_for_test("test", "d1_t", 1, true)
+        .expect("set d1_t TiFlash replica");
+    domain
+        .set_tiflash_replica_for_test("test", "fact_t", 1, true)
+        .expect("set fact_t TiFlash replica");
+    tk.MustExec("set @@session.tidb_allow_mpp=1", Vec::new());
+    tk.MustExec(
+        "set @@session.tidb_isolation_read_engines='tiflash'",
+        Vec::new(),
+    );
+}
+
 #[test]
 fn test_mpp_join_plan_golden_is_executed() {
     let suite = super::main_test::load_integration_suite();
@@ -209,16 +251,11 @@ fn test_mpp_join_plan_golden_is_executed() {
 fn scalar_mpp_tidb_aggregation_keeps_root_boundary() {
     let suite = super::main_test::load_integration_suite();
     let (domain, mut tk) = new_testkit();
-    prepare_mpp_join_fixture(&domain, &mut tk);
+    prepare_scalar_mpp_join_fixture(&domain, &mut tk);
     tk.MustExec("set @@session.tidb_enable_cascades_planner = 0", Vec::new());
-    let (input, _) = suite
-        .LoadTestCasesByName("TestMPPJoin", false)
-        .expect("load Go MPP join cases");
-    let sql = input.as_array().expect("cases array")[0]
-        .as_str()
-        .expect("first SQL");
+    let (sql, expected) = expected_plan_case(&suite, "TestMPPJoin", 0, false);
     let plan = tk
-        .MustQuery(sql, Vec::new())
+        .MustQuery(&sql, Vec::new())
         .Rows()
         .into_iter()
         .map(|row| row.join(" "))
@@ -241,7 +278,7 @@ fn scalar_mpp_tidb_aggregation_keeps_root_boundary() {
         !plan.iter().any(|row| row.contains("HashAgg mpp[tiflash]")),
         "scalar final aggregate must not be pushed into MPP: {plan:#?}"
     );
-    assert_plan_case(&tk, &suite, "TestMPPJoin", 0, false);
+    assert_eq!(plan, expected, "TestMPPJoin[0] SQL: {sql}");
 }
 
 #[test]
