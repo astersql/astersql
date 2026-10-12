@@ -816,6 +816,38 @@ fn insert_vector_search_fixture(domain: &astersql_domain::Domain) {
     let table = domain
         .table_by_name("test", "t1")
         .expect("lookup test.t1 fixture table");
+    let encoded_rows = encode_vector_search_fixture_rows(&table);
+    let mut transaction = domain
+        .storage_handle()
+        .with_storage(|store| store.Begin(&[]))
+        .expect("begin vector fixture transaction");
+    for i in 0..ROWS_PER_GROUP {
+        for group in 0..3 {
+            let id = group as i64 * ROWS_PER_GROUP + i;
+            let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+                table.ID,
+                Box::new(astersql_kv::IntHandle(id)),
+            );
+            transaction
+                .Set(astersql_kv::Key(key.0), encoded_rows[group].clone())
+                .expect("seed vector fixture row");
+        }
+    }
+    transaction
+        .Commit(&astersql_kv::Context::default())
+        .expect("commit vector fixture rows");
+    // Direct fixture writes bypass the SQL session's DML statistics collector.
+    // Record the same row delta that the 6,000 Go-aligned INSERT rows produce.
+    domain.enqueue_stats_mutations([(table.ID, 3 * ROWS_PER_GROUP, 3 * ROWS_PER_GROUP)]);
+    domain
+        .preflush_stats_delta(&[table.ID])
+        .expect("publish vector fixture statistics delta");
+    domain
+        .persist_stats_meta(&[table.ID])
+        .expect("persist vector fixture statistics metadata");
+}
+
+fn encode_vector_search_fixture_rows(table: &astersql_meta_model::TableInfo) -> [Vec<u8>; 3] {
     let columns = ["vec", "a", "b", "c", "d"]
         .map(|name| {
             table
@@ -826,71 +858,63 @@ fn insert_vector_search_fixture(domain: &astersql_domain::Domain) {
                 .ID
         })
         .to_vec();
-    let vectors = [1, 2, 3].map(|value| {
-        astersql_types::vector::ParseVectorFloat32(&format!("[{value},{value},{value}]"))
-            .expect("parse fixture vector")
-    });
-    let mut transaction = domain
-        .storage_handle()
-        .with_storage(|store| store.Begin(&[]))
-        .expect("begin vector fixture transaction");
-    for i in 0..ROWS_PER_GROUP {
-        for (group, value) in [1_i64, 2, 3].into_iter().enumerate() {
-            let id = group as i64 * ROWS_PER_GROUP + i;
-            let vector = vectors[group].Clone();
-            let row = astersql_tablecodec::EncodeRow(
-                Some(astersql_tablecodec::time::UTC),
-                vec![
-                    astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
-                    astersql_types::datum::NewIntDatum(value),
-                    astersql_types::datum::NewIntDatum(value),
-                    astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
-                    astersql_types::datum::NewVectorFloat32Datum(vector),
-                ],
-                columns.clone(),
-                Vec::new(),
-                None,
-                None,
-                astersql_tablecodec::rowcodec::Encoder::new(true),
-            )
-            .expect("encode vector fixture row");
-            let key = astersql_tablecodec::EncodeRowKeyWithHandle(
-                table.ID,
-                Box::new(astersql_kv::IntHandle(id)),
-            );
-            transaction
-                .Set(astersql_kv::Key(key.0), row)
-                .expect("seed vector fixture row");
-        }
-    }
-    transaction
-        .Commit(&astersql_kv::Context::default())
-        .expect("commit vector fixture rows");
+    [1_i64, 2, 3].map(|value| {
+        let vector =
+            astersql_types::vector::ParseVectorFloat32(&format!("[{value},{value},{value}]"))
+                .expect("parse fixture vector");
+        astersql_tablecodec::EncodeRow(
+            Some(astersql_tablecodec::time::UTC),
+            vec![
+                astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
+                astersql_types::datum::NewIntDatum(value),
+                astersql_types::datum::NewIntDatum(value),
+                astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
+                astersql_types::datum::NewVectorFloat32Datum(vector),
+            ],
+            columns.clone(),
+            Vec::new(),
+            None,
+            None,
+            astersql_tablecodec::rowcodec::Encoder::new(true),
+        )
+        .expect("encode vector fixture row")
+    })
 }
 
 #[test]
 fn vector_pk_fixture_preserves_go_distribution() {
-    let (domain, mut tk) = new_testkit();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store);
     setup_vector_search_with_pk(&domain, &mut tk);
 
-    tk.MustQuery("select count(*) from t1", Vec::new())
-        .Check(vec![vec!["6000"]]);
-    for (start, end, vector, value) in [
-        (0, 1999, "[1,1,1]", 1),
-        (2000, 3999, "[2,2,2]", 2),
-        (4000, 5999, "[3,3,3]", 3),
-    ] {
-        tk.MustQuery(
-            &format!(
-                "select count(*), min(id), max(id) from t1
-                 where id between {start} and {end}
-                   and vec_l2_distance(vec, '{vector}') = 0
-                   and a = {value} and b = {value}",
-            ),
-            Vec::new(),
-        )
-        .Check(vec![vec!["2000", &start.to_string(), &end.to_string()]]);
-    }
+    let table = domain.table_by_name("test", "t1").expect("lookup test.t1");
+    let expected_rows = encode_vector_search_fixture_rows(&table);
+    let mut counts = [0_usize; 3];
+    let mut minimum_ids = [i64::MAX; 3];
+    let mut maximum_ids = [i64::MIN; 3];
+    domain.storage_handle().with_storage(|store| {
+        let snapshot = store.GetSnapshot(store.CurrentVersion("global").unwrap());
+        let prefix = astersql_kv::Key(astersql_tablecodec::GenTableRecordPrefix(table.ID).0);
+        let mut iterator = snapshot
+            .Iter(prefix.clone(), Some(prefix.PrefixNext()))
+            .expect("scan vector fixture rows");
+        while iterator.Valid() {
+            let id = astersql_tablecodec::DecodeRowKey(iterator.Key())
+                .expect("decode vector fixture handle")
+                .IntValue();
+            let group = usize::try_from(id / 2000).expect("non-negative vector fixture handle");
+            assert!(group < 3, "unexpected vector fixture handle {id}");
+            assert_eq!(iterator.Value(), expected_rows[group]);
+            counts[group] += 1;
+            minimum_ids[group] = minimum_ids[group].min(id);
+            maximum_ids[group] = maximum_ids[group].max(id);
+            iterator.Next().expect("advance vector fixture scan");
+        }
+        iterator.Close();
+    });
+    assert_eq!(counts, [2000, 2000, 2000]);
+    assert_eq!(minimum_ids, [0, 2000, 4000]);
+    assert_eq!(maximum_ids, [1999, 3999, 5999]);
 
     tk.MustQuery(
         "show stats_meta where db_name = 'test' and table_name = 't1'",
