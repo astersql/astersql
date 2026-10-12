@@ -10,14 +10,22 @@
 #[cfg(test)]
 mod support {
     use astersql_testkit::TestKit;
-    use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+    use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
     use astersql_testkit_testsetup::SetupForCommonTest;
 
     /// Create the same real mock-backed SQL session used by the Go TestKit.
     pub fn new_testkit() -> TestKit {
         SetupForCommonTest();
-        let (store, _domain) = CreateMockStoreAndDomain();
-        TestKit::new(store)
+        let (store, _domain) = CreatePlannerTestStoreAndDomain();
+        let mut test_kit = TestKit::new(store);
+        // The planner fixture skips unrelated statistics bootstrap. Partition
+        // casetests still run Go-aligned ANALYZE statements, so keep their real
+        // option-persistence boundary available.
+        test_kit.MustExec(
+            "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
+            Vec::new(),
+        );
+        test_kit
     }
 
     /// Run a casetest once for each planner mode represented by Go's harness.

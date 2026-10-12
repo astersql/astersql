@@ -19,6 +19,7 @@
 //! 重点对照动态/静态分区裁剪，并复用 cascades 开关下的同一组用例。
 
 use astersql_config_kerneltype::{IsClassic, IsNextGen};
+use astersql_testkit::testdata::TestData;
 use astersql_testkit::{TestKit, testdata};
 use astersql_testkit_testfailpoint::enable;
 
@@ -127,21 +128,39 @@ pub fn test_partition_table_explain() {
         "github.com/pingcap/tidb/pkg/planner/core/forceDynamicPrune",
         "return(true)",
     );
-    crate::support::run_test_under_cascades(|tk, cascades, caller| {
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec("create table t (a int primary key, b int, key (b)) partition by hash(a) (partition P0, partition p1, partition P2)", Vec::new());
-        tk.MustExec("create table t2 (a int, b int)", Vec::new());
-        tk.MustExec("insert into t values (1,1),(2,2),(3,3)", Vec::new());
-        tk.MustExec("insert into t2 values (1,1),(2,2),(3,3)", Vec::new());
-        tk.MustExec("analyze table t, t2 all columns", Vec::new());
-        for case in load_integration_partition_cases(cascades, caller, "TestPartitionTableExplain")
-        {
+    let mut tk = crate::support::new_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("drop table if exists t, t2", Vec::new());
+    tk.MustExec("create table t (a int primary key, b int, key (b)) partition by hash(a) (partition P0, partition p1, partition P2)", Vec::new());
+    tk.MustExec("create table t2 (a int, b int)", Vec::new());
+    tk.MustExec("insert into t values (1,1),(2,2),(3,3)", Vec::new());
+    tk.MustExec("insert into t2 values (1,1),(2,2),(3,3)", Vec::new());
+    tk.MustExec("analyze table t, t2 all columns", Vec::new());
+    let data = testdata::LoadTestSuiteDataWithCascades(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/testdata"),
+        "integration_partition_suite",
+        true,
+    )
+    .unwrap_or_else(|error| panic!("load integration_partition_suite: {error}"));
+    for (cascades, caller) in [("off", "classic"), ("on", "cascades")] {
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades == "on" { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
+        for case in integration_partition_cases_from_data(
+            &data,
+            cascades == "on",
+            "TestPartitionTableExplain",
+        ) {
             tk.MustExec("set @@tidb_partition_prune_mode = 'dynamic'", Vec::new());
-            check_plan(tk, &case.sql, &case.dynamic_plan);
+            check_plan(&tk, &case.sql, &case.dynamic_plan);
             tk.MustExec("set @@tidb_partition_prune_mode = 'static'", Vec::new());
-            check_plan(tk, &case.sql, &case.static_plan);
+            check_plan(&tk, &case.sql, &case.static_plan);
         }
-    });
+    }
 }
 
 #[test]
@@ -244,8 +263,16 @@ pub fn load_integration_partition_cases(
         cascades == "on",
     )
     .unwrap_or_else(|error| panic!("load integration_partition_suite: {error}"));
+    integration_partition_cases_from_data(&data, cascades == "on", suite)
+}
+
+fn integration_partition_cases_from_data(
+    data: &TestData,
+    cascades: bool,
+    suite: &str,
+) -> Vec<IntegrationCase> {
     let (input, output) = data
-        .LoadTestCasesByName(suite, cascades == "on")
+        .LoadTestCasesByName(suite, cascades)
         .unwrap_or_else(|error| panic!("load {suite}: {error}"));
     let input = input.as_array().expect("integration input array");
     let output = output.as_array().expect("integration output array");

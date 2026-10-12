@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 139 的测试从 3.215 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,28 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并按阶段取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 完成最终 after 五次验证与 Ready lint；被无关的共享 `pkg/testkit` 未完成修改阻断，待回归。
+- [x] 自审、更新状态并提交；按“已完成，待回归验证”协议保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.215s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 五次均正确通过但超限：`2.035531 / 1.989515 / 2.085458 / 2.061037 / 1.891059s`，最大 `2.085458s`，每次精确 1 项。
+- 使用现有 `CreatePlannerTestStoreAndDomain` 后，必须显式创建 `mysql.analyze_options`，否则真实 `ANALYZE` 边界会报表不存在；已保留该真实 DDL/持久化依赖。
+- 复用单个真实 TestKit 并把只读数据 setup 提到 planner 模式循环外后，已有正确通过样本 `0.432171 / 0.442067 / 0.459494s` 以及 `0.445860 / 0.428224 / 0.407654s`；但同组仍有主机抖动样本 `0.808261 / 0.564796s` 和 `0.635895 / 0.499495s`，因而未将这些报告当作最终达标证据。
+- 最后的不变语义优化是一次加载 308KB `in/out/xut` fixture 并在 off/on 两模式间复用不可变 `TestData`；`cargo fmt --all` 已通过，但随后精确编译被共享 `pkg/testkit/mockstore.rs` 与 `Database` trait 的并行未完成修改阻断。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：保留 Rust 现有 off/on 两个 planner 模式，即使当前 Go `RunTestUnderCascades` 只运行 off；不用减少模式换取达标。日期/作者：2026-10-12 / Codex。
+- 决策：共用同一 TestKit、表数据和 ANALYZE 结果，因为两轮只改 session planner 开关并执行只读 EXPLAIN；仍执行两套 fixture 和动态/静态全部断言。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 实现已将稳定热样本从约 `1.9–2.1s` 降至约 `0.41–0.46s`，保留两个 planner 模式、两种 partition prune mode、全部 SQL/golden 断言与真实 ANALYZE 边界。
+- 最终状态为“已完成，待回归验证”：最后 fixture 单次加载改动已 fmt，但无法在当前工作区重新编译/计时/运行 `make lint`；具体无关失败是 `pkg/testkit/mockstore.rs` 引用了 `Database` trait 中尚不存在的 `query_prepared_statement(s)`，且 match 引用了尚不存在的 `SessionRequest::ExecutePreparedQuery/ExecutePreparedQueries`。
+- 回归时需重跑：`cargo fmt --all`、本文 after 精确性能命令和 `make lint`；只有 5 次全部 `<=0.499s` 才可删除本任务文件。
