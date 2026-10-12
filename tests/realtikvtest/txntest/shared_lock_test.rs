@@ -803,7 +803,10 @@ fn test_shared_lock_cascade_update_explicit_pessimistic_transaction() {
 fn test_shared_lock_lock_view() {
     let _serial = serial_guard();
     let _config = allow_foreign_key_check_in_shared_lock_for_test();
-    let (store, mut tk1, database) = prepare("test_shared_lock_lock_view");
+    // The Go scenario only needs an isolated Domain; its lock-view assertions
+    // do not depend on waiting out a schema lease during teardown.
+    let (store, mut tk1, database) =
+        prepare_with_schema_lease("test_shared_lock_lock_view", Duration::ZERO);
     let mut tk2 = session(store.clone(), &database);
     let observer = session(store.clone(), &database);
     tk1.MustExec(
