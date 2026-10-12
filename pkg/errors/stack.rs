@@ -10,6 +10,7 @@ use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, Index};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use backtrace::Backtrace;
 
@@ -234,19 +235,54 @@ pub fn GetStackTracer(mut original: &dyn StackTraceCarrier) -> Option<&dyn Stack
 }
 
 /// Owned captured stack returned by [`NewStack`].
+///
+/// Go captures program counters eagerly and resolves symbols only when the
+/// stack is inspected. Keep the same split here: ordinary error creation only
+/// records the backtrace, while the first [`StackTracer::stack_trace`] call
+/// resolves and caches the structured frames.
 /// [`NewStack`] 返回的已拥有捕获栈。
 #[derive(Clone, Default)]
 pub struct Stack {
-    trace: StackTrace,
+    backtrace: Option<Backtrace>,
+    skip: usize,
+    trace: OnceLock<StackTrace>,
+}
+
+impl Stack {
+    fn resolved_trace(&self) -> &StackTrace {
+        self.trace.get_or_init(|| {
+            let Some(mut backtrace) = self.backtrace.clone() else {
+                return StackTrace::default();
+            };
+            backtrace.resolve();
+            let frames = resolve_backtrace(backtrace);
+            let first_caller = frames
+                .iter()
+                .position(|frame| is_new_stack(&frame.function))
+                .map_or(0, |index| index + 1);
+            frames
+                .into_iter()
+                .skip(first_caller + self.skip)
+                .collect::<Vec<_>>()
+                .into()
+        })
+    }
 }
 
 impl StackTracer for Stack {
     fn stack_trace(&self) -> StackTrace {
-        self.trace.clone()
+        self.resolved_trace().clone()
     }
 
     fn empty(&self) -> bool {
-        self.trace.is_empty()
+        self.trace.get().map_or_else(
+            || {
+                self.backtrace
+                    .as_ref()
+                    .is_none_or(|backtrace| backtrace.frames().is_empty())
+            },
+            StackTrace::is_empty,
+        )
     }
 }
 
@@ -260,15 +296,10 @@ impl StackTraceCarrier for Stack {
 /// 捕获真实堆栈，并排除本函数以及再往上 `skip` 层调用者。
 #[inline(never)]
 pub fn NewStack(skip: usize) -> Stack {
-    let frames = resolve_backtrace(Backtrace::new());
-    // 定位 NewStack 自身帧，再加 skip 跳过调用方
-    let first_caller = frames
-        .iter()
-        .position(|frame| is_new_stack(&frame.function))
-        .map_or(0, |index| index + 1);
-    let trace = frames.into_iter().skip(first_caller + skip).collect();
     Stack {
-        trace: StackTrace(trace),
+        backtrace: Some(Backtrace::new_unresolved()),
+        skip,
+        trace: OnceLock::new(),
     }
 }
 
