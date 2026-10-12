@@ -413,14 +413,22 @@ pub fn TestInstancePlanCacheIndexJoin() {
     insert_rows(&mut harness.tk, "insert into t2 values", &t2_values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
-        exec(
-            &mut tk,
-            "prepare st from 'select /*+ tidb_inlj(t2) */ t2.a from t1,t2 where t1.a=t2.a and t1.b=?'",
-        );
-        for _ in 0..100 {
-            let value = rand::intn(100);
-            exec(&mut tk, &format!("set @v={value}"));
-            query(&tk, "execute st using @v").Check(rows(&[value.to_string()]));
+        let values = (0..100).map(|_| rand::intn(100)).collect::<Vec<_>>();
+        let mut statements = vec![
+            "prepare st from 'select /*+ tidb_inlj(t2) */ t2.a from t1,t2 where t1.a=t2.a and t1.b=?'"
+                .to_owned(),
+        ];
+        for value in &values {
+            statements.push(format!("set @v={value}"));
+            statements.push("execute st using @v".to_owned());
+        }
+        let results = tk
+            .Session()
+            .QueryStatementBatch(&statements.join(";"))
+            .expect("execute index-join statement batch");
+        assert_eq!(results.len(), values.len());
+        for (result, value) in results.iter().zip(values) {
+            assert_eq!(result.string_rows(), vec![vec![value.to_string()]]);
         }
     });
 }
