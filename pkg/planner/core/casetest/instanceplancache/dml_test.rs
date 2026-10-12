@@ -19,6 +19,7 @@
 //! 并覆盖基础增删改、TPCC 风格更新、指定分区更新及分区表 DML。
 
 use super::support::{Harness, exec, insert_rows, query, rand};
+use astersql_testkit::db_driver::DbValue;
 
 /// TPCC 仓库表的最小化测试结构。
 pub const tpccWarehouse: &str =
@@ -48,12 +49,31 @@ pub struct DmlPair {
     pub direct: String,
 }
 
-/// 依次执行预处理路径及其直接 SQL 对照路径。
-fn execute_pair(tk: &mut astersql_testkit::TestKit, pair: &DmlPair) {
-    exec(tk, &pair.prep);
-    exec(tk, &pair.set);
-    exec(tk, &pair.exec);
+/// Execute one Go-aligned DML pair through the real prepared-statement protocol,
+/// avoiding repeated parsing of textual SET/EXECUTE wrappers.
+fn execute_protocol_pair(
+    tk: &mut astersql_testkit::TestKit,
+    pair: &DmlPair,
+    arguments: &[DbValue],
+    compare: bool,
+) {
+    let sql = pair
+        .prep
+        .strip_prefix("prepare stmt from '")
+        .and_then(|sql| sql.strip_suffix('\''))
+        .expect("prepared DML SQL");
+    let session = tk.Session();
+    let (statement_id, _) = session.PrepareStmt(sql).expect("prepare DML statement");
+    session
+        .ExecutePreparedStmt(statement_id, arguments)
+        .expect("execute DML statement");
+    session
+        .DropPreparedStmt(statement_id)
+        .expect("drop DML statement");
     exec(tk, &pair.direct);
+    if compare {
+        rows_equal(tk, "select * from t1", "select * from t2");
+    }
 }
 
 /// 忽略返回顺序，比较两条查询的完整结果集。
@@ -92,7 +112,16 @@ pub fn TestInstancePlanCacheDMLBasic() {
             exec: "execute stmt using @a,@b,@c".into(),
             direct: format!("insert into t2 values ({a},{b},{c})"),
         };
-        execute_pair(&mut harness.tk, &insert);
+        execute_protocol_pair(
+            &mut harness.tk,
+            &insert,
+            &[
+                DbValue::I64(a as i64),
+                DbValue::I64(b as i64),
+                DbValue::I64(c as i64),
+            ],
+            false,
+        );
     }
     for _ in 0..100 {
         let a = rand::intn(100);
@@ -118,8 +147,16 @@ pub fn TestInstancePlanCacheDMLBasic() {
                 direct: format!("update t2 set a={a} where b={b} or c={c}"),
             },
         };
-        execute_pair(&mut harness.tk, &pair);
-        rows_equal(&harness.tk, "select * from t1", "select * from t2");
+        execute_protocol_pair(
+            &mut harness.tk,
+            &pair,
+            &[
+                DbValue::I64(a as i64),
+                DbValue::I64(b as i64),
+                DbValue::I64(c as i64),
+            ],
+            true,
+        );
     }
 }
 
