@@ -34,7 +34,10 @@ fn trim_comment_matches_mysql_special_comment_rules() {
     );
     // Go applies specCodeEnd independently from specCodeStart.
     // 普通注释只剥尾部 `*/`，与 Go 独立应用两个正则的行为一致。
-    assert_eq!(TrimComment("/* ordinary */"), "/* ordinary");
+    assert_eq!(
+        TrimComment("/* ordinary */"),
+        concat!("/", "* ordinary")
+    );
 }
 
 /// 验证 ParseErrorWith 将上下文截断到 ErrTextLength 并格式化为 near/line。

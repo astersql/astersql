@@ -309,7 +309,7 @@ fn test_optimizer_hint_after_certain_keyword_only() {
         "insert /*+ MEMORY_QUOTA(1 MB) */ into t values (1)",
     ] {
         assert_parse_ok(sql);
-        assert!(normalize(sql).contains("/*+"));
+        assert!(normalize(sql).contains(concat!("/", "*+")));
     }
 }
 

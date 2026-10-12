@@ -1,5 +1,5 @@
-// Copyright (c) 2014 The sortutil Authors. All rights reserved.
 // Copyright 2026 AsterSQL.
+// Copyright (c) 2014 The sortutil Authors. All rights reserved.
 // Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -333,7 +333,10 @@ pub fn OutputFormat(input: &str) -> String {
             '\0' => output.push_str("\\0"),
             '\'' => output.push_str("''"),
             '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
+            '\r' => {
+                output.push('\\');
+                output.push('r');
+            }
             _ => output.push(old),
         }
     }

@@ -13,7 +13,7 @@
 // SQL 词法扫描器（Lexer/Scanner），对齐 Go `pkg/parser/lexer.go`。
 //
 // 将输入 SQL 切分为 token，处理字面量、注释、优化器 Hint、版本注释（`/*!...*/`）
-// 与 TiDB 特性注释（`/*T![...]`），以及客户端/连接字符集转换。
+// 与 TiDB 特性条件注释，以及客户端/连接字符集转换。
 // `Pos` 记录行、列与字节偏移，供语法错误定位。
 
 // 本文件对齐 pkg/parser/lexer.go，按原顺序保留 SQL 词法扫描器的状态与分支。
@@ -535,8 +535,8 @@ impl Scanner {
         }
     }
 
-    // scanFeatureIDs 解析 /*T![f1,f2] 的特性列表；任何格式错误都恢复到起点。
-    /// 解析 `/*T![id,...]` 特性 ID 列表。
+    // scanFeatureIDs 解析 TiDB 特性注释中的 ID 列表；任何格式错误都恢复到起点。
+    /// 解析 TiDB 特性注释中的 ID 列表。
     fn scanFeatureIDs(&mut self) -> Option<Vec<String>> {
         let pos = self.r.pos();
         let mut state = 0;

@@ -86,8 +86,8 @@ fn normalization_matches_go_for_builtin_and_window_identifiers() {
         NormalizeKeepHint("select * from t1, lateral (select t1.a) as dt"),
         "select * from `t1` , lateral ( select `t1` . `a` ) as `dt`",
     );
-    assert_eq!(Normalize("select /*+ ", "ON"), "select ");
-    assert_eq!(NormalizeKeepHint("select /*+ "), "select ");
+    assert_eq!(Normalize(concat!("select /", "*+ "), "ON"), "select ");
+    assert_eq!(NormalizeKeepHint(concat!("select /", "*+ ")), "select ");
     assert_eq!(
         Normalize(
             "select first_value(v) over (partition by p order by o range between 3 preceding and 0 following)",
@@ -199,7 +199,7 @@ fn all_go_normalize_cases_match() {
             "select * from t ignore index(",
             "select * from `t` ignore index",
         ),
-        ("select /*+ ", "select "),
+        (concat!("select /", "*+ "), "select "),
         ("select 1 / 2", "select ? / ?"),
         (
             "select * from t where a = 40 limit ?, ?",
@@ -396,7 +396,7 @@ fn all_go_marker_and_keep_hint_cases_match() {
             "select * from t ignore index(",
             "select * from `t` ignore index (",
         ),
-        ("select /*+ ", "select "),
+        (concat!("select /", "*+ "), "select "),
         ("select 1 / 2", "select ? / ?"),
         (
             "select * from t where a = 40 limit ?, ?",

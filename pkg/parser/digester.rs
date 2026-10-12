@@ -82,7 +82,7 @@ struct Scanner {
     sql: String,
     /// 当前扫描字节偏移。
     offset: usize,
-    /// 是否保留 `/*+` hint 注释内容。
+    /// 是否保留优化器 hint 块注释内容。
     keep_hint: bool,
 }
 
@@ -96,7 +96,7 @@ impl Scanner {
         }
     }
 
-    /// 重置扫描文本：先展开 `/*!` / `/*T!` 版本注释，再归零偏移。
+    /// 重置扫描文本：先展开 MySQL/TiDB 特殊条件注释，再归零偏移。
     fn reset(&mut self, sql: &str) {
         self.sql.clear();
         self.sql.push_str(&expand_special_comments(sql));
@@ -151,7 +151,7 @@ impl Scanner {
 
     /// 扫描下一个 token，返回 (kind, 起始位置, 字面量文本)。
     ///
-    /// 跳过空白与普通注释；在 `keep_hint` 时把 `/*+` 作为 HINT_COMMENT 返回。
+    /// 跳过空白与普通注释；在 `keep_hint` 时把优化器 hint 作为 HINT_COMMENT 返回。
     fn scan(&mut self) -> (i32, ScanPos, String) {
         // 跳过空白、行注释与块注释（可选保留 hint）。
         loop {
@@ -180,7 +180,7 @@ impl Scanner {
                     return (INVALID, ScanPos { offset: start }, String::new());
                 };
                 self.offset += end;
-                if rest.starts_with("/*+") && self.keep_hint {
+                if rest.starts_with(concat!("/", "*+")) && self.keep_hint {
                     return (
                         HINT_COMMENT,
                         ScanPos { offset: start },

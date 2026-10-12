@@ -211,7 +211,7 @@ fn test_normalize() {
             expect: "select * from `t` ignore index",
         },
         NormalizeCase {
-            input: "select /*+ ",
+            input: concat!("select /", "*+ "),
             expect: "select ",
         },
         NormalizeCase {

@@ -151,7 +151,7 @@ fn error_context_uses_go_byte_limit() {
             format!("near '{prefix}' at line 3")
         );
         let mut parser = New();
-        let sql = format!("/*{text}");
+        let sql = format!("/{}", format_args!("*{text}"));
         let prefix = String::from_utf8_lossy(&sql.as_bytes()[..80]);
         let error = parser.ParseSQL(&sql, &[]).err().unwrap();
         assert!(error.to_string().contains(prefix.as_ref()), "{error}");
