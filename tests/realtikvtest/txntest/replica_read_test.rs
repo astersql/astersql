@@ -72,7 +72,9 @@
 //! policy, rollback isolation, and exact committed effects.
 
 use astersql_config_kerneltype::IsNextGen;
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use std::time::Duration;
+
+use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomainWithSchemaLease};
 use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_tests_realtikvtest_txntest::serial_guard;
 
@@ -213,7 +215,10 @@ fn test_replica_read_effect_scope() {
         return;
     }
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // Go creates a fresh mock store for this replica-read matrix, but none of
+    // its assertions depend on waiting out a schema lease. Keep the isolated
+    // Domain while avoiding an unrelated lease shutdown delay.
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
     let mut tk = NewTestKit(store.clone());
     tk.MustExec("drop database if exists txn_replica_scope", Vec::new());
     tk.MustExec("create database txn_replica_scope", Vec::new());
