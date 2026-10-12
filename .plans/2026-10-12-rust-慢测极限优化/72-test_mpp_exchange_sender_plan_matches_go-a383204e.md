@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 72 的测试从 4.208 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,26 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确测试、调用链和 Go `TestMPPExchangeSender` 意图。
+- [x] 按共享规则领取 Cargo 槽位 10，设置绝对路径 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`，并在失败后由 trap 释放自有锁。
+- [x] 执行 before 预编译；Cargo 在测试枚举前因共享工作区的无关 manifest/lock 不一致退出 101，未获得有效 sample。
+- [x] 确认本任务未修改 Rust 源码、未删减 case/断言/数据规模；`cargo fmt --all`、after 和 `make lint` 留待共享 `Cargo.lock` 恢复一致后回归。
+- [x] 自审并按无关共享工作区阻断规则更新为“已完成，待回归验证”；保留任务文件供回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.208s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 实际领取槽位 10 后，`cargo nextest ... --no-run --locked` 在枚举测试前报错：`cannot update the lock file .../Cargo.lock because --locked was passed`，退出码 101。
+- 阻断来自共享工作区中无关本任务的 `pkg/planner/core/casetest/hint/Cargo.toml` 未提交变更（新增 `serde_json = "1"`），而 `Cargo.lock` 尚未同步；等待两个重试窗口后仍存在。本任务不擅自修改或回滚他人 manifest/lock 变更。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：标记“已完成，待回归验证”并保留任务文件。理由：精确命令必须使用 `--locked`，而无关本任务的 manifest/lock 漂移使 before 无法开始；修改共享 `Cargo.lock` 或他人 manifest 会越出任务范围并干扰并行会话。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已完成，待回归验证。本任务没有产生 Rust 代码变更，也未对目标测试做任何语义弱化。
+- 实际 Cargo 槽位：10；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`。
+- 命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest-mpp --lib -E 'binary_id(=astersql-planner-core-casetest-mpp) & test(=mpp_test::test_mpp_exchange_sender_plan_matches_go)'`；退出码 101，有效测试数 0，未生成 before TSV sample。
+- 未验证：five-run before/after 耗时、精确测试通过、`cargo fmt --all`、`make lint`。回归时必须先确认 `Cargo.lock` 与所有 manifests 一致，再使用本文原定 before/after 命令取得 1×5 有效 sample。
