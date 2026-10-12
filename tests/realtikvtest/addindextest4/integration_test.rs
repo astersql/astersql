@@ -189,17 +189,20 @@ fn ddl_status(tk: &mut TestKit, job_id: i64) -> String {
 // 如果该函数涉及全局状态、failpoint 或外部存储，它还承担把副作用限制在局部的责任。
 
 fn table_index_count(tk: &mut TestKit, index: &str) -> (usize, usize) {
-    let table = tk.MustQuery("select count(*) from t", Vec::new()).Rows()[0][0]
-        .parse()
-        .expect("table count");
-    let indexed = tk
+    let row = tk
         .MustQuery(
-            &format!("select count(*) from t use index({index})"),
+            &format!(
+                "select (select count(*) from t), \
+                 (select count(*) from t use index({index}))"
+            ),
             Vec::new(),
         )
-        .Rows()[0][0]
-        .parse()
-        .expect("index count");
+        .Rows()
+        .into_iter()
+        .next()
+        .expect("count row");
+    let table = row[0].parse().expect("table count");
+    let indexed = row[1].parse().expect("index count");
     (table, indexed)
 }
 
@@ -602,29 +605,6 @@ fn run_prepared_checkpoint_case(
     prepared
 }
 
-fn run_checkpoint_case(database: &str, dist_task: bool, failpoint: &str, expression: &str) {
-    let (_store, mut tk) = prepare(database);
-    tk.MustExec("set global tidb_ddl_enable_fast_reorg = 1", Vec::new());
-    tk.MustExec(
-        &format!(
-            "set global tidb_enable_dist_task = {}",
-            i32::from(dist_task)
-        ),
-        Vec::new(),
-    );
-    tk.MustExec(
-        "create table t (a bigint primary key, b bigint)",
-        Vec::new(),
-    );
-    for value in 0..2000 {
-        tk.MustExec(
-            &format!("insert into t values ({value},{value})"),
-            Vec::new(),
-        );
-    }
-    let _prepared = run_prepared_checkpoint_case(database, (_store, tk), failpoint, expression);
-}
-
 /// Go `TestAddIndexResumesFromCheckpointAfterPartialImport`.
 // 该用例覆盖 添加 索引 resumes from checkpoint after partial import。
 // 它负责把当前文件最关键的一条产品语义固定成可回归的观察序列。
@@ -666,15 +646,20 @@ fn test_add_index_resumes_from_checkpoint_after_partial_import() {
 #[test]
 fn test_add_index_resumes_from_checkpoint_after_partial_scan() {
     let _serial = serial_guard();
-    run_checkpoint_case(
-        "integration_scan_off",
-        false,
+    let prepared = prepare_checkpoint_case("integration_scan", false);
+    let (store, mut tk) = run_prepared_checkpoint_case(
+        "integration_scan",
+        prepared,
         PARTIAL_SCAN,
         "1*return(false)->1*return(true)",
     );
-    run_checkpoint_case(
-        "integration_scan_on",
-        true,
+    // Reset the only DDL artifact before exercising the dist-task-on path over
+    // the same unchanged 2,000-row input and production Domain.
+    tk.MustExec("alter table t drop index idx_b", Vec::new());
+    tk.MustExec("set global tidb_enable_dist_task = 1", Vec::new());
+    let _prepared = run_prepared_checkpoint_case(
+        "integration_scan",
+        (store, tk),
         PARTIAL_SCAN,
         "1*return(false)->1*return(true)",
     );
