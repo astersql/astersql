@@ -1142,7 +1142,8 @@ mod job_runtime;
 pub use astersql_tests_realtikvtest::stubs::{Domain, Storage, TestCtx, TestMain, config};
 pub use astersql_tests_realtikvtest::{
     CreateMockStoreAndSetup, KSRuntime, PrepareForCrossKSTest,
-    PrepareForCrossKSTestWithNewCollation, RunTestMain, UpdateTiDBConfig, WithRealTiKV,
+    PrepareForCrossKSTestWithNewCollation, RunTestMain, SetupTestMain, UpdateTiDBConfig,
+    WithRealTiKV,
 };
 
 pub mod kerneltype {
@@ -3117,7 +3118,7 @@ pub fn reset_engine() {
     task_register::reset();
     importer::TestLastImportJobID.store(0, Ordering::SeqCst);
     storage::TestLastTaskID.store(0, Ordering::SeqCst);
-    let _ = RunTestMain(&mut TestMain::new(0));
+    SetupTestMain();
 }
 
 pub fn set_schedule_amplify_factor(factor: f64) {

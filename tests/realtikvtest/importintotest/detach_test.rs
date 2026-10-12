@@ -98,7 +98,7 @@ fn test_same_behaviour_detached_or_not() {
                 task.State == proto::TaskStateSucceed
             },
             max_wait_time(),
-            Duration::from_secs(1),
+            Duration::from_millis(10),
         );
 
         let r1 =
