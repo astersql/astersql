@@ -1443,7 +1443,10 @@ fn TestSetTransactionReadOnlyAsOf() {
 #[test]
 fn TestValidateReadOnlyInStalenessTransaction() {
     let _serial = serial_guard();
-    let mut tk = fixture("readonly");
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
+    let mut tk = NewTestKit(store);
+    tk.MustExec("create database `stale_readonly`", Vec::new());
+    tk.MustExec("use `stale_readonly`", Vec::new());
     let ts = history(&mut tk);
     tk.MustExec("create table t1 (id int primary key, v int)", Vec::new());
     tk.MustExec(
@@ -1530,7 +1533,10 @@ fn TestValidateReadOnlyInStalenessTransaction() {
             Outcome::Read,
             false,
         ),
-        ("do statement", "do sleep(1)", Outcome::Read, false),
+        // Go uses SLEEP(1), but elapsed time is not part of this validation:
+        // executing the SLEEP builtin through DO in both stale-transaction
+        // forms is. Keep that SQL path while avoiding two unrelated seconds.
+        ("do statement", "do sleep(0.001)", Outcome::Read, false),
         (
             "select for update",
             "select * from t where id=1 for update",
