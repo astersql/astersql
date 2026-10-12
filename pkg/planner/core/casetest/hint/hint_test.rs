@@ -43,8 +43,8 @@
 use astersql_parser::ast;
 use astersql_parser::{New, Parser};
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
-use astersql_testkit::testdata::ConvertRowsToStrings;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
+use astersql_testkit::testdata::{ConvertRowsToStrings, TestData};
 use astersql_util_hint::{
     ExtractTableHintsFromStmtNode, HintHJ, HintLeading, HintMaxExecutionTime, HintMemoryQuota,
     HintSMJ, HintStraightJoin, HintUseIndex, NewQBHintHandler, ParsePlanHints, ParseStmtHints,
@@ -117,95 +117,131 @@ fn test_integration_fixture_sql_remains_parseable() {
     }
 }
 
+fn run_read_from_storage_hint_fixture(
+    cascades: bool,
+    suite: std::sync::Arc<TestData>,
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("set session tidb_allow_mpp=OFF", Vec::new());
+    tk.MustExec("set @@session.tidb_allow_tiflash_cop=ON", Vec::new());
+    tk.MustExec("create table t(a int, b int, index ia(a))", Vec::new());
+    tk.MustExec("create table tt(a int, b int, primary key(a))", Vec::new());
+    tk.MustExec("create table ttt(a int, primary key (a desc))", Vec::new());
+    for table in ["t", "tt", "ttt"] {
+        domain
+            .set_tiflash_replica_for_test("test", table, 1, true)
+            .unwrap_or_else(|error| panic!("set test.{table} TiFlash replica: {error}"));
+    }
+
+    let (input, output) = suite
+        .LoadTestCasesByName("TestReadFromStorageHint", cascades)
+        .expect("load TestReadFromStorageHint fixture");
+    let input = input.as_array().expect("hint input cases array");
+    let output = output.as_array().expect("hint output cases array");
+    assert_eq!(input.len(), output.len());
+
+    tk.MustExec(
+        &format!(
+            "set @@session.tidb_enable_cascades_planner={}",
+            if cascades { "ON" } else { "OFF" }
+        ),
+        Vec::new(),
+    );
+
+    let statements = input
+        .iter()
+        .map(|sql| {
+            let sql = sql.as_str().expect("hint input case must be SQL text");
+            format!("{sql}; show warnings")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let results = tk
+        .Session()
+        .QueryStatementBatch(&statements)
+        .unwrap_or_else(|error| panic!("query read-from-storage plans and warnings: {error}"));
+    assert_eq!(
+        results.len(),
+        input.len() * 2,
+        "plan and warning result sets"
+    );
+
+    for (index, ((sql, expected), results)) in input
+        .iter()
+        .zip(output)
+        .zip(results.chunks_exact(2))
+        .enumerate()
+    {
+        let sql = sql
+            .as_str()
+            .unwrap_or_else(|| panic!("input[{index}] must be SQL text"));
+        assert_eq!(
+            expected.get("SQL").and_then(|value| value.as_str()),
+            Some(sql)
+        );
+        let expected_plan = expected
+            .get("Plan")
+            .and_then(|value| value.as_array())
+            .unwrap_or_else(|| panic!("output[{index}] lacks Plan"))
+            .iter()
+            .map(|row| row.as_str().expect("plan row must be text").to_owned())
+            .collect::<Vec<_>>();
+        let expected_warnings = expected
+            .get("Warn")
+            .and_then(|value| value.as_array())
+            .map(|warnings| {
+                warnings
+                    .iter()
+                    .map(|warning| {
+                        warning
+                            .as_str()
+                            .expect("warning row must be text")
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let actual_plan = ConvertRowsToStrings(&results[0].string_rows());
+        if actual_plan != expected_plan {
+            mismatches.push(format!(
+                    "cascades={cascades}, sql={sql}\nactual plan: {actual_plan:?}\nexpected plan: {expected_plan:?}"
+                ));
+        }
+        let actual_warnings = ConvertRowsToStrings(&results[1].string_rows())
+            .into_iter()
+            .map(|warning| {
+                if let Some(message) = warning.strip_prefix("Warning 1815 ") {
+                    format!("[planner:1815]{message}")
+                } else {
+                    warning
+                }
+            })
+            .collect::<Vec<_>>();
+        if actual_warnings != expected_warnings {
+            mismatches.push(format!(
+                    "cascades={cascades}, sql={sql}\nactual warnings: {actual_warnings:?}\nexpected warnings: {expected_warnings:?}"
+                ));
+        }
+    }
+    mismatches
+}
+
 /// 对应 Go `TestReadFromStorageHint`：真实建立 TiKV/TiFlash 元数据并逐条回放黄金计划与警告。
 #[test]
 fn test_read_from_storage_hint_matches_go_fixture() {
-    let mut mismatches = Vec::new();
-    for cascades in [false, true] {
-        let suite = crate::main_test::load_integration_suite();
-        let (input, output) = suite
-            .LoadTestCasesByName("TestReadFromStorageHint", cascades)
-            .expect("load TestReadFromStorageHint fixture");
-        let input = input.as_array().expect("hint input cases array");
-        let output = output.as_array().expect("hint output cases array");
-        assert_eq!(input.len(), output.len());
-
-        let (store, domain) = CreateMockStoreAndDomain();
-        let mut tk = TestKit::new(store);
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec(
-            &format!(
-                "set @@session.tidb_enable_cascades_planner={}",
-                if cascades { "ON" } else { "OFF" }
-            ),
-            Vec::new(),
-        );
-        tk.MustExec("set session tidb_allow_mpp=OFF", Vec::new());
-        tk.MustExec("set @@session.tidb_allow_tiflash_cop=ON", Vec::new());
-        tk.MustExec("create table t(a int, b int, index ia(a))", Vec::new());
-        tk.MustExec("create table tt(a int, b int, primary key(a))", Vec::new());
-        tk.MustExec("create table ttt(a int, primary key (a desc))", Vec::new());
-        for table in ["t", "tt", "ttt"] {
-            domain
-                .set_tiflash_replica_for_test("test", table, 1, true)
-                .unwrap_or_else(|error| panic!("set test.{table} TiFlash replica: {error}"));
-        }
-
-        for (index, (sql, expected)) in input.iter().zip(output).enumerate() {
-            let sql = sql
-                .as_str()
-                .unwrap_or_else(|| panic!("input[{index}] must be SQL text"));
-            assert_eq!(
-                expected.get("SQL").and_then(|value| value.as_str()),
-                Some(sql)
-            );
-            let expected_plan = expected
-                .get("Plan")
-                .and_then(|value| value.as_array())
-                .unwrap_or_else(|| panic!("output[{index}] lacks Plan"))
-                .iter()
-                .map(|row| row.as_str().expect("plan row must be text").to_owned())
-                .collect::<Vec<_>>();
-            let expected_warnings = expected
-                .get("Warn")
-                .and_then(|value| value.as_array())
-                .map(|warnings| {
-                    warnings
-                        .iter()
-                        .map(|warning| {
-                            warning
-                                .as_str()
-                                .expect("warning row must be text")
-                                .to_owned()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let actual_plan = ConvertRowsToStrings(&tk.MustQuery(sql, Vec::new()).Rows());
-            if actual_plan != expected_plan {
-                mismatches.push(format!(
-                    "cascades={cascades}, sql={sql}\nactual plan: {actual_plan:?}\nexpected plan: {expected_plan:?}"
-                ));
-            }
-            let actual_warnings =
-                ConvertRowsToStrings(&tk.MustQuery("show warnings", Vec::new()).Rows())
-                    .into_iter()
-                    .map(|warning| {
-                        if let Some(message) = warning.strip_prefix("Warning 1815 ") {
-                            format!("[planner:1815]{message}")
-                        } else {
-                            warning
-                        }
-                    })
-                    .collect::<Vec<_>>();
-            if actual_warnings != expected_warnings {
-                mismatches.push(format!(
-                    "cascades={cascades}, sql={sql}\nactual warnings: {actual_warnings:?}\nexpected warnings: {expected_warnings:?}"
-                ));
-            }
-        }
-    }
+    let suite = std::sync::Arc::new(crate::main_test::load_integration_suite());
+    let mismatches = [false, true]
+        .map(|cascades| {
+            let suite = std::sync::Arc::clone(&suite);
+            std::thread::spawn(move || run_read_from_storage_hint_fixture(cascades, suite))
+        })
+        .into_iter()
+        .flat_map(|handle| handle.join().expect("read-from-storage planner round"))
+        .collect::<Vec<_>>();
     assert!(
         mismatches.is_empty(),
         "TestReadFromStorageHint mismatches:\n{}",

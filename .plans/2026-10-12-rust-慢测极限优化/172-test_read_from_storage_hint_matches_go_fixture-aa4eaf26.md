@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 172 的测试从 2.795 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,28 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存 after、测试数量与耗时证据；最终 full-batch 版本因无关 Cargo manifest/lock 并发竞态待回归。
+- [x] 自审并更新为“已完成，待回归验证”；保留本任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.795s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 在槽位 4（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`）与性能锁下精确选中 1 项，五次为 `1.998215/3.501356/3.569950/1.986242/2.344021s`，最大 `3.569950s`，功能全部通过但性能门槛失败。
+- planner 专用 store/domain 将五次降至 `0.649785/0.655547/0.615287/0.613987/0.666056s`；两个独立 fixture 并行后阶段性数据为 `0.545153/0.569572/0.490059/0.534090/0.489021s`。
+- 最终又将每个 planner 模式的 14 组 plan/warning 语句合并为一次 `QueryStatementBatch`，保持 28 组 SQL 与全部断言，但尚未获得该最终版本的五次有效 sample。
+- 回归阻断：并行任务持续修改 `tests/realtikvtest/addindextest/Cargo.toml`/`Cargo.lock`，使规定脚本在获得性能锁后多次于 `cargo metadata --locked` 失败；`cargo fmt --all` 也曾被无关 `pkg/expression/integration_test/integration_part1_aster_unit_test.rs` 的临时语法错误中断。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：改用 `CreatePlannerTestStoreAndDomain`，仅跳过与本 planner 测试无关的统计系统表 bootstrap，仍使用生产 Domain、事务 KV、DDL、session 和 optimizer。日期/作者：2026-10-13 / Codex。
+- 决策：两种 planner 模式使用各自独立的真实 fixture 并行执行，suite 只读数据用 `Arc` 共享；每个模式内通过 `QueryStatementBatch` 顺序执行全部 SQL 和 `show warnings`，减少 session actor 往返而不减少工作量。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已完成代码优化与定向格式化/预编译；最终版本尚待在 Cargo manifest/lock 稳定时重跑规定的 after 五次与 `make lint`。
+- 改动范围仅为 `pkg/planner/core/casetest/hint/hint_test.rs`：保留 false/true 两种 planner 模式、14条 fixture SQL、三张表、TiFlash replica、plan 与 warning 断言；没有降低 case、数据、并发或 timeout。
+- 剩余风险：最终 full-batch 版本未取得正式五次门槛证据，因此状态是“已完成，待回归验证”而非“已完成”，本任务文件保留。
