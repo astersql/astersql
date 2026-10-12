@@ -32,7 +32,7 @@ use object_store::azure::MicrosoftAzureBuilder;
 use object_store::path::Path;
 use object_store::{
     Attribute, Attributes, MultipartUpload, ObjectStore, ObjectStoreExt, PutMultipartOptions,
-    PutOptions,
+    PutOptions, RetryConfig,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -260,15 +260,26 @@ fn default_service_url(endpoint: &str, account: &str) -> String {
 
 /// 根据配置构建真实 Azure Blob 客户端并包装为 `AzureBlobStorage`。
 pub fn new_azure_blob_storage(
+    options: AzureBlobStorageConfig,
+    opts: &StorageOptions,
+) -> Result<AzureBlobStorage> {
+    new_azure_blob_storage_with_retry(options, opts, RetryConfig::default())
+}
+
+/// 根据配置和重试策略构建 Azure Blob 客户端。
+pub(crate) fn new_azure_blob_storage_with_retry(
     mut options: AzureBlobStorageConfig,
     opts: &StorageOptions,
+    mut retry: RetryConfig,
 ) -> Result<AzureBlobStorage> {
     let selected = select_azure_client(&mut options, opts)?;
     validate_encryption_options(&options)?;
+    retry.max_retries = AZBLOB_RETRY_TIMES as usize;
 
     let mut builder = MicrosoftAzureBuilder::from_env()
         .with_account(selected.account_name.clone())
-        .with_container_name(options.bucket.clone());
+        .with_container_name(options.bucket.clone())
+        .with_retry(retry);
     if !options.endpoint.is_empty() {
         builder = builder
             .with_endpoint(options.endpoint.clone())

@@ -23,9 +23,11 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
+use object_store::{BackoffConfig, RetryConfig};
 use objstore::azblob::*;
 use objstore::objectio::Context;
 use objstore::storeapi::{CopySpec, Storage, WalkOption, WriterOption};
@@ -297,11 +299,18 @@ impl Drop for TruncatedServer {
 /// 真实客户端读截断响应时应重试超过 `AZBLOB_RETRY_TIMES`。
 fn test_download_retry() {
     let server = TruncatedServer::start();
-    let storage = new_azure_blob_storage(AzureBlobStorageConfig {
+    let storage = new_azure_blob_storage_with_retry(AzureBlobStorageConfig {
         endpoint: server.endpoint.clone(), bucket: "test".into(), prefix: "a/b/".into(),
         account_name: "devstoreaccount1".into(), shared_key: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".into(),
         ..Default::default()
-    }, &StorageOptions::default()).unwrap();
+    }, &StorageOptions::default(), RetryConfig {
+        backoff: BackoffConfig {
+            init_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    }).unwrap();
     let error = storage.ReadFile(&Context::default(), "c").unwrap_err();
     let requests = server.requests.load(Ordering::Acquire);
     assert!(
