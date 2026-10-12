@@ -2084,23 +2084,25 @@ fn TestStaleSessionQuery() {
     let mut tk = fixture("session_query");
     tk.MustExec("create table t (id int primary key)", Vec::new());
     tk.MustExec("insert into t values (1)", Vec::new());
-    std::thread::sleep(Duration::from_secs(2));
+    let stale_read_ts = current_ts(&mut tk);
     tk.MustExec("set @@tidb_read_staleness='-1'", Vec::new());
     assert!(
         tk.StaleReadStateForTest().session_read_ts.is_some(),
         "tidb_read_staleness must install a session read TS"
     );
-    const INJECT_NOW: &str = "github.com/pingcap/tidb/pkg/expression/injectNow";
+    const MOCK_STALE_READ_TSO: &str =
+        "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO";
     const ASSERT_STALE_TSO: &str = "github.com/pingcap/tidb/pkg/executor/assertStaleTSO";
-    let injected_now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after epoch")
-        .as_secs();
-    let now = testfailpoint::enable(INJECT_NOW, &format!("1*return({injected_now})"));
-    let tso = testfailpoint::enable(ASSERT_STALE_TSO, &format!("1*return({})", injected_now - 1));
+    let stale_now_tso = stale_read_ts + (1_000 << 18);
+    let expected_stale_seconds = physical_ts(stale_read_ts) / 1_000;
+    let now = testfailpoint::enable(MOCK_STALE_READ_TSO, &format!("1*return({stale_now_tso})"));
+    let tso = testfailpoint::enable(
+        ASSERT_STALE_TSO,
+        &format!("1*return({expected_stale_seconds})"),
+    );
     tk.MustQuery("select * from t", Vec::new())
         .Check(Rows(&["1"]));
-    assert!(testfailpoint::eval_string(INJECT_NOW).is_none());
+    assert!(testfailpoint::eval_string(MOCK_STALE_READ_TSO).is_none());
     assert!(testfailpoint::eval_string(ASSERT_STALE_TSO).is_none());
     drop(tso);
     drop(now);
@@ -2112,11 +2114,14 @@ fn TestStaleSessionQuery() {
     tk.MustExec("insert into t values (2)", Vec::new());
     tk.MustExec("commit", Vec::new());
     tk.MustExec("insert into t values (3)", Vec::new());
-    let now = testfailpoint::enable(INJECT_NOW, &format!("1*return({injected_now})"));
-    let tso = testfailpoint::enable(ASSERT_STALE_TSO, &format!("1*return({})", injected_now - 1));
+    let now = testfailpoint::enable(MOCK_STALE_READ_TSO, &format!("1*return({stale_now_tso})"));
+    let tso = testfailpoint::enable(
+        ASSERT_STALE_TSO,
+        &format!("1*return({expected_stale_seconds})"),
+    );
     tk.MustQuery("select * from t order by id", Vec::new())
         .Check(Rows(&["1"]));
-    assert!(testfailpoint::eval_string(INJECT_NOW).is_none());
+    assert!(testfailpoint::eval_string(MOCK_STALE_READ_TSO).is_none());
     assert!(testfailpoint::eval_string(ASSERT_STALE_TSO).is_none());
     drop(tso);
     drop(now);
