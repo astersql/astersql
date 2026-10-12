@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 
 fn rows(value: &str) -> Vec<Vec<String>> {
     astersql_testkit::Rows(&value.lines().collect::<Vec<_>>())
@@ -22,9 +22,9 @@ fn rows(value: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn common_handle_secondary_index_ranges() {
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store);
     for cascades in [false, true] {
-        let (store, _domain) = CreateMockStoreAndDomain();
-        let mut tk = TestKit::new(store);
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
             &format!(
@@ -33,8 +33,11 @@ fn common_handle_secondary_index_ranges() {
             ),
             Vec::new(),
         );
-        tk.MustExec("CREATE TABLE t_chr (tenant int, seq bigint, a int, b int, c int, PRIMARY KEY(tenant, seq) CLUSTERED, KEY ia(a), KEY ia_overlap(a, tenant), UNIQUE KEY ub(b))", Vec::new());
-        tk.MustExec("insert into t_chr values (1,100,10,1,0),(1,200,10,2,0),(2,100,10,3,0),(2,200,20,4,0),(3,100,10,5,1)", Vec::new());
+        if !cascades {
+            tk.MustExec("drop table if exists t_chr", Vec::new());
+            tk.MustExec("CREATE TABLE t_chr (tenant int, seq bigint, a int, b int, c int, PRIMARY KEY(tenant, seq) CLUSTERED, KEY ia(a), KEY ia_overlap(a, tenant), UNIQUE KEY ub(b))", Vec::new());
+            tk.MustExec("insert into t_chr values (1,100,10,1,0),(1,200,10,2,0),(2,100,10,3,0),(2,200,20,4,0),(3,100,10,5,1)", Vec::new());
+        }
         for (sql, expected) in [
             (
                 "select * from t_chr use index(ia) where a = 10 and tenant = 2",
@@ -72,11 +75,14 @@ fn common_handle_secondary_index_ranges() {
             // The typed planner test verifies the exact physical ranges/schema.
             tk.MustQuery(sql, Vec::new()).Check(rows(expected));
         }
-        tk.MustExec("CREATE TABLE t_chr_ci (tenant varchar(32) COLLATE utf8mb4_general_ci, seq int, a int, PRIMARY KEY(tenant, seq) CLUSTERED, KEY ia(a))", Vec::new());
-        tk.MustExec(
-            "insert into t_chr_ci values ('abc',1,10),('ABC',2,10),('xyz',1,10),('abc',3,20)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_chr_ci", Vec::new());
+            tk.MustExec("CREATE TABLE t_chr_ci (tenant varchar(32) COLLATE utf8mb4_general_ci, seq int, a int, PRIMARY KEY(tenant, seq) CLUSTERED, KEY ia(a))", Vec::new());
+            tk.MustExec(
+                "insert into t_chr_ci values ('abc',1,10),('ABC',2,10),('xyz',1,10),('abc',3,20)",
+                Vec::new(),
+            );
+        }
         tk.MustQuery(
             "select * from t_chr_ci use index(ia) where a = 10 and tenant = 'AbC' order by seq",
             Vec::new(),
@@ -87,11 +93,14 @@ fn common_handle_secondary_index_ranges() {
             Vec::new(),
         )
         .Check(rows("ABC 2 10"));
-        tk.MustExec("CREATE TABLE t_chr_prefix (p1 varchar(64), p2 int, c int, PRIMARY KEY(p1(2), p2) CLUSTERED, KEY ic(c))", Vec::new());
-        tk.MustExec(
-            "insert into t_chr_prefix values ('abz',1,0),('abc',2,0),('axy',3,0),('abc',4,1)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_chr_prefix", Vec::new());
+            tk.MustExec("CREATE TABLE t_chr_prefix (p1 varchar(64), p2 int, c int, PRIMARY KEY(p1(2), p2) CLUSTERED, KEY ic(c))", Vec::new());
+            tk.MustExec(
+                "insert into t_chr_prefix values ('abz',1,0),('abc',2,0),('axy',3,0),('abc',4,1)",
+                Vec::new(),
+            );
+        }
         tk.MustQuery(
             "select * from t_chr_prefix use index(ic) where c = 0 and p1 = 'abc'",
             Vec::new(),
@@ -102,11 +111,14 @@ fn common_handle_secondary_index_ranges() {
             Vec::new(),
         )
         .Check(rows("abz 1 0"));
-        tk.MustExec("CREATE TABLE t_chr_single (pk varchar(32), a int, b int, PRIMARY KEY(pk) CLUSTERED, KEY ia(a))", Vec::new());
-        tk.MustExec(
-            "insert into t_chr_single values ('u1',10,1),('u2',10,2),('u3',10,3),('u4',20,4)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_chr_single", Vec::new());
+            tk.MustExec("CREATE TABLE t_chr_single (pk varchar(32), a int, b int, PRIMARY KEY(pk) CLUSTERED, KEY ia(a))", Vec::new());
+            tk.MustExec(
+                "insert into t_chr_single values ('u1',10,1),('u2',10,2),('u3',10,3),('u4',20,4)",
+                Vec::new(),
+            );
+        }
         for (sql, expected) in [
             (
                 "select * from t_chr_single use index(ia) where a = 10 and pk = 'u2'",
@@ -123,11 +135,14 @@ fn common_handle_secondary_index_ranges() {
         ] {
             tk.MustQuery(sql, Vec::new()).Check(rows(expected));
         }
-        tk.MustExec("CREATE TABLE t_chr_dec (pk decimal(10,2), a int, PRIMARY KEY(pk) CLUSTERED, KEY ia(a))", Vec::new());
-        tk.MustExec(
-            "insert into t_chr_dec values (1.50,10),(2.50,10),(3.50,20)",
-            Vec::new(),
-        );
+        if !cascades {
+            tk.MustExec("drop table if exists t_chr_dec", Vec::new());
+            tk.MustExec("CREATE TABLE t_chr_dec (pk decimal(10,2), a int, PRIMARY KEY(pk) CLUSTERED, KEY ia(a))", Vec::new());
+            tk.MustExec(
+                "insert into t_chr_dec values (1.50,10),(2.50,10),(3.50,20)",
+                Vec::new(),
+            );
+        }
         let sql = "select * from t_chr_dec use index(ia) where a = 10 and pk = 2.50";
         tk.MustQuery(sql, Vec::new()).Check(rows("2.50 10"));
     }
