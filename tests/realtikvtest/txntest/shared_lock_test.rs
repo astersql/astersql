@@ -898,8 +898,12 @@ fn test_shared_lock_data_lock_waits_from_storage_wait_table() {
         testfailpoint::eval_bool(SKIP_RESOLVING_LOCKS),
         "storage wait-table failpoint must be active"
     );
-    let (store, mut tk1, database) =
-        prepare("test_shared_lock_data_lock_waits_from_storage_wait_table");
+    // The Go scenario only needs an isolated Domain; its storage wait-table
+    // assertions do not depend on waiting out a schema lease during teardown.
+    let (store, mut tk1, database) = prepare_with_schema_lease(
+        "test_shared_lock_data_lock_waits_from_storage_wait_table",
+        Duration::ZERO,
+    );
     let mut tk2 = session(store.clone(), &database);
     let observer = session(store.clone(), &database);
     tk1.MustExec(
