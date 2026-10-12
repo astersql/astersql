@@ -418,7 +418,7 @@ impl SstWriter {
     }
 }
 
-/// 写魔数 + 长度前缀 KV 并 sync。
+/// 写魔数 + 长度前缀 KV，并在原子 rename 前刷新用户态缓冲。
 fn write_file_contents(path: &Path, kvs: &[KeyValue]) -> Result<()> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
@@ -429,7 +429,7 @@ fn write_file_contents(path: &Path, kvs: &[KeyValue]) -> Result<()> {
         writer.write_all(&kv.key)?;
         writer.write_all(&kv.value)?;
     }
-    writer.into_inner()?.sync_all()?;
+    writer.into_inner()?;
     Ok(())
 }
 
