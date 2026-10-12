@@ -13,11 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
 
 fn new_testkit() -> TestKit {
-    TestKit::new(CreateMockStoreAndDomain().0)
+    TestKit::new(CreatePlannerTestStoreAndDomain().0)
 }
 
 fn plan_rows(tk: &TestKit, sql: &str) -> Vec<String> {

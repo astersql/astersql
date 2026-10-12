@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 12 的测试从 9.119 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。（无关并行任务长时间占用仓库性能锁，待回归）
+- [x] 自审、更新状态并提交；待回归状态保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `9.119s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 精确选中 1 项，5 次均正确通过但超限：`2.659744s, 2.298936s, 2.175436s, 2.161741s, 2.144021s`，最大值 `2.659744s`。
+- 临时尝试在 standard/cascades 间复用同一可变 TestKit/Domain 时首轮挂起超过 2 分钟，证明不具备完整 reset 语义；该尝试已完全撤销。
+- 仓库已有 `CreatePlannerTestStoreAndDomain`，保留生产 Domain、事务 KV、DDL、session 和 optimizer，仅跳过 planner casetest 无关的统计系统表 bootstrap；同目录 `indexmerge_path_test.rs` 已使用该 fixture。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：用 `CreatePlannerTestStoreAndDomain` 替换通用 fixture，不共享可变 session/Domain，不删除 standard/cascades、25×2 golden case、SQL、结果、warning 和 clustered-primary-key 断言。理由：该 fixture 是仓库内 planner casetest 的真实依赖快速路径，瓶颈分型为无关 bootstrap。日期/作者：2026-10-12 / Codex。
+- 决策：状态记为“已完成，待回归验证”并保留本文件。理由：最终 fixture 变更后，性能锁被无关任务 24 的活跃性能脚本长时间占用，按规则不能删锁或并行计时；`make lint` 同样不能在持锁等待期并行。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 改动范围：仅将 Index Merge casetest 的通用 mock-store fixture 替换为仓库现有 planner 专用 fixture；没有删减任何 case、数据、planner 模式或断言。
+- 验证：Ready 配置。before 报告 `target/rust-performance/task-0012-before.tsv`，5×1 项全部正确通过但性能超限；`cargo fmt --all` 在槽位 7 和最终槽位 4 均退出 0。最终 after 与 `make lint` 未能在本地执行，因无关活跃脚本持有仓库性能锁；任务文件保留供后续使用槽位和性能锁回归。
+- 已使用的 Cargo 槽位 / `CARGO_TARGET_DIR`：before 槽位 5 (`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`)；格式化槽位 7；两次受无关 manifest/lockfile 竞态影响的 after 尝试使用槽位 8 和 6；最终格式化/待回归阶段槽位 4 (`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`)。所有本会话锁已释放，编译缓存保留。
