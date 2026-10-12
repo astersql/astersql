@@ -534,15 +534,24 @@ fn TestTxnScopeAndValidateReadTs() {
     astersql_config::update_global(|config| {
         config.labels = HashMap::from([("zone".to_owned(), "bj".to_owned())]);
     });
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
     let mut tk = NewTestKit(store.clone());
     tk.MustExec("create database `stale_scope_validate`", Vec::new());
     tk.MustExec("use `stale_scope_validate`", Vec::new());
     tk.MustExec("create table t1 (id int primary key)", Vec::new());
-    std::thread::sleep(Duration::from_secs(1));
+    // Go waits one wall-clock second so the stale-read TSO is newer than the
+    // DDL. The mock oracle advances logically, so assert that boundary instead.
+    let table_ready_ts = current_ts(&mut tk);
 
     tk.MustExec("begin", Vec::new());
     tk.MustExec("set @txn_scope_read_ts = @@tidb_current_ts", Vec::new());
+    let read_ts = tk.MustQuery("select @txn_scope_read_ts", Vec::new()).Rows()[0][0]
+        .parse::<u64>()
+        .expect("@txn_scope_read_ts must be a TSO");
+    assert!(
+        table_ready_ts < read_ts,
+        "stale-read TSO must be newer than the table DDL"
+    );
     tk.MustExec("commit", Vec::new());
     tk.MustQuery(
         "select * from t1 as of timestamp @txn_scope_read_ts where id=1",
