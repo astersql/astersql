@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 20 的测试从 7.649 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据并完成调用链分析。
+- [ ] 完成保持语义的最小优化：被字符串参数和非主键访问路径的 typed adapter 支持缺口阻塞。
+- [ ] 保存 after、测试数量与耗时证据：未实施不等价简化，无可验收 after。
+- [x] 自审、更新阻塞状态；任务文件保留供后续扩展 typed adapter 后回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `7.649s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 `before` 五次均正确通过且每次精确选中 1 个测试，耗时为 `1.707641s`、`1.536308s`、`1.679019s`、`1.477454s`、`1.521120s`，最大值 `1.707641s`，严格门槛退出码 `1`。
+- RustCodeGraph 调用链与源码确认，`execute_simple_prepared_select_through_adapter` 在 `pkg/session/runtime/dispatch.rs` 中只把 SQL user-variable 参数解析为 `i64`；本测试的 `varchar(20)` 参数因而必然回退到完整关系规划/执行路径。
+- 同一快路还通过 `simple_typed_primary_key_predicate` 限制谓词，而 Go 对齐工作负载必须保留无索引、普通索引、主键和唯一索引四种访问路径；单纯改用 TestKit 直接参数绑定或减少 `PREPARE`/`SET`/`EXECUTE` 会弱化真实 SQL 边界。
+- 临时阶段插桩未落入本任务 diff：相邻任务 21 正在同一 `run_in_case` 上进行独立 profiling，本任务避免覆盖它的未提交插桩。上述调用链证据已能确定非局部分配/格式化瓶颈。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过减少 4 张表、100 行、10 worker 或每 worker 100 次执行，不删除任一索引路径、不替换真实 `PREPARE`/`SET`/`EXECUTE` 边界，也不放宽门槛。理由：这些都会弱化 Go 对齐语义。日期/作者：2026-10-12 / Codex。
+- 决策：本任务标记为 `已阻塞`，不在本提交递归扩建字符串参数、无索引/普通索引/唯一索引读取与 plan-cache invalidation 子系统。理由：该扩展需要生产规划/执行改动及独立回归覆盖，超出对应 Go 用例的最小增量与局部接线范围。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 使用 Cargo 共享槽位 `7`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`；目标编译预热退出码 `0`。阶段结束后已释放自己的槽位锁和性能锁，保留编译缓存。
+- `before` 命令按任务“失败验证”原样执行，报告为 `target/rust-performance/task-0020-before.tsv`；5 个 sample 每次 `test_count=1`、零失败、零超时，最大值 `1.707641s`，因超过 `0.499s` 门槛而退出 `1`。
+- 生产与测试 Rust 源文件没有本任务可交付 diff；未运行 after、`cargo fmt --all` 或 `make lint`，因为没有实施代码变更，且严格门槛仍未达标。任务文件按阻塞协议保留。
+- 后续建议：单独规划 `execute_simple_prepared_select_through_adapter` / `ExecutePreparedPlannedKVSelectThroughAdapter` 对字符串参数以及无索引、普通索引、唯一索引 `IN (?, ?)` 的等价扩展，完整覆盖 catalog version、schema/parameter shape、事务上下文和 plan-cache invalidation 后再回归本任务。
