@@ -24,7 +24,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use astersql_executor::foreign_key::{
     Assignment, ColumnInfo as CascadeColumnInfo, Datum, FKCascadeRuntimeStats, FKCheckRuntimeStats,
@@ -246,6 +246,31 @@ fn assert_parent_error(tk: &mut TestKit, sql: &str) {
         error.to_string().contains(PARENT_ERROR),
         "unexpected error for {sql}: {error}"
     );
+}
+
+/// Wait until the peer statement has entered the lock manager instead of
+/// guessing with a fixed sleep. The transaction view is the same observable
+/// boundary used by `TestForeignKeyAndLockView` below.
+fn wait_for_lock_wait(tk: &mut TestKit, ready: mpsc::Receiver<()>) {
+    ready.recv().expect("lock waiter must start");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if !tk
+            .MustQuery(
+                "select 1 from information_schema.tidb_trx where state='LockWaiting' limit 1",
+                Vec::new(),
+            )
+            .Rows()
+            .is_empty()
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "peer statement did not enter lock wait"
+        );
+        thread::yield_now();
+    }
 }
 
 #[test]
@@ -515,16 +540,18 @@ fn TestForeignKeyCheckAndLock() {
         tk.MustExec("begin pessimistic", Vec::new());
         tk.MustExec("insert into t2 (a,name) values (1,'a')", Vec::new());
         let peer_store = store.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
         let worker = thread::spawn(move || {
             let mut peer = new_fk_testkit(peer_store);
             peer.MustExec("set @@foreign_key_checks=1", Vec::new());
             peer.MustExec("use test", Vec::new());
             peer.MustExec("begin pessimistic", Vec::new());
+            ready_tx.send(()).expect("signal parent-update lock waiter");
             let error = peer.ExecToErr("update t1 set id=2 where id=1").to_string();
             peer.MustExec("commit", Vec::new());
             error
         });
-        thread::sleep(Duration::from_millis(50));
+        wait_for_lock_wait(&mut tk2, ready_rx);
         tk.MustExec("commit", Vec::new());
         assert!(
             worker
@@ -538,16 +565,18 @@ fn TestForeignKeyCheckAndLock() {
         tk.MustExec("begin pessimistic", Vec::new());
         tk.MustExec("update t2 set a=2 where a=1", Vec::new());
         let peer_store = store.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
         let worker = thread::spawn(move || {
             let mut peer = new_fk_testkit(peer_store);
             peer.MustExec("set @@foreign_key_checks=1", Vec::new());
             peer.MustExec("use test", Vec::new());
             peer.MustExec("begin pessimistic", Vec::new());
+            ready_tx.send(()).expect("signal updated-child lock waiter");
             let error = peer.ExecToErr("update t1 set id=3 where id=2").to_string();
             peer.MustExec("commit", Vec::new());
             error
         });
-        thread::sleep(Duration::from_millis(50));
+        wait_for_lock_wait(&mut tk2, ready_rx);
         tk.MustExec("commit", Vec::new());
         assert!(
             worker
@@ -562,16 +591,18 @@ fn TestForeignKeyCheckAndLock() {
         for delete_sql in ["delete from t1 where id=1", "delete from t1 where id<5"] {
             let peer_store = store.clone();
             let sql = delete_sql.to_owned();
+            let (ready_tx, ready_rx) = mpsc::sync_channel(0);
             let worker = thread::spawn(move || {
                 let mut peer = new_fk_testkit(peer_store);
                 peer.MustExec("set @@foreign_key_checks=1", Vec::new());
                 peer.MustExec("use test", Vec::new());
                 peer.MustExec("begin pessimistic", Vec::new());
+                ready_tx.send(()).expect("signal parent-delete lock waiter");
                 let error = peer.ExecToErr(&sql).to_string();
                 peer.MustExec("commit", Vec::new());
                 error
             });
-            thread::sleep(Duration::from_millis(50));
+            wait_for_lock_wait(&mut tk2, ready_rx);
             tk.MustExec("commit", Vec::new());
             assert!(
                 worker
@@ -1390,7 +1421,9 @@ fn TestForeignKeyOnDeleteSetNull() {
 
 #[test]
 fn TestForeignKeyOnDeleteSetNull2() {
+    let profile_start = Instant::now();
     let mut tk = fk_testkit();
+    eprintln!("task180 setup {:?}", profile_start.elapsed());
     tk.MustExec(
         "create table t1 (id int key,name varchar(10),leader int,index(leader),foreign key(leader) references t1(id) on delete set null)",
         Vec::new(),
@@ -1447,6 +1480,7 @@ fn TestForeignKeyOnDeleteSetNull2() {
             "1 <nil>", "2 1", "3 2", "4 3", "5 4", "6 5", "7 6", "8 7", "9 8", "10 9", "11 10",
             "12 11", "13 12", "14 13", "15 14",
         ]));
+    eprintln!("task180 first-three {:?}", profile_start.elapsed());
 
     // SET NULL changes the child key. A grandchild RESTRICT edge therefore
     // rejects the statement and all three tables remain unchanged.
@@ -1539,6 +1573,7 @@ fn TestForeignKeyOnDeleteSetNull2() {
     tk.MustExec("commit", Vec::new());
     tk.MustQuery("select * from t1 order by id", Vec::new())
         .Check(Rows(&["3 b <nil>", "4 c <nil>", "5 d 3", "6 e 4"]));
+    eprintln!("task180 remaining-small {:?}", profile_start.elapsed());
     tk.MustExec("drop table t1", Vec::new());
     tk.MustExec(
         "create table t1 (id int auto_increment primary key,b int)",
@@ -1555,14 +1590,19 @@ fn TestForeignKeyOnDeleteSetNull2() {
     for _ in 0..12 {
         tk.MustExec("insert into t1 (b) select b from t1", Vec::new());
     }
+    eprintln!("task180 generate {:?}", profile_start.elapsed());
     tk.MustQuery("select count(*) from t1", Vec::new())
         .Check(Rows(&["32768"]));
+    eprintln!("task180 count-parent {:?}", profile_start.elapsed());
     tk.MustExec("insert into t2 select * from t1", Vec::new());
+    eprintln!("task180 copy-child {:?}", profile_start.elapsed());
     tk.MustExec("delete from t1", Vec::new());
+    eprintln!("task180 delete-parent {:?}", profile_start.elapsed());
     tk.MustQuery("select count(*) from t1", Vec::new())
         .Check(Rows(&["0"]));
     tk.MustQuery("select count(*) from t2 where id is null", Vec::new())
         .Check(Rows(&["32768"]));
+    eprintln!("task180 done {:?}", profile_start.elapsed());
 }
 
 #[test]
