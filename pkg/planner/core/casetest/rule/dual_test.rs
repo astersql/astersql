@@ -18,7 +18,7 @@
 // 对应 Go `dual_test.go`：矛盾谓词、常量投影与 NULL 比较应规划为
 // TableDual（空结果节点），且矛盾谓词查询必须返回空结果。
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
 
 /// 对齐 Go `testkit.RunTestUnderCascades`：两种 planner 模式使用独立存储和会话。
@@ -26,8 +26,14 @@ fn run_test_under_cascades<F>(mut test: F)
 where
     F: FnMut(&mut TestKit, &str),
 {
-    for cascades in ["off", "on"] {
-        let (store, _domain) = CreateMockStoreAndDomain();
+    let fixtures = std::thread::scope(|scope| {
+        ["off", "on"]
+            .map(|cascades| (cascades, scope.spawn(CreatePlannerTestStoreAndDomain)))
+            .into_iter()
+            .map(|(cascades, handle)| (cascades, handle.join().unwrap()))
+            .collect::<Vec<_>>()
+    });
+    for (cascades, (store, _domain)) in fixtures {
         let mut test_kit = TestKit::new(store);
         test_kit.MustExec("use test", Vec::new());
         test_kit.MustExec(
