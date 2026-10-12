@@ -1,6 +1,6 @@
 // Copyright 2026 AsterSQL.
 
-use super::{CreateAnalyzeSession, system_session::SystemSessionPool};
+use super::{ConcreteSession, CreateAnalyzeSession, system_session::SystemSessionPool};
 use astersql_ddl::job_scheduler::JobScheduler;
 use astersql_ddl::job_worker::{
     DurableJobExecutor, DurableJobSession, DurableJobStep, JobLease, JobWorker, WorkerType,
@@ -10,6 +10,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -200,6 +201,37 @@ fn global_id(domain: &astersql_domain::Domain) -> i64 {
     value
 }
 
+fn durable_scheduler_domain() -> (Arc<astersql_domain::Domain>, Arc<SystemSessionPool>) {
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap(),
+    )
+    .ok()
+    .unwrap();
+    let mut config = astersql_domain::DomainConfig::default();
+    config.schema_lease = Duration::ZERO;
+    config.stats_lease = Duration::ZERO;
+    let domain = Arc::new(astersql_domain::Domain::new(
+        storage,
+        Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+        config,
+    ));
+    domain.init().unwrap();
+    let session = ConcreteSession::new(domain.clone());
+    session
+        .execute("CREATE DATABASE IF NOT EXISTS mysql")
+        .unwrap();
+    session
+        .execute(astersql_meta_metadef::CreateTiDBDDLJobTable)
+        .unwrap();
+    drop(session);
+    let pool = SystemSessionPool::new(domain.clone());
+    (domain, pool)
+}
+
 #[test]
 fn crossks_align_durable_scheduler_reloads_sql_job_after_restart() {
     let (domain, _) = CreateAnalyzeSession().unwrap();
@@ -238,10 +270,10 @@ fn crossks_align_durable_scheduler_reloads_sql_job_after_restart() {
 
 #[test]
 fn crossks_align_durable_scheduler_owner_loss_cancel_and_error_roll_back_meta_and_job() {
+    let (domain, pool) = durable_scheduler_domain();
     for failure in 0..4 {
-        let (domain, _) = CreateAnalyzeSession().unwrap();
-        let pool = SystemSessionPool::new(domain.clone());
-        insert(&pool, 79002, JobState::Queueing);
+        let job_id = 79002 + failure;
+        insert(&pool, job_id, JobState::Queueing);
         let before = global_id(&domain);
         let owner = Arc::new(Lease::default());
         let mut executor = TransactionStep::new(owner.clone());
@@ -259,13 +291,13 @@ fn crossks_align_durable_scheduler_owner_loss_cancel_and_error_roll_back_meta_an
         } else {
             assert!(result.is_err());
         }
-        assert_eq!(read(&pool, 79002).state, JobState::Queueing);
-        assert_eq!(read(&pool, 79002).error_count, 0);
+        assert_eq!(read(&pool, job_id).state, JobState::Queueing);
+        assert_eq!(read(&pool, job_id).error_count, 0);
         assert_eq!(global_id(&domain), before);
         drop(lease);
-        pool.close();
-        domain.close();
     }
+    pool.close();
+    domain.close();
 }
 
 #[test]
