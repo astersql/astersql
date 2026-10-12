@@ -18,45 +18,6 @@
 // 自顶向下根据上层所需列集合，删除逻辑计划（Logical Plan，优化器内部的代数算子树）
 // 中多余的输出列，减少后续算子处理与传输的数据量。
 
-// 列裁剪规则；LogicalPlan 等类型由后续模块接线。
-//
-// ColumnPruner 对应 Go 类型，负责删除逻辑计划中不再需要的列。
-// pub struct ColumnPruner;
-//
-// impl ColumnPruner {
-// Optimize 先复制 schema 列，再调用 Go 的 PruneColumns；错误会立即返回。
-//     pub fn Optimize(&self, mut plan: base::LogicalPlan) -> (Option<base::LogicalPlan>, bool, Error) {
-//         let plan_changed = false;
-//         let columns = plan.schema().columns().to_vec();
-//         if let Err(err) = plan.prune_columns(columns) {
-//             return (None, plan_changed, err);
-//         }
-// 断言是开发期不变量检查：除特殊节点外，裁剪后不应产生零列 schema。
-//         intest::assert_fn(|| noUnexpectedZeroColumnSchema(&plan),
-//             "After column pruning, some operator got an unexpected zero-column output schema. Please fix it.");
-//         (Some(plan), plan_changed, Error::none())
-//     }
-//
-// Name 返回优化规则的稳定注册名。
-//     pub fn Name(&self) -> &'static str { "column_prune" }
-// }
-//
-// noUnexpectedZeroColumnSchema 保留 Go 的递归不变量检查。
-// fn noUnexpectedZeroColumnSchema(plan: &base::LogicalPlan) -> bool {
-//     for child in plan.children() {
-//         if !noUnexpectedZeroColumnSchema(child) { return false; }
-//     }
-//     if plan.schema().len() == 0 {
-// 某些算子复用第一个子节点的 schema，此时不能把空 schema 当作错误。
-//         if !plan.children().is_empty() && plan.schema().same_as(plan.children()[0].schema()) { return true; }
-// LogicalTableDual 合法地没有输出列；其他算子都必须保留至少一列。
-//         if !plan.is_logical_table_dual() { return false; }
-//     }
-//     true
-// }
-//
-// base、logicalop、intest 为尚未接通的外部依赖；这里不声称可以独立编译。
-// */
 use crate::rule_init::{LogicalRule, Plan, PlanKind};
 use std::collections::BTreeSet;
 

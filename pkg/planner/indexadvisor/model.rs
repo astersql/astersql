@@ -31,57 +31,6 @@ fn go_lowercase(value: &str) -> String {
         .collect()
 }
 
-// 索引顾问的数据模型与比较规则。
-//
-// Query 表示待分析的 SQL 查询及其出现频率。
-// #[derive(Clone)]
-// pub struct Query { pub Alias: String, pub SchemaName: String, pub Text: String, pub Frequency: i32 }
-// Key 返回查询文本；这是 Go Set[Query] 去重使用的稳定键。
-// impl Query { pub fn Key(&self) -> String { self.Text.clone() } }
-//
-// Column 表示可用于索引的列。
-// #[derive(Clone, PartialEq, Eq)]
-// pub struct Column { pub SchemaName: String, pub TableName: String, pub ColumnName: String }
-// NewColumn 按 Go 语义把 schema、table、column 统一转换为小写。
-// pub fn NewColumn(schemaName: &str, tableName: &str, columnName: &str) -> Column { Column { SchemaName: schemaName.to_lowercase(), TableName: tableName.to_lowercase(), ColumnName: columnName.to_lowercase() } }
-// NewColumns 批量构造列，并保持调用方传入的列顺序。
-// pub fn NewColumns(schemaName: &str, tableName: &str, columnNames: &[&str]) -> Vec<Column> { columnNames.iter().map(|c| NewColumn(schemaName, tableName, c)).collect() }
-// Key 返回 schema.table.column 形式的列键。
-// impl Column { pub fn Key(&self) -> String { format!("{}.{}.{}", self.SchemaName, self.TableName, self.ColumnName) } }
-//
-// Index 表示一个候选索引及其有序列列表。
-// #[derive(Clone, PartialEq, Eq)]
-// pub struct Index { pub SchemaName: String, pub TableName: String, pub IndexName: String, pub Columns: Vec<Column> }
-// NewIndex 创建单列或多列索引；列名规范化沿用 Go 的 NewColumns。
-// pub fn NewIndex(schemaName: &str, tableName: &str, indexName: &str, columns: &[&str]) -> Index { Index { SchemaName: schemaName.to_lowercase(), TableName: tableName.to_lowercase(), IndexName: indexName.to_lowercase(), Columns: NewColumns(schemaName, tableName, columns) } }
-// NewIndexWithColumns 从已有列推导表身份并构造索引，空列调用仍保留 Go 会 panic 的前置假设。
-// pub fn NewIndexWithColumns(indexName: &str, columns: &[Column]) -> Index { let names: Vec<&str> = columns.iter().map(|c| c.ColumnName.as_str()).collect(); NewIndex(&columns[0].SchemaName, &columns[0].TableName, indexName, &names) }
-// Key 返回稳定的 schema.table(column1,column2) 表示。
-// impl Index { pub fn Key(&self) -> String { format!("{}.{}({})", self.SchemaName, self.TableName, self.Columns.iter().map(|c| c.ColumnName.as_str()).collect::<Vec<_>>().join(",")) } }
-// PrefixContain 判断 j 是否为 i 的列前缀。
-// pub fn PrefixContain(i: &Index, j: &Index) -> bool { i.SchemaName == j.SchemaName && i.TableName == j.TableName && i.Columns.len() >= j.Columns.len() && i.Columns.iter().zip(&j.Columns).all(|(a,b)| a.ColumnName == b.ColumnName) }
-//
-// IndexSetCost 表示索引集合对整个 workload 的估算成本。
-// pub struct IndexSetCost { pub TotalWorkloadQueryCost: f64, pub TotalNumberOfIndexColumns: i32, pub IndexKeysStr: String }
-// Less 保留 Go 的成本、列数、键字符串三级稳定排序规则。
-// pub fn Less(c: &IndexSetCost, other: &IndexSetCost) -> bool {
-//     if c.TotalWorkloadQueryCost == 0.0 { return false; }
-//     if other.TotalWorkloadQueryCost == 0.0 { return true; }
-//     let diff = (c.TotalWorkloadQueryCost - other.TotalWorkloadQueryCost).abs();
-//     if diff > 10.0 && diff / c.TotalWorkloadQueryCost.max(other.TotalWorkloadQueryCost) > 0.001 { return c.TotalWorkloadQueryCost < other.TotalWorkloadQueryCost; }
-//     if c.TotalNumberOfIndexColumns != other.TotalNumberOfIndexColumns { return c.TotalNumberOfIndexColumns < other.TotalNumberOfIndexColumns; }
-//     c.IndexKeysStr < other.IndexKeysStr
-// }
-//
-// ImpactedQuery 表示一个查询受推荐索引影响后的收益。
-// pub struct ImpactedQuery { pub Query: String, pub Improvement: f64 }
-// WorkloadImpact 表示整体 workload 的改善比例。
-// pub struct WorkloadImpact { pub WorkloadImprovement: f64 }
-// IndexDetail 保存推荐原因与估算索引大小（字节）。
-// pub struct IndexDetail { pub Reason: String, pub IndexSize: u64 }
-// Recommendation 是索引顾问对外返回的结果模型。
-// pub struct Recommendation { pub Database: String, pub Table: String, pub IndexName: String, pub IndexColumns: Vec<String>, pub IndexDetail: Option<IndexDetail>, pub WorkloadImpact: Option<WorkloadImpact>, pub TopImpactedQueries: Vec<ImpactedQuery> }
-// */
 /// workload 中的一条查询：含别名、默认 schema、SQL 文本与出现频率。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Query {

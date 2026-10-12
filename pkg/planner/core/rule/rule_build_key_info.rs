@@ -13,25 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// BuildKeySolver 对应 Go 类型，用于为逻辑计划构建 key 信息。
-// pub struct BuildKeySolver;
-//
-// *************************** LogicalOptRule 接口实现 ***************************
-// impl BuildKeySolver {
-// Name 对应 LogicalOptRule.Name，返回规则注册名。
-//     pub fn Name(&self) -> &'static str { "build_keys" }
-//
-// Optimize 对应 LogicalOptRule.Optimize。context 在 Go 中未使用，故这里省略。
-//     pub fn Optimize(&self, plan: base::LogicalPlan) -> (base::LogicalPlan, bool, Result<(), Error>) {
-//         let plan_changed = false;
-//         ruleutil::build_key_info_portal(&plan);
-//         (plan, plan_changed, Ok(()))
-//     }
-// }
-//
-// Go imports：context；planner/core/base；planner/core/rule/util。
-// 这些名称是迁移参考，未在这里中虚构跨文件模块连接。
-// */
 // 构建逻辑计划的唯一键 / 候选键（key）信息。
 //
 // Key 信息描述输出行可由哪些列唯一确定，供 Join 消除、聚合简化等

@@ -13,43 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Join 键类型转换（Join Key Type Cast）逻辑优化规则。
-//
-// 识别两侧 Projection 产生的 DOUBLE Join 键，将 signed INT/VARCHAR 比较改写为
-// 整数比较，并在 VARCHAR 非保留侧插入与 Go 实现一致的转换安全 guard。
-//
-// JoinKeyTypeCastRewriter rewrites join conditions where implicit type
-// conversion prevents index usage.
-// By the time this rule runs (after column pruning and predicate pushdown),
-// a condition like t_int.id = t_varchar.id has been transformed into:
-// EqualConditions: proj_col_L = proj_col_R (both type DOUBLE)
-// Left child Projection: [..., CAST(int_col AS DOUBLE) -> proj_col_L]
-//	Right child Projection: [..., CAST(varchar_col AS DOUBLE) -> proj_col_R]
-// This rule detects the pattern and rewrites:
-// EqualConditions: new_col_L = new_col_R (both type INT)
-// Left child Projection: [..., int_col -> new_col_L] (cast removed)
-//	Right child Projection: [..., CAST(varchar_col AS SIGNED) -> new_col_R]
-//	Guard Selection on VARCHAR side
-// The guard predicate filters non-integer VARCHAR values:
-//	CAST(CAST(varchar_col AS SIGNED) AS DOUBLE) = CAST(varchar_col AS DOUBLE)
-// Limitation: TiDB's expression framework does not distinguish implicit CASTs
-// (inserted by type coercion) from explicit user-written CASTs. If a user
-// writes CAST(int_col AS DOUBLE) = CAST(varchar_col AS DOUBLE) in a join
-// condition, updateEQCond materializes these into child projections that are
-// indistinguishable from the implicit case, so this rule will rewrite them too.
-// In practice the semantic difference is negligible: it only manifests for
-// integers outside DOUBLE's exact range (>2^53), where the INT comparison is
-// arguably more correct than DOUBLE (which would silently equate distinct
-// values due to precision loss).
-// type JoinKeyTypeCastRewriter struct{}
-//
-// Optimize implements base.LogicalOptRule.
-// Optimize 对应 Go 的同名函数或方法；保留原参数、分支和错误传播语义。
-// pub fn (*JoinKeyTypeCastRewriter) Optimize(_ context.Context, p base.LogicalPlan) (base.LogicalPlan, bool, error) {
-//     newP, changed := rewriteJoinTypeCasts(p)
-//     return newP, changed, nil
-// }
-// */
 use std::collections::BTreeMap;
 
 use crate::rule_init::{Expr, FieldType, JoinType, LogicalRule, Plan, PlanKind};
