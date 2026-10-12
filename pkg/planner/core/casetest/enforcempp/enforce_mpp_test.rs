@@ -37,9 +37,9 @@ use astersql_sessionctx_vardef::{
     TiDBAllowTiFlashCop, TiDBEnableChunkRPC, TiDBEnforceMPPExecution, TiDBHashJoinVersion,
     TiDBIsolationReadEngines, TiDBOptEnable3StageMultiDistinctAgg,
 };
-use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::testdata::{ConvertRowsToStrings, TestData};
+use astersql_testkit::{Database, TestKit};
 use astersql_util_collate::SetNewCollationEnabledForTest;
 use std::sync::Arc;
 use std::thread;
@@ -276,9 +276,29 @@ fn test_enforce_mpp_session_defaults_match_golden() {
 #[test]
 fn test_enforce_mpp_standard_golden_matches_go() {
     let data = super::main_test::load_enforce_mpp_suite_data();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let store: Arc<dyn Database> = store;
+    let mut setup_tk = TestKit::new(Arc::clone(&store));
+    setup_tk.MustExec("drop table if exists t", Vec::new());
+    setup_tk.MustExec("create table t(a int, b int)", Vec::new());
+    setup_tk.MustExec("create index idx on t(a)", Vec::new());
+    setup_tk.MustExec(
+        "CREATE TABLE s (a int DEFAULT NULL, b int DEFAULT NULL, c int DEFAULT NULL, d int DEFAULT NULL, UNIQUE KEY a (a), KEY ii (a,b))",
+        Vec::new(),
+    );
+    setup_tk.MustExec(
+        "create table t3(id int, sala char(10), name char(100), primary key(id, sala)) partition by list columns (sala)(partition p1 values in('a'))",
+        Vec::new(),
+    );
+    for table in ["t", "s", "t3"] {
+        domain
+            .set_tiflash_replica_for_test("test", table, 1, true)
+            .unwrap_or_else(|error| panic!("set test.{table} TiFlash replica: {error}"));
+    }
+
     for cascades in [false, true] {
         let cases = suite_cases(&data, "TestEnforceMPP", cascades);
-        let (domain, mut tk) = new_testkit();
+        let mut tk = TestKit::new(Arc::clone(&store));
         tk.MustExec(
             &format!(
                 "set @@tidb_enable_cascades_planner={}",
@@ -286,24 +306,8 @@ fn test_enforce_mpp_standard_golden_matches_go() {
             ),
             Vec::new(),
         );
-        tk.MustExec("drop table if exists t", Vec::new());
-        tk.MustExec("create table t(a int, b int)", Vec::new());
-        tk.MustExec("create index idx on t(a)", Vec::new());
-        tk.MustExec(
-            "CREATE TABLE s (a int DEFAULT NULL, b int DEFAULT NULL, c int DEFAULT NULL, d int DEFAULT NULL, UNIQUE KEY a (a), KEY ii (a,b))",
-            Vec::new(),
-        );
-        tk.MustExec(
-            "create table t3(id int, sala char(10), name char(100), primary key(id, sala)) partition by list columns (sala)(partition p1 values in('a'))",
-            Vec::new(),
-        );
         tk.MustExec("set @@tidb_enable_chunk_rpc = on", Vec::new());
         tk.MustExec("set @@session.tidb_allow_tiflash_cop=ON", Vec::new());
-        for table in ["t", "s", "t3"] {
-            domain
-                .set_tiflash_replica_for_test("test", table, 1, true)
-                .unwrap_or_else(|error| panic!("set test.{table} TiFlash replica: {error}"));
-        }
 
         for case in &cases {
             if case.sql.starts_with("set") {
