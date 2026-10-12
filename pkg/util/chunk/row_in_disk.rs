@@ -22,7 +22,7 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 
@@ -181,8 +181,16 @@ impl DataInDiskByRows {
         {
             return Err(ChunkError::Message("row pointer out of range".to_owned()));
         }
-        let offset = self.getOffset(ptr.ChkIdx, ptr.RowIdx)?;
-        let mut reader = self.dataReader(offset)?;
+        let (offset, end) = self.getOffsetRange(ptr.ChkIdx, ptr.RowIdx)?;
+        let row_size = usize::try_from(end - offset)
+            .map_err(|_| ChunkError::Message("invalid spilled row offset range".to_owned()))?;
+        let mut encoded = vec![0_u8; row_size];
+        self.dataFile
+            .as_ref()
+            .ok_or_else(|| ChunkError::Message("disk data is empty".to_owned()))?
+            .as_file()
+            .read_exact_at(&mut encoded, offset as u64)?;
+        let mut reader = Cursor::new(encoded);
         let mut format = rowInDisk::new(self.fieldTypes.len());
         format.ReadFrom(&mut reader)?;
         Ok(format.diskFormatRow.toRow(&self.fieldTypes, chunk))
@@ -220,6 +228,47 @@ impl DataInDiskByRows {
                 }
             })?;
         Ok(i64::from_le_bytes(bytes))
+    }
+
+    /// Return the byte range occupied by one row. Reading both adjacent
+    /// offsets in one positioned I/O keeps the on-disk index authoritative
+    /// while avoiding one read syscall per serialized column.
+    fn getOffsetRange(&self, chkIdx: u32, rowIdx: u32) -> Result<(i64, i64)> {
+        let ordinal = self.rowNumOfEachChunkFirstRow[chkIdx as usize] + rowIdx as usize;
+        let file = self
+            .offsetFile
+            .as_ref()
+            .ok_or_else(|| ChunkError::Message("offset file is empty".to_owned()))?
+            .as_file();
+        let mut bytes = [0_u8; 16];
+        let count = if ordinal + 1 < self.totalNumRows {
+            16
+        } else {
+            8
+        };
+        file.read_exact_at(&mut bytes[..count], (ordinal * 8) as u64)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::UnexpectedEof {
+                    ChunkError::Message(
+                        "The file spilled is broken, can not get data offset from the disk"
+                            .to_owned(),
+                    )
+                } else {
+                    error.into()
+                }
+            })?;
+        let offset = i64::from_le_bytes(bytes[..8].try_into().expect("fixed offset width"));
+        let end = if count == 16 {
+            i64::from_le_bytes(bytes[8..].try_into().expect("fixed offset width"))
+        } else {
+            self.dataOffWrite
+        };
+        if offset < 0 || end < offset || end > self.dataOffWrite {
+            return Err(ChunkError::Message(
+                "invalid spilled row offset range".to_owned(),
+            ));
+        }
+        Ok((offset, end))
     }
 
     /// 返回指定 Chunk 的行数。
