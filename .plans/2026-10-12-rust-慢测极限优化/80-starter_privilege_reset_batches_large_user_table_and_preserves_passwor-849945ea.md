@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 80 的测试从 3.966 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,20 +88,26 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，并取得 Cargo 槽位 2 和性能锁；两者已由 trap 清理。
+- [x] 尝试保存 before 证据；Cargo 在选测前因共享工作区 `Cargo.lock` 与 manifests 不一致而失败。
+- [x] 确认未获得性能基线，不制造无证据的源码优化 diff。
+- [ ] 待共享 Cargo 元数据恢复一致后，执行 before/after 五次严格计时及适用的 Ready 检查。
+- [x] 自审并更新为“已完成，待回归验证”；按协议保留本任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.966s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 实际领取槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。预编译与 before 脚本均在 Cargo metadata 阶段失败：共享 `Cargo.lock` 中暂时增加了 `astersql-tests-realtikvtest-addindextest -> astersql-session`，但对应 `tests/realtikvtest/addindextest/Cargo.toml` 尚无该依赖，`--locked` 拒绝更新锁文件。该改动与任务 80 无关，未回滚或改写他人工作。
+- `target/rust-performance/task-0080-before.tsv` 仅含表头，有效测试数为 0，因此不得声称五次耗时或性能达标。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不为绕过无关的锁文件不一致而移除 `--locked`、修改共享 `Cargo.lock` 或删除他人锁；依用户授权的无关验证阻断例外，标记为“已完成，待回归验证”并保留任务文件。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态为“已完成，待回归验证”。本次未修改 Rust 源码、测试逻辑、数据规模、断言或 Cargo manifest，因此 `cargo fmt --all` 和 `make lint` 不适用。
+- 已执行的预编译命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-session --lib -E 'binary_id(=astersql-session) & test(=starter_bootstrap_file_test::starter_privilege_reset_batches_large_user_table_and_preserves_password_history)'`，退出码 101（外层脚本未对该阶段启用 `set -e`，但 Cargo 明确报告 101）。
+- 已执行的 before 命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0080-before.tsv -- --locked --package astersql-session --lib -E 'binary_id(=astersql-session) & test(=starter_bootstrap_file_test::starter_privilege_reset_batches_large_user_table_and_preserves_password_history)'`，退出码 1，有效测试数 0，五次数据不可用。
+- 回归必须在 `Cargo.lock` 与 manifests 一致后按原命令重跑，确认 1×5 个有效样本、零失败、零超时且最大值 `<=0.499s`；本次没有这些证据。
