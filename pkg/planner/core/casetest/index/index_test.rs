@@ -443,15 +443,114 @@ fn prepare_range_intersection_fixture(tk: &mut TestKit) {
     );
 }
 
+fn run_range_intersection_cases(
+    store: Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    suite: &astersql_testkit::testdata::TestData,
+    cascades: bool,
+) {
+    let (input, output) = suite
+        .LoadTestCasesByName("TestRangeIntersection", cascades)
+        .unwrap_or_else(|error| panic!("load TestRangeIntersection ({cascades}): {error}"));
+    let input = input.as_array().expect("suite input must be an array");
+    let output = output.as_array().expect("suite output must be an array");
+    assert_eq!(
+        input.len(),
+        output.len(),
+        "TestRangeIntersection input/output length"
+    );
+
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set @@tidb_enable_cascades_planner = {}",
+            if cascades { 1 } else { 0 }
+        ),
+        Vec::new(),
+    );
+    let mut statements = String::new();
+    for (sql, expected) in input.iter().zip(output) {
+        let sql = sql.as_str().expect("suite SQL must be text");
+        statements.push_str(&format!("explain format = 'plan_tree' {sql};"));
+        if expected
+            .get("Result")
+            .and_then(|value| value.as_array())
+            .is_some()
+        {
+            statements.push_str(sql);
+            statements.push(';');
+        }
+    }
+    let results = tk
+        .Session()
+        .QueryStatementBatch(&statements)
+        .unwrap_or_else(|error| {
+            panic!("run TestRangeIntersection ({cascades}) statement batch: {error}")
+        });
+
+    let mut result_index = 0;
+    for (sql, expected) in input.iter().zip(output) {
+        let sql = sql.as_str().expect("suite SQL must be text");
+        let actual_plan = results[result_index]
+            .string_rows()
+            .into_iter()
+            .map(|row| row.join(" "))
+            .collect::<Vec<_>>();
+        result_index += 1;
+        let expected_plan = expected
+            .get("Plan")
+            .and_then(|value| value.as_array())
+            .expect("TestRangeIntersection golden case lacks Plan")
+            .iter()
+            .map(|row| {
+                row.as_str()
+                    .expect("TestRangeIntersection Plan row is not text")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual_plan, expected_plan, "sql={sql}");
+        if let Some(expected_result) = expected.get("Result").and_then(|value| value.as_array()) {
+            let mut actual_result = results[result_index]
+                .string_rows()
+                .into_iter()
+                .map(|row| row.join(" "))
+                .collect::<Vec<_>>();
+            result_index += 1;
+            actual_result.sort();
+            let mut expected_result = expected_result
+                .iter()
+                .map(|row| {
+                    row.as_str()
+                        .expect("TestRangeIntersection Result row is not text")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            expected_result.sort();
+            assert_eq!(actual_result, expected_result, "sql={sql}");
+        }
+    }
+    assert_eq!(
+        result_index,
+        results.len(),
+        "TestRangeIntersection consumed result sets"
+    );
+}
+
 #[test]
 fn test_range_intersection() {
     let suite = load_suite("index_range");
-    run_suite_cases(
-        &suite,
-        "TestRangeIntersection",
-        true,
-        prepare_range_intersection_fixture,
-    );
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    prepare_range_intersection_fixture(&mut setup_tk);
+    drop(setup_tk);
+
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let store = store.clone();
+            let suite = &suite;
+            scope.spawn(move || run_range_intersection_cases(store, suite, cascades));
+        }
+    });
 }
 
 #[test]
