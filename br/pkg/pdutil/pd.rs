@@ -1021,6 +1021,17 @@ pub fn pause_scheduler_by_key_range_with_ttl(
     key_range: &[[Vec<u8>; 2]],
     ttl: Duration,
 ) -> Result<(Option<std::sync::mpsc::Receiver<()>>, String), SharedError> {
+    pause_scheduler_by_key_range_with_ttl_and_tick(ctx, pd_http, key_range, ttl, ttl / 3)
+}
+
+// 将刷新间隔与 label TTL 分离，便于调用方用确定性时钟验证刷新循环；生产入口始终传 TTL/3。
+pub(crate) fn pause_scheduler_by_key_range_with_ttl_and_tick(
+    ctx: &Context,
+    pd_http: Arc<dyn PdHttpClient>,
+    key_range: &[[Vec<u8>; 2]],
+    ttl: Duration,
+    tick: Duration,
+) -> Result<(Option<std::sync::mpsc::Receiver<()>>, String), SharedError> {
     // 空范围或首 start 为空：不建规则，返回空 id。
     // Go: no table to restore → empty rule when len==0 || keyRange[0][0] == nil.
     if key_range.is_empty() || key_range[0][0].is_empty() {
@@ -1059,8 +1070,6 @@ pub fn pause_scheduler_by_key_range_with_ttl(
     let http = Arc::clone(&pd_http);
     // 刷新循环：取消后将 TTL 置 0 并 PATCH 删除，再通知 done。
     thread::spawn(move || {
-        // 刷新周期为 TTL 的三分之一。
-        let tick = ttl / 3;
         let mut rule = rule;
         loop {
             if ctx_bg.is_cancelled() {

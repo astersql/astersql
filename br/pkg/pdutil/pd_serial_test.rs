@@ -19,7 +19,7 @@
 //! `mockPDHTTPClient` / `httptest` for label-rule TTL). No real PD/TiKV.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use astersql_br_pkg_errors::Is;
@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::{
     Context, LabelRule, LabelRulePatch, PdController, PdHttpClient, RegionLabel, StoreInfo,
-    parseVersion, pause_scheduler_by_key_range_with_ttl,
+    parseVersion, pause_scheduler_by_key_range_with_ttl_and_tick,
 };
 
 // 可注入错误与 label 过期表，模拟暂停失败、配置失败与按键范围暂停清理。
@@ -38,6 +38,8 @@ struct MockPDHTTPClient {
     // 记录 rule_id → 过期时刻，用于断言 TTL 刷新与取消后清理。
     /// Tracks label-rule TTL expirations like Go `TestPauseSchedulersByKeyRange` httptest.
     label_expires: Mutex<HashMap<String, Instant>>,
+    // 同步等待真实后台刷新，避免用 3 秒墙钟 sleep 推测刷新已发生。
+    label_updates: (Mutex<usize>, Condvar),
     // PATCH 删除后置位，后续 Set/Patch 变成空操作，对齐 httptest 幂等行为。
     deleted: Mutex<bool>,
 }
@@ -48,6 +50,7 @@ impl MockPDHTTPClient {
         Arc::new(Self {
             err: Mutex::new(msg.map(str::to_string)),
             label_expires: Mutex::new(HashMap::new()),
+            label_updates: (Mutex::new(0), Condvar::new()),
             deleted: Mutex::new(false),
         })
     }
@@ -172,6 +175,10 @@ impl PdHttpClient for MockPDHTTPClient {
                 assert!(*expire > Instant::now(), "should not expire before now");
             }
             expires.insert(rule.ID.clone(), Instant::now() + req_ttl);
+            let (updates, updated) = &self.label_updates;
+            let mut updates = updates.lock().unwrap();
+            *updates += 1;
+            updated.notify_all();
         }
         Ok(())
     }
@@ -332,17 +339,25 @@ fn test_pause_schedulers_by_key_range() {
     // 全范围键：覆盖从零到 0xff 的暂停区间。
     let start_key = vec![0, 0, 0, 0];
     let end_key = vec![0xff, 0xff, 0xff, 0xff];
-    // 启动后台刷新；返回 done channel 供等待退出。
-    let (done, _rule_id) = pause_scheduler_by_key_range_with_ttl(
+    // TTL 仍与 Go 一致为 1 秒；仅压缩测试时钟的刷新 tick。
+    let (done, _rule_id) = pause_scheduler_by_key_range_with_ttl_and_tick(
         &ctx,
         Arc::clone(&mock) as Arc<dyn PdHttpClient>,
         &[[start_key, end_key]],
         ttl,
+        Duration::from_millis(1),
     )
     .expect("pause by key range");
 
-    // 给刷新循环至少跑若干 tick 的时间。
-    std::thread::sleep(ttl * 3);
+    // 初次创建计为 1；等待至少两次真实后台刷新，覆盖 Go 测试的续期断言。
+    let (updates, updated) = &mock.label_updates;
+    let updates = updates.lock().unwrap();
+    let (updates, timeout) = updated
+        .wait_timeout_while(updates, Duration::from_secs(1), |updates| *updates < 3)
+        .unwrap();
+    assert!(!timeout.timed_out(), "background label refresh timed out");
+    assert!(*updates >= 3, "expected initial create and two refreshes");
+    drop(updates);
     // 取消触发清理：PATCH 删除规则并关闭 done。
     ctx.cancel();
     done.expect("done channel")
