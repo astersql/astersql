@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 28 的测试从 6.439 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 定位精确测试，并两次取得 Cargo 槽位与性能锁。
+- [ ] 保存 before 的五次有效数据：两次预热均被本任务无关的共享工作区中间态阻断，未进入测试执行。
+- [x] 未修改源码：无有效基线前不预设优化，也未减少 case、断言或 Go 对齐规模。
+- [ ] 保存 after、测试数量与耗时证据：需在共享工作区稳定后回归。
+- [x] 自审任务范围并按无关并行变更导致无法验证的例外路径更新为“已完成，待回归验证”；保留本文件供回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `6.439s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- RustCodeGraph 精确定位 `test_join_regression_runs_go_contract` 于 `join_test.rs:611`（索引位置）；测试在 classic/cascades 两种 planner 模式下创建真实 TestKit/mock store 并执行完整 issue 回归断言。
+- 共享工作区中 `pkg/planner/core/casetest/join/join_test.rs` 的未提交变更仅是相邻 `test_index_join_inner_row_count_uses_usable_join_keys` 的临时剖析插桩，非本任务所有，本任务未修改、未回滚、未提交该变更。
+- 第一次取得槽位 4，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`；预热在 `cargo metadata --locked` 因并行任务正在修改 `pkg/planner/core/casetest/join/Cargo.toml` 且 Cargo.lock 尚未更新时退出 101，报告只有表头、有效测试数 0。
+- 第二次取得槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；预热因并行任务中的 `pkg/session/runtime/modify_column_dist_backfill.rs:1140` 临时引用不存在的 `BaseScheduler.mock_node` 而退出 101，有效测试数 0。随后该并行任务已把该引用改为局部 `mock_node`，证实为共享中间态。
+- 第三次在 Cargo.lock 和上述编译点稳定后重试，连续等待 1230 秒仍无 1–10 号空闲槽位；已停止自己的排队进程，且未遗留 Cargo 槽位锁或性能锁。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不把两份只有表头的 partial TSV 视为性能证据，也不在未完成基线时修改测试或热路径。理由：两次均在编译预热阶段被无关并行修改阻断，不能推断本测试的瓶颈。日期/作者：2026-10-12 / Codex。
+- 决策：使用用户授权的“已完成，待回归验证”状态并保留任务文件。理由：失败来自本任务无关的共享工作区中间态，且三轮重试后仍无法获得完整验证窗口。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 本任务未修改 Rust 源码或测试，因此 `cargo fmt --all` 和 Ready `make lint` 对本任务变更不适用；也未触发 Bazel metadata 条件。
+- 已执行的两次精确命令均为 `./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0028-before.tsv -- --locked --package astersql-planner-core-casetest-join --lib -E 'binary_id(=astersql-planner-core-casetest-join) & test(=join_test::test_join_regression_runs_go_contract)'`，退出码均为 1（内部 Cargo 退出 101），均在 compilation warmup 失败，有效测试 0、无五次耗时。
+- 未本地验证：`before`/`after` 的 1×5 有效 sample、最大值 `<=0.499s`、功能断言。回归时必须在共享工作区稳定且能取得 Cargo/性能锁后重跑原命令；在此之前不得删除本任务文件或宣称性能达标。
+- 风险：正确性、兼容性和性能均未由本轮新证据覆盖；但本任务未引入代码改动，因此没有新的实现风险。
