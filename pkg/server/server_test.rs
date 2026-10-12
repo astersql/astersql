@@ -77,6 +77,31 @@ impl Domain for TestDomain {
 fn start_real_server() -> Arc<Server> {
     let (domain, _) =
         astersql_session::runtime::CreateAnalyzeSession().expect("initialize canonical domain");
+    start_real_server_with_domain(domain)
+}
+
+fn start_real_server_without_bootstrap() -> Arc<Server> {
+    let mut domain_config = astersql_domain::DomainConfig::default();
+    domain_config.schema_lease = Duration::ZERO;
+    domain_config.stats_lease = Duration::ZERO;
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .expect("create mock storage"),
+    )
+    .unwrap_or_else(|_| panic!("mock storage retained an unexpected owner"));
+    let domain = Arc::new(astersql_domain::Domain::new(
+        storage,
+        Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+        domain_config,
+    ));
+    domain.init().expect("initialize canonical domain");
+    start_real_server_with_domain(domain)
+}
+
+fn start_real_server_with_domain(domain: Arc<astersql_domain::Domain>) -> Arc<Server> {
     let session_driver: Arc<dyn SessionDriver> = Arc::new(ConcreteSessionDriver::new_for_test(
         Arc::clone(&domain),
         BootstrapAuthMode::InsecureRootOnly,
@@ -405,7 +430,7 @@ fn shutdown_flags_do_not_start_server_shutdown() {
 
 #[test]
 fn real_listener_serves_handshake_ping_select_and_drains_connection() {
-    let server = start_real_server();
+    let server = start_real_server_without_bootstrap();
     let mysql_addr = server.listener_addr().expect("MySQL listener address");
     let mut stream = TcpStream::connect(mysql_addr).expect("connect real MySQL listener");
     stream
