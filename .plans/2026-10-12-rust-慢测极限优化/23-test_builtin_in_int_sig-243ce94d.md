@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 23 的测试从 7.055 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据并完成调用链分析。
+- [ ] 完成保持语义的最小优化：被 typed adapter 对 `IN (?, ?)` 和非主键访问路径的支持缺口阻塞。
+- [ ] 保存 after、测试数量与耗时证据：未实施不等价简化，无可验收 after。
+- [x] 自审、更新阻塞状态；任务文件保留供后续扩展 typed adapter 后回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `7.055s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 `before` 五次均正确通过且每次精确选中 1 个测试，耗时为 `1.414938s`、`1.359057s`、`1.656631s`、`1.423754s`、`1.457426s`，最大值 `1.656631s`，严格门槛退出码 `1`。
+- RustCodeGraph 调用链和源码确认，`execute_simple_prepared_select_through_adapter` 虽可把本测试的整数 user-variable 参数解析为 `Datum::Int`，但 `simple_typed_select_shape` 只接受 `=`/`==`，`simple_typed_primary_key_predicate` 还限定必须是主键谓词；本测试的 `a IN (?, ?)` 因而全部回退完整关系规划/执行路径。
+- Go 对齐用例必须保留无索引、普通索引、主键和唯一索引四张表，以及 10 个 worker 每个 100 轮的真实 `PREPARE`/`SET`/`EXECUTE` 边界；仅改用主键 `=`、复用一次 prepare 或减少轮次都会弱化原始行为。
+- 临时分段计时由相邻任务在共享 `run_in_case` 上运行并已清理；本任务未保留或提交诊断插桩。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不减少 4 张表、100 行、10 worker 或每 worker 100 次执行，不删除任一索引路径，不替换真实 `PREPARE`/`SET`/`EXECUTE` 边界，也不放宽门槛。理由：这些都会弱化 Go 对齐语义。日期/作者：2026-10-12 / Codex。
+- 决策：本任务标记为 `已阻塞`，不在单一测试优化任务中递归扩建 `IN` range 编码、无索引/普通索引/唯一索引读取、catalog version、schema/parameter shape、事务上下文和 plan-cache invalidation 子系统。理由：该生产能力缺口需独立设计和回归，超出对应 Go 用例的最小增量与局部接线范围。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 使用 Cargo 共享槽位 `6`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；目标编译预热退出码 `0`。分段调查还使用槽位 `9`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`。阶段结束后已释放自己的槽位锁和性能锁，保留编译缓存。
+- `before` 命令按任务“失败验证”原样执行，报告为 `target/rust-performance/task-0023-before.tsv`；5 个 sample 每次 `test_count=1`、零失败、零超时，最大值 `1.656631s`，因超过 `0.499s` 门槛而退出 `1`。
+- 首次尝试 before 时受并行 Cargo 清单改动影响，`--locked` metadata 预热在测试执行前退出 `1`且 TSV 为零样本；对方清单改动消失后原命令重试成功取得上述 5 次有效证据。
+- 生产与测试 Rust 源文件没有本任务可交付 diff；未运行 after、`cargo fmt --all` 或 `make lint`，因为没有实施代码变更，且严格门槛仍未达标。任务文件按阻塞协议保留。
+- 后续建议：单独规划 `execute_simple_prepared_select_through_adapter` / `ExecutePreparedPlannedKVSelectThroughAdapter` 对整数 `IN (?, ?)` 以及无索引、普通索引、唯一索引的等价扩展，完整覆盖 catalog version、schema/parameter shape、事务上下文和 plan-cache invalidation 后再回归本任务。
