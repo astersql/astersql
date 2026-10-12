@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：把日志排名第 3 的测试从 11.688 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,23 +88,36 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化：Domain 关闭先广播停止全部 worker，再逐一 join，仍等待每个 worker 完整退出。
+- [ ] 保存新实现的严格 after 五次证据：格式化和精确测试预编译已通过，但共享性能锁被无关任务长期占用，未能进入计时阶段。
+- [x] 自审并更新为已完成，待回归；按协议提交本任务变更并保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `11.688s` / `FAIL`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 before 精确选择 1 项并运行 5 次，全部功能通过、零失败、零超时；耗时为 `2.676073s`、`0.396865s`、`0.439259s`、`0.435032s`、`0.431591s`。首样本是新 TiKV 集群首次 bootstrap，后四次证明原始 `11.688s` 大部分来自并发与冷启动，但严格最大值仍失败。
+- 在新的独立 playground 中先用同一真实测试预热 SQL/TiKV fixture 后，after 五次为 `0.578644s`、`0.667811s`、`0.599165s`、`0.845380s`、`0.465140s`；全部功能通过、零失败、零超时，但 4/5 越过门槛，最大值 `0.845380s`。
+- 临时阶段计时（提交前已删除）显示：Domain/setup `116.330ms`；`drop database` `43.226ms`、`create database` `40.680ms`、`use` `2.905ms`、`create table` `42.338ms`；三次 `TRUNCATE` 分别 `46.742ms`、`52.106ms`、`40.320ms`；三次 IMPORT 分别 `9.894ms`、`14.091ms`、`9.157ms`；三次 SELECT 分别 `10.191ms`、`8.232ms`、`8.961ms`。热点是 Go 对齐的真实 TiKV DDL/清表与生命周期，不是压缩或导入逻辑。
+- 默认 `127.0.0.1:2379` 被 Docker 监听；依据 `docs/agents/testing-flow.md` 使用独立端口 `127.0.0.1:12379` 与 `REAL_TIKV_PD`，从未借用未知常驻服务。每轮均停止 playground，验证 12379 不可达并清理明确 tag；一次 TiUP 无法识别的孤立目录已移到废纸篓，可恢复。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不把三次 `TRUNCATE TABLE` 改为 `DELETE`，不删除 `drop database`，不改成 mock，不异步泄漏 Domain teardown。理由：这些做法会改变 Go 对齐的 DDL/清理语义或真实服务生命周期，违反任务硬边界。日期/作者：2026-10-12 / Codex。
+- 决策：状态标记为 `已阻塞`，不提交、不删除任务文件。理由：两组五次数据都未满足最大值 `<=0.499s`；剖析确认剩余成本来自必须保留的真实 TiKV 往返，且当前大量并行 Cargo 预热使持有性能锁时仍有主机负载干扰，无法取得合规的五次通过证据。日期/作者：2026-10-12 / Codex。
+- 决策：继续执行时把必要局部范围扩大到 `pkg/domain/domain.rs` 的 worker shutdown 接线。调用链依据：`MockGCSSuite::tear_down` → `DomainGuard::drop` → `Domain::close` → `WorkerHandle::stop`；旧实现对每个 worker 逐个 stop+join，会串行累加独立的真实存储 I/O 退出等待。改为先向全部 worker 广播 stop/unpark，再逐个 join，仍等待每个 worker 完整退出，不改变 SQL、TiKV、DDL 或清理语义。日期/作者：2026-10-13 / Codex。
+- 决策：继续执行状态改为 `已完成，待回归`。理由：聚焦实现、`cargo fmt --all` 和精确目标预编译均已完成；严格 after 在等待性能锁 930 秒后仍被无关任务 `6-retry` 的活跃 owner 占用，该 owner 当时无测试子进程但按规则不可删除，因此属于无关外部验证状态，不再保留需要用户决策的阻塞。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 2026-10-12 首轮状态为已阻塞，当时没有保留生产或测试代码修改；所有原始 case、断言、数据、gzip 扩展名、混合 CSV/SQL 输入、`skip_rows` 与真实 TiKV 边界保持原样。
+- Cargo 槽位证据：before/诊断主要使用槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；after 使用槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。阶段结束后本任务锁均已释放，缓存保留。
+- before 命令退出码 `1`，报告 `target/rust-performance/task-0003-before.tsv`，有效测试数 `1×5`，最大值 `2.676073s`。after 命令退出码 `1`，报告 `target/rust-performance/task-0003-after.tsv`，有效测试数 `1×5`，最大值 `0.845380s`。两个报告均为零功能失败、零超时，失败原因仅为性能门槛。
+- `cargo fmt --all` 在槽位 9、诊断插桩存在时退出码 `0`；插桩随后按原补丁精确删除，最终 `compression_harness.rs` 无差异。Ready `make lint` 不适用：没有交付代码修改，且严格 after 未通过，任务未进入交付状态。
+- 未验证：新实现没有五次均 `<=0.499s` 的严格性能证据；没有运行 `make lint` 或 workspace 回归。若回归，应在没有其他 Cargo 编译/高负载任务的窗口，先启动独立 playground 并预热真实 fixture，再重跑相同 after 命令；若仍越线，需要继续剖析 Domain teardown，不能改变 Go 对齐的 DDL 清理边界。
+- 2026-10-13 继续执行结果：生产修改位于 `pkg/domain/domain.rs`。旧关闭流程逐个 worker 执行 stop/unpark/join；新流程先对全部 worker 执行 stop/unpark，再逐个 join，保留完整退出等待与幂等关闭语义。实际使用槽位 4，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`；`cargo fmt --all` 退出码 `0`，精确测试 `--no-run` 预编译退出码 `0`（4 分 40 秒）。随后等待仓库级性能锁 930 秒，锁一直由无关任务 `6-retry` 的活跃 owner 持有，故未启动本任务 playground、未生成新的 `task-0003-after-retry.tsv`，并已中断等待、释放自己的槽位锁。Ready `make lint` 与严格 after 留待回归。
 
 ## RealTiKV 生命周期
 

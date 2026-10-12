@@ -474,11 +474,17 @@ struct WorkerHandle {
 }
 
 impl WorkerHandle {
-    /// 停止后台 worker。
-    fn stop(mut self) {
+    /// 请求后台 worker 停止，并立即唤醒可能正在 park 的线程。
+    fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
+        if let Some(join) = &self.join {
             join.thread().unpark();
+        }
+    }
+
+    /// 等待后台 worker 完成退出。
+    fn join(mut self) {
+        if let Some(join) = self.join.take() {
             let _ = join.join();
         }
     }
@@ -6386,8 +6392,14 @@ impl Domain {
             return;
         }
         let workers = std::mem::take(&mut *self.workers.lock().expect("worker lock poisoned"));
+        // Broadcast shutdown before joining. A worker may be finishing storage
+        // I/O when close starts; stopping and joining one-by-one serializes
+        // those independent waits and needlessly stretches Domain teardown.
+        for worker in &workers {
+            worker.request_stop();
+        }
         for worker in workers {
-            worker.stop();
+            worker.join();
         }
         // Drop the service reference after stopping: its pool owns sessions
         // referring to this Domain, so retaining it would form an Arc cycle.
