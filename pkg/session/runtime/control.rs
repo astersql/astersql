@@ -454,17 +454,27 @@ impl ConcreteSession {
             };
             seconds
         };
-        let now_seconds = astersql_testkit_testfailpoint::eval_string(
-            "github.com/pingcap/tidb/pkg/expression/injectNow",
+        let stale_read_tso = astersql_testkit_testfailpoint::eval_string(
+            "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO",
         )
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        });
-        let stale_seconds = now_seconds.saturating_sub(seconds);
+        .map(|now_tso| now_tso.saturating_sub(seconds.saturating_mul(1_000) << 18));
+        let stale_seconds = stale_read_tso.map_or_else(
+            || {
+                let now_seconds = astersql_testkit_testfailpoint::eval_string(
+                    "github.com/pingcap/tidb/pkg/expression/injectNow",
+                )
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                });
+                now_seconds.saturating_sub(seconds)
+            },
+            |timestamp| (timestamp >> 18) / 1_000,
+        );
         if let Some(expected) = astersql_testkit_testfailpoint::eval_string(
             "github.com/pingcap/tidb/pkg/executor/assertStaleTSO",
         )
@@ -476,7 +486,7 @@ impl ConcreteSession {
             )));
         }
         self.state.borrow_mut().session_stale_read_ts =
-            Some(stale_seconds.saturating_mul(1_000) << 18);
+            Some(stale_read_tso.unwrap_or_else(|| stale_seconds.saturating_mul(1_000) << 18));
         Ok(())
     }
 

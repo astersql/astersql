@@ -472,7 +472,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithSchemaLease,
+};
 use astersql_testkit::{DbValue, NewTestKit, Rows, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use astersql_tests_realtikvtest_txntest::serial_guard;
@@ -2476,7 +2478,7 @@ fn TestStaleReadAllCombinations() {
     let _serial = serial_guard();
     let _config_restore =
         GlobalConfigRestore(astersql_config::get_global_config().as_ref().clone());
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
     let mut tk = NewTestKit(store.clone());
     tk.MustExec("create database `stale_all_combinations`", Vec::new());
     tk.MustExec("use `stale_all_combinations`", Vec::new());
@@ -2492,19 +2494,16 @@ fn TestStaleReadAllCombinations() {
     tk.MustExec("insert into t values(1,10)", Vec::new());
     let first_ts = current_ts(&mut tk);
     // The mock oracle advances logically rather than from wall time. Reserve
-    // enough logical space for the Go test's incrementing external TS values.
-    for _ in 0..128 {
+    // one logical timestamp for every Go-aligned external-TS combination.
+    for _ in 0..(5 * 4) {
         let _ = current_ts(&mut tk);
     }
-    std::thread::sleep(Duration::from_secs(3));
     tk.MustExec("insert into t values(2,20)", Vec::new());
     let second_ts = current_ts(&mut tk);
-    let row2_created_at = SystemTime::now();
     assert!(
         first_ts < second_ts,
         "row1 snapshot TSO must precede row2 snapshot TSO"
     );
-    std::thread::sleep(Duration::from_secs(3));
     let label_settings: [(&str, &[(&str, &str)], &str); 5] = [
         ("no labels", &[], "global"),
         ("with DC label", &[("zone", "bj")], "bj"),
@@ -2544,6 +2543,10 @@ fn TestStaleReadAllCombinations() {
     // Run the latency-sensitive session-staleness path first, matching Go's
     // ordering, then exercise every other read mechanism and transaction mode
     // under all five label sets and four replica policies.
+    const MOCK_STALE_TSO: &str =
+        "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO";
+    let stale_now_ts = first_ts + (1_000_u64 << 18);
+    let stale_now = testfailpoint::enable(MOCK_STALE_TSO, &format!("20*return({stale_now_ts})"));
     for (label, labels, expected_scope) in label_settings {
         astersql_config::update_global(|config| {
             config.labels = labels
@@ -2553,14 +2556,7 @@ fn TestStaleReadAllCombinations() {
         });
         for replica in replica_settings {
             tk.MustExec(&format!("set @@tidb_replica_read='{replica}'"), Vec::new());
-            let elapsed = SystemTime::now()
-                .duration_since(row2_created_at)
-                .expect("wall clock after row2 creation");
-            let staleness = elapsed.as_secs() + 2;
-            tk.MustExec(
-                &format!("set @@tidb_read_staleness='-{staleness}'"),
-                Vec::new(),
-            );
+            tk.MustExec("set @@tidb_read_staleness='-1'", Vec::new());
             store
                 .clear_replica_read_request_for_test()
                 .expect("clear session staleness request");
@@ -2580,6 +2576,11 @@ fn TestStaleReadAllCombinations() {
             tk.MustExec("set @@tidb_read_staleness=''", Vec::new());
         }
     }
+    assert!(
+        testfailpoint::eval_string(MOCK_STALE_TSO).is_none(),
+        "all 20 session-staleness combinations must consume the injected TSO"
+    );
+    drop(stale_now);
 
     let mut external_ts = first_ts;
     for (label, labels, expected_scope) in label_settings {

@@ -3,6 +3,37 @@
 use crate::runtime::CreateAnalyzeSession;
 
 #[test]
+fn session_read_staleness_honors_mock_stale_read_tso() {
+    let (_, session) = CreateAnalyzeSession().expect("create canonical session");
+    let snapshot_ts = (1_700_000_000_123_u64 << 18) + 17;
+    let now_ts = snapshot_ts + (1_000_u64 << 18);
+    let guard = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO",
+        &format!("1*return({now_ts})"),
+    );
+
+    session
+        .execute("set @@tidb_read_staleness='-1'")
+        .expect("enable one-second session staleness");
+    session
+        .execute("select 1")
+        .expect("refresh session staleness from the injected TSO");
+
+    assert_eq!(
+        session.StaleReadStateForTest().session_read_ts,
+        Some(snapshot_ts)
+    );
+    assert!(
+        astersql_testkit_testfailpoint::eval_string(
+            "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO"
+        )
+        .is_none(),
+        "the statement must consume the injected stale-read TSO"
+    );
+    drop(guard);
+}
+
+#[test]
 fn fixed_time_zone_range_matches_go_parse_time_zone() {
     let (_, session) = CreateAnalyzeSession().expect("create canonical session");
 
