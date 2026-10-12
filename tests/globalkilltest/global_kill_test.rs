@@ -59,7 +59,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -309,7 +309,26 @@ impl MockTiDB {
             return;
         }
         g.accept_conns = true;
+        self.cv.notify_all();
         // Fresh connections only; existing slots stay invalid/closed.
+    }
+
+    /// Wait for the in-process PD recovery signal instead of sleeping after
+    /// the recovery transition has already completed.
+    fn wait_for_pd_restore(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut g = self.inner.lock().unwrap();
+        while g.pd_linked && g.alive && !g.accept_conns {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next, wait) = self.cv.wait_timeout(g, remaining).unwrap();
+            g = next;
+            if wait.timed_out() {
+                return false;
+            }
+        }
+        g.accept_conns
     }
 
     /// 分配连接 ID 时复刻 Go 里的“32 位资源耗尽后升级到 64 位”策略。
@@ -947,6 +966,16 @@ impl GlobalKillSuite {
                     }
                 }
                 Err(err) => {
+                    // A registered in-process server that rejected new
+                    // connections after PD loss cannot recover until this
+                    // synchronous test explicitly restarts the cluster.
+                    let terminal_pd_loss = self.cluster.lookup_server(port).is_some_and(|server| {
+                        let g = server.inner.lock().unwrap();
+                        g.alive && g.pd_linked && !g.accept_conns
+                    });
+                    if terminal_pd_loss {
+                        return Err(trace(err));
+                    }
                     last_err = Some(err);
                 }
             }
@@ -1040,8 +1069,11 @@ impl GlobalKillSuite {
         let conn_id1 = conn1.conn_id;
         eprintln!("[INFO] connID1={:x}", conn_id1);
         let slot = Arc::clone(&conn1.slot);
+        let started = Arc::new(Barrier::new(2));
+        let worker_started = Arc::clone(&started);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
+            worker_started.wait();
             let start = Instant::now();
             let err = run_sleep(sleep_time, &slot);
             let _ = tx.send(SleepResult {
@@ -1050,7 +1082,7 @@ impl GlobalKillSuite {
             });
         });
 
-        thread::sleep(WAIT_TO_STARTUP);
+        started.wait();
         let conn2 = db_conn(db2).expect("conn2");
         eprintln!("[INFO] connID2={:x}", conn2.conn_id);
         eprintln!(
@@ -1294,8 +1326,13 @@ fn do_test_lost_connection(enable32_bits: bool) {
     let sql_time = lost_connection_to_pd_timeout() + 10;
     let (tx, rx) = mpsc::channel();
     let slot = Arc::clone(&conn1.slot);
-    thread::spawn(move || sleep_routine(sql_time, slot, tx));
-    thread::sleep(WAIT_TO_STARTUP);
+    let started = Arc::new(Barrier::new(2));
+    let worker_started = Arc::clone(&started);
+    thread::spawn(move || {
+        worker_started.wait();
+        sleep_routine(sql_time, slot, tx);
+    });
+    started.wait();
 
     // 先停 PD，但此时旧连接还不会立刻失效。
     eprintln!("[INFO] shutdown PD to simulate lost connection to PD.");
@@ -1337,9 +1374,10 @@ fn do_test_lost_connection(enable32_bits: bool) {
     s.cluster.stop_tikv().unwrap();
     s.cluster.start_cluster().unwrap();
 
-    let sleep_time = secs(time_to_check_pd_connection_restored() + 3);
-    eprintln!("[INFO] sleep to wait for PD restored detect {sleep_time:?}");
-    thread::sleep(sleep_time);
+    let restore_timeout = secs(time_to_check_pd_connection_restored() + 3);
+    eprintln!("[INFO] wait for PD restored detect {restore_timeout:?}");
+    assert!(tidb1.server.wait_for_pd_restore(restore_timeout));
+    assert!(tidb2.server.wait_for_pd_restore(restore_timeout));
 
     {
         let db1 = s.connect_tidb(port1).expect("restored db1");
