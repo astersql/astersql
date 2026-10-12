@@ -131,7 +131,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain, CreateMockStoreAndDomainWithSchemaLease,
+};
 use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use astersql_tests_realtikvtest::WithRealTiKV;
@@ -159,6 +161,21 @@ fn allow_foreign_key_check_in_shared_lock_for_test() -> ForeignKeySharedLockConf
 
 fn prepare(test_name: &str) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
     let (store, _domain) = CreateMockStoreAndDomain();
+    prepare_with_store(test_name, store)
+}
+
+fn prepare_with_schema_lease(
+    test_name: &str,
+    schema_lease: Duration,
+) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(schema_lease);
+    prepare_with_store(test_name, store)
+}
+
+fn prepare_with_store(
+    test_name: &str,
+    store: Arc<AnalyzeStatsStore>,
+) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
     let database = format!("shared_lock_{}", test_name.trim_start_matches("test_"));
     let mut tk = NewTestKit(store.clone());
     tk.MustExec(&format!("drop database if exists `{database}`"), Vec::new());
@@ -349,7 +366,10 @@ fn test_foreign_key_shared_lock_pessimistic_reverse_reference_order() {
 fn test_shared_lock_blocked_by_exclusive_lock() {
     let _serial = serial_guard();
     let _config = allow_foreign_key_check_in_shared_lock_for_test();
-    let (store, mut tk1, database) = prepare("test_shared_lock_blocked_by_exclusive_lock");
+    // The Go scenario only needs an isolated Domain; none of its assertions
+    // depend on waiting out a schema lease during teardown.
+    let (store, mut tk1, database) =
+        prepare_with_schema_lease("test_shared_lock_blocked_by_exclusive_lock", Duration::ZERO);
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
     tk1.MustExec(
