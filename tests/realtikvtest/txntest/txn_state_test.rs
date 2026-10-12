@@ -414,18 +414,6 @@ fn test_entries_count_and_size() {
     assert!(transaction(&observer, session_id).is_none());
 }
 
-fn insert_rows(tk: &mut TestKit, first: usize, count: usize) {
-    const BATCH: usize = 128;
-    for batch_start in (first..first + count).step_by(BATCH) {
-        let batch_end = (batch_start + BATCH).min(first + count);
-        let values = (batch_start..batch_end)
-            .map(|value| format!("({value})"))
-            .collect::<Vec<_>>()
-            .join(",");
-        tk.MustExec(&format!("insert into t(id) values {values}"), Vec::new());
-    }
-}
-
 #[test]
 fn test_mem_db_tracker() {
     let _serial = serial_guard();
@@ -433,7 +421,20 @@ fn test_mem_db_tracker() {
     tk.MustExec("create table t(id int)", Vec::new());
     let session_id = connection_id(&tk);
     tk.MustExec("begin", Vec::new());
-    insert_rows(&mut tk, 0, 1 << 10);
+    tk.MustExec(
+        "insert into t select 1
+         from (select 1 union all select 1) a
+         cross join (select 1 union all select 1) b
+         cross join (select 1 union all select 1) c
+         cross join (select 1 union all select 1) d
+         cross join (select 1 union all select 1) e
+         cross join (select 1 union all select 1) f
+         cross join (select 1 union all select 1) g
+         cross join (select 1 union all select 1) h
+         cross join (select 1 union all select 1) i
+         cross join (select 1 union all select 1) j",
+        Vec::new(),
+    );
     let after_one_k = require_transaction(&observer, session_id).mem_buffer_bytes;
     assert!(
         after_one_k > 1 << (10 + 4),
@@ -443,7 +444,15 @@ fn test_mem_db_tracker() {
         after_one_k < 1 << (14 + 4),
         "1K rows used unexpectedly {after_one_k} bytes"
     );
-    insert_rows(&mut tk, 1 << 10, 1 << 14);
+    tk.MustExec(
+        "insert into t select t.id from t cross join (
+            select 1 union all select 1 union all select 1 union all select 1
+            union all select 1 union all select 1 union all select 1 union all select 1
+            union all select 1 union all select 1 union all select 1 union all select 1
+            union all select 1 union all select 1 union all select 1 union all select 1
+        ) copies",
+        Vec::new(),
+    );
     let after_seventeen_k = require_transaction(&observer, session_id).mem_buffer_bytes;
     assert!(
         after_seventeen_k > 1 << (14 + 4),
