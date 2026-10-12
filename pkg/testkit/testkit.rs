@@ -146,6 +146,11 @@ impl TestSession {
             .execute_prepared_statement(statement_id, arguments)
     }
 
+    /// Execute one multi-statement batch and retain every result set in order.
+    pub fn QueryStatementBatch(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
+        self.database.query_statement_batch(statement)
+    }
+
     /// Drop a statement returned by [`TestSession::PrepareStmt`].
     pub fn DropPreparedStmt(&self, statement_id: u64) -> TestResult {
         self.database.drop_prepared_statement(statement_id)

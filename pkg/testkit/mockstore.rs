@@ -464,6 +464,10 @@ enum SessionRequest {
         arguments: Vec<DbValue>,
         response: mpsc::SyncSender<TestResult<ExecutionResult>>,
     },
+    QueryStatementBatch {
+        statement: String,
+        response: mpsc::SyncSender<TestResult<Vec<QueryRows>>>,
+    },
     DropPrepared {
         statement_id: u64,
         response: mpsc::SyncSender<TestResult>,
@@ -974,6 +978,14 @@ impl AnalyzeSessionDatabase {
                             });
                         let _ = response.send(result);
                     }
+                    SessionRequest::QueryStatementBatch {
+                        statement,
+                        response,
+                    } => {
+                        let result = execute_concrete_session(&session, &statement, &[])
+                            .map(|reply| reply.record_sets);
+                        let _ = response.send(result);
+                    }
                     SessionRequest::DropPrepared {
                         statement_id,
                         response,
@@ -1059,6 +1071,14 @@ impl AnalyzeSessionDatabase {
         result
             .recv()
             .map_err(|_| TestError::new("canonical analyze session dropped its response"))?
+    }
+
+    fn query_statement_batch_rows(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
+        let statement = statement.to_owned();
+        self.send_test_request(|response| SessionRequest::QueryStatementBatch {
+            statement,
+            response,
+        })?
     }
 
     fn drop_prepared_statement_metadata(&self, statement_id: u64) -> TestResult {
@@ -1433,6 +1453,10 @@ impl Database for AnalyzeSessionDatabase {
             arguments,
             response,
         })?
+    }
+
+    fn query_statement_batch(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
+        self.query_statement_batch_rows(statement)
     }
 
     fn drop_prepared_statement(&self, statement_id: u64) -> TestResult {

@@ -298,28 +298,49 @@ pub fn TestInstancePlanCacheUpdateSpecifiedPartition() {
     insert_rows(&mut harness.tk, "insert into t1 values", &values);
     insert_rows(&mut harness.tk, "insert into t2 values", &values);
     exec(&mut harness.tk, "set @v=1");
+    let mut statements = String::new();
     for _ in 0..100 {
         let partition = rand::intn(5);
-        if partition < 4 {
-            exec(
-                &mut harness.tk,
-                &format!("prepare st from 'update t1 partition(p{partition}) set b=b+?'"),
-            );
-            exec(&mut harness.tk, "execute st using @v");
-            exec(&mut harness.tk, "execute st using @v");
-            query(&harness.tk, "select @@last_plan_from_cache").Check(vec![vec!["1"]]);
-            exec(
-                &mut harness.tk,
-                &format!("update t2 partition(p{partition}) set b=b+2"),
-            );
+        let (prepared_update, direct_update) = if partition < 4 {
+            (
+                format!("update t1 partition(p{partition}) set b=b+?"),
+                format!("update t2 partition(p{partition}) set b=b+2"),
+            )
         } else {
-            exec(&mut harness.tk, "prepare st from 'update t1 set b=b+?'");
-            exec(&mut harness.tk, "execute st using @v");
-            exec(&mut harness.tk, "execute st using @v");
-            query(&harness.tk, "select @@last_plan_from_cache").Check(vec![vec!["1"]]);
-            exec(&mut harness.tk, "update t2 set b=b+2");
+            (
+                "update t1 set b=b+?".to_owned(),
+                "update t2 set b=b+2".to_owned(),
+            )
+        };
+        statements.push_str(&format!(
+            "prepare st from '{prepared_update}';execute st using @v;execute st using @v;select @@last_plan_from_cache;{direct_update};select 1 as source,a,b from t1 union all select 2,a,b from t2;"
+        ));
+    }
+
+    let session = harness.tk.Session();
+    let results = session
+        .QueryStatementBatch(&statements)
+        .expect("execute specified-partition update matrix");
+    assert_eq!(results.len(), 200);
+    for iteration in 0..100 {
+        assert_eq!(
+            results[iteration * 2].string_rows(),
+            vec![vec!["1".to_owned()]],
+            "iteration {iteration} must hit the instance plan cache"
+        );
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for mut row in results[iteration * 2 + 1].string_rows() {
+            let source = row.remove(0);
+            match source.as_str() {
+                "1" => left.push(row),
+                "2" => right.push(row),
+                _ => panic!("unexpected comparison source {source}"),
+            }
         }
-        rows_equal(&harness.tk, "select * from t1", "select * from t2");
+        left.sort();
+        right.sort();
+        assert_eq!(left, right, "iteration {iteration}");
     }
 }
 

@@ -189,6 +189,13 @@ pub trait Database: Send + Sync + 'static {
         ))
     }
 
+    /// Execute one multi-statement batch and return every result set in order.
+    fn query_statement_batch(&self, _statement: &str) -> TestResult<Vec<QueryRows>> {
+        Err(TestError::new(
+            "database does not expose multi-statement result batches",
+        ))
+    }
+
     /// Drop one statement previously returned by [`Database::prepare_statement`].
     fn drop_prepared_statement(&self, _statement_id: u64) -> TestResult {
         Err(TestError::new(
