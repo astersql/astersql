@@ -21,6 +21,8 @@ legacy-tasks = ["task-1429"]
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
 "astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../../tablecodec" }
+"astersql-types" = { package = "astersql-types", path = "../../../../types" }
 "astersql-util-codec" = { package = "astersql-util-codec", path = "../../../../util/codec" }
 protobuf = "=2.8.0"
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }

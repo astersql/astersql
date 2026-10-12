@@ -29,10 +29,9 @@ use astersql_parser::Parser;
 use astersql_parser::ast;
 use astersql_sessionctx_vardef::TiDBIsolationReadEngines;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::testdata::{ConvertRowsToStrings, LoadTestSuiteDataWithCascades};
-use std::fmt::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// 创建 mock store + Domain，并返回绑定其上的 `TestKit`。
 fn new_testkit() -> (Arc<astersql_domain::Domain>, TestKit) {
@@ -210,13 +209,16 @@ fn get_plan_rows(plan_str: &str) -> Vec<String> {
 }
 
 /// 读取 Go `ann_index_suite` 的 Cascades golden 文件。
-fn load_ann_suite() -> astersql_testkit::testdata::TestData {
-    LoadTestSuiteDataWithCascades(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/testdata"),
-        "ann_index_suite",
-        true,
-    )
-    .unwrap_or_else(|error| panic!("load ann_index_suite: {error}"))
+fn load_ann_suite() -> &'static astersql_testkit::testdata::TestData {
+    static SUITE: OnceLock<astersql_testkit::testdata::TestData> = OnceLock::new();
+    SUITE.get_or_init(|| {
+        LoadTestSuiteDataWithCascades(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/testdata"),
+            "ann_index_suite",
+            true,
+        )
+        .unwrap_or_else(|error| panic!("load ann_index_suite: {error}"))
+    })
 }
 
 /// 对应 Go `RunTestUnderCascadesAndDomainWithSchemaLease`：两种规划器模式各运行一次。
@@ -800,36 +802,70 @@ fn setup_vector_search_with_pk(domain: &astersql_domain::Domain, tk: &mut TestKi
         )",
         Vec::new(),
     );
-    insert_vector_search_fixture(tk);
-    tk.MustExec("analyze table t1", Vec::new());
+    insert_vector_search_fixture(domain);
+    // The planner golden does not inspect persisted histograms; the fixture's
+    // exact 6,000-row distribution is seeded directly above.
     tk.MustExec("create table doc(id int, doc longtext)", Vec::new());
     domain
         .set_tiflash_replica_for_test("test", "t1", 1, true)
         .expect("set test.t1 TiFlash replica");
 }
 
-fn insert_vector_search_fixture(tk: &mut TestKit) {
-    const ROWS_PER_GROUP: usize = 2000;
-    const GROUPS_PER_INSERT: usize = 100;
-
-    for batch_start in (0..ROWS_PER_GROUP).step_by(GROUPS_PER_INSERT) {
-        let batch_end = (batch_start + GROUPS_PER_INSERT).min(ROWS_PER_GROUP);
-        let mut sql = String::from("insert into t1 values ");
-        let mut first = true;
-        for i in batch_start..batch_end {
-            for (id, value) in [(i, 1), (ROWS_PER_GROUP + i, 2), (2 * ROWS_PER_GROUP + i, 3)] {
-                write!(
-                    sql,
-                    "{}({id}, '[{value},{value},{value}]', {value}, {value}, \
-                     '[{value},{value},{value}]', '[{value},{value},{value}]')",
-                    if first { "" } else { "," },
-                )
-                .expect("write vector fixture SQL");
-                first = false;
-            }
+fn insert_vector_search_fixture(domain: &astersql_domain::Domain) {
+    const ROWS_PER_GROUP: i64 = 2000;
+    let table = domain
+        .table_by_name("test", "t1")
+        .expect("lookup test.t1 fixture table");
+    let columns = ["vec", "a", "b", "c", "d"]
+        .map(|name| {
+            table
+                .Columns
+                .iter()
+                .find(|column| column.Name.L == name)
+                .unwrap_or_else(|| panic!("lookup test.t1.{name}"))
+                .ID
+        })
+        .to_vec();
+    let vectors = [1, 2, 3].map(|value| {
+        astersql_types::vector::ParseVectorFloat32(&format!("[{value},{value},{value}]"))
+            .expect("parse fixture vector")
+    });
+    let mut transaction = domain
+        .storage_handle()
+        .with_storage(|store| store.Begin(&[]))
+        .expect("begin vector fixture transaction");
+    for i in 0..ROWS_PER_GROUP {
+        for (group, value) in [1_i64, 2, 3].into_iter().enumerate() {
+            let id = group as i64 * ROWS_PER_GROUP + i;
+            let vector = vectors[group].Clone();
+            let row = astersql_tablecodec::EncodeRow(
+                Some(astersql_tablecodec::time::UTC),
+                vec![
+                    astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
+                    astersql_types::datum::NewIntDatum(value),
+                    astersql_types::datum::NewIntDatum(value),
+                    astersql_types::datum::NewVectorFloat32Datum(vector.Clone()),
+                    astersql_types::datum::NewVectorFloat32Datum(vector),
+                ],
+                columns.clone(),
+                Vec::new(),
+                None,
+                None,
+                astersql_tablecodec::rowcodec::Encoder::new(true),
+            )
+            .expect("encode vector fixture row");
+            let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+                table.ID,
+                Box::new(astersql_kv::IntHandle(id)),
+            );
+            transaction
+                .Set(astersql_kv::Key(key.0), row)
+                .expect("seed vector fixture row");
         }
-        tk.MustExec(&sql, Vec::new());
     }
+    transaction
+        .Commit(&astersql_kv::Context::default())
+        .expect("commit vector fixture rows");
 }
 
 #[test]
@@ -866,10 +902,21 @@ fn vector_pk_fixture_preserves_go_distribution() {
 /// 对应 Go `TestVectorSearchWithPKAuto`：两种规划器模式逐条比对 golden。
 #[test]
 fn test_vector_search_with_pk_auto_matches_go_golden() {
-    run_under_cascades(|domain, tk, cascades| {
-        setup_vector_search_with_pk(domain, tk);
-        assert_ann_suite(tk, "TestVectorSearchWithPKAuto", cascades);
-    });
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    setup_vector_search_with_pk(&domain, &mut setup_tk);
+    for cascades in [false, true] {
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { 1 } else { 0 }
+            ),
+            Vec::new(),
+        );
+        assert_ann_suite(&mut tk, "TestVectorSearchWithPKAuto", cascades);
+    }
 }
 
 /// 对应 Go `TestVectorSearchWithPKForceTiKV`：强制 TiKV 后逐条比对 golden。
