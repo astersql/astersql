@@ -1712,7 +1712,13 @@ fn TestSpecialSQLInStalenessTxn() {
 #[test]
 fn TestAsOfTimestampCompatibility() {
     let _serial = serial_guard();
-    let mut tk = fixture("compat_txn");
+    // Go creates a fresh mock store for this compatibility matrix, but the
+    // assertions do not depend on waiting out a schema lease. Keep the same
+    // isolated Domain while avoiding an unrelated lease shutdown delay.
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
+    let mut tk = NewTestKit(store);
+    tk.MustExec("create database `stale_compat_txn`", Vec::new());
+    tk.MustExec("use `stale_compat_txn`", Vec::new());
     let ts = history(&mut tk);
     for begin in [
         format!("start transaction read only as of timestamp {ts}"),
