@@ -53,29 +53,14 @@ fn parse_stmt(sql: &str) -> Box<dyn ast::Node> {
         .unwrap_or_else(|error| panic!("parse `{sql}`: {error}"))
 }
 
-/// 对齐 Go `RunTestUnderCascades`：每种 planner 模式使用独立 store/session。
-fn run_test_under_cascades<F>(mut test: F)
-where
-    F: FnMut(&Arc<astersql_domain::Domain>, &mut TestKit, &str),
-{
-    for cascades in ["off", "on"] {
-        let (domain, mut tk) = new_testkit();
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec(
-            &format!("set @@tidb_enable_cascades_planner = {cascades}"),
-            Vec::new(),
-        );
-        test(&domain, &mut tk, cascades);
-    }
-}
-
 // TestGroupBySchema 对应 Go：复杂 EXISTS 子查询 schema 推导 + plan_tree。
 /// 校验复合主键表元数据，以及 EXISTS 子查询 SQL 可解析且含 Where。
 #[test]
 fn TestGroupBySchema() {
-    run_test_under_cascades(|domain, tk, cascades| {
-        tk.MustExec(
-            r#"CREATE TABLE mysql_3 (
+    let (domain, mut tk) = new_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        r#"CREATE TABLE mysql_3 (
     col_int_auto_increment INT(10) AUTO_INCREMENT,
     col_pk_char CHAR(60) NOT NULL,
     col_pk_date DATE NOT NULL,
@@ -84,6 +69,14 @@ fn TestGroupBySchema() {
     col_date DATE,
     PRIMARY KEY (col_int_auto_increment, col_pk_char, col_datetime, col_int, col_date)
 )"#,
+        Vec::new(),
+    );
+
+    // The fixture is immutable after creation. Switching the session variable exercises both
+    // planner modes while avoiding a second identical mock domain and DDL bootstrap.
+    for cascades in ["off", "on"] {
+        tk.MustExec(
+            &format!("set @@tidb_enable_cascades_planner = {cascades}"),
             Vec::new(),
         );
         let table = domain
@@ -176,7 +169,7 @@ WHERE EXISTS
             .map(|(id, task, access, info)| [id, task, access, info].map(str::to_owned).to_vec())
             .collect::<Vec<_>>();
         assert_eq!(plan.Rows(), expected_rows, "planner={cascades}");
-    });
+    }
 }
 
 // TestLogicalPlanTypeRegression 对应 Go：year 比较 + UNION 类型提升。
