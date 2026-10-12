@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 75 的测试从 4.089 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [ ] 保存 before 的预期失败证据和阶段耗时分解。目标 lib 被无关并行改动编译失败阻断，未产生有效 sample。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。已完成 fmt 和局部 testkit check，待外部编译错误消失后回归性能与 lint。
+- [x] 自审、更新状态并提交；因待回归验证保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.089s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- Rust 测试固定执行 50 轮并每轮 sleep 50ms，而 Go 在 `ReadFromTableCache` 首次为真时立即退出；这是至少 2.5s 的可证明热点。
+- `before` 脚本的编译预热因 `pkg/expression/integration_test/integration_part1_aster_unit_test.rs:1074-1239` 的 28 个 `E0308` 失败：该文件的 `Rows(...)` 产生 `Vec<Vec<String>>`，但并行改动中的 helper 仍要求 `Vec<Vec<&str>>`。该文件不在任务 75 改动范围，且本任务开始前已处于未提交修改状态。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：新增仅读 `ReadFromTableCache` 测试观测接口，将 Rust 轮询改为与 Go 相同的“最多 50 次、首次命中即退出”，并补齐轮询后和 prepared execute 后的两处真值断言。理由：直接删除 sleep 或固定只跑一次会弱化 Go 语义。日期/作者：2026-10-13 / Codex。
+- 决策：状态记为“已完成，待回归验证”并保留任务文件。理由：无关并行改动使目标 lib 无法编译，但本任务的 testkit 局部接线已经独立编译通过。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已完成与 Go 对齐的最小修复：保留全部 SQL、最多 50 次轮询、50ms 退避、prepared plan cache 断言和真实 Domain/TestKit 依赖，只在真正读到 table cache 后提前退出。
+- 实际 Cargo 槽位为 `7`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`。`cargo fmt --all` 退出码 0；`cargo check --locked --package astersql-testkit` 退出码 0。
+- `before` 精确命令退出码 1，TSV `target/rust-performance/task-0075-before.tsv` 只有表头，有效测试数 0；原因是上述无关 `integration_part1` 编译错误，不是任务 75 的代码失败。因同一 lib target 无法绕过该文件，after 五次性能数据与 `make lint` 未在本地完成。
+- 自审确认未删减 case、SQL、断言、轮询上限或真实依赖，未修改只读 `plan.md`，未增加本地依赖覆盖。待并行改动恢复目标 lib 编译后，需重跑 before/after 五次与 `make lint`。

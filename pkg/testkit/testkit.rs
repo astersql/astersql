@@ -59,6 +59,7 @@ pub struct TestSessionVars {
     mem_tracker_max_consumed: i64,
     disk_tracker_max_consumed: i64,
     cte_storage_map_is_empty: bool,
+    read_from_table_cache: bool,
 }
 
 /// Effective statement hints observed on the concrete execution path.
@@ -158,6 +159,7 @@ impl TestSession {
             mem_tracker_max_consumed: self.database.mem_tracker_max_consumed_for_test(),
             disk_tracker_max_consumed: self.database.disk_tracker_max_consumed_for_test(),
             cte_storage_map_is_empty: self.database.cte_storage_map_is_empty_for_test(),
+            read_from_table_cache: self.database.read_from_table_cache_for_test(),
         }
     }
 
@@ -324,6 +326,11 @@ impl TestSessionVars {
     /// 对应 Go `StmtCtx.CTEStorageMap == nil` 的清理断言。
     pub fn CTEStorageMapIsEmpty(&self) -> bool {
         self.cte_storage_map_is_empty
+    }
+
+    /// Whether the latest statement read rows through the table cache.
+    pub fn ReadFromTableCache(&self) -> bool {
+        self.read_from_table_cache
     }
 }
 

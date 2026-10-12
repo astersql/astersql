@@ -354,11 +354,17 @@ fn TestPreparePlanCacheOnCachedTable() {
     tk.MustExec("SET tidb_enable_prepared_plan_cache=ON", Vec::new());
     tk.MustExec("CREATE TABLE t(a INT)", Vec::new());
     tk.MustExec("ALTER TABLE t CACHE", Vec::new());
+    let mut read_from_table_cache = false;
     for _ in 0..50 {
         tk.MustQuery("SELECT * FROM t WHERE a = 1", Vec::new())
             .Check(Vec::<Vec<&str>>::new());
+        if tk.Session().GetSessionVars().ReadFromTableCache() {
+            read_from_table_cache = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    assert!(read_from_table_cache);
     tk.MustExec(
         "PREPARE stmt FROM 'SELECT * FROM t WHERE a = ?'",
         Vec::new(),
@@ -368,6 +374,7 @@ fn TestPreparePlanCacheOnCachedTable() {
     tk.MustQuery("SELECT @@last_plan_from_cache", Vec::new())
         .Check(Rows(&["0"]));
     tk.MustExec("EXECUTE stmt USING @a", Vec::new());
+    assert!(tk.Session().GetSessionVars().ReadFromTableCache());
     tk.MustQuery("SELECT @@last_plan_from_cache", Vec::new())
         .Check(Rows(&["1"]));
 }

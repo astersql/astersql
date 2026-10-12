@@ -329,6 +329,11 @@ pub trait Database: Send + Sync + 'static {
         None
     }
 
+    /// Whether the latest statement read rows through the table cache.
+    fn read_from_table_cache_for_test(&self) -> bool {
+        false
+    }
+
     /// Enable or disable the session-local inspection-table snapshot cache.
     fn set_inspection_table_cache_enabled_for_test(&self, _enabled: bool) -> TestResult {
         Err(TestError::new(

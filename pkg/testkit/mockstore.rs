@@ -429,6 +429,9 @@ enum SessionRequest {
     StaleReadState {
         response: mpsc::SyncSender<RuntimeStaleReadState>,
     },
+    ReadFromTableCache {
+        response: mpsc::SyncSender<bool>,
+    },
     SetInspectionTableCacheEnabled {
         enabled: bool,
         response: mpsc::SyncSender<()>,
@@ -888,6 +891,11 @@ impl AnalyzeSessionDatabase {
                     SessionRequest::StaleReadState { response } => {
                         let _ = response.send(session.StaleReadStateForTest());
                     }
+                    SessionRequest::ReadFromTableCache { response } => {
+                        let read_from_table_cache =
+                            session.WithSessionVars(|variables| variables.ReadFromTableCache());
+                        let _ = response.send(read_from_table_cache);
+                    }
                     SessionRequest::SetInspectionTableCacheEnabled { enabled, response } => {
                         session.SetInspectionTableCacheEnabledForTest(enabled);
                         let _ = response.send(());
@@ -1282,6 +1290,10 @@ impl AnalyzeSessionDatabase {
         self.send_test_request(|response| SessionRequest::StaleReadState { response })
     }
 
+    pub fn read_from_table_cache_for_test(&self) -> TestResult<bool> {
+        self.send_test_request(|response| SessionRequest::ReadFromTableCache { response })
+    }
+
     pub fn set_inspection_table_cache_enabled_for_test(&self, enabled: bool) -> TestResult {
         self.send_test_request(|response| SessionRequest::SetInspectionTableCacheEnabled {
             enabled,
@@ -1545,6 +1557,11 @@ impl Database for AnalyzeSessionDatabase {
             self.stale_read_state_for_test()
                 .unwrap_or_else(|error| panic!("read stale-read state: {error}")),
         )
+    }
+
+    fn read_from_table_cache_for_test(&self) -> bool {
+        self.read_from_table_cache_for_test()
+            .unwrap_or_else(|error| panic!("read table-cache statement state: {error}"))
     }
 
     fn set_inspection_table_cache_enabled_for_test(&self, enabled: bool) -> TestResult {
