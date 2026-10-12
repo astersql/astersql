@@ -2127,10 +2127,12 @@ fn TestStaleReadCompatibility() {
     tk.MustExec("create table t(id int primary key,v int)", Vec::new());
     tk.MustExec("insert into t values(1,10)", Vec::new());
     let first_ts = current_ts(&mut tk);
-    std::thread::sleep(Duration::from_secs(3));
     tk.MustExec("insert into t values(2,20)", Vec::new());
     let second_ts = current_ts(&mut tk);
-    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        first_ts < second_ts,
+        "row1 snapshot TSO must precede row2 snapshot TSO"
+    );
     tk.MustExec(
         &format!("set transaction read only as of timestamp {first_ts}"),
         Vec::new(),
@@ -2154,30 +2156,23 @@ fn TestStaleReadCompatibility() {
         Rows(&["1 10", "2 20"]),
         "SET TRANSACTION must be consumed by the rejected AS OF statement"
     );
-    tk.MustExec("set @@tidb_read_staleness='-5'", Vec::new());
+    tk.MustExec("set @@tidb_read_staleness='-1'", Vec::new());
     assert!(tk.StaleReadStateForTest().session_read_ts.is_some());
-    let injected_now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after epoch")
-        .as_secs();
-    let now = testfailpoint::enable(
-        "github.com/pingcap/tidb/pkg/expression/injectNow",
-        &format!("2*return({injected_now})"),
-    );
-    let stale = testfailpoint::enable(
-        "github.com/pingcap/tidb/pkg/executor/assertStaleTSO",
-        &format!("1*return({})", injected_now - 5),
-    );
+    // Go advances wall time before evaluating -1 second. The mock oracle
+    // advances logically, so inject an equivalent logical "now" one second
+    // after row1 and avoid making the test wait on the wall clock.
+    const MOCK_STALE_TSO: &str =
+        "github.com/pingcap/tidb/pkg/sessiontxn/staleread/mockStaleReadTSO";
+    let stale_now_ts = first_ts + (1_000_u64 << 18);
+    let now = testfailpoint::enable(MOCK_STALE_TSO, &format!("1*return({stale_now_ts})"));
     assert_eq!(
         tk.MustQuery("select * from t order by id", Vec::new())
             .Rows(),
         Rows(&["1 10"]),
         "tidb_read_staleness"
     );
-    assert!(
-        testfailpoint::eval_string("github.com/pingcap/tidb/pkg/executor/assertStaleTSO").is_none()
-    );
-    drop(stale);
+    assert!(testfailpoint::eval_string(MOCK_STALE_TSO).is_none());
+    drop(now);
     assert_as_of_rows(&tk, second_ts, &["1 10", "2 20"]);
     tk.MustExec(
         &format!("set transaction read only as of timestamp {second_ts}"),
@@ -2210,10 +2205,7 @@ fn TestStaleReadCompatibility() {
     let resumed = tk.StaleReadStateForTest();
     assert!(!resumed.transaction_active);
     assert!(resumed.session_read_ts.is_some());
-    let stale = testfailpoint::enable(
-        "github.com/pingcap/tidb/pkg/executor/assertStaleTSO",
-        &format!("1*return({})", injected_now - 5),
-    );
+    let now = testfailpoint::enable(MOCK_STALE_TSO, &format!("1*return({stale_now_ts})"));
     assert_eq!(
         tk.MustQuery("select * from t order by id", Vec::new())
             .Rows(),
@@ -2221,12 +2213,9 @@ fn TestStaleReadCompatibility() {
         "session staleness must resume after stale COMMIT"
     );
     assert!(
-        testfailpoint::eval_string("github.com/pingcap/tidb/pkg/executor/assertStaleTSO").is_none()
+        testfailpoint::eval_string(MOCK_STALE_TSO).is_none(),
+        "resumed session-staleness read must consume the injected logical TSO"
     );
-    assert!(
-        testfailpoint::eval_string("github.com/pingcap/tidb/pkg/expression/injectNow").is_none()
-    );
-    drop(stale);
     drop(now);
     tk.MustExec("set @@tidb_read_staleness=''", Vec::new());
     assert_eq!(tk.StaleReadStateForTest().session_read_ts, None);
