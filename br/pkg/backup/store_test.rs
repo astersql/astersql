@@ -27,7 +27,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::limit::NewResourceMemoryLimiter;
-use crate::store::{StartTimeoutRecv, set_timeout_one_response_for_test, startBackup};
+use crate::store::{
+    StartTimeoutRecv, TestTimeoutClock, set_timeout_one_response_for_test,
+    start_backup_with_timeout_clock,
+};
 use crate::stubs::backuppb::{BackupClient, BackupRequest, BackupResponse, BackupStream};
 use crate::stubs::{Context, Error, Result};
 
@@ -135,15 +138,21 @@ fn test_timeout_recv() {
 
     // Just Timeout Once — 首包 sleep 1s > 800ms，期望 startBackup 返回 Err。
     {
+        let clock = Arc::new(TestTimeoutClock::new());
+        let recv_clock = Arc::clone(&clock);
         let (timeout_observed, observation) = mpsc::sync_channel(1);
-        let err = startBackup(
+        let err = start_backup_with_timeout_clock(
             &ctx,
             0,
             Arc::new(NewResourceMemoryLimiter(100)),
             BackupRequest::default(),
             Arc::new(MockBackupClient {
                 recv_func: Arc::new(move |ctx| {
-                    thread::sleep(Duration::from_secs(1));
+                    // Advance the same logical 1s used by Go, without a wall-clock sleep.
+                    recv_clock.advance(Duration::from_secs(1));
+                    while ctx.Err().is_none() {
+                        thread::yield_now();
+                    }
                     Err(record_timeout_err(ctx, &timeout_observed))
                 }),
             }),
@@ -152,6 +161,7 @@ fn test_timeout_recv() {
                 let (tx, _rx) = mpsc::channel();
                 tx
             },
+            Some(clock),
         );
         assert!(err.is_err(), "first-packet timeout must error");
         assert!(observation.recv().unwrap());
@@ -159,6 +169,8 @@ fn test_timeout_recv() {
 
     // Timeout Not At First — 前 15 次及时 Refresh，第 16 次卡死触发超时。
     {
+        let clock = Arc::new(TestTimeoutClock::new());
+        let recv_clock = Arc::clone(&clock);
         let (timeout_observed, observation) = mpsc::sync_channel(1);
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
@@ -172,7 +184,7 @@ fn test_timeout_recv() {
             }
             received
         });
-        let err = startBackup(
+        let err = start_backup_with_timeout_clock(
             &ctx,
             0,
             Arc::new(NewResourceMemoryLimiter(100)),
@@ -185,17 +197,21 @@ fn test_timeout_recv() {
                     }
                     let c = count2.load(Ordering::SeqCst);
                     if c == 15 {
-                        thread::sleep(Duration::from_secs(1));
+                        recv_clock.advance(Duration::from_secs(1));
+                        while ctx.Err().is_none() {
+                            thread::yield_now();
+                        }
                         return Err(record_timeout_err(ctx, &timeout_observed));
                     }
                     count2.fetch_add(1, Ordering::SeqCst);
-                    // 80ms << 800ms，保证 Refresh 能重置看门狗。
-                    thread::sleep(Duration::from_millis(80));
+                    // Advance the same logical 80ms used by Go; Refresh resets it afterward.
+                    recv_clock.advance(Duration::from_millis(80));
                     Ok(Some(BackupResponse::default()))
                 }),
             }),
             1,
             tx,
+            Some(clock),
         );
         assert!(err.is_err());
         // 恰好成功投递 15 包后超时，与 Go 断言一致。

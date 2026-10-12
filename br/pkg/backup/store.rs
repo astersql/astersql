@@ -14,7 +14,7 @@
 //! 不在此文件建立 PD/TiKV 连接，客户端由调用方注入。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -102,6 +102,8 @@ pub struct timeoutRecv {
     join: Mutex<Option<JoinHandle<()>>>,
     /// 幂等 Stop：重复调用直接返回。
     stopped: AtomicBool,
+    /// 可控逻辑时钟仅由性能测试注入；生产路径始终为 `None`。
+    test_clock: Option<Arc<TestTimeoutClock>>,
 }
 
 impl timeoutRecv {
@@ -109,6 +111,9 @@ impl timeoutRecv {
     pub fn Refresh(&self) {
         if self.parent_done.load(Ordering::SeqCst) {
             return;
+        }
+        if let Some(clock) = &self.test_clock {
+            clock.reset();
         }
         if let Some(tx) = self.refresh_tx.lock().unwrap().as_ref() {
             let _ = tx.try_send(());
@@ -128,6 +133,35 @@ impl timeoutRecv {
             let _ = h.join();
         }
         self.cancel.cancel(None);
+    }
+}
+
+/// Controllable logical clock for timeout tests.
+///
+/// It preserves the Go test's 800ms/80ms/1s timeline without spending wall-clock time.
+#[doc(hidden)]
+pub(crate) struct TestTimeoutClock {
+    elapsed_nanos: AtomicU64,
+}
+
+impl TestTimeoutClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            elapsed_nanos: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn advance(&self, duration: Duration) {
+        let nanos = duration.as_nanos().min(u64::MAX as u128) as u64;
+        self.elapsed_nanos.fetch_add(nanos, Ordering::SeqCst);
+    }
+
+    fn reset(&self) {
+        self.elapsed_nanos.store(0, Ordering::SeqCst);
+    }
+
+    fn expired(&self, timeout: Duration) -> bool {
+        self.elapsed_nanos.load(Ordering::SeqCst) >= timeout.as_nanos() as u64
     }
 }
 
@@ -163,6 +197,15 @@ pub fn StartTimeoutRecv(
     timeout: Duration,
     storeID: u64,
 ) -> (Context, Arc<timeoutRecv>) {
+    start_timeout_recv(ctx, timeout, storeID, None)
+}
+
+fn start_timeout_recv(
+    ctx: &Context,
+    timeout: Duration,
+    storeID: u64,
+    test_clock: Option<Arc<TestTimeoutClock>>,
+) -> (Context, Arc<timeoutRecv>) {
     let (cctx, cancel) = Context::WithCancelCause(ctx);
     let parent_done = Arc::new(AtomicBool::new(false));
     let parent_flag = parent_done.clone();
@@ -183,8 +226,16 @@ pub fn StartTimeoutRecv(
     let (tx, rx) = mpsc::sync_channel::<()>(1);
     let cancel_for_loop = cancel.clone();
     let parent_for_loop = parent_done.clone();
+    let clock_for_loop = test_clock.clone();
     let join = thread::spawn(move || {
-        loop_timeout(rx, timeout, storeID, parent_for_loop, cancel_for_loop);
+        loop_timeout(
+            rx,
+            timeout,
+            storeID,
+            parent_for_loop,
+            cancel_for_loop,
+            clock_for_loop,
+        );
     });
 
     let trecv = Arc::new(timeoutRecv {
@@ -194,6 +245,7 @@ pub fn StartTimeoutRecv(
         refresh_tx: Mutex::new(Some(tx)),
         join: Mutex::new(Some(join)),
         stopped: AtomicBool::new(false),
+        test_clock,
     });
     (cctx, trecv)
 }
@@ -206,17 +258,33 @@ fn loop_timeout(
     storeID: u64,
     parent_done: Arc<AtomicBool>,
     cancel: crate::stubs::CancelCauseFunc,
+    test_clock: Option<Arc<TestTimeoutClock>>,
 ) {
     let _ = storeID;
     loop {
         if parent_done.load(Ordering::SeqCst) {
             return;
         }
-        match rx.recv_timeout(timeout) {
+        let wait = if let Some(clock) = &test_clock {
+            if clock.expired(timeout) {
+                Err(RecvTimeoutError::Timeout)
+            } else {
+                rx.recv_timeout(Duration::from_millis(1))
+            }
+        } else {
+            rx.recv_timeout(timeout)
+        };
+        match wait {
             Ok(()) => {
                 // refreshed — 成功收到心跳，下一轮重新计时
             }
             Err(RecvTimeoutError::Timeout) => {
+                if test_clock
+                    .as_ref()
+                    .is_some_and(|clock| !clock.expired(timeout))
+                {
+                    continue;
+                }
                 // 与 Go 错误文案一致，供上层识别超时取消原因。
                 cancel.cancel(Some(Error::new("receive a backup response timeout")));
                 return;
@@ -316,6 +384,29 @@ pub fn startBackup(
     concurrency: u32,
     respCh: Sender<Option<ResponseAndStore>>,
 ) -> Result<()> {
+    start_backup_with_timeout_clock(
+        pctx,
+        storeID,
+        limiter,
+        backupReq,
+        backupCli,
+        concurrency,
+        respCh,
+        None,
+    )
+}
+
+#[doc(hidden)]
+pub(crate) fn start_backup_with_timeout_clock(
+    pctx: &Context,
+    storeID: u64,
+    limiter: Arc<ResourceConcurrentLimiter>,
+    backupReq: BackupRequest,
+    backupCli: Arc<dyn BackupClient>,
+    concurrency: u32,
+    respCh: Sender<Option<ResponseAndStore>>,
+    test_clock: Option<Arc<TestTimeoutClock>>,
+) -> Result<()> {
     if pctx.Done() {
         return Err(pctx.Err().unwrap_or_else(|| Error::new("context canceled")));
     }
@@ -323,7 +414,7 @@ pub fn startBackup(
     // 按并发度切分 SubRanges，每个分片独立重试退避。
     let reqs = SplitBackupReqRanges(backupReq, concurrency as isize);
     let timeout = effective_timeout();
-    let (ctx, timerecv) = StartTimeoutRecv(pctx, timeout, storeID);
+    let (ctx, timerecv) = start_timeout_recv(pctx, timeout, storeID, test_clock);
     let pool = WorkerPool::new(concurrency, "store_backup");
     let mut jobs = Vec::new();
     let ectx = ctx.clone();
