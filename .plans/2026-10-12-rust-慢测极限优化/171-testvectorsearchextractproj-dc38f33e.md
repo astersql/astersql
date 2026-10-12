@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 171 的测试从 2.820 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,32 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并按阶段动态取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存满足门槛的 after 与 Ready lint 证据；当前并行 workspace 在持有性能锁期间仍运行其他 Cargo/rustc，留待安静窗口回归。
+- [x] 自审、更新状态并准备提交；按“待回归验证”协议保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.820s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before（槽位 7，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`）精确选择 1 项，5 次功能均通过，但耗时为 `12.722300 / 4.831492 / 1.980540 / 2.648544 / 3.912302s`，脚本退出码 1，报告为 `target/rust-performance/task-0171-before.tsv`。
+- 临时阶段计时显示通用 fixture 的两次 setup 分别约 `725ms`、`723ms`；改用 planner fixture 并只真实创建 ANALYZE 所需的规范 `mysql.analyze_options` 后，setup 降至约 `81ms`、`72ms`。首次分区表 setup/ANALYZE 约 `306ms`，其余查询为几十毫秒。
+- 双独立 planner store/domain 并行执行全部默认/fix-control-off 工作负载后，一轮 5 次结果为 `0.549713 / 0.554615 / 0.544473 / 0.569848 / 0.545491s`，功能全通过但仍略超门槛。
+- 尝试单 store、双数据库/双 session 会因共享 Domain 的 DDL/统计互斥回退到 `0.608012 / 0.634749 / 0.635988 / 0.632673 / 0.620330s`，已撤回。
+- 最终 after7 使用双独立 store/domain；预编译在槽位 10 成功，严格命令精确选择 1 项且五次功能全通过，但持有性能锁时仍可观察到其他 Cargo/rustc 高负载，样本 `2.373598 / 2.308259 / 2.265791 / 1.793869 / 0.658813s` 随外部负载退潮而下降，脚本退出码 1。这违反性能测量独占前提，不能作为实现稳定下界或通过证据。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：使用现有 `CreatePlannerTestStoreAndDomain`，并在每个独立 fixture 中创建规范 `mysql.analyze_options`。理由：保留生产 Domain、事务 KV、DDL、session、optimizer 与真实 ANALYZE，只跳过本 planner 用例不使用的其余统计系统表预引导。日期/作者：2026-10-13 / Codex。
+- 决策：默认与 `56318:OFF` 两套完整 Go 对齐 workload 使用独立 store/domain 并行执行。理由：两块无数据依赖；不减少 SQL、case、断言、数据规模或真实边界，只消除串行叠加。日期/作者：2026-10-13 / Codex。
+- 决策：标记 `已完成，待回归验证` 并保留任务文件。理由：代码已格式化、编译且原功能反复通过，但共享 workspace 在性能锁内仍有外部 Cargo/rustc，无法取得合规隔离五次门槛证据；Ready lint 也未在该高负载窗口执行。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 改动范围仅为 `integration_part1_aster_unit_test.rs`：目标测试使用轻量但真实的 planner fixture，显式补齐规范 `mysql.analyze_options`，并并行运行默认与 fix-control-off 两套完整 workload。临时计时插桩已删除。
+- 正确性：所有已完成的 before/after 样本均精确执行 1 个目标测试且功能通过；没有删除 case、SQL 或断言。
+- 格式化：`cargo fmt --all` 多次退出码 0；最终一次使用槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`。
+- 待回归：在无其他 Cargo/rustc 负载且性能锁确实全局生效的窗口，重新运行任务给定 after 命令并要求五次最大值 `<=0.499s`；随后运行 `make lint`。当前未获得这两项 Ready 完成证据，因此保留本文件。
+- 自审：仅改变目标测试 fixture/调度，保留 AsterSQL/PingCAP 版权、两套会话语义、全部真实 DDL/DML/ANALYZE/查询和逐项断言；未改 Cargo manifest、依赖覆盖、数据规模或 timeout。

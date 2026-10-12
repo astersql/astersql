@@ -20,7 +20,7 @@
 
 #![allow(non_snake_case)]
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::{Rows, TestKit};
 use astersql_types::vector::{CheckVectorDimValid, ParseVectorFloat32};
 
@@ -34,6 +34,27 @@ fn new_testkit() -> TestKit {
     let (store, _domain) = CreateMockStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
+    tk
+}
+
+fn new_vector_search_testkit(database: &str) -> TestKit {
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("CREATE DATABASE IF NOT EXISTS mysql", Vec::new());
+    tk.MustExec(
+        "CREATE TABLE IF NOT EXISTS mysql.analyze_options(\
+         table_id BIGINT(64) NOT NULL,\
+         sample_num BIGINT(64) NOT NULL DEFAULT 0,\
+         sample_rate DOUBLE NOT NULL DEFAULT -1,\
+         buckets BIGINT(64) NOT NULL DEFAULT 0,\
+         topn BIGINT(64) NOT NULL DEFAULT -1,\
+         column_choice ENUM('DEFAULT','ALL','PREDICATE','LIST') NOT NULL DEFAULT 'DEFAULT',\
+         column_ids TEXT(19372),\
+         PRIMARY KEY(table_id) CLUSTERED)",
+        Vec::new(),
+    );
+    tk.MustExec(&format!("CREATE DATABASE {database}"), Vec::new());
+    tk.MustExec(&format!("USE {database}"), Vec::new());
     tk
 }
 
@@ -1206,12 +1227,21 @@ fn testVectorSearchInternal(tk: &mut TestKit) {
 #[test]
 /// 向量搜索投影提取覆盖普通表、分区表及 fix-control 两种会话。
 fn TestVectorSearchExtractProj() {
-    let mut tk = new_testkit();
-    testVectorSearchInternal(&mut tk);
-
-    let mut tk = new_testkit();
-    tk.MustExec("SET SESSION tidb_opt_fix_control='56318:OFF'", Vec::new());
-    testVectorSearchInternal(&mut tk);
+    std::thread::scope(|scope| {
+        let default = scope.spawn(|| {
+            let mut tk = new_vector_search_testkit("vector_search_default");
+            testVectorSearchInternal(&mut tk);
+        });
+        let fix_control_off = scope.spawn(|| {
+            let mut tk = new_vector_search_testkit("vector_search_fix_control_off");
+            tk.MustExec("SET SESSION tidb_opt_fix_control='56318:OFF'", Vec::new());
+            testVectorSearchInternal(&mut tk);
+        });
+        default.join().expect("default vector search path panicked");
+        fix_control_off
+            .join()
+            .expect("fix-control-off vector search path panicked");
+    });
 }
 
 #[test]
