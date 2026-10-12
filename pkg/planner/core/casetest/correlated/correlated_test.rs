@@ -24,7 +24,7 @@ use astersql_sessionctx_vardef::{
     DefOptEnableAlternativeLogicalPlans, TiDBOptEnableAlternativeLogicalPlans,
 };
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_util_hint::{
     ExtractTableHintsFromStmtNode, HintFlagNoDecorrelate, HintNoDecorrelate, ParsePlanHints,
     QBHintHandler, hintWarnHandler,
@@ -150,9 +150,27 @@ WHERE NOT (tlc07c2a51.col_1>=
 fn test_correlated_subquery() {
     let tlc_rows = go_must_exec_string("INSERT INTO `tlc07c2a51` VALUES");
     let tc_rows = go_must_exec_string("INSERT INTO `tc4cf4a6b` VALUES");
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let database = "test_correlated_subquery";
+    let mut setup = TestKit::new(store.clone());
+    setup.MustExec(
+        "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
+        Vec::new(),
+    );
+    setup.MustExec(&format!("create database {database}"), Vec::new());
+    setup.MustExec(&format!("use {database}"), Vec::new());
+    setup.MustExec(CREATE_TLC07C2A51, Vec::new());
+    setup.MustExec(CREATE_TC4CF4A6B, Vec::new());
+    setup.MustExec(&tlc_rows, Vec::new());
+    setup.MustExec(&tc_rows, Vec::new());
+    setup.MustExec("analyze table tlc07c2a51", Vec::new());
+    setup.MustExec("analyze table tc4cf4a6b", Vec::new());
+
     for cascades in [false, true] {
-        let mut tk = new_testkit();
-        tk.MustExec("use test", Vec::new());
+        // The fixture is immutable after setup. Keep planner rounds in separate
+        // sessions so their variables and statement state cannot leak.
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec(&format!("use {database}"), Vec::new());
         tk.MustExec(
             &format!(
                 "set @@tidb_enable_cascades_planner={}",
@@ -160,12 +178,6 @@ fn test_correlated_subquery() {
             ),
             Vec::new(),
         );
-        tk.MustExec(CREATE_TLC07C2A51, Vec::new());
-        tk.MustExec(CREATE_TC4CF4A6B, Vec::new());
-        tk.MustExec(&tlc_rows, Vec::new());
-        tk.MustExec(&tc_rows, Vec::new());
-        tk.MustExec("analyze table tlc07c2a51", Vec::new());
-        tk.MustExec("analyze table tc4cf4a6b", Vec::new());
         tk.MustQuery(CORRELATED_GROUP_CONCAT_QUERY, Vec::new())
             .Check(astersql_testkit::Rows(&[]));
         tk.MustQuery(CORRELATED_ANY_GROUP_CONCAT_QUERY, Vec::new())
