@@ -92,6 +92,7 @@
 - [ ] 完成保持语义的最小优化：被字符串参数和非主键访问路径的 typed adapter 支持缺口阻塞。
 - [ ] 保存 after、测试数量与耗时证据：未实施不等价简化，无可验收 after。
 - [x] 自审、更新阻塞状态；任务文件保留供后续扩展 typed adapter 后回归。
+- [x] 续查共享 `run_in_case` 的多值 fixture、session-owner 请求批处理与多语句批处理；全部保留原规模但均未跨过门槛。
 
 ## 意外发现
 
@@ -100,12 +101,15 @@
 - RustCodeGraph 调用链与源码确认，`execute_simple_prepared_select_through_adapter` 在 `pkg/session/runtime/dispatch.rs` 中只把 SQL user-variable 参数解析为 `i64`；本测试的 `varchar(20)` 参数因而必然回退到完整关系规划/执行路径。
 - 同一快路还通过 `simple_typed_primary_key_predicate` 限制谓词，而 Go 对齐工作负载必须保留无索引、普通索引、主键和唯一索引四种访问路径；单纯改用 TestKit 直接参数绑定或减少 `PREPARE`/`SET`/`EXECUTE` 会弱化真实 SQL 边界。
 - 临时阶段插桩未落入本任务 diff：相邻任务 21 正在同一 `run_in_case` 上进行独立 profiling，本任务避免覆盖它的未提交插桩。上述调用链证据已能确定非局部分配/格式化瓶颈。
+- 续查证据：仅将 400 次单行 INSERT 合并为 4 次等价多值 INSERT 后，同族 real 签名五次为 `1.443819 / 1.487721 / 1.425557 / 1.556424 / 1.506000s`；主体 text-protocol 路径仍是下界。
+- 续查证据：将每轮的 PREPARE/SET 与 EXECUTE 交由同一 session-owner 批处理、不减少任何语句或断言时，同族 int 签名五次为 `3.288997 / 3.061911 / 2.953193 / 2.908752 / 2.620625s`；多语句分块也呈现非线性退化，不是可交付优化。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
 - 决策：不通过减少 4 张表、100 行、10 worker 或每 worker 100 次执行，不删除任一索引路径、不替换真实 `PREPARE`/`SET`/`EXECUTE` 边界，也不放宽门槛。理由：这些都会弱化 Go 对齐语义。日期/作者：2026-10-12 / Codex。
 - 决策：本任务标记为 `已阻塞`，不在本提交递归扩建字符串参数、无索引/普通索引/唯一索引读取与 plan-cache invalidation 子系统。理由：该扩展需要生产规划/执行改动及独立回归覆盖，超出对应 Go 用例的最小增量与局部接线范围。日期/作者：2026-10-12 / Codex。
+- 决策：不接受请求合并、结果丢失或 protocol 替换为达标方式。理由：已测试的安全批处理未达标，而更激进的多语句实验曾触发 session dispatch 正确性失败；继续需要上述 typed adapter 生产扩展。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
@@ -113,3 +117,4 @@
 - `before` 命令按任务“失败验证”原样执行，报告为 `target/rust-performance/task-0020-before.tsv`；5 个 sample 每次 `test_count=1`、零失败、零超时，最大值 `1.707641s`，因超过 `0.499s` 门槛而退出 `1`。
 - 生产与测试 Rust 源文件没有本任务可交付 diff；未运行 after、`cargo fmt --all` 或 `make lint`，因为没有实施代码变更，且严格门槛仍未达标。任务文件按阻塞协议保留。
 - 后续建议：单独规划 `execute_simple_prepared_select_through_adapter` / `ExecutePreparedPlannedKVSelectThroughAdapter` 对字符串参数以及无索引、普通索引、唯一索引 `IN (?, ?)` 的等价扩展，完整覆盖 catalog version、schema/parameter shape、事务上下文和 plan-cache invalidation 后再回归本任务。
+- 续查未修改本任务源码；共享工作区中的 fixture/testkit 改动属于其他并行任务，本任务不提交、不回滚这些改动。
