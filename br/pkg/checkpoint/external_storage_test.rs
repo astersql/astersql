@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::checkpoint::{checkpointStorage, flushPath};
 use crate::external_storage::{
-    newExternalCheckpointStorage, set_failed_after_checkpoint_updates_lock_for_test,
+    newExternalCheckpointStorage, newExternalCheckpointStorageForTest,
+    set_failed_after_checkpoint_updates_lock_for_test,
 };
 use crate::stubs::{Context, Error, GlobalTimer, MemStorage, Result, Storage};
 
@@ -57,7 +58,7 @@ fn update_lock_preserves_go_post_write_failpoint() {
         failures: 0,
     });
     let checkpoint =
-        newExternalCheckpointStorage(&ctx, storage, Some(timer), test_flush_path()).unwrap();
+        newExternalCheckpointStorageForTest(&ctx, storage, Some(timer), test_flush_path()).unwrap();
 
     set_failed_after_checkpoint_updates_lock_for_test(true);
     let result = checkpoint.updateLock(&ctx);
