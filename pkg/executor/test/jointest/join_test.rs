@@ -178,7 +178,7 @@ fn execute_single_task_incremental_index_hash_join_contract() {
     }
 }
 
-fn check_semijoin_cases(tk: &TestKit, cases: &[(&str, &[&str])]) {
+fn check_semijoin_cases(testkits: &[TestKit], cases: &[(&str, &[&str])]) {
     const HINTS: [&str; 5] = [
         "/*+ HASH_JOIN(t1, t2) */",
         "/*+ MERGE_JOIN(t1, t2) */",
@@ -186,21 +186,32 @@ fn check_semijoin_cases(tk: &TestKit, cases: &[(&str, &[&str])]) {
         "/*+ INL_HASH_JOIN(t1, t2) */",
         "/*+ INL_MERGE_JOIN(t1, t2) */",
     ];
-    for (fragment, expected) in cases {
-        for hint in HINTS {
-            let sql = format!("select {hint} {fragment}");
-            let actual = tk.MustQuery(&sql, Vec::new()).Rows();
-            assert_eq!(Rows(expected), actual, "sql={sql}");
+    assert_eq!(HINTS.len(), testkits.len());
+    // Every statement in a phase is a read-only query over the same committed
+    // fixture. Give each Go join hint its own real session, then join all five
+    // workers before the caller mutates the tables for the next phase.
+    std::thread::scope(|scope| {
+        for (hint, tk) in HINTS.into_iter().zip(testkits) {
+            scope.spawn(move || {
+                for (fragment, expected) in cases {
+                    let sql = format!("select {hint} {fragment}");
+                    let actual = tk.MustQuery(&sql, Vec::new()).Rows();
+                    assert_eq!(Rows(expected), actual, "sql={sql}");
+                }
+            });
         }
-    }
+    });
 }
 
 /// Complete executable SQL/NULL matrix from Go
 /// `TestNullEmptyAwareSemiJoin`, including every join hint.
 fn execute_null_empty_aware_semijoin_contract() {
-    let mut tk = new_join_testkit();
-    tk.MustExec("create table t(a int, b int, c int)", Vec::new());
-    tk.MustExec("insert into t values(null, 1, 0), (1, 2, 0)", Vec::new());
+    let store = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain().0;
+    let mut testkits = (0..5)
+        .map(|_| NewTestKit(store.clone()))
+        .collect::<Vec<_>>();
+    testkits[0].MustExec("create table t(a int, b int, c int)", Vec::new());
+    testkits[0].MustExec("insert into t values(null, 1, 0), (1, 2, 0)", Vec::new());
     let predicates = [
         "a, b from t t1 where a not in (select b from t t2)",
         "a, b from t t1 where a not in (select b from t t2 where t1.b = t2.a)",
@@ -230,10 +241,10 @@ fn execute_null_empty_aware_semijoin_contract() {
         .zip(expected_1)
         .map(|(sql, rows)| (*sql, rows))
         .collect::<Vec<_>>();
-    check_semijoin_cases(&tk, &cases_1);
+    check_semijoin_cases(&testkits, &cases_1);
 
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec("insert into t values(1, null, 0), (2, 1, 0)", Vec::new());
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec("insert into t values(1, null, 0), (2, 1, 0)", Vec::new());
     let expected_2: [&[&str]; 10] = [
         &[],
         &["1 <nil>"],
@@ -251,10 +262,10 @@ fn execute_null_empty_aware_semijoin_contract() {
         .zip(expected_2)
         .map(|(sql, rows)| (*sql, rows))
         .collect::<Vec<_>>();
-    check_semijoin_cases(&tk, &cases_2);
+    check_semijoin_cases(&testkits, &cases_2);
 
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec(
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec(
         "insert into t values(1, null, 0), (2, 1, 0), (null, 2, 0)",
         Vec::new(),
     );
@@ -275,22 +286,22 @@ fn execute_null_empty_aware_semijoin_contract() {
         .zip(expected_3)
         .map(|(sql, rows)| (*sql, rows))
         .collect::<Vec<_>>();
-    check_semijoin_cases(&tk, &cases_3);
+    check_semijoin_cases(&testkits, &cases_3);
 
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec("insert into t values(1, null, 0), (2, null, 0)", Vec::new());
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec("insert into t values(1, null, 0), (2, null, 0)", Vec::new());
     check_semijoin_cases(
-        &tk,
+        &testkits,
         &[("a, b from t t1 where b not in (select a from t t2)", &[])],
     );
 
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec(
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec(
         "insert into t values(null, 1, 1), (2, 2, 2), (3, null, 3), (4, 4, 3)",
         Vec::new(),
     );
     check_semijoin_cases(
-        &tk,
+        &testkits,
         &[
             (
                 "a, b, a not in (select b from t t2) from t t1 order by a",
@@ -311,12 +322,12 @@ fn execute_null_empty_aware_semijoin_contract() {
         ],
     );
 
-    tk.MustExec("create table s(a int, b int)", Vec::new());
-    tk.MustExec("insert into s values(1, 2)", Vec::new());
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec("insert into t values(null, null, 0)", Vec::new());
+    testkits[0].MustExec("create table s(a int, b int)", Vec::new());
+    testkits[0].MustExec("insert into s values(1, 2)", Vec::new());
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec("insert into t values(null, null, 0)", Vec::new());
     check_semijoin_cases(
-        &tk,
+        &testkits,
         &[
             (
                 "a in (select b from t t2 where t2.a = t1.b) from s t1",
@@ -329,12 +340,12 @@ fn execute_null_empty_aware_semijoin_contract() {
         ],
     );
 
-    tk.MustExec("truncate table s", Vec::new());
-    tk.MustExec("insert into s values(2, 2)", Vec::new());
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec("insert into t values(null, 1, 0)", Vec::new());
+    testkits[0].MustExec("truncate table s", Vec::new());
+    testkits[0].MustExec("insert into s values(2, 2)", Vec::new());
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec("insert into t values(null, 1, 0)", Vec::new());
     check_semijoin_cases(
-        &tk,
+        &testkits,
         &[
             (
                 "a in (select a from s t2 where t2.b = t1.b) from t t1",
@@ -347,12 +358,12 @@ fn execute_null_empty_aware_semijoin_contract() {
         ],
     );
 
-    tk.MustExec("truncate table s", Vec::new());
-    tk.MustExec("insert into s values(null, 2)", Vec::new());
-    tk.MustExec("truncate table t", Vec::new());
-    tk.MustExec("insert into t values(1, 1, 0)", Vec::new());
+    testkits[0].MustExec("truncate table s", Vec::new());
+    testkits[0].MustExec("insert into s values(null, 2)", Vec::new());
+    testkits[0].MustExec("truncate table t", Vec::new());
+    testkits[0].MustExec("insert into t values(1, 1, 0)", Vec::new());
     check_semijoin_cases(
-        &tk,
+        &testkits,
         &[
             (
                 "a in (select a from s t2 where t2.b = t1.b) from t t1",
@@ -368,16 +379,19 @@ fn execute_null_empty_aware_semijoin_contract() {
         ],
     );
 
-    tk.MustExec("create table t1(a int)", Vec::new());
-    tk.MustExec("create table t2(a int)", Vec::new());
-    tk.MustExec("insert into t1 values(1),(2)", Vec::new());
-    tk.MustExec("insert into t2 values(1),(null)", Vec::new());
+    testkits[0].MustExec("create table t1(a int)", Vec::new());
+    testkits[0].MustExec("create table t2(a int)", Vec::new());
+    testkits[0].MustExec("insert into t1 values(1),(2)", Vec::new());
+    testkits[0].MustExec("insert into t2 values(1),(null)", Vec::new());
     for operator in ["not in", "!= all", "<> all"] {
-        tk.MustQuery(
-            &format!("select * from t1 where a {operator} (select a from t2 where t1.a = t2.a)"),
-            Vec::new(),
-        )
-        .Check(Rows(&["2"]));
+        testkits[0]
+            .MustQuery(
+                &format!(
+                    "select * from t1 where a {operator} (select a from t2 where t1.a = t2.a)"
+                ),
+                Vec::new(),
+            )
+            .Check(Rows(&["2"]));
     }
 }
 
