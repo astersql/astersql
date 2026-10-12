@@ -962,8 +962,19 @@ fn test_vector_search_with_pk_force_tikv_matches_go_golden() {
 /// cosine/L1/L2/inner-product/非向量排序表达式。
 #[test]
 fn test_vector_search_heavy_function_matches_go_golden() {
-    run_under_cascades(|domain, tk, cascades| {
-        setup_vector_search_with_pk(domain, tk);
-        assert_ann_suite(tk, "TestVectorSearchHeavyFunction", cascades);
-    });
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    setup_vector_search_with_pk(&domain, &mut setup_tk);
+    for cascades in [false, true] {
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { 1 } else { 0 }
+            ),
+            Vec::new(),
+        );
+        assert_ann_suite(&mut tk, "TestVectorSearchHeavyFunction", cascades);
+    }
 }
