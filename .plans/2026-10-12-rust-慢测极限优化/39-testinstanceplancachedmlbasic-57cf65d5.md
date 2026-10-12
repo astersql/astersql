@@ -111,4 +111,4 @@
 
 - 改动范围仅为 `dml_test.rs` 的执行路径：所有原 case、随机参数、直接 SQL 对照和断言数量保持。
 - `cargo fmt --all` 最后一次成功（退出码 0）；最终五次 after 和 `make lint` 待共享工作区的无关编译错误清理后回归。
-- 已使用过的 Cargo 槽位：9、10、7、4、5、3、2；最后格式化/验证阶段为槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`，所有自有锁均已释放且缓存保留。
+- 已使用过的 Cargo 槽位：9、10、7、4、5、3、2；最后格式化阶段为槽位 10，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`，所有自有锁均已释放且缓存保留。
