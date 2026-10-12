@@ -34,7 +34,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain,
+};
 use astersql_testkit::{NewTestKit, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use astersql_tests_realtikvtest_addindextest3::serial_guard;
@@ -135,6 +137,10 @@ fn assert_indexes(store: &AnalyzeStatsStore, database: &str, expected: &[&str]) 
 #[test]
 fn test_merge_temp_index_basic() {
     let _serial = serial_guard();
+    // Go creates the mock store once and only rebuilds the database between
+    // cases. Reusing the same domain also preserves the intended DDL worker
+    // lifecycle instead of paying six unrelated bootstrap costs.
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let cases = [
         MergeTempIndexCase {
             name: "basic",
@@ -212,7 +218,11 @@ fn test_merge_temp_index_basic() {
 
     for (case_number, case) in cases.iter().enumerate() {
         let database = format!("temp_merge_{case_number}");
-        let (store, mut tk) = prepare(&database);
+        let mut tk = NewTestKit(store.clone());
+        tk.MustExec(&format!("drop database if exists {database}"), Vec::new());
+        tk.MustExec(&format!("create database {database}"), Vec::new());
+        tk.MustExec(&format!("use {database}"), Vec::new());
+        tk.MustExec("set sql_mode=''", Vec::new());
         tk.AddComment(case.name);
         tk.MustExec(case.create_table, Vec::new());
         for statement in case.init_ops {

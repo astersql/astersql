@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 53 的测试从 5.057 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,23 +88,32 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确节点/callees/callers/impact，并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化：对齐 Go 只初始化一次 Domain，并使用不 bootstrap 无关统计系统表的生产 DDL 夹具。
+- [ ] 回归最终代码的 after/fmt/lint：受与本修改无关的共享 Cargo/RealTiKV 资源死锁阻断。
+- [x] 自审无 case、断言、数据规模、failpoint 或真实 DDL 路径删减；保留本文件供回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.057s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 在槽位 4（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`）精确选中 1 项，5 次均正确通过，耗时为 `5.544001, 5.444121, 6.796521, 6.271324, 6.398982s`，门槛退出码 1。
+- 阶段计时证明重复 bootstrap 是主热点：对齐 Go 的单 Domain 后，一次 bootstrap 约 `903ms`，6 个 DDL case 合计约 `267ms`；该版本 5 次为 `1.615308, 1.445709, 1.453235, 1.507244, 1.453517s`。
+- 最终修改进一步切换到 `CreatePlannerTestStoreAndDomain`；该夹具仍使用生产 Domain、事务 KV、DDL 和 canonical session，仅跳过本测试不读写的统计系统表 bootstrap。
+- 最终回归时 10 个 Cargo 槽位均长时间被其他任务持有；同时任务 166 持有仓库性能锁并等待 `127.0.0.1:2379` 不可达，但该端口由与仓库无关的 Docker 进程 PID 706 监听，形成不能由本任务删锁或杀进程解除的外部死锁。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：保留 6 个 case 的所有 SQL、failpoint、行数/索引断言，只对齐 Go 的单 store/Domain 生命周期。理由：Go `TestMergeTempIndexBasic` 在 case 循环外创建一次 store。日期/作者：2026-10-12 / Codex。
+- 决策：最终代码使用 `CreatePlannerTestStoreAndDomain`。理由：调用链与阶段计时证明本用例不依赖统计系统表，该夹具保留真实 DDL/Domain/session 语义。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 代码改动仅限 `tests/realtikvtest/addindextest3/temp_index_test.rs`：把 basic 测试的 store/Domain 移到 case 循环外，并使用不初始化无关统计表的真实 DDL 夹具。
+- 已验证的中间版本把最大耗时从 `6.796521s` 降到 `1.615308s`，且 5×1 项全部正确通过；最终夹具切换因外部共享资源死锁未能执行 fmt/compile/after/lint，因此按协议标记“已完成，待回归验证”并保留本文件。
+- 实际槽位/目录：预热槽位 1（`target/rust-slot-1`），before 槽位 4（`target/rust-slot-4`），中间 after 槽位 6（`target/rust-slot-6`），阶段剖析槽位 8（`target/rust-slot-8`）；均为仓库根目录下的绝对路径 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-N`，锁已由 trap 释放。
+- 未验证：最终代码的 5 次 `<=0.499s`、`cargo fmt --all`、`make lint`。回归时必须重跑任务所列 after 命令，不得把中间数据当作达标证据。
 
 ## RealTiKV 生命周期
 
