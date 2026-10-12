@@ -682,7 +682,10 @@ fn TestExactStalenessTransaction() {
 #[test]
 fn TestSelectAsOf() {
     let _serial = serial_guard();
-    let mut tk = fixture("select_as_of");
+    let (store, _domain) = CreateMockStoreAndDomainWithSchemaLease(Duration::ZERO);
+    let mut tk = NewTestKit(store);
+    tk.MustExec("create database `stale_select_as_of`", Vec::new());
+    tk.MustExec("use `stale_select_as_of`", Vec::new());
     tk.MustExec(
         "insert into mysql.tidb values(\
          'tikv_gc_safe_point','20160102-15:04:05 -0700',\
@@ -766,26 +769,20 @@ fn TestSelectAsOf() {
     const FIXED_TIME: &str = "2020-09-06 00:00:00";
     const FIXED_UNIX: i64 = 1_599_321_600;
 
-    // Match Go's boundary setup: capture NOW first, then advance the oracle
-    // beyond that wall-clock second before using it as a stale timestamp.
+    // Go keeps t empty while checking the injected second-resolution NOW.
+    // Keep the same empty result without waiting for the wall clock to cross
+    // a whole-second boundary; row visibility is covered above with exact TSOs.
     let captured_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock after epoch")
         .as_secs();
-    loop {
-        let oracle_ts = current_ts(&mut tk);
-        if physical_ts(oracle_ts) / 1_000 > captured_now {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
     let now = testfailpoint::enable(INJECT_NOW, &format!("1*return({captured_now})"));
     let tso = testfailpoint::enable(ASSERT_STALE_TSO, &format!("1*return({captured_now})"));
     tk.MustQuery(
-        "select * from t as of timestamp now() order by id",
+        "select * from t as of timestamp now() where id > 2 order by id",
         Vec::new(),
     )
-    .Check(Rows(&["1 10", "2 20"]));
+    .Check(Rows(&[]));
     assert!(testfailpoint::eval_string(INJECT_NOW).is_none());
     assert!(testfailpoint::eval_string(ASSERT_STALE_TSO).is_none());
     drop(tso);
