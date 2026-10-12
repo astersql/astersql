@@ -48,17 +48,19 @@ fn fields() -> Vec<types::FieldType> {
 /// 构造 `numChk` 个 Chunk，每个 `numRow` 行的固定模式数据。
 fn initChunks(numChk: usize, numRow: usize) -> (Vec<Box<Chunk>>, Vec<types::FieldType>) {
     let fields = fields();
+    let strings: Vec<_> = (0..5).map(genString).collect();
     let mut chunks = Vec::with_capacity(numChk);
     for chk_idx in 0..numChk {
         let mut chunk = NewChunkWithCapacity(fields.clone(), numRow);
         for row_idx in 0..numRow {
             let ordinal = chk_idx * numRow + row_idx;
-            chunk.AppendString(0, &genString(ordinal));
+            let value = &strings[ordinal % strings.len()];
+            chunk.AppendString(0, value);
             chunk.AppendNull(1);
             chunk.AppendNull(2);
             chunk.AppendInt64(3, ordinal as i64);
             if chk_idx % 2 == 0 {
-                chunk.AppendJSON(4, types::CreateBinaryJSON(genString(ordinal)));
+                chunk.AppendJSON(4, types::CreateBinaryJSON(value.clone()));
             } else {
                 chunk.AppendNull(4);
             }
@@ -119,7 +121,9 @@ fn TestDataInDiskByRows() {
 }
 
 /// 展开所有 Chunk 行为可比较元组，供并发校验。
-fn expected_rows(chunks: &[Box<Chunk>]) -> Vec<(String, bool, bool, i64, Option<String>)> {
+fn expected_rows(
+    chunks: &[Box<Chunk>],
+) -> Vec<(String, bool, bool, i64, Option<types::BinaryJSON>)> {
     chunks
         .iter()
         .flat_map(|chunk| {
@@ -130,7 +134,7 @@ fn expected_rows(chunks: &[Box<Chunk>]) -> Vec<(String, bool, bool, i64, Option<
                     row.IsNull(1),
                     row.IsNull(2),
                     row.GetInt64(3),
-                    (!row.IsNull(4)).then(|| row.GetJSON(4).String()),
+                    (!row.IsNull(4)).then(|| row.GetJSON(4)),
                 )
             })
         })
@@ -163,10 +167,7 @@ fn testDataInDiskByRows(concurrency: usize) {
                 assert_eq!(row.IsNull(1), expected.1);
                 assert_eq!(row.IsNull(2), expected.2);
                 assert_eq!(row.GetInt64(3), expected.3);
-                assert_eq!(
-                    (!row.IsNull(4)).then(|| row.GetJSON(4).String()),
-                    expected.4
-                );
+                assert_eq!((!row.IsNull(4)).then(|| row.GetJSON(4)), expected.4);
             }
         }));
     }

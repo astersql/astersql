@@ -23,6 +23,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 
 use crate::{Chunk, ChunkError, Result, Row, RowPtr, disk, memory, types};
@@ -188,36 +189,36 @@ impl DataInDiskByRows {
     }
 
     /// 从数据文件指定偏移打开只读句柄。
-    fn dataReader(&self, offset: i64) -> Result<File> {
-        let mut reader = self
+    fn dataReader(&self, offset: i64) -> Result<PositionedFileReader<'_>> {
+        let file = self
             .dataFile
             .as_ref()
             .ok_or_else(|| ChunkError::Message("disk data is empty".to_owned()))?
-            .reopen()?;
-        reader.seek(SeekFrom::Start(offset as u64))?;
-        Ok(reader)
+            .as_file();
+        Ok(PositionedFileReader::new(file, offset as u64))
     }
 
     /// 从偏移文件读取指定 (chunk, row) 在数据文件中的绝对偏移。
     fn getOffset(&self, chkIdx: u32, rowIdx: u32) -> Result<i64> {
         let ordinal = self.rowNumOfEachChunkFirstRow[chkIdx as usize] + rowIdx as usize;
-        let mut file = self
+        let file = self
             .offsetFile
             .as_ref()
             .ok_or_else(|| ChunkError::Message("offset file is empty".to_owned()))?
-            .reopen()?;
+            .as_file();
         // 每个偏移占 8 字节小端 i64。
-        file.seek(SeekFrom::Start((ordinal * 8) as u64))?;
         let mut bytes = [0_u8; 8];
-        file.read_exact(&mut bytes).map_err(|error| {
-            if error.kind() == io::ErrorKind::UnexpectedEof {
-                ChunkError::Message(
-                    "The file spilled is broken, can not get data offset from the disk".to_owned(),
-                )
-            } else {
-                error.into()
-            }
-        })?;
+        file.read_exact_at(&mut bytes, (ordinal * 8) as u64)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::UnexpectedEof {
+                    ChunkError::Message(
+                        "The file spilled is broken, can not get data offset from the disk"
+                            .to_owned(),
+                    )
+                } else {
+                    error.into()
+                }
+            })?;
         Ok(i64::from_le_bytes(bytes))
     }
 
@@ -238,6 +239,27 @@ impl DataInDiskByRows {
         self.dataOffWrite = 0;
         self.offsetOffWrite = 0;
         Ok(())
+    }
+}
+
+/// A concurrent section reader backed by positioned file reads, matching Go's
+/// `io.SectionReader` without reopening and seeking the file for every row.
+struct PositionedFileReader<'a> {
+    file: &'a File,
+    offset: u64,
+}
+
+impl<'a> PositionedFileReader<'a> {
+    fn new(file: &'a File, offset: u64) -> Self {
+        Self { file, offset }
+    }
+}
+
+impl Read for PositionedFileReader<'_> {
+    fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+        let read = self.file.read_at(target, self.offset)?;
+        self.offset += read as u64;
+        Ok(read)
     }
 }
 
