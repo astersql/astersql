@@ -654,7 +654,10 @@ fn test_upgrade_multiple_shared_locks_waits_for_shared_holder() {
 fn test_shared_lock_child_table_conflict() {
     let _serial = serial_guard();
     let _config = allow_foreign_key_check_in_shared_lock_for_test();
-    let (store, mut tk1, database) = prepare("test_shared_lock_child_table_conflict");
+    // The Go scenario only needs an isolated Domain; its foreign-key lock
+    // conflict assertions do not depend on waiting out a schema lease.
+    let (store, mut tk1, database) =
+        prepare_with_schema_lease("test_shared_lock_child_table_conflict", Duration::ZERO);
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
     tk1.MustExec(
