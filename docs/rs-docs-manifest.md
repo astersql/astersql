@@ -1094,8 +1094,8 @@
 
 ## pkg/format
 
-- [ ] [`pkg/format/textrow/result_encoder.rs.md`](../pkg/format/textrow/result_encoder.rs.md)
-- [ ] [`pkg/format/textrow/textrow.rs.md`](../pkg/format/textrow/textrow.rs.md)
+- [x] [`pkg/format/textrow/result_encoder.rs.md`](../pkg/format/textrow/result_encoder.rs.md)
+- [x] [`pkg/format/textrow/textrow.rs.md`](../pkg/format/textrow/textrow.rs.md)
 
 ## pkg/importsdk
 
@@ -1430,7 +1430,7 @@
 
 ## pkg/param
 
-- [ ] [`pkg/param/binary_params.rs.md`](../pkg/param/binary_params.rs.md)
+- [x] [`pkg/param/binary_params.rs.md`](../pkg/param/binary_params.rs.md) @todo
 
 ## pkg/parser
 
@@ -2395,11 +2395,11 @@
 
 ## pkg/types
 
-- [ ] [`pkg/types/binary_literal.rs.md`](../pkg/types/binary_literal.rs.md)
-- [ ] [`pkg/types/compare.rs.md`](../pkg/types/compare.rs.md)
-- [ ] [`pkg/types/context.rs.md`](../pkg/types/context.rs.md)
-- [ ] [`pkg/types/convert.rs.md`](../pkg/types/convert.rs.md)
-- [ ] [`pkg/types/core_time.rs.md`](../pkg/types/core_time.rs.md)
+- [x] [`pkg/types/binary_literal.rs.md`](../pkg/types/binary_literal.rs.md)
+- [x] [`pkg/types/compare.rs.md`](../pkg/types/compare.rs.md)
+- [x] [`pkg/types/context.rs.md`](../pkg/types/context.rs.md) @todo
+- [x] [`pkg/types/convert.rs.md`](../pkg/types/convert.rs.md) @todo
+- [x] [`pkg/types/core_time.rs.md`](../pkg/types/core_time.rs.md) @todo
 - [ ] [`pkg/types/datum.rs.md`](../pkg/types/datum.rs.md)
 - [ ] [`pkg/types/datum_eval.rs.md`](../pkg/types/datum_eval.rs.md)
 - [ ] [`pkg/types/enum.rs.md`](../pkg/types/enum.rs.md)
