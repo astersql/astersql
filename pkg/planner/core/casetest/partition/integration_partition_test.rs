@@ -195,20 +195,28 @@ pub fn test_batch_point_get_partition_for_access_object() {
         "github.com/pingcap/tidb/pkg/planner/core/forceDynamicPrune",
         "return(true)",
     );
-    crate::support::run_test_under_cascades(|tk, cascades, caller| {
-        tk.MustExec("use test", Vec::new());
-        for sql in ACCESS_OBJECT_SETUP {
-            tk.MustExec(sql, Vec::new());
-        }
+    let mut tk = crate::support::new_testkit();
+    tk.MustExec("use test", Vec::new());
+    for sql in ACCESS_OBJECT_SETUP {
+        tk.MustExec(sql, Vec::new());
+    }
+    for (cascades, caller) in [("off", "classic"), ("on", "cascades")] {
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades == "on" { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
         tk.MustExec("set @@tidb_partition_prune_mode = 'dynamic'", Vec::new());
         for case in load_integration_partition_cases(
             cascades,
             caller,
             "TestBatchPointGetPartitionForAccessObject",
         ) {
-            check_plan(tk, &case.sql, &case.plan);
+            check_plan(&tk, &case.sql, &case.plan);
         }
-    });
+    }
 }
 
 #[test]
