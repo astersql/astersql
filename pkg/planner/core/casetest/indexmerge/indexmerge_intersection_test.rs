@@ -120,40 +120,66 @@ fn test_plan_cache_for_intersection_index_merge() {
 #[test]
 fn test_index_merge_with_order_property() {
     let suite = crate::main_test::load_index_merge_suite();
-    for cascades in [false, true] {
-        let mut tk = new_testkit();
-        tk.MustExec(
-            &format!(
-                "set @@tidb_enable_cascades_planner = {}",
-                usize::from(cascades)
-            ),
-            Vec::new(),
-        );
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec("drop table if exists t", Vec::new());
-        tk.MustExec("drop table if exists t2", Vec::new());
-        tk.MustExec(
-            "create table t (a int, b int, c int, d int, e int, key a(a), key b(b), key c(c), key ac(a, c), key bc(b, c), key ae(a, e), key be(b, e), key abd(a, b, d), key cd(c, d))",
-            Vec::new(),
-        );
-        tk.MustExec(
-            "create table t2 (a int, b int, c int, key a(a), key b(b), key ac(a, c))",
-            Vec::new(),
-        );
-        let (input, output) = suite
-            .LoadTestCasesByName("TestIndexMergeWithOrderProperty", cascades)
-            .unwrap();
-        for (sql, expected) in input
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(output.as_array().unwrap())
-        {
-            let sql = sql.as_str().unwrap();
-            assert_golden_plan!(&tk, sql, expected);
-            assert!(tk.MustQuery("show warnings", Vec::new()).is_empty());
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store.clone());
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("drop table if exists t", Vec::new());
+    tk.MustExec("drop table if exists t2", Vec::new());
+    tk.MustExec(
+        "create table t (a int, b int, c int, d int, e int, key a(a), key b(b), key c(c), key ac(a, c), key bc(b, c), key ae(a, e), key be(b, e), key abd(a, b, d), key cd(c, d))",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table t2 (a int, b int, c int, key a(a), key b(b), key ac(a, c))",
+        Vec::new(),
+    );
+    drop(tk);
+
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let suite = &suite;
+            let store = store.clone();
+            scope.spawn(move || run_index_merge_with_order_property_round(store, suite, cascades));
         }
-    }
+    });
+}
+
+fn run_index_merge_with_order_property_round(
+    store: std::sync::Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    suite: &astersql_testkit::testdata::TestData,
+    cascades: bool,
+) {
+    let (input, output) = suite
+        .LoadTestCasesByName("TestIndexMergeWithOrderProperty", cascades)
+        .unwrap();
+    let cases = input
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(output.as_array().unwrap())
+        .map(|(sql, expected)| (sql.as_str().unwrap().to_owned(), expected.clone()))
+        .collect::<Vec<_>>();
+
+    std::thread::scope(|scope| {
+        for cases in cases.chunks(4).map(<[_]>::to_vec) {
+            let store = store.clone();
+            scope.spawn(move || {
+                let mut tk = TestKit::new(store);
+                tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner = {}",
+                        usize::from(cascades)
+                    ),
+                    Vec::new(),
+                );
+                tk.MustExec("use test", Vec::new());
+                for (sql, expected) in cases {
+                    assert_golden_plan!(&tk, sql.as_str(), &expected);
+                    assert!(tk.MustQuery("show warnings", Vec::new()).is_empty());
+                }
+            });
+        }
+    });
 }
 
 /// 对应 Go TestHintForIntersectionIndexMerge：覆盖动态/静态分区裁剪、视图
