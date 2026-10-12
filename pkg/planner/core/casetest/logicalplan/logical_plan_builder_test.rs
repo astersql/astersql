@@ -35,14 +35,14 @@ use astersql_parser::Parser;
 use astersql_parser::ast;
 use astersql_testkit::Rows;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_types::field::{AggFieldType, NewFieldType};
 use astersql_types::metadata::mysql;
 use std::sync::Arc;
 
 /// 创建 mock store/domain 与绑定其上的 TestKit。
 fn new_testkit() -> (Arc<astersql_domain::Domain>, TestKit) {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
     (domain, TestKit::new(store))
 }
 
@@ -205,16 +205,23 @@ fn TestLogicalPlanTypeRegression() {
     )
     .Check(Rows(&["2016"]));
 
-    run_test_under_cascades(|domain, tk, cascades| {
-        tk.MustExec("CREATE TABLE t1 ( c1 int)", Vec::new());
-        tk.MustExec("CREATE TABLE t2 ( c1 int unsigned)", Vec::new());
-        tk.MustExec("CREATE TABLE t3 ( c1 bigint unsigned)", Vec::new());
-        tk.MustExec("INSERT INTO t1 (c1) VALUES (8)", Vec::new());
-        tk.MustExec("INSERT INTO t2 (c1) VALUES (2454396638)", Vec::new());
+    // The planner modes use the same immutable fixture, so switching the session variable is
+    // sufficient and avoids rebuilding the entire mock domain for each mode.
+    tk.MustExec("CREATE TABLE t1 ( c1 int)", Vec::new());
+    tk.MustExec("CREATE TABLE t2 ( c1 int unsigned)", Vec::new());
+    tk.MustExec("CREATE TABLE t3 ( c1 bigint unsigned)", Vec::new());
+    tk.MustExec("INSERT INTO t1 (c1) VALUES (8)", Vec::new());
+    tk.MustExec("INSERT INTO t2 (c1) VALUES (2454396638)", Vec::new());
 
-        let t1 = domain.table_by_name("test", "t1").expect("t1 metadata");
-        let t2 = domain.table_by_name("test", "t2").expect("t2 metadata");
-        let t3 = domain.table_by_name("test", "t3").expect("t3 metadata");
+    let t1 = domain.table_by_name("test", "t1").expect("t1 metadata");
+    let t2 = domain.table_by_name("test", "t2").expect("t2 metadata");
+    let t3 = domain.table_by_name("test", "t3").expect("t3 metadata");
+
+    for cascades in ["off", "on"] {
+        tk.MustExec(
+            &format!("set @@tidb_enable_cascades_planner = {cascades}"),
+            Vec::new(),
+        );
 
         // issue:52472 — fixture 的 int ∪ unsigned int → longlong。
         let int_union_type = AggFieldType(&[&t1.Columns[0].FieldType, &t2.Columns[0].FieldType]);
@@ -249,7 +256,7 @@ fn TestLogicalPlanTypeRegression() {
             .expect("execute decimal union");
         assert_eq!(decimal_union.columns.len(), 1, "planner={cascades}");
         assert_eq!(decimal_union.string_rows(), Rows(&["0"]));
-    });
+    }
 
     let _ = parse_stmt("SELECT c1 FROM t1 UNION ALL SELECT c1 FROM t2");
     let _ = parse_stmt("SELECT 0 UNION ALL SELECT c1 FROM t3");
