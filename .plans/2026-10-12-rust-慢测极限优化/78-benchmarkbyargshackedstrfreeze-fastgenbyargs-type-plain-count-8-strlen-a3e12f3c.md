@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 78 的测试从 4.026 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -85,20 +85,26 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位：实际槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；预编译失败后已释放本任务槽位，未取得性能锁。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并更新为“已完成，待回归验证”；依协议保留本任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.026s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- RustCodeGraph 确认精确 bench case 仅在 `benches/errors.rs` 中构造 8 个 `ErrorArg` 并调用 `FastGenByArgs`，影响半径限于该 benchmark；未发现可在无基线证据时安全预先修改的热点。
+- 实际命令 `cargo nextest run --profile perf-audit --no-run --locked --package astersql --bench errors -E 'binary_id(=astersql::bench/errors) & test(=BenchmarkByArgsHackedStrFreeze/FastGenByArgs/type-plain/count-8/strlen-16)'` 在测试枚举前退出 102：Cargo 拒绝在 `--locked` 下更新 `Cargo.lock`。
+- 阻断来自本任务范围外的共享工作区改动：`Cargo.lock` 尚有其他任务未提交的 `astersql-session` 依赖行，对应 `tests/realtikvtest/addindextest/Cargo.toml` 当前没有该依赖。等待 60 秒后状态未变；为避免覆盖并行任务改动，未重写锁文件。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不回滚、不覆盖、不自动重写其他并行任务的 `Cargo.lock` 改动，也不移除任务要求的 `--locked`。因该无关改动使验证无法运行，按协议记为“已完成，待回归验证”并保留任务文件。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 未修改 Rust 生产或测试代码，因此 `cargo fmt --all` 与 `make lint` 不适用，也没有供审查的行为 diff。
+- `before` 输出路径原定为 `target/rust-performance/task-0078-before.tsv`，但预编译在运行脚本前失败，因此没有生成 TSV、没有有效测试数，也没有五次耗时可报告；不以零测试冒充完成证据。
+- 待共享 `Cargo.lock` 恢复与 manifests 一致后，必须重新领取 Cargo 槽位和性能锁，按原定命令生成 5 个成功 sample，并确认最大值 `<=0.499s` 后才能删除本文件。
