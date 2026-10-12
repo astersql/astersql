@@ -116,6 +116,7 @@ pub struct GlobalSortWriteIngestBackend {
     collector: Mutex<Option<Arc<dyn execute::Collector + Send + Sync>>>,
     token: local::CancellationToken,
     concurrency: usize,
+    import_options: local::import_pipeline::ImportOptions,
 }
 impl GlobalSortWriteIngestBackend {
     pub fn new(
@@ -130,7 +131,17 @@ impl GlobalSortWriteIngestBackend {
             collector: Default::default(),
             token: Default::default(),
             concurrency: concurrency.max(1),
+            import_options: Default::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_import_options(
+        mut self,
+        import_options: local::import_pipeline::ImportOptions,
+    ) -> Self {
+        self.import_options = import_options;
+        self
     }
 }
 impl WriteIngestBackend for GlobalSortWriteIngestBackend {
@@ -264,7 +275,7 @@ impl WriteIngestBackend for GlobalSortWriteIngestBackend {
             self.concurrency,
             generate,
             workers,
-            Default::default(),
+            self.import_options.clone(),
         )?;
         if (bytes, count) != engine.ImportedStatistics() || count != engine.GetTotalLoadedKVsCount()
         {

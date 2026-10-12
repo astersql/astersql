@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 77 的测试从 4.030 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [ ] 保存 after、测试数量与耗时证据；无关的共享锁文件变化和持续槽位/性能锁争用阻止回归，待验证。
+- [x] 自审、更新状态并提交；按“已完成，待回归验证”协议保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.030s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 隔离基线精确选择 1 项，五次功能均通过但分别耗时 `4.025599s`、`4.024287s`、`4.022096s`、`4.023257s`、`4.023937s`；最大值 `4.025599s`，性能脚本退出 `1`。
+- 两个可重试 case 各触发一次首次 `2s` 指数退避，与约 `4.02s` 基线完全吻合。Go dispatcher 在同一位置提供 `adjustRegionJobRetryBackoff` failpoint，Rust 原先缺少对应测试钩子。
+- `after` 第一次尝试在执行前因其他会话直接覆写槽位 8 owner 而中止；第二次尝试在执行前由 `cargo metadata --locked` 退出 `101`：共享 `Cargo.lock` 中 `astersql-tests-realtikvtest-addindextest` 残留 `astersql-session`，但当前 manifest 不含该依赖。任务 77 未修改 Cargo manifests 或依赖，且未把空 partial TSV 作为证据。
+- 性能锁多次被任务 61 以“先取性能锁、后等 Cargo 槽位”的逆序方式持有并形成系统死锁；任务 77 三次主动释放自己的槽位以恢复全局调度。该共享资源问题与本修改无关。
+- 提交前共享 `Cargo.lock` 已由其所属并行任务恢复干净，但 10 个 Cargo 槽位随后全部由其他存活任务持有，未再获得同时满足槽位和性能锁规则的回归窗口。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：在 `ImportOptions` 增加默认关闭的 `adjust_retry_backoff`，并仅通过 `#[cfg(test)]` backend builder 为本测试注入零等待。理由：这与 Go `adjustRegionJobRetryBackoff` failpoint 对齐，生产默认指数退避、重试阶段、三个 case、真实 pipeline 与全部统计断言均不变。日期/作者：2026-10-13 / Codex。
+- 决策：状态使用“已完成，待回归验证”，保留任务文件。理由：代码修改和 `cargo fmt --all` 已完成，但无关的共享 `Cargo.lock` 短暂不一致以及后续持续的槽位/性能锁争用使规定的 `--locked` after 和 `make lint` 未获得合法运行窗口；不修改或提交其他任务的变更。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 修改范围：`pkg/ingestor/ingestctrl/import_pipeline.rs` 增加 Go 对齐的可选测试退避调整钩子；`pkg/dxf/importinto/write_ingest_backend.rs` 增加仅测试可用的 options builder；目标测试注入零等待；三个 dispatcher 直接调用测试补传默认 `None`。
+- Cargo 资源：有效 before 使用槽位 8，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`；格式化也使用槽位 8。after 尝试使用槽位 8（owner 被外部覆写后中止）和槽位 5（`Cargo.lock` 不一致，退出 1；内部 cargo metadata 退出 101），均未产生有效测试样本。
+- 已运行：规定的 before 命令退出 `1`，得到 5 个有效样本、每次测试数 1、失败/超时 0；`CARGO_TARGET_DIR=.../rust-slot-8 cargo fmt --all` 退出 `0`。规定的 after 命令因当时无关的锁文件状态在预热阶段退出 `1`、测试数 0；`make lint` 未运行，因为后续没有同时满足共享槽位与性能锁规则的 Ready 验证窗口。
+- 自审：未减少 case、断言、数据、并发或真实依赖；生产默认 2/4/8…秒退避不变；未删除 PingCAP/AsterSQL 版权；未增加本地依赖覆盖。剩余风险是新增参数尚需在共享 `Cargo.lock` 恢复一致后完成编译、五次 after 与 `make lint` 回归。

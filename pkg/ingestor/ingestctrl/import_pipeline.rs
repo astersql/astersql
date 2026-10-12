@@ -220,6 +220,9 @@ pub struct ImportOptions {
     pub before_release: Option<Arc<dyn Fn() + Send + Sync>>,
     pub before_wait_outcome: Option<Arc<dyn Fn() + Send + Sync>>,
     pub before_receive_result: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test hook matching Go's adjustRegionJobRetryBackoff failpoint. Production
+    /// callers leave this unset and retain the exponential retry delay.
+    pub adjust_retry_backoff: Option<Arc<dyn Fn(Duration) -> Duration + Send + Sync>>,
 }
 
 /// Wait for a successful pool outcome after result-channel closure. Closure
@@ -244,6 +247,7 @@ pub(crate) fn dispatch_results(
     succeeded: &AtomicBool,
     before_wait_outcome: &Option<Arc<dyn Fn() + Send + Sync>>,
     before_receive: &Option<Arc<dyn Fn() + Send + Sync>>,
+    adjust_retry_backoff: &Option<Arc<dyn Fn(Duration) -> Duration + Send + Sync>>,
 ) -> Result<()> {
     token.check()?;
     loop {
@@ -272,7 +276,10 @@ pub(crate) fn dispatch_results(
                         )
                     }));
                 }
-                let delay = Duration::from_secs((1u64 << job.retry_count.min(31)).min(30));
+                let mut delay = Duration::from_secs((1u64 << job.retry_count.min(31)).min(30));
+                if let Some(adjust) = adjust_retry_backoff {
+                    delay = adjust(delay);
+                }
                 let mut cleanup = OwnedJob(Some(job.clone()));
                 if retryer.push(job, Instant::now() + delay) {
                     cleanup.0.take();
@@ -425,6 +432,7 @@ pub fn do_import(
                 &succeeded,
                 &options.before_wait_outcome,
                 &options.before_receive_result,
+                &options.adjust_retry_backoff,
             );
             if let Err(error) = &result {
                 group.fail(error.clone(), &wctx);

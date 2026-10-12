@@ -103,7 +103,12 @@ fn physical_region_rewrite_increments_progress_without_recounting_logical_import
             rows: Default::default(),
             failure,
         });
-        let backend = GlobalSortWriteIngestBackend::new(store, rpc.clone(), 1);
+        let backend = GlobalSortWriteIngestBackend::new(store, rpc.clone(), 1).with_import_options(
+            local::import_pipeline::ImportOptions {
+                adjust_retry_backoff: Some(Arc::new(|_| std::time::Duration::ZERO)),
+                ..Default::default()
+            },
+        );
         let summary = Arc::new(execute::SubtaskSummary::default());
         backend.SetCollector(Arc::new(crate::task_executor::ingestCollector {
             summary: summary.clone(),

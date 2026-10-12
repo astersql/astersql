@@ -3710,6 +3710,7 @@ fn dispatcher_handles_error_shutdown_when_result_channel_closes() {
             &std::sync::atomic::AtomicBool::new(false),
             &before_wait,
             &None,
+            &None,
         ),
         Err(crate::Error::Cancelled),
     );
@@ -3726,6 +3727,7 @@ fn dispatcher_propagates_context_cancellation() {
             &results,
             &crate::region_job::regionJobRetryer::default(),
             &std::sync::atomic::AtomicBool::new(false),
+            &None,
             &None,
             &None,
         ),
@@ -3925,6 +3927,7 @@ fn dispatcher_cancellation_interrupts_open_result_channel() {
                 &AtomicBool::new(false),
                 &None,
                 &before_receive,
+                &None,
             ))
             .unwrap();
         }
