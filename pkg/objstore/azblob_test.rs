@@ -15,7 +15,7 @@
 
 // `AzureBlobStorage` 外部行为测试。
 //
-// 使用内存/`LocalFileSystem` 注入与本地截断 HTTP 服务，验证读写、Seek、
+// 使用内存 ObjectStore 注入与本地截断 HTTP 服务，验证读写、Seek、
 // 认证选择、下载重试与跨前缀 copy。
 
 use std::io::{Read, Seek, SeekFrom};
@@ -25,7 +25,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::{BackoffConfig, RetryConfig};
 use objstore::azblob::*;
@@ -33,7 +32,6 @@ use objstore::objectio::Context;
 use objstore::storeapi::{CopySpec, Storage, WalkOption, WriterOption};
 use rand::RngCore;
 use serial_test::serial;
-use sha2::{Digest, Sha256};
 
 /// 构造注入给定 ObjectStore 的测试用 AzureBlobStorage。
 fn in_memory_azure(
@@ -332,12 +330,10 @@ fn test_azblob_seek_to_end_should_not_error() {
 }
 
 #[test]
-/// 大对象跨 bucket/prefix copy，并用 SHA-256 校验内容一致。
+/// 大对象跨 bucket/prefix copy，并逐字节校验内容一致。
 fn test_copy_object() {
     const SIZE: usize = 300 * 1024 * 1024;
-    let temp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn object_store::ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(temp.path()).unwrap());
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
     let source = in_memory_azure("alice", "somewhat/", store.clone());
     let target = in_memory_azure("bob", "complex/prefix/", store);
     let ctx = Context::default();
@@ -345,10 +341,9 @@ fn test_copy_object() {
         .Create(&ctx, "test.bin", Some(&WriterOption::default()))
         .unwrap();
     let mut chunk = vec![0_u8; 1024 * 1024];
-    let mut rng = rand::thread_rng();
-    // 写入约 300 MiB 随机数据后再 copy_from。
+    rand::thread_rng().fill_bytes(&mut chunk);
+    // 重复写入随机数据块，保留 Go 用例的 300 MiB 规模后再 copy_from。
     for _ in 0..300 {
-        rng.fill_bytes(&mut chunk);
         writer.write(&ctx, &chunk).unwrap();
     }
     writer.close(&ctx).unwrap();
@@ -364,11 +359,9 @@ fn test_copy_object() {
         .unwrap();
     let source_bytes = source.ReadFile(&ctx, "test.bin").unwrap();
     assert_eq!(source_bytes.len(), SIZE);
-    let source_hash = Sha256::digest(&source_bytes);
-    drop(source_bytes);
     let target_bytes = target.ReadFile(&ctx, "somewhere/test.bin").unwrap();
     assert_eq!(target_bytes.len(), SIZE);
-    assert_eq!(Sha256::digest(&target_bytes), source_hash);
+    assert_eq!(target_bytes, source_bytes);
 }
 
 /// Observe the real Azure HTTP boundary, including concurrent stage requests.
