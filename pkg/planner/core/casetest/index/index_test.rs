@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use astersql_domain::Domain;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::testdata::LoadTestSuiteDataWithCascades;
 
 fn new_testkit() -> TestKit {
@@ -518,20 +518,32 @@ fn test_force_index_limit() {
 
 #[test]
 fn test_vector_index() {
-    run_under_cascades(|domain, tk| {
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    setup_tk.MustExec("use test", Vec::new());
+    setup_tk.MustExec(
+        "create table t(a int, b vector, c vector(3), d vector(4))",
+        Vec::new(),
+    );
+    setup_tk.MustExec("alter table t set tiflash replica 1", Vec::new());
+    setup_tk.MustExec(
+        "alter table t add vector index vecIdx1((vec_cosine_distance(d))) using hnsw",
+        Vec::new(),
+    );
+    domain
+        .set_tiflash_replica_for_test("test", "t", 1, true)
+        .expect("set test.t TiFlash replica");
+
+    for cascades in [false, true] {
+        let mut tk = TestKit::new(store.clone());
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
-            "create table t(a int, b vector, c vector(3), d vector(4))",
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { 1 } else { 0 }
+            ),
             Vec::new(),
         );
-        tk.MustExec("alter table t set tiflash replica 1", Vec::new());
-        tk.MustExec(
-            "alter table t add vector index vecIdx1((vec_cosine_distance(d))) using hnsw",
-            Vec::new(),
-        );
-        domain
-            .set_tiflash_replica_for_test("test", "t", 1, true)
-            .expect("set test.t TiFlash replica");
         tk.MustUseIndex(
             "select * from t use index(vecIdx1) order by vec_cosine_distance(d, '[1,1,1,1]') limit 1",
             "vecidx1",
@@ -552,7 +564,7 @@ fn test_vector_index() {
             wrong_distance.is_err() && filtered.is_err(),
             "vector-index incompatibilities must fail: wrong_distance={wrong_distance:?}, filtered={filtered:?}"
         );
-    });
+    }
 }
 
 #[test]
