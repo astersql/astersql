@@ -24,6 +24,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1367,24 +1368,44 @@ impl TestServerClient {
             let mut txn2 = database.fork()?;
             txn2.execute(&format!("USE `{pessimistic_db}`;"), &[])?;
             txn2.execute("begin", &[])?;
-            let commit = thread::spawn(move || {
-                thread::sleep(Duration::from_secs(2));
-                txn1.execute("commit", &[]).map(|_| ())
+            let (started_tx, started_rx) = sync_channel(0);
+            let (result_tx, result_rx) = sync_channel(1);
+            let waiter = thread::spawn(move || -> Result<(), String> {
+                started_tx
+                    .send(())
+                    .map_err(|_| "pessimistic lock waiter start receiver dropped".to_string())?;
+                let result = txn2
+                    .query("select * from t where a = 1 for update", &[])
+                    .map(|_| ())
+                    .and_then(|_| txn2.execute("rollback", &[]).map(|_| ()));
+                result_tx
+                    .send(result.clone())
+                    .map_err(|_| "pessimistic lock waiter result receiver dropped".to_string())?;
+                result
             });
-            let wait_started = Instant::now();
-            let lock_result = txn2.query("select * from t where a = 1 for update", &[]);
-            let lock_wait = wait_started.elapsed();
-            let commit_result = commit
-                .join()
-                .map_err(|_| "pessimistic transaction commit thread panicked".to_string())?;
-            lock_result?;
-            commit_result?;
-            if lock_wait < Duration::from_secs(1) {
-                return Err(
-                    "pessimistic SELECT FOR UPDATE acquired the lock before txn1 committed".into(),
-                );
+            started_rx
+                .recv()
+                .map_err(|_| "pessimistic lock waiter exited before querying".to_string())?;
+            match result_rx.recv_timeout(Duration::from_millis(25)) {
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("pessimistic lock waiter disconnected before commit".into());
+                }
+                Ok(result) => {
+                    result?;
+                    return Err(
+                        "pessimistic SELECT FOR UPDATE acquired the lock before txn1 committed"
+                            .into(),
+                    );
+                }
             }
-            txn2.execute("rollback", &[])?;
+            txn1.execute("commit", &[])?;
+            result_rx
+                .recv()
+                .map_err(|_| "pessimistic lock waiter disconnected after commit".to_string())??;
+            waiter
+                .join()
+                .map_err(|_| "pessimistic lock waiter thread panicked".to_string())??;
             check_rows(&database.query("select * from t", &[])?, &[&["1"]])?;
 
             let optimistic_db = "LoadDataInExplicitTransaction";

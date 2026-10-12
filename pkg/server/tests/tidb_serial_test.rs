@@ -42,6 +42,13 @@ impl TestKitExecutor {
             testkit: new_testkit(),
         }
     }
+
+    fn new_without_stats_bootstrap() -> Self {
+        let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
+        Self {
+            testkit: TestKit::new(store as Arc<dyn astersql_testkit::Database>),
+        }
+    }
 }
 
 impl SqlExecutor for TestKitExecutor {
@@ -166,7 +173,7 @@ fn test_load_data_in_transaction() {
     let _serial = serial_guard();
     let suite = create_tidb_test_suite();
     assert_live_suite(&suite);
-    let mut executor = TestKitExecutor::new();
+    let mut executor = TestKitExecutor::new_without_stats_bootstrap();
     suite
         .test_server_client
         .run_test_load_data_in_transaction(&mut executor)
