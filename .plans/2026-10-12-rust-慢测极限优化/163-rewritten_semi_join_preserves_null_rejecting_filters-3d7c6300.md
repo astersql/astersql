@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 163 的测试从 2.946 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
+- [x] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
+- [x] 自审、更新状态并提交；因无关并发 Cargo/测试破坏性能锁隔离，按“已完成，待回归验证”保留本文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.946s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 精确选中 1 项且 5 次功能全部通过，耗时为 `0.593780, 0.469299, 0.490135, 0.518317, 0.455051s`，最大值 `0.593780s`，性能门槛预期失败。
+- 分段插桩后已删除： suite 解析约 `2–5ms`，Domain/TestKit 初始化约 `70–100ms`，聚焦后两表夹具约 `14–62ms`；稳定时 classic planner 的 case 12 是主要热点（约 `329ms`），cascades 路径约 `10ms`。
+- 严格 after 最后一轮精确选中 1×5 且全部功能通过，耗时为 `0.478592, 2.094462, 2.045021, 0.468050, 0.464886s`。同轮中低值已达门槛，但两个异常值使最大值为 `2.094462s`。
+- after 持有仓库性能锁时，其他任务仍并发运行 Cargo、`cargo fmt`、RealTiKV playground 和 profiler；本任务独占的 `rust-slot-3` 还出现 `Blocking waiting for file lock on build directory`。因隔离前提被无关任务破坏，无法在本轮获取可信的连续五次数据。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：`TestMPPJoin[12]` 仅读取 `d1_t` 和 `fact_t`，因此增加定向夹具，保留这两表的完整 Go schema、全部原始行、`analyze ... all columns`、TiFlash replica 元数据和 MPP 会话变量；不再准备该 case 不可达的 `d2_t`/`d3_t`。两种 planner 的 golden 和结果断言仍原样执行。依据：Go `TestMPPJoin` 共享四表夹具，而 in/out/xut 的第 12 个 SQL 及计划只引用上述两表。日期/作者：2026-10-13 / Codex。
+- 决策：状态为“已完成，待回归验证”并保留任务文件。理由：用户允许在无关修改导致无法运行可信验证时采用该状态；本轮性能锁隔离被其他任务的高负载命令和槽位构建锁争用实证破坏。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 改动范围：仅 `pkg/planner/core/casetest/mpp/mpp_test.rs` 中的定向夹具和目标测试接线；保留 classic/cascades 双路径、case 12 两套 golden、每条原始数据和两路结果断言，未改生产逻辑。
+- Cargo 槽位：`3`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`。
+- 验证：`cargo fmt --all` 退出 0；`make lint` 退出 0；before/after 性能命令均精确命中 1×5、零失败、零超时，但因无关并发负载导致耗时门槛退出 1。报告：`target/rust-performance/task-0163-before.tsv` 与 `target/rust-performance/task-0163-after.tsv`。
+- 自审：无 case/断言/数据行/planner 模式删减，无 timeout 放宽、mock 替换、PingCAP license 删除、本地依赖覆盖或超范围生产修改。
+- 剩余风险：需在性能锁真正排他、且 Cargo 槽位未被其他进程使用时重跑 after；只有连续五次最大值 `<=0.499s` 后才删除本任务文件。

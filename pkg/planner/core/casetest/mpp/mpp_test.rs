@@ -225,6 +225,42 @@ fn prepare_scalar_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
     );
 }
 
+/// Prepare the two-table subset used by `TestMPPJoin` case 12.
+///
+/// The Go suite creates four tables because all 20 cases share one fixture, but
+/// this focused regression only reads `d1_t` and `fact_t`. Keep their schemas,
+/// rows, statistics, and TiFlash metadata identical without paying to prepare
+/// the unrelated decimal/date dimension tables.
+fn prepare_rewritten_semi_join_fixture(domain: &Domain, tk: &mut TestKit) {
+    struct PersistAnalyzeOptionsGuard(bool);
+    impl Drop for PersistAnalyzeOptionsGuard {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(self.0);
+        }
+    }
+
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table d1_t(d1_k int, value int)", Vec::new());
+    tk.MustExec("insert into d1_t values(1,2),(2,3)", Vec::new());
+    tk.MustExec("create table fact_t(d1_k int, d2_k decimal(10,2), d3_k date, col1 int, col2 int, col3 int)", Vec::new());
+    tk.MustExec("insert into fact_t values(1,10.11,date'2010-01-01',1,2,3),(1,10.11,date'2010-01-02',1,2,3),(1,10.12,date'2010-01-01',1,2,3),(1,10.12,date'2010-01-02',1,2,3),(2,10.11,date'2010-01-01',1,2,3),(2,10.11,date'2010-01-02',1,2,3),(2,10.12,date'2010-01-01',1,2,3),(2,10.12,date'2010-01-02',1,2,3)", Vec::new());
+    let _persist_analyze_options =
+        PersistAnalyzeOptionsGuard(astersql_sessionctx_vardef::PersistAnalyzeOptions.Load());
+    astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(false);
+    tk.MustExec("analyze table d1_t, fact_t all columns", Vec::new());
+    domain
+        .set_tiflash_replica_for_test("test", "d1_t", 1, true)
+        .expect("set d1_t TiFlash replica");
+    domain
+        .set_tiflash_replica_for_test("test", "fact_t", 1, true)
+        .expect("set fact_t TiFlash replica");
+    tk.MustExec("set @@session.tidb_allow_mpp=1", Vec::new());
+    tk.MustExec(
+        "set @@session.tidb_isolation_read_engines='tiflash'",
+        Vec::new(),
+    );
+}
+
 #[test]
 fn test_mpp_join_plan_golden_is_executed() {
     let suite = super::main_test::load_integration_suite();
@@ -314,7 +350,7 @@ fn nested_index_join_preserves_intermediate_lookup_keys() {
 fn rewritten_semi_join_preserves_null_rejecting_filters() {
     let suite = super::main_test::load_integration_suite();
     let (domain, mut tk) = new_testkit();
-    prepare_mpp_join_fixture(&domain, &mut tk);
+    prepare_rewritten_semi_join_fixture(&domain, &mut tk);
     for cascades in [false, true] {
         tk.MustExec(
             &format!(
