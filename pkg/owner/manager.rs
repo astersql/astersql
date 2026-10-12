@@ -842,7 +842,7 @@ pub async fn WatchOwnerForTest(
 pub struct DistributedLock {
     client: Client,
     key: Vec<u8>,
-    lease_id: i64,
+    lease_id: Option<i64>,
     keep_alive_cancel: CancellationToken,
     keep_alive_task: JoinHandle<()>,
 }
@@ -874,7 +874,11 @@ impl DistributedLock {
         let unlock = self.client.unlock(self.key.clone()).await;
         self.keep_alive_cancel.cancel();
         let _ = (&mut self.keep_alive_task).await;
-        let revoke = self.client.lease_revoke(self.lease_id).await;
+        let lease_id = self
+            .lease_id
+            .take()
+            .expect("distributed lock lease must exist before release");
+        let revoke = self.client.lease_revoke(lease_id).await;
         unlock?;
         revoke?;
         Ok(())
@@ -883,11 +887,21 @@ impl DistributedLock {
 
 impl Drop for DistributedLock {
     fn drop(&mut self) {
-        // Dropping a Tokio JoinHandle detaches its task. Explicitly cancel and
-        // abort here so an abandoned Go-style client cannot keep the lease alive.
-        // 丢弃时取消/abort 保活，避免遗弃的 Go 风格 client 继续保活。
+        // Go closes the session when the returned release function is abandoned.
+        // Cancel keepalive and revoke the lease asynchronously to preserve that
+        // prompt cleanup without blocking Drop.
+        // Go 在遗弃 release 函数时会关闭 session；Rust 在 Drop 中异步 revoke
+        // lease，既不阻塞 Drop，也不必等待服务端 TTL 到期。
         self.keep_alive_cancel.cancel();
         self.keep_alive_task.abort();
+        if let Some(lease_id) = self.lease_id.take() {
+            let mut client = self.client.clone();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = client.lease_revoke(lease_id).await;
+                });
+            }
+        }
     }
 }
 
@@ -941,7 +955,7 @@ pub async fn AcquireDistributedLock(
         Ok(response) => Ok(DistributedLock {
             client,
             key: response.key().to_vec(),
-            lease_id,
+            lease_id: Some(lease_id),
             keep_alive_cancel: cancel,
             keep_alive_task,
         }),

@@ -710,9 +710,9 @@ async fn test_acquire_distributed_lock() {
         .unwrap();
     lock2.release().await.unwrap();
 
-    // acquire distributed lock until timeout: dropping the first client's
-    // handle stops keepalive and etcd releases the lock after its one-second TTL.
-    // 丢弃锁句柄后保活停止，TTL 到期后另一 client 可获取。
+    // acquire distributed lock until timeout: abandoning the first lock closes
+    // its session lease, matching the Go client-close cleanup path.
+    // 丢弃锁句柄后关闭 session lease，另一 client 可获取。
     let key = "/task-547/lock/timeout";
     clear_path(&mut client1, key).await;
     let abandoned = AcquireDistributedLock(&ctx, client1.clone(), key, 1)
