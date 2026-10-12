@@ -567,12 +567,28 @@ fn new_single_store_harness() -> IntegrationHarness {
 }
 
 // 构造 Calculator 的可选覆写：自定义上游、观察者或持久化状态。
-#[derive(Default)]
 struct CalculatorOptions {
     cfg: CheckpointCalculatorConfig,
     upstream: Option<Box<dyn UpstreamStorageReader>>,
     observer: Option<Box<dyn Observer>>,
     state: Option<PersistentState>,
+}
+
+impl Default for CalculatorOptions {
+    fn default() -> Self {
+        // Go calculatorParams starts from its zero value; newCalculator below
+        // then installs the integration-test task name and 5ms poll interval.
+        Self {
+            cfg: CheckpointCalculatorConfig {
+                TaskName: String::new(),
+                PollInterval: Duration::ZERO,
+                MetaReadConcurrency: 0,
+            },
+            upstream: None,
+            observer: None,
+            state: None,
+        }
+    }
 }
 
 impl IntegrationHarness {
