@@ -1,6 +1,8 @@
 # 任务 502: 优化 `astersql-server::pg_catalog_test::pg_introspection_joins_live`
 
-批次：【批次 502】 依赖批次 501
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

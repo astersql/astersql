@@ -1,6 +1,8 @@
 # 任务 1404: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_fill_missing_stats_meta`
 
-批次：【批次 1404】 依赖批次 1403
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

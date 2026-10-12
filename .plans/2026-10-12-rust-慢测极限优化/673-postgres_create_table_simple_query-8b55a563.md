@@ -1,6 +1,8 @@
 # 任务 673: 优化 `astersql-server::pg_query_test::postgres_create_table_simple_query`
 
-批次：【批次 673】 依赖批次 672
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

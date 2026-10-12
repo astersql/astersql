@@ -1,6 +1,8 @@
 # 任务 830: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_dynamic_partition_rewrite_keeps_all_columns`
 
-批次：【批次 830】 依赖批次 829
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

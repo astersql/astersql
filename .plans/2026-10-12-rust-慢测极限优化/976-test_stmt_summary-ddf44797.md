@@ -1,6 +1,8 @@
 # 任务 976: 优化 `astersql-util-stmtsummary-v2::stmtsummary_test::test_stmt_summary`
 
-批次：【批次 976】 依赖批次 975
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

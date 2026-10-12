@@ -1,6 +1,8 @@
 # 任务 2213: 优化 `astersql-importsdk-mock::sdk_mock_test::call_counts_and_dependencies_match_gomock_rules`
 
-批次：【批次 2213】 依赖批次 2212
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1715: 优化 `astersql-server::runtime_test::go_merge_43_extract_archive_view_and_partitions`
 
-批次：【批次 1715】 依赖批次 1714
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

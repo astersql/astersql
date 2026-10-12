@@ -1,6 +1,8 @@
 # 任务 1759: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_create_schema_v1_cancels_name_conflict_without_metadata_change`
 
-批次：【批次 1759】 依赖批次 1758
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

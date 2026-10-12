@@ -1,6 +1,8 @@
 # 任务 541: 优化 `astersql-executor-test-analyzetest-panictest::panic_test::TestPanicInHandleAnalyzeWorkerPanic`
 
-批次：【批次 541】 依赖批次 540
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

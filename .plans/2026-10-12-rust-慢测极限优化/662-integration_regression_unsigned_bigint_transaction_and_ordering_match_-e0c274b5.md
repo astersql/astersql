@@ -1,6 +1,8 @@
 # 任务 662: 优化 `astersql-planner-core-casetest::integration_test::integration_regression_unsigned_bigint_transaction_and_ordering_match_go`
 
-批次：【批次 662】 依赖批次 661
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

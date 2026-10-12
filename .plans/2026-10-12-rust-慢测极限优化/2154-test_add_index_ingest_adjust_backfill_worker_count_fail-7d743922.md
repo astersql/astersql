@@ -1,6 +1,8 @@
 # 任务 2154: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_ingest_adjust_backfill_worker_count_fail`
 
-批次：【批次 2154】 依赖批次 2153
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

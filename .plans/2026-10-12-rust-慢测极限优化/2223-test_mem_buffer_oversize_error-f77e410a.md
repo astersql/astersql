@@ -1,6 +1,8 @@
 # 任务 2223: 优化 `astersql-store-driver-error::error_test::test_mem_buffer_oversize_error`
 
-批次：【批次 2223】 依赖批次 2222
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

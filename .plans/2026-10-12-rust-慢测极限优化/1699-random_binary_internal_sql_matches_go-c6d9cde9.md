@@ -1,6 +1,8 @@
 # 任务 1699: 优化 `astersql-session-test::session_test::random_binary_internal_sql_matches_go`
 
-批次：【批次 1699】 依赖批次 1698
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

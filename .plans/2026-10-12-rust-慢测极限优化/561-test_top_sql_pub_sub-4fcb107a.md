@@ -1,6 +1,8 @@
 # 任务 561: 优化 `astersql-util-topsql::topsql_test::test_top_sql_pub_sub`
 
-批次：【批次 561】 依赖批次 560
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

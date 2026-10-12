@@ -1,6 +1,8 @@
 # 任务 332: 优化 `astersql-testkit::stats_runtime_aster_unit_test::dynamic_partition_analyze_uses_requested_production_worker_concurrency`
 
-批次：【批次 332】 依赖批次 331
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

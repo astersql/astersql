@@ -1,6 +1,8 @@
 # 任务 1306: 优化 `astersql-executor-test-loadremotetest::multi_file_test::test_mixed_compression`
 
-批次：【批次 1306】 依赖批次 1305
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

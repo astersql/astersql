@@ -1,6 +1,8 @@
 # 任务 899: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_restart_preserves_renamed_system_table`
 
-批次：【批次 899】 依赖批次 898
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

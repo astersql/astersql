@@ -1,6 +1,8 @@
 # 任务 607: 优化 `astersql-executor::historical_stats_test::TestDumpHistoricalStatsFallback`
 
-批次：【批次 607】 依赖批次 606
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 804: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_metadata_comment_preserves_full_table_and_multi_boundary`
 
-批次：【批次 804】 依赖批次 803
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

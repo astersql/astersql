@@ -1,6 +1,8 @@
 # 任务 1047: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_analyze_all_columns_marks_table_non_pseudo`
 
-批次：【批次 1047】 依赖批次 1046
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

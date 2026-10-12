@@ -1,6 +1,8 @@
 # 任务 606: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_modify_timestamp_uses_named_timezone`
 
-批次：【批次 606】 依赖批次 605
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

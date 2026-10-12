@@ -1,6 +1,8 @@
 # 任务 1523: 优化 `astersql-session-test-bootstraptest::boot_test::default_stats_background_survives_other_resource_group_alters`
 
-批次：【批次 1523】 依赖批次 1522
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

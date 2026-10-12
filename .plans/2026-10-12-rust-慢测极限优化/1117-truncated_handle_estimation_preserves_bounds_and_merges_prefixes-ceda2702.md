@@ -1,6 +1,8 @@
 # 任务 1117: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::truncated_handle_estimation_preserves_bounds_and_merges_prefixes`
 
-批次：【批次 1117】 依赖批次 1116
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

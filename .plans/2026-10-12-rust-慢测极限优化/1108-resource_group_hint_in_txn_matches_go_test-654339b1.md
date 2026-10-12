@@ -1,6 +1,8 @@
 # 任务 1108: 优化 `astersql-session-test-resourcegrouptest::resource_group_test::resource_group_hint_in_txn_matches_go_test`
 
-批次：【批次 1108】 依赖批次 1107
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2195: 优化 `astersql-parser-charset::charset_test::test_valid_charset`
 
-批次：【批次 2195】 依赖批次 2194
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

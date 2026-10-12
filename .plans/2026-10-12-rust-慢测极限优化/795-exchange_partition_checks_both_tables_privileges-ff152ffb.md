@@ -1,6 +1,8 @@
 # 任务 795: 优化 `astersql-session::exchange_partition_privileges::exchange_partition_checks_both_tables_privileges`
 
-批次：【批次 795】 依赖批次 794
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

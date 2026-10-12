@@ -1,6 +1,8 @@
 # 任务 569: 优化 `astersql-server::conn_stmt_test::cursor_iteration_is_timed_and_notification_excluded`
 
-批次：【批次 569】 依赖批次 568
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

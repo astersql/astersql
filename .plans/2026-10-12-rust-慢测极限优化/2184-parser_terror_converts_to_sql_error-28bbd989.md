@@ -1,6 +1,8 @@
 # 任务 2184: 优化 `astersql-parser-terror::parser_terror_test::parser_terror_converts_to_sql_error`
 
-批次：【批次 2184】 依赖批次 2183
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

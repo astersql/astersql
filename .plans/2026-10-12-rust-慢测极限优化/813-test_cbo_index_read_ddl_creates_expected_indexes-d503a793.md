@@ -1,6 +1,8 @@
 # 任务 813: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_read_ddl_creates_expected_indexes`
 
-批次：【批次 813】 依赖批次 812
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

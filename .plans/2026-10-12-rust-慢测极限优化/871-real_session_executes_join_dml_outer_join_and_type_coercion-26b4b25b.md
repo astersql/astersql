@@ -1,6 +1,8 @@
 # 任务 871: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_join_dml_outer_join_and_type_coercion`
 
-批次：【批次 871】 依赖批次 870
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1570: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_privilege_failed_account_batch_rolls_back_tables_and_cache`
 
-批次：【批次 1570】 依赖批次 1569
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

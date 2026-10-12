@@ -1,6 +1,8 @@
 # 任务 1866: 优化 `astersql-session::runtime::import_compression::tests::canonical_corrupt_file_keeps_table_empty`
 
-批次：【批次 1866】 依赖批次 1865
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

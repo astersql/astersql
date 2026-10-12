@@ -1,6 +1,8 @@
 # 任务 234: 优化 `astersql-tests-realtikvtest-addindextest::pitr_test::test_pitr_create_multi_cols_index`
 
-批次：【批次 234】 依赖批次 233
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

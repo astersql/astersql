@@ -1,6 +1,8 @@
 # 任务 56: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_for_share_with_promotion`
 
-批次：【批次 56】 依赖批次 55
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

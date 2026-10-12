@@ -1,6 +1,8 @@
 # 任务 1112: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_reloads_sql_job_after_restart`
 
-批次：【批次 1112】 依赖批次 1111
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

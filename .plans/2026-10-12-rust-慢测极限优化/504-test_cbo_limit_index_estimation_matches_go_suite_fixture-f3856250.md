@@ -1,6 +1,8 @@
 # 任务 504: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_limit_index_estimation_matches_go_suite_fixture`
 
-批次：【批次 504】 依赖批次 503
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1667: 优化 `astersql-session-test-txn::txn_test::mem_buffer_snapshot_read_preserves_union_scan_consistency`
 
-批次：【批次 1667】 依赖批次 1666
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2058: 优化 `astersql-br-pkg-task::restore_ebs_meta_test::skip_aws_uses_meta_volume_count_and_always_writes_preserved_output`
 
-批次：【批次 2058】 依赖批次 2057
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

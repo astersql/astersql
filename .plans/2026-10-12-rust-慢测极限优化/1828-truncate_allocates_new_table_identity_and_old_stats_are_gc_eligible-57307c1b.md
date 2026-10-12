@@ -1,6 +1,8 @@
 # 任务 1828: 优化 `astersql-testkit::mockstore_domain_ddl_test::truncate_allocates_new_table_identity_and_old_stats_are_gc_eligible`
 
-批次：【批次 1828】 依赖批次 1827
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

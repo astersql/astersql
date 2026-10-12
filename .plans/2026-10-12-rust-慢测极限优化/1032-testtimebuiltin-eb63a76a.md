@@ -1,6 +1,8 @@
 # 任务 1032: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestTimeBuiltin`
 
-批次：【批次 1032】 依赖批次 1031
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

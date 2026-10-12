@@ -1,6 +1,8 @@
 # 任务 1064: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_table_dual_flush_stats_reflects_inserted_rows`
 
-批次：【批次 1064】 依赖批次 1063
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

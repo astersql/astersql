@@ -1,6 +1,8 @@
 # 任务 589: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_validates_before_deleting_and_retries_rolled_back_bootstrap`
 
-批次：【批次 589】 依赖批次 588
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

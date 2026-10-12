@@ -1,6 +1,8 @@
 # 任务 259: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::partition_index_merge_union_matches_table_scan_and_deduplicates`
 
-批次：【批次 259】 依赖批次 258
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1628: 优化 `astersql-session::runtime_test::session::sem_restricted_sql_uses_authenticated_dynamic_privileges_and_preserves_import_path`
 
-批次：【批次 1628】 依赖批次 1627
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

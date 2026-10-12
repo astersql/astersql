@@ -1,6 +1,8 @@
 # 任务 319: 优化 `astersql-util-extsort::disk_sorter_test::test_disk_sorter_common`
 
-批次：【批次 319】 依赖批次 318
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1475: 优化 `astersql-session-test-meta::session_test::runtime_meta_table_regions_use_canonical_start_keys`
 
-批次：【批次 1475】 依赖批次 1474
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1816: 优化 `astersql-server::http_status_test::tiflash_replica_summary_reports_live_tables_gate_and_query_validation`
 
-批次：【批次 1816】 依赖批次 1815
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

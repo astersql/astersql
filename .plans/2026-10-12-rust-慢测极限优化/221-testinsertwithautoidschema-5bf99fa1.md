@@ -1,6 +1,8 @@
 # 任务 221: 优化 `astersql-executor-test-autoidtest::autoid_test::TestInsertWithAutoidSchema`
 
-批次：【批次 221】 依赖批次 220
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

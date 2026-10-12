@@ -1,6 +1,8 @@
 # 任务 442: 优化 `astersql-privilege-privileges-ldap::ldap_common_test::tests::set_ca_path_does_not_rebuild_connection_pool`
 
-批次：【批次 442】 依赖批次 441
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

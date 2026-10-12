@@ -1,6 +1,8 @@
 # 任务 1058: 优化 `astersql-session-test-txn::txn_test::closing_pessimistic_transaction_releases_rollback_state`
 
-批次：【批次 1058】 依赖批次 1057
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

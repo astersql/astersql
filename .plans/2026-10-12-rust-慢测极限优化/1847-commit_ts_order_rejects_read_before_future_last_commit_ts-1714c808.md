@@ -1,6 +1,8 @@
 # 任务 1847: 优化 `astersql-session-test-txn::txn_test::commit_ts_order_rejects_read_before_future_last_commit_ts`
 
-批次：【批次 1847】 依赖批次 1846
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

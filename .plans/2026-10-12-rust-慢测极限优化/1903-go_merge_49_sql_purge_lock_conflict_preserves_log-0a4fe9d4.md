@@ -1,6 +1,8 @@
 # 任务 1903: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_lock_conflict_preserves_log`
 
-批次：【批次 1903】 依赖批次 1902
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

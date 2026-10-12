@@ -1,6 +1,8 @@
 # 任务 445: 优化 `astersql-util-cpuprofile::cpuprofile_test::TestGetCPUProfile`
 
-批次：【批次 445】 依赖批次 444
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

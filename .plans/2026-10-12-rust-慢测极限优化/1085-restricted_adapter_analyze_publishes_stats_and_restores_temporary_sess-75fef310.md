@@ -1,6 +1,8 @@
 # 任务 1085: 优化 `astersql-session::runtime::scan_adapter_runtime_test::restricted_adapter_analyze_publishes_stats_and_restores_temporary_session_settings`
 
-批次：【批次 1085】 依赖批次 1084
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

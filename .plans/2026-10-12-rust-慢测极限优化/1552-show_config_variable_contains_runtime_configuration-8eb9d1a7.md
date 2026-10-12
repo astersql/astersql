@@ -1,6 +1,8 @@
 # 任务 1552: 优化 `astersql-executor-test-showtest::show_test::show_config_variable_contains_runtime_configuration`
 
-批次：【批次 1552】 依赖批次 1551
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 134: 优化 `astersql::bench/errors::BenchmarkByArgsHackedStrFreeze/FastGenByArgs/type-hacked/count-8/strlen-1024`
 
-批次：【批次 134】 依赖批次 133
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

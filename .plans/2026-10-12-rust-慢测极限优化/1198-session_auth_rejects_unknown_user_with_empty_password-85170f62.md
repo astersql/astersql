@@ -1,6 +1,8 @@
 # 任务 1198: 优化 `astersql-session-test-privileges::privileges_test::session_auth_rejects_unknown_user_with_empty_password`
 
-批次：【批次 1198】 依赖批次 1197
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 514: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_native_introspection_supports_boolean_projection_and_positional_order`
 
-批次：【批次 514】 依赖批次 513
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

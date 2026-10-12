@@ -1,6 +1,8 @@
 # 任务 1098: 优化 `astersql-session::runtime::scan_adapter_runtime_test::canonical_locked_unique_point_get_locks_index_and_record_and_rr_missing_index_key`
 
-批次：【批次 1098】 依赖批次 1097
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

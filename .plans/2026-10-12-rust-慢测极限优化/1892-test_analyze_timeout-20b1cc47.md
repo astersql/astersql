@@ -1,6 +1,8 @@
 # 任务 1892: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_analyze_timeout`
 
-批次：【批次 1892】 依赖批次 1891
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

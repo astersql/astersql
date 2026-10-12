@@ -1,6 +1,8 @@
 # 任务 1189: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_drop_column_persistent_four_phases_and_policy_cleanup`
 
-批次：【批次 1189】 依赖批次 1188
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1722: 优化 `astersql-testkit::stats_runtime_aster_unit_test::domain_schema_is_cross_session_and_uses_one_snapshot_version`
 
-批次：【批次 1722】 依赖批次 1721
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

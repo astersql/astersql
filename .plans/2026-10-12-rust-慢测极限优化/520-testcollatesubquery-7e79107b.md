@@ -1,6 +1,8 @@
 # 任务 520: 优化 `astersql-planner-core-tests-subquery::subquery_test::TestCollateSubQuery`
 
-批次：【批次 520】 依赖批次 519
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

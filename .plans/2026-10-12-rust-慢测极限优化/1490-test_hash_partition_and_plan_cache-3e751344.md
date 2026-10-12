@@ -1,6 +1,8 @@
 # 任务 1490: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_hash_partition_and_plan_cache`
 
-批次：【批次 1490】 依赖批次 1489
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

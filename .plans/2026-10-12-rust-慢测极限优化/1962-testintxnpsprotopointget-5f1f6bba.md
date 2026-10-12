@@ -1,6 +1,8 @@
 # 任务 1962: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestInTxnPSProtoPointGet`
 
-批次：【批次 1962】 依赖批次 1961
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

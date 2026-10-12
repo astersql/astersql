@@ -1,6 +1,8 @@
 # 任务 811: 优化 `astersql-session::mysql_type_compat_test::common_mysql_types_round_trip_without_metadata_or_value_loss`
 
-批次：【批次 811】 依赖批次 810
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

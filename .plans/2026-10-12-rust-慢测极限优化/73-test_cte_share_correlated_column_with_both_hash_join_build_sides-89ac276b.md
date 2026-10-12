@@ -1,6 +1,8 @@
 # 任务 73: 优化 `astersql-executor-test-cte::cte_test::test_cte_share_correlated_column_with_both_hash_join_build_sides`
 
-批次：【批次 73】 依赖批次 72
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

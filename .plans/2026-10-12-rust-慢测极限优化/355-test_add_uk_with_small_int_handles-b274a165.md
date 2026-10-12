@@ -1,6 +1,8 @@
 # 任务 355: 优化 `astersql-tests-realtikvtest-addindextest::add_index_test::test_add_uk_with_small_int_handles`
 
-批次：【批次 355】 依赖批次 354
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

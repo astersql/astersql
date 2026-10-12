@@ -1,6 +1,8 @@
 # 任务 959: 优化 `astersql-testkit::mockstore_domain_stats_test::analyze_session_workers_join_on_explicit_close_and_drop`
 
-批次：【批次 959】 依赖批次 958
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

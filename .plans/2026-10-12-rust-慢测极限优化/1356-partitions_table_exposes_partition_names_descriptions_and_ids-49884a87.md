@@ -1,6 +1,8 @@
 # 任务 1356: 优化 `astersql-executor-test-infoschema::infoschema_test::partitions_table_exposes_partition_names_descriptions_and_ids`
 
-批次：【批次 1356】 依赖批次 1355
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

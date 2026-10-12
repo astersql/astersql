@@ -1,6 +1,8 @@
 # 任务 1513: 优化 `astersql-session-test::session_test::result_field_metadata_matches_go_query_shape`
 
-批次：【批次 1513】 依赖批次 1512
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

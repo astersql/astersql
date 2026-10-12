@@ -1,6 +1,8 @@
 # 任务 1894: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_select_for_update_conflict_retry`
 
-批次：【批次 1894】 依赖批次 1893
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

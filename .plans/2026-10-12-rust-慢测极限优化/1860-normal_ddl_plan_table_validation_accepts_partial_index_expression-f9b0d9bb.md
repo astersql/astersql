@@ -1,6 +1,8 @@
 # 任务 1860: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_accepts_partial_index_expression`
 
-批次：【批次 1860】 依赖批次 1859
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

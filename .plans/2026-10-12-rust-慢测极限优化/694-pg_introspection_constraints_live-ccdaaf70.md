@@ -1,6 +1,8 @@
 # 任务 694: 优化 `astersql-server::pg_catalog_test::pg_introspection_constraints_live`
 
-批次：【批次 694】 依赖批次 693
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

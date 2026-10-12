@@ -1,6 +1,8 @@
 # 任务 562: 优化 `astersql-executor-test-infoschema::infoschema_test::columns_exclude_non_public_modify_column_artifacts`
 
-批次：【批次 562】 依赖批次 561
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

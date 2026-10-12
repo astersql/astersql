@@ -1,6 +1,8 @@
 # 任务 2257: 优化 `astersql-types-core-time::core_time_2_aster_unit_test::core_time_2_add_date_uses_mysql_month_end_rule`
 
-批次：【批次 2257】 依赖批次 2256
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

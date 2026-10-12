@@ -1,6 +1,8 @@
 # 任务 43: 优化 `astersql-planner-core-casetest-join::join_test::test_join_with_nulleq_runs_go_plan_and_result_contract`
 
-批次：【批次 43】 依赖批次 42
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

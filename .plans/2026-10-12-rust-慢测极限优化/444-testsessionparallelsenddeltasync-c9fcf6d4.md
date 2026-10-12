@@ -1,6 +1,8 @@
 # 任务 444: 优化 `astersql-statistics-handle-usage-collector::collector_test::TestSessionParallelSendDeltaSync`
 
-批次：【批次 444】 依赖批次 443
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

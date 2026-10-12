@@ -1,6 +1,8 @@
 # 任务 1869: 优化 `astersql-session::runtime_pessimistic_test::insert_ignore_skips_secondary_unique_conflicts_without_losing_other_rows`
 
-批次：【批次 1869】 依赖批次 1868
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

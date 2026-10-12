@@ -1,6 +1,8 @@
 # 任务 55: 优化 `astersql-owner::manager_test::test_set_and_get_owner_op_value`
 
-批次：【批次 55】 依赖批次 54
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

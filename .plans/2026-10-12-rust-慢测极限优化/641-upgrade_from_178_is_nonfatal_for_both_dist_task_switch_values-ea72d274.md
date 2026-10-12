@@ -1,6 +1,8 @@
 # 任务 641: 优化 `astersql-session-test-bootstraptest2::boot_test::upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values`
 
-批次：【批次 641】 依赖批次 640
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

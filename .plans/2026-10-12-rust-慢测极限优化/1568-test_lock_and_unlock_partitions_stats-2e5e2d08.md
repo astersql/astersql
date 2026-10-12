@@ -1,6 +1,8 @@
 # 任务 1568: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_lock_and_unlock_partitions_stats`
 
-批次：【批次 1568】 依赖批次 1567
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

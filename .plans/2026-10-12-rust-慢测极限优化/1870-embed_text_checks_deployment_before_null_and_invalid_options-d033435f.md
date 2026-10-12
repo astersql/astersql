@@ -1,6 +1,8 @@
 # 任务 1870: 优化 `astersql-session::runtime::inference_test::embed_text_checks_deployment_before_null_and_invalid_options`
 
-批次：【批次 1870】 依赖批次 1869
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

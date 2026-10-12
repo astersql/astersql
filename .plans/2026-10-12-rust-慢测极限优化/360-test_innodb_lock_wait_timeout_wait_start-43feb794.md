@@ -1,6 +1,8 @@
 # 任务 360: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_innodb_lock_wait_timeout_wait_start`
 
-批次：【批次 360】 依赖批次 359
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

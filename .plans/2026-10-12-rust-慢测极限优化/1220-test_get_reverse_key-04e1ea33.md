@@ -1,6 +1,8 @@
 # 任务 1220: 优化 `astersql-ddl-tests-serial::serial_test::test_get_reverse_key`
 
-批次：【批次 1220】 依赖批次 1219
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

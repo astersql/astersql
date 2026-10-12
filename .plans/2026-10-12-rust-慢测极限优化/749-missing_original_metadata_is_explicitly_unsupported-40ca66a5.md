@@ -1,6 +1,8 @@
 # 任务 749: 优化 `astersql-server::pg_types_test::missing_original_metadata_is_explicitly_unsupported`
 
-批次：【批次 749】 依赖批次 748
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

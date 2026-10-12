@@ -1,6 +1,8 @@
 # 任务 1550: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::prepared_partition_point_get_and_batch_point_get_rebuild_safely`
 
-批次：【批次 1550】 依赖批次 1549
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

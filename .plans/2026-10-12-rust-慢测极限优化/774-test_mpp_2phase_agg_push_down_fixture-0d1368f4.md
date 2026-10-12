@@ -1,6 +1,8 @@
 # 任务 774: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_2phase_agg_push_down_fixture`
 
-批次：【批次 774】 依赖批次 773
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

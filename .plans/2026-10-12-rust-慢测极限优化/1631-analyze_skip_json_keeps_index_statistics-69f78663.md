@@ -1,6 +1,8 @@
 # 任务 1631: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_skip_json_keeps_index_statistics`
 
-批次：【批次 1631】 依赖批次 1630
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

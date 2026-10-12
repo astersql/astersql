@@ -1,6 +1,8 @@
 # 任务 975: 优化 `astersql-session::runtime::normal_ddl_create_table_test::sql_alter_ttl_syncs_controller_and_preserves_unspecified_options`
 
-批次：【批次 975】 依赖批次 974
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

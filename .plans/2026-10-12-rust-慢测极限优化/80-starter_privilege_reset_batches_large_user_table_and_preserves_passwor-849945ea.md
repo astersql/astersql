@@ -1,6 +1,8 @@
 # 任务 80: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_batches_large_user_table_and_preserves_password_history`
 
-批次：【批次 80】 依赖批次 79
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

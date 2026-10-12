@@ -1,6 +1,8 @@
 # 任务 49: 优化 `astersql-planner-core-casetest::tiflash_predicate_push_down_test::tiflash_inverted_index_matches_go_goldens`
 
-批次：【批次 49】 依赖批次 48
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

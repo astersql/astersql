@@ -1,6 +1,8 @@
 # 任务 1926: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestStalenessAndHistoryRead`
 
-批次：【批次 1926】 依赖批次 1925
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

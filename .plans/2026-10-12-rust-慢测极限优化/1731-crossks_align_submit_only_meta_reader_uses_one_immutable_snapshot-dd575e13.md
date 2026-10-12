@@ -1,6 +1,8 @@
 # 任务 1731: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_meta_reader_uses_one_immutable_snapshot`
 
-批次：【批次 1731】 依赖批次 1730
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

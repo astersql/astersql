@@ -1,6 +1,8 @@
 # 任务 1817: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_invalid_server_state_removes_registration_and_store`
 
-批次：【批次 1817】 依赖批次 1816
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

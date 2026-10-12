@@ -1,6 +1,8 @@
 # 任务 1214: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_plan_cache_snapshot`
 
-批次：【批次 1214】 依赖批次 1213
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1027: 优化 `astersql-executor::detach_integration_test::detached_reader_context_survives_its_real_sql_session`
 
-批次：【批次 1027】 依赖批次 1026
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

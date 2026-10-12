@@ -1,6 +1,8 @@
 # 任务 1131: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_partition_with_varied_data_sources`
 
-批次：【批次 1131】 依赖批次 1130
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

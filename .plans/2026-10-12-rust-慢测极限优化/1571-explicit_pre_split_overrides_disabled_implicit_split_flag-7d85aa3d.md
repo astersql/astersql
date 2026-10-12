@@ -1,6 +1,8 @@
 # 任务 1571: 优化 `astersql-tests-realtikvtest-ddltest::ddl_test::explicit_pre_split_overrides_disabled_implicit_split_flag`
 
-批次：【批次 1571】 依赖批次 1570
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

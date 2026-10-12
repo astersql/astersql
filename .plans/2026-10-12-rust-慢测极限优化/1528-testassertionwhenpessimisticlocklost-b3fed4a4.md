@@ -1,6 +1,8 @@
 # 任务 1528: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestAssertionWhenPessimisticLockLost`
 
-批次：【批次 1528】 依赖批次 1527
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

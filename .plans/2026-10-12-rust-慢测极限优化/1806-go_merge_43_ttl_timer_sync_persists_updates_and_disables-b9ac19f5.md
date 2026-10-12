@@ -1,6 +1,8 @@
 # 任务 1806: 优化 `astersql-session::runtime::ttl_timer_test::go_merge_43_ttl_timer_sync_persists_updates_and_disables`
 
-批次：【批次 1806】 依赖批次 1805
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

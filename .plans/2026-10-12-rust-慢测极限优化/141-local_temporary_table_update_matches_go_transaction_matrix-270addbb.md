@@ -1,6 +1,8 @@
 # 任务 141: 优化 `astersql-session-test-temporarytabletest::temporary_table_test::local_temporary_table_update_matches_go_transaction_matrix`
 
-批次：【批次 141】 依赖批次 140
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

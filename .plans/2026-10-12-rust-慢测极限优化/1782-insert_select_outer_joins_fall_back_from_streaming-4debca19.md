@@ -1,6 +1,8 @@
 # 任务 1782: 优化 `astersql-session::runtime_test::query::insert_select_outer_joins_fall_back_from_streaming`
 
-批次：【批次 1782】 依赖批次 1781
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

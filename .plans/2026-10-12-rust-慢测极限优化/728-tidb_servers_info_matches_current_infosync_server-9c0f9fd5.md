@@ -1,6 +1,8 @@
 # 任务 728: 优化 `astersql-executor-test-infoschema::infoschema_test::tidb_servers_info_matches_current_infosync_server`
 
-批次：【批次 728】 依赖批次 727
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

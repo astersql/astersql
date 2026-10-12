@@ -1,6 +1,8 @@
 # 任务 1775: 优化 `astersql-owner::fail_test::test_fail_new_session`
 
-批次：【批次 1775】 依赖批次 1774
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

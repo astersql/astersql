@@ -1,6 +1,8 @@
 # 任务 727: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_waits_for_delayed_publication`
 
-批次：【批次 727】 依赖批次 726
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

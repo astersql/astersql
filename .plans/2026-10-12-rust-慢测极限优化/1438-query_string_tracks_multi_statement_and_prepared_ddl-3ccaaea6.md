@@ -1,6 +1,8 @@
 # 任务 1438: 优化 `astersql-session-test-common::common_test::query_string_tracks_multi_statement_and_prepared_ddl`
 
-批次：【批次 1438】 依赖批次 1437
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 596: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_many_partitions_preserves_physical_stats`
 
-批次：【批次 596】 依赖批次 595
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1341: 优化 `astersql-tests-realtikvtest-importintotest3::extra_param_test::test_starter_max_import_data_size`
 
-批次：【批次 1341】 依赖批次 1340
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

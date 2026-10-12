@@ -1,6 +1,8 @@
 # 任务 1301: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_add_index_by_sql`
 
-批次：【批次 1301】 依赖批次 1300
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1398: 优化 `astersql-tests-realtikvtest-importintotest::job_test::test_precheck_failure_on_prepare_is_not_retried`
 
-批次：【批次 1398】 依赖批次 1397
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

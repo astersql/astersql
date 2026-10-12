@@ -1,6 +1,8 @@
 # 任务 2051: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_domain_owns_and_stops_real_ttl_job_manager`
 
-批次：【批次 2051】 依赖批次 2050
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

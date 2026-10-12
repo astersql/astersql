@@ -1,6 +1,8 @@
 # 任务 985: 优化 `astersql-cmd-tidb-server::main_test::canonical_listener_starts_on_port_zero_and_preserves_cleanup_order`
 
-批次：【批次 985】 依赖批次 984
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

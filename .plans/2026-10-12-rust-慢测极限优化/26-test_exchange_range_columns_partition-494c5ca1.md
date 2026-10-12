@@ -1,6 +1,8 @@
 # 任务 26: 优化 `astersql-ddl-tests-partition::exchange_partition_test::test_exchange_range_columns_partition`
 
-批次：【批次 26】 依赖批次 25
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

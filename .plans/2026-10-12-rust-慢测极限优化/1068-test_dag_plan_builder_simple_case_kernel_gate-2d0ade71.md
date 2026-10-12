@@ -1,6 +1,8 @@
 # 任务 1068: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_simple_case_kernel_gate`
 
-批次：【批次 1068】 依赖批次 1067
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

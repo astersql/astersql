@@ -1,6 +1,8 @@
 # 任务 1689: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_issue_44369_and_table_last_analyze_version`
 
-批次：【批次 1689】 依赖批次 1688
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

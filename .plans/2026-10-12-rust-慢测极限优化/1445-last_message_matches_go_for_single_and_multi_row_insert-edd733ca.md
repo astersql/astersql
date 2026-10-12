@@ -1,6 +1,8 @@
 # 任务 1445: 优化 `astersql-session-test-common::common_test::last_message_matches_go_for_single_and_multi_row_insert`
 
-批次：【批次 1445】 依赖批次 1444
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

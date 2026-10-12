@@ -1,6 +1,8 @@
 # 任务 849: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_token_only_require_preserves_existing_tls`
 
-批次：【批次 849】 依赖批次 848
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

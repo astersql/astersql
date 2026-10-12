@@ -1,6 +1,8 @@
 # 任务 1179: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_materialized_view_refresh_and_log_purge_update_metadata_and_publish_events`
 
-批次：【批次 1179】 依赖批次 1178
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

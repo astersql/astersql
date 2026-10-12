@@ -1,6 +1,8 @@
 # 任务 2112: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_ingest_limit_one_backend`
 
-批次：【批次 2112】 依赖批次 2111
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

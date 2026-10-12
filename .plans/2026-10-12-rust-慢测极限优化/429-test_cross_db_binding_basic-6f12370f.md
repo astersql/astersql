@@ -1,6 +1,8 @@
 # 任务 429: 优化 `astersql-bindinfo-tests::cross_db_binding_test::test_cross_db_binding_basic`
 
-批次：【批次 429】 依赖批次 428
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

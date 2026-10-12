@@ -1,6 +1,8 @@
 # 任务 1877: 优化 `astersql-session::runtime_test::session::cloned_concrete_session_retains_shared_state_until_last_owner_drops`
 
-批次：【批次 1877】 依赖批次 1876
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

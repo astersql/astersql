@@ -1,6 +1,8 @@
 # 任务 290: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_collect_predicate_columns_from_execute`
 
-批次：【批次 290】 依赖批次 289
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

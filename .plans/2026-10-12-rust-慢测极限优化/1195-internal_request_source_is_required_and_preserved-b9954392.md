@@ -1,6 +1,8 @@
 # 任务 1195: 优化 `astersql-session-test::session_test::internal_request_source_is_required_and_preserved`
 
-批次：【批次 1195】 依赖批次 1194
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 231: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnInsertDuplicateUpdateChildTable`
 
-批次：【批次 231】 依赖批次 230
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2171: 优化 `astersql-util-set::set_with_memory_usage_test::BenchmarkStringSetMemoryUsage`
 
-批次：【批次 2171】 依赖批次 2170
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

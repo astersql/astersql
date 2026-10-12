@@ -1,6 +1,8 @@
 # 任务 1349: 优化 `astersql-tests-realtikvtest-importintotest::job_test::test_job_comparison_rejects_wrong_source_and_error`
 
-批次：【批次 1349】 依赖批次 1348
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

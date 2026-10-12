@@ -1,6 +1,8 @@
 # 任务 1917: 优化 `astersql-session-test-schematest::schema_test::unrelated_table_creation_does_not_disturb_a_concurrent_sessions_open_transaction`
 
-批次：【批次 1917】 依赖批次 1916
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

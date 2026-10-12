@@ -1,6 +1,8 @@
 # 任务 160: 优化 `astersql-executor-test-jointest::join_test::test_null_empty_aware_semi_join`
 
-批次：【批次 160】 依赖批次 159
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

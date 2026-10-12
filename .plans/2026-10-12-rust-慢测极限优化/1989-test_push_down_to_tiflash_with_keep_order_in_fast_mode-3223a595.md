@@ -1,6 +1,8 @@
 # 任务 1989: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_push_down_to_tiflash_with_keep_order_in_fast_mode`
 
-批次：【批次 1989】 依赖批次 1988
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1280: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_delta_in_lock_info_can_be_negative`
 
-批次：【批次 1280】 依赖批次 1279
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

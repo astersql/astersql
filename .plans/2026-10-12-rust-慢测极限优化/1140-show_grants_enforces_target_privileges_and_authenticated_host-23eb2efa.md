@@ -1,6 +1,8 @@
 # 任务 1140: 优化 `astersql-executor-test-showtest::show_test::show_grants_enforces_target_privileges_and_authenticated_host`
 
-批次：【批次 1140】 依赖批次 1139
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1510: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_service_domain_close_releases_owned_service_and_pool`
 
-批次：【批次 1510】 依赖批次 1509
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

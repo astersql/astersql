@@ -1,6 +1,8 @@
 # 任务 2210: 优化 `astersql-dxf-importinto::clean_up_test::parallel_metering_propagates_parent_cancellation_and_recovers_panic`
 
-批次：【批次 2210】 依赖批次 2209
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

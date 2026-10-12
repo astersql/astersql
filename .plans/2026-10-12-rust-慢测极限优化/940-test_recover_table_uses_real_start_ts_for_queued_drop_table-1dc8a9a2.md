@@ -1,6 +1,8 @@
 # 任务 940: 优化 `astersql-ddl-tests-serial::serial_test::test_recover_table_uses_real_start_ts_for_queued_drop_table`
 
-批次：【批次 940】 依赖批次 939
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

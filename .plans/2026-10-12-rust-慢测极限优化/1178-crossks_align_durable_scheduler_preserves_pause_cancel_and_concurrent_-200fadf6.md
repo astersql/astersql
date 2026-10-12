@@ -1,6 +1,8 @@
 # 任务 1178: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_admin_change`
 
-批次：【批次 1178】 依赖批次 1177
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

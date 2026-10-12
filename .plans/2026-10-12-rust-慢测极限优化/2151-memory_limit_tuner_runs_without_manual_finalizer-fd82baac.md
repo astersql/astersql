@@ -1,6 +1,8 @@
 # 任务 2151: 优化 `astersql-util-gctuner::memory_limit_tuner_test::memory_limit_tuner_runs_without_manual_finalizer`
 
-批次：【批次 2151】 依赖批次 2150
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

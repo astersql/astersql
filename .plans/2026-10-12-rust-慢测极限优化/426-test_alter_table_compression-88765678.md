@@ -1,6 +1,8 @@
 # 任务 426: 优化 `astersql-ddl-tests-serial::serial_test::test_alter_table_compression`
 
-批次：【批次 426】 依赖批次 425
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

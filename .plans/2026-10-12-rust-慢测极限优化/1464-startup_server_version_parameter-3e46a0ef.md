@@ -1,6 +1,8 @@
 # 任务 1464: 优化 `astersql-server::pg_conn_test::startup_server_version_parameter`
 
-批次：【批次 1464】 依赖批次 1463
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

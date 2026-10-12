@@ -1,6 +1,8 @@
 # 任务 1394: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::infoschema_table_name_like_honors_custom_escape`
 
-批次：【批次 1394】 依赖批次 1393
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

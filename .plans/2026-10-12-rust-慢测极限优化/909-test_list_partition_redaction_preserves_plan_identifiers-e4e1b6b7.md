@@ -1,6 +1,8 @@
 # 任务 909: 优化 `astersql-planner-core-tests-redact::redact_test::test_list_partition_redaction_preserves_plan_identifiers`
 
-批次：【批次 909】 依赖批次 908
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

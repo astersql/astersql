@@ -1,6 +1,8 @@
 # 任务 1109: 优化 `astersql-util-globalconn::pool_test::TestLockBasedPoolConcurrencySafety`
 
-批次：【批次 1109】 依赖批次 1108
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

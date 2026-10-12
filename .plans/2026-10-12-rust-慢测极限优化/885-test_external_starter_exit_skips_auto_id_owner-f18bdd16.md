@@ -1,6 +1,8 @@
 # 任务 885: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_exit_skips_auto_id_owner`
 
-批次：【批次 885】 依赖批次 884
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

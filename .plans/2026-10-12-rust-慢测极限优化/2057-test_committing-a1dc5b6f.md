@@ -1,6 +1,8 @@
 # 任务 2057: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_committing`
 
-批次：【批次 2057】 依赖批次 2056
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

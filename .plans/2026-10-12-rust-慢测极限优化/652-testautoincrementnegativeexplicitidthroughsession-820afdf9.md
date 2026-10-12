@@ -1,6 +1,8 @@
 # 任务 652: 优化 `astersql-executor-test-autoidtest::autoid_test::TestAutoIncrementNegativeExplicitIdThroughSession`
 
-批次：【批次 652】 依赖批次 651
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

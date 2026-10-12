@@ -1,6 +1,8 @@
 # 任务 732: 优化 `astersql-session::runtime::ttl_worker_session_test::ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes`
 
-批次：【批次 732】 依赖批次 731
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

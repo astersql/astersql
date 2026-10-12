@@ -1,6 +1,8 @@
 # 任务 946: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_index_fm_sketch`
 
-批次：【批次 946】 依赖批次 945
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

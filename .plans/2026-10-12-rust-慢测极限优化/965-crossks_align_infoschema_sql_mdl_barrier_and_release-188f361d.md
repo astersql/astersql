@@ -1,6 +1,8 @@
 # 任务 965: 优化 `astersql-session::system_session::crossks_align_infoschema_sql_mdl_barrier_and_release`
 
-批次：【批次 965】 依赖批次 964
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

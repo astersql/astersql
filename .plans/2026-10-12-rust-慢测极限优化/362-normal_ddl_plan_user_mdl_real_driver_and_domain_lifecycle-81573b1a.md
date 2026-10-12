@@ -1,6 +1,8 @@
 # 任务 362: 优化 `astersql-server::runtime_test::normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle`
 
-批次：【批次 362】 依赖批次 361
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

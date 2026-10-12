@@ -1,6 +1,8 @@
 # 任务 1579: 优化 `astersql-server-tests::tidb_serial_test::test_config_default_value`
 
-批次：【批次 1579】 依赖批次 1578
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

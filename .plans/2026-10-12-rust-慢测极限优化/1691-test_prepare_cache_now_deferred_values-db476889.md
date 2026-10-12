@@ -1,6 +1,8 @@
 # 任务 1691: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_prepare_cache_now_deferred_values`
 
-批次：【批次 1691】 依赖批次 1690
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

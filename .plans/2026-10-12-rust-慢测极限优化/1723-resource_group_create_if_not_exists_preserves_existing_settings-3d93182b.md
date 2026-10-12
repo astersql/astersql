@@ -1,6 +1,8 @@
 # 任务 1723: 优化 `astersql-resourcegroup-tests::resource_group_test::resource_group_create_if_not_exists_preserves_existing_settings`
 
-批次：【批次 1723】 依赖批次 1722
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

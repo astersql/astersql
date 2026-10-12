@@ -1,6 +1,8 @@
 # 任务 1927: 优化 `astersql-tests-realtikvtest-testutils::workload_test::workers_publish_counter_and_stop_with_cancelled_context`
 
-批次：【批次 1927】 依赖批次 1926
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

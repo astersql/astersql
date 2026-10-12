@@ -1,6 +1,8 @@
 # 任务 1476: 优化 `astersql-session-test-variable::variable_test::general_log_records_sql_and_nonzero_transaction_start_ts`
 
-批次：【批次 1476】 依赖批次 1475
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

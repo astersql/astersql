@@ -1,6 +1,8 @@
 # 任务 203: 优化 `astersql-planner-core-casetest-rule::rule_eliminate_empty_selection_test::test_empty_selection_eliminator`
 
-批次：【批次 203】 依赖批次 202
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 20: 优化 `astersql-planner-core-casetest-instanceplancache::builtin_func_test::test_builtin_in_string_sig`
 
-批次：【批次 20】 依赖批次 19
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

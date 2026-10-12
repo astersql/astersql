@@ -1,6 +1,8 @@
 # 任务 1063: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::canonical_preflush_targets_dynamic_global_and_static_partitions`
 
-批次：【批次 1063】 依赖批次 1062
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

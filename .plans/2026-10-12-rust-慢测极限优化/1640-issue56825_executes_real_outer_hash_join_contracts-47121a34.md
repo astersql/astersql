@@ -1,6 +1,8 @@
 # 任务 1640: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue56825_executes_real_outer_hash_join_contracts`
 
-批次：【批次 1640】 依赖批次 1639
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

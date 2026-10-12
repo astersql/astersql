@@ -1,6 +1,8 @@
 # 任务 398: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_analyze_suite_matches_go_state_sequence`
 
-批次：【批次 398】 依赖批次 397
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

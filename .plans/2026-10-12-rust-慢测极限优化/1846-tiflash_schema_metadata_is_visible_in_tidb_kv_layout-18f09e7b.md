@@ -1,6 +1,8 @@
 # 任务 1846: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::tiflash_schema_metadata_is_visible_in_tidb_kv_layout`
 
-批次：【批次 1846】 依赖批次 1845
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

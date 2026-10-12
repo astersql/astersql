@@ -1,6 +1,8 @@
 # 任务 206: 优化 `astersql-server::server_test::show_processlist_uses_live_server_session_manager`
 
-批次：【批次 206】 依赖批次 205
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

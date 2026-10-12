@@ -1,6 +1,8 @@
 # 任务 335: 优化 `astersql-planner-core-casetest-rule::rule_predicate_pushdown_test::predicate_pushdown_issue_paths_execute`
 
-批次：【批次 335】 依赖批次 334
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

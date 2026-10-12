@@ -1,6 +1,8 @@
 # 任务 2130: 优化 `astersql-tests-realtikvtest-testutils::workload_test::real_date_arithmetic_uses_calendar_and_null_semantics`
 
-批次：【批次 2130】 依赖批次 2129
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

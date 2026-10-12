@@ -1,6 +1,8 @@
 # 任务 1677: 优化 `astersql-testkit::stats_runtime_aster_unit_test::column_usage_analyze_status_and_schema_snapshot_are_queryable`
 
-批次：【批次 1677】 依赖批次 1676
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

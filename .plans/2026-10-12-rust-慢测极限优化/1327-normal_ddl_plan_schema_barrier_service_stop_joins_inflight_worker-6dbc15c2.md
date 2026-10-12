@@ -1,6 +1,8 @@
 # 任务 1327: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_schema_barrier_service_stop_joins_inflight_worker`
 
-批次：【批次 1327】 依赖批次 1326
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

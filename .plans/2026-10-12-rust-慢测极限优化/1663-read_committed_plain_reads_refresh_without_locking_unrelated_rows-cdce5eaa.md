@@ -1,6 +1,8 @@
 # 任务 1663: 优化 `astersql-session::runtime_pessimistic_test::read_committed_plain_reads_refresh_without_locking_unrelated_rows`
 
-批次：【批次 1663】 依赖批次 1662
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

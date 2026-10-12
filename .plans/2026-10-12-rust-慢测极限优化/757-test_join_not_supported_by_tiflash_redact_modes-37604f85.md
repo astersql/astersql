@@ -1,6 +1,8 @@
 # 任务 757: 优化 `astersql-planner-core-tests-redact::redact_test::test_join_not_supported_by_tiflash_redact_modes`
 
-批次：【批次 757】 依赖批次 756
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

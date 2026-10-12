@@ -1,6 +1,8 @@
 # 任务 1325: 优化 `astersql-ddl-notifier::testkit_test::test_commit_failed`
 
-批次：【批次 1325】 依赖批次 1324
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

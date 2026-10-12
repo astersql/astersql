@@ -1,6 +1,8 @@
 # 任务 1858: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_temporary_unique_delete_removes_orphaned_handle`
 
-批次：【批次 1858】 依赖批次 1857
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

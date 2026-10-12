@@ -1,6 +1,8 @@
 # 任务 1372: 优化 `astersql-tests-realtikvtest-importintotest::parquet_test::test_import_parquet_with_spark_legacy_dates`
 
-批次：【批次 1372】 依赖批次 1371
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

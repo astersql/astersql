@@ -1,6 +1,8 @@
 # 任务 540: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_2_barrier_recovery_and_payload`
 
-批次：【批次 540】 依赖批次 539
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

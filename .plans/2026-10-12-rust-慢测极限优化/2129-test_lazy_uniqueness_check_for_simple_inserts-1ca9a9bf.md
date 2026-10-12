@@ -1,6 +1,8 @@
 # 任务 2129: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_lazy_uniqueness_check_for_simple_inserts`
 
-批次：【批次 2129】 依赖批次 2128
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

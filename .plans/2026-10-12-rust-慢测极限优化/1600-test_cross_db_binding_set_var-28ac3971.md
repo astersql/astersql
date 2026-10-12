@@ -1,6 +1,8 @@
 # 任务 1600: 优化 `astersql-bindinfo-tests::cross_db_binding_test::test_cross_db_binding_set_var`
 
-批次：【批次 1600】 依赖批次 1599
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

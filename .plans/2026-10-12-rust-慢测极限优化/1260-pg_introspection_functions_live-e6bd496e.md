@@ -1,6 +1,8 @@
 # 任务 1260: 优化 `astersql-server::pg_catalog_test::pg_introspection_functions_live`
 
-批次：【批次 1260】 依赖批次 1259
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

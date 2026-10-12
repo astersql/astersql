@@ -1,6 +1,8 @@
 # 任务 1943: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_load_full_queue_resets_direct_select_context`
 
-批次：【批次 1943】 依赖批次 1942
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1259: 优化 `astersql-dxf-importinto::scheduler_test::prepare_import_task_persists_real_file_controller_result`
 
-批次：【批次 1259】 依赖批次 1258
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

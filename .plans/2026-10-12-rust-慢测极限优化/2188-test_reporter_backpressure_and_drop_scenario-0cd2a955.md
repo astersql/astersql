@@ -1,6 +1,8 @@
 # 任务 2188: 优化 `astersql-util-topsql-reporter::reporter_test::test_reporter_backpressure_and_drop_scenario`
 
-批次：【批次 2188】 依赖批次 2187
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

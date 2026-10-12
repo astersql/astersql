@@ -1,6 +1,8 @@
 # 任务 2149: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_dist_cancel_with_partition`
 
-批次：【批次 2149】 依赖批次 2148
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

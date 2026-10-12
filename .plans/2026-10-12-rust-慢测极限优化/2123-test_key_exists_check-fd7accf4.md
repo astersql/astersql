@@ -1,6 +1,8 @@
 # 任务 2123: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_key_exists_check`
 
-批次：【批次 2123】 依赖批次 2122
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

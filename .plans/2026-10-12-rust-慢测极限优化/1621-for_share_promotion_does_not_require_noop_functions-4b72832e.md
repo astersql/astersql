@@ -1,6 +1,8 @@
 # 任务 1621: 优化 `astersql-session::runtime_pessimistic_test::for_share_promotion_does_not_require_noop_functions`
 
-批次：【批次 1621】 依赖批次 1620
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

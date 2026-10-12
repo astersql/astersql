@@ -1,6 +1,8 @@
 # 任务 1966: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_use_lock_cache_in_rc_mode`
 
-批次：【批次 1966】 依赖批次 1965
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

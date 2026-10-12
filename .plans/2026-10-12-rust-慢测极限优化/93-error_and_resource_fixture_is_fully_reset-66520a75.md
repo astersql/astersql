@@ -1,6 +1,8 @@
 # 任务 93: 优化 `astersql-tests-realtikvtest-testutils::parity_test::error_and_resource_fixture_is_fully_reset`
 
-批次：【批次 93】 依赖批次 92
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

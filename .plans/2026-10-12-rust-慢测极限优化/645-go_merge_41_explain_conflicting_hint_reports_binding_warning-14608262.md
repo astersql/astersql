@@ -1,6 +1,8 @@
 # 任务 645: 优化 `astersql-bindinfo-tests::bind_test::go_merge_41_explain_conflicting_hint_reports_binding_warning`
 
-批次：【批次 645】 依赖批次 644
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

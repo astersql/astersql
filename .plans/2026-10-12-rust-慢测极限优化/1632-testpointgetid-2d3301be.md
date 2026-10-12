@@ -1,6 +1,8 @@
 # 任务 1632: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestPointGetId`
 
-批次：【批次 1632】 依赖批次 1631
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 135: 优化 `astersql-server-internal-testserverclient::server_client_test::load_data_transaction_scenarios_execute_against_shared_sessions`
 
-批次：【批次 135】 依赖批次 134
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

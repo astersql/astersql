@@ -1,6 +1,8 @@
 # 任务 1559: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_view_derived_subquery_and_cte_regressions`
 
-批次：【批次 1559】 依赖批次 1558
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

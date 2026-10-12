@@ -1,6 +1,8 @@
 # 任务 988: 优化 `astersql-bindinfo-tests::bind_test::test_simplified_create_binding`
 
-批次：【批次 988】 依赖批次 987
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

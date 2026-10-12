@@ -1,6 +1,8 @@
 # 任务 1215: 优化 `astersql-server::conn_stmt_test::cursor_iterator_error_is_accounted`
 
-批次：【批次 1215】 依赖批次 1214
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

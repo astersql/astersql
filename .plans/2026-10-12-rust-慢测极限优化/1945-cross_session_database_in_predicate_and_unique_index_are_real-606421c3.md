@@ -1,6 +1,8 @@
 # 任务 1945: 优化 `astersql-session::runtime_pessimistic_test::cross_session_database_in_predicate_and_unique_index_are_real`
 
-批次：【批次 1945】 依赖批次 1944
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

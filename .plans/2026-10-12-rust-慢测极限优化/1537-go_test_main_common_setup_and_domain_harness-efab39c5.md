@@ -1,6 +1,8 @@
 # 任务 1537: 优化 `astersql-statistics-handle-handletest::main_test::go_test_main_common_setup_and_domain_harness`
 
-批次：【批次 1537】 依赖批次 1536
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

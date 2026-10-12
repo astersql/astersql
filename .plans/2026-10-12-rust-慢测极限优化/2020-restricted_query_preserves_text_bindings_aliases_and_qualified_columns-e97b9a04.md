@@ -1,6 +1,8 @@
 # 任务 2020: 优化 `astersql-testkit::mockstore_domain_stats_test::restricted_query_preserves_text_bindings_aliases_and_qualified_columns`
 
-批次：【批次 2020】 依赖批次 2019
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1504: 优化 `astersql-session::runtime_test::ddl::scatter_scope_inherits_globally_and_show_regions_comes_from_table_metadata`
 
-批次：【批次 1504】 依赖批次 1503
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

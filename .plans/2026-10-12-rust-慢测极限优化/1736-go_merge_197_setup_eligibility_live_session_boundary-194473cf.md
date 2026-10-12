@@ -1,6 +1,8 @@
 # 任务 1736: 优化 `astersql-session::runtime::scan_adapter_runtime_test::go_merge_197_setup_eligibility_live_session_boundary`
 
-批次：【批次 1736】 依赖批次 1735
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

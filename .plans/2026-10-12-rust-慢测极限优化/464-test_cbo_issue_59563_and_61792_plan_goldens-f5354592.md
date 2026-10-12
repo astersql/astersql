@@ -1,6 +1,8 @@
 # 任务 464: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_59563_and_61792_plan_goldens`
 
-批次：【批次 464】 依赖批次 463
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

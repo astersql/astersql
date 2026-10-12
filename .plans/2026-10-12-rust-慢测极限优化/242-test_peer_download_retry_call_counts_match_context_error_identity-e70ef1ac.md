@@ -1,6 +1,8 @@
 # 任务 242: 优化 `astersql-br-pkg-utils::backoff_test::test_peer_download_retry_call_counts_match_context_error_identity`
 
-批次：【批次 242】 依赖批次 241
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

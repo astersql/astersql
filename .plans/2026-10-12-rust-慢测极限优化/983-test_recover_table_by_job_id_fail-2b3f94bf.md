@@ -1,6 +1,8 @@
 # 任务 983: 优化 `astersql-ddl-tests-serial::serial_test::test_recover_table_by_job_id_fail`
 
-批次：【批次 983】 依赖批次 982
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

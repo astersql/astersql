@@ -1,6 +1,8 @@
 # 任务 1254: 优化 `astersql-session::system_session_alignment_test::crossks_align_system_session_callbacks_and_metadata_error`
 
-批次：【批次 1254】 依赖批次 1253
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

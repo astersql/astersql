@@ -1,6 +1,8 @@
 # 任务 1478: 优化 `astersql-session::mysql_dml_compat_test::mixed_explicit_and_allocated_auto_increment_reports_first_allocated_id`
 
-批次：【批次 1478】 依赖批次 1477
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

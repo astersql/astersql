@@ -1,6 +1,8 @@
 # 任务 1890: 优化 `astersql-session::runtime_test::session::show_processlist_uses_session_manager_rows_and_full_flag`
 
-批次：【批次 1890】 依赖批次 1889
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

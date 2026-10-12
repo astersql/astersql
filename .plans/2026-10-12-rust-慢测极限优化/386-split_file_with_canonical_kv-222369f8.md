@@ -1,6 +1,8 @@
 # 任务 386: 优化 `astersql-tests-realtikvtest-importintotest4::split_file_test::split_file_with_canonical_kv`
 
-批次：【批次 386】 依赖批次 385
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

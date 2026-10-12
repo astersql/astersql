@@ -1,6 +1,8 @@
 # 任务 1564: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_owner_loss_rolls_back_table_diff_job_and_history`
 
-批次：【批次 1564】 依赖批次 1563
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

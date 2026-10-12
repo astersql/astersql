@@ -1,6 +1,8 @@
 # 任务 783: 优化 `astersql-executor::temporary_table_test::local_temporary_table_no_network_with_create_inside_txn`
 
-批次：【批次 783】 依赖批次 782
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

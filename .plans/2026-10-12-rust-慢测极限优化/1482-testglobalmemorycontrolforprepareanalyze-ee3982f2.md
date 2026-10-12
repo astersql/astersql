@@ -1,6 +1,8 @@
 # 任务 1482: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestGlobalMemoryControlForPrepareAnalyze`
 
-批次：【批次 1482】 依赖批次 1481
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1881: 优化 `astersql-planner-core-casetest-rule::rule_predicate_simplification_test::find_in_set_factory_supports_go_null_and_match_semantics`
 
-批次：【批次 1881】 依赖批次 1880
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

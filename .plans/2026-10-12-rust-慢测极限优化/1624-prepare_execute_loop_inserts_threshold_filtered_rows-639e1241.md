@@ -1,6 +1,8 @@
 # 任务 1624: 优化 `astersql-session-test-common::prepare_dedup_cache_test::prepare_execute_loop_inserts_threshold_filtered_rows`
 
-批次：【批次 1624】 依赖批次 1623
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

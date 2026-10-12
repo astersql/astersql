@@ -1,6 +1,8 @@
 # 任务 142: 优化 `astersql-dxf-importinto::scheduler_test::import_job_session_retry_recovers_and_cancel_interrupts_backoff`
 
-批次：【批次 142】 依赖批次 141
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

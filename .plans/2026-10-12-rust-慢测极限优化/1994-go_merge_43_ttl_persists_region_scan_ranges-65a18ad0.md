@@ -1,6 +1,8 @@
 # 任务 1994: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_persists_region_scan_ranges`
 
-批次：【批次 1994】 依赖批次 1993
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 46: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_q64_matches_go_suite_fixture`
 
-批次：【批次 46】 依赖批次 45
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

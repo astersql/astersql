@@ -1,6 +1,8 @@
 # 任务 2230: 优化 `astersql-store-driver-error::migration_aster_unit_test::gc_and_pd_resource_group_errors_keep_go_arguments`
 
-批次：【批次 2230】 依赖批次 2229
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

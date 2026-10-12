@@ -1,6 +1,8 @@
 # 任务 1908: 优化 `astersql-session::load_data_runtime_test::local_infile_integer_prefixes_participate_in_duplicate_key_checks`
 
-批次：【批次 1908】 依赖批次 1907
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

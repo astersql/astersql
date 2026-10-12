@@ -1,6 +1,8 @@
 # 任务 1115: 优化 `astersql-planner-core-tests-partition::bench_test::prepared_benchmark_hits_plan_cache_after_first_execution`
 
-批次：【批次 1115】 依赖批次 1114
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

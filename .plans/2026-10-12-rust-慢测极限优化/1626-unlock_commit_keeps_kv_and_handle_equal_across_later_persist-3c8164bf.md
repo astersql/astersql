@@ -1,6 +1,8 @@
 # 任务 1626: 优化 `astersql-testkit::mockstore_domain_stats_test::unlock_commit_keeps_kv_and_handle_equal_across_later_persist`
 
-批次：【批次 1626】 依赖批次 1625
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

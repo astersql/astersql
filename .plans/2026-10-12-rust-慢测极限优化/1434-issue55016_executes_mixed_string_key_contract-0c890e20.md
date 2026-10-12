@@ -1,6 +1,8 @@
 # 任务 1434: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue55016_executes_mixed_string_key_contract`
 
-批次：【批次 1434】 依赖批次 1433
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

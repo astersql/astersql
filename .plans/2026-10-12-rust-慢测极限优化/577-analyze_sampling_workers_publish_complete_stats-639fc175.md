@@ -1,6 +1,8 @@
 # 任务 577: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_sampling_workers_publish_complete_stats`
 
-批次：【批次 577】 依赖批次 576
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

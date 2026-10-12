@@ -1,6 +1,8 @@
 # 任务 1224: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_enables_statement_summary_by_default`
 
-批次：【批次 1224】 依赖批次 1223
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2185: 优化 `astersql-parser-mysql::unit_test::parser_mysql_const_exposes_protocol_sqlmode_and_versions`
 
-批次：【批次 2185】 依赖批次 2184
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

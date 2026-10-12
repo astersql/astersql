@@ -1,6 +1,8 @@
 # 任务 54: 优化 `astersql-planner-core-casetest-join::join_test::test_keeping_join_keys_runs_go_plan_contract`
 
-批次：【批次 54】 依赖批次 53
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

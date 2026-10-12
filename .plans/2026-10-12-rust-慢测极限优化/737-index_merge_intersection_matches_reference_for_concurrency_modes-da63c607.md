@@ -1,6 +1,8 @@
 # 任务 737: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_intersection_matches_reference_for_concurrency_modes`
 
-批次：【批次 737】 依赖批次 736
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

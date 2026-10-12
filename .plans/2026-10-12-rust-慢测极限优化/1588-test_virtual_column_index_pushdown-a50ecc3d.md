@@ -1,6 +1,8 @@
 # 任务 1588: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_virtual_column_index_pushdown`
 
-批次：【批次 1588】 依赖批次 1587
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

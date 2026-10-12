@@ -1,6 +1,8 @@
 # 任务 510: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_join_prefers_covering_index`
 
-批次：【批次 510】 依赖批次 509
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

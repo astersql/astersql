@@ -1,6 +1,8 @@
 # 任务 986: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_partition_table`
 
-批次：【批次 986】 依赖批次 985
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

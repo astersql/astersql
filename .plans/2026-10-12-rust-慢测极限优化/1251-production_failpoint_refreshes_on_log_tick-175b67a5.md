@@ -1,6 +1,8 @@
 # 任务 1251: 优化 `astersql-dumpling-export::status_test::production_failpoint_refreshes_on_log_tick`
 
-批次：【批次 1251】 依赖批次 1250
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1385: 优化 `astersql-session-test::session_test::primary_key_auto_increment_matches_go`
 
-批次：【批次 1385】 依赖批次 1384
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

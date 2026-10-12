@@ -1,6 +1,8 @@
 # 任务 1483: 优化 `astersql-planner-core-issuetest::planner_issue_test::planner_issue_error_and_rewrite_regressions_match_go_contracts`
 
-批次：【批次 1483】 依赖批次 1482
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

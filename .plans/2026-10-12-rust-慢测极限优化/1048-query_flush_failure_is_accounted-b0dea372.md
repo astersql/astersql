@@ -1,6 +1,8 @@
 # 任务 1048: 优化 `astersql-server::conn_stmt_test::query_flush_failure_is_accounted`
 
-批次：【批次 1048】 依赖批次 1047
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

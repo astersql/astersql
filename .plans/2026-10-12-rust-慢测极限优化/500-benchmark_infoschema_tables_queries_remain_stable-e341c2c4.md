@@ -1,6 +1,8 @@
 # 任务 500: 优化 `astersql-executor::infoschema_reader_bench_test::benchmark_infoschema_tables_queries_remain_stable`
 
-批次：【批次 500】 依赖批次 499
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

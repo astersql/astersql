@@ -1,6 +1,8 @@
 # 任务 2119: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_ingest_unique_key`
 
-批次：【批次 2119】 依赖批次 2118
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 973: 优化 `astersql-ddl-tests-serial::serial_test::test_check_enum_length`
 
-批次：【批次 973】 依赖批次 972
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

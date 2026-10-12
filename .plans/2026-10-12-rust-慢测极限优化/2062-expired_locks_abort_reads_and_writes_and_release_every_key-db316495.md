@@ -1,6 +1,8 @@
 # 任务 2062: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test::expired_locks_abort_reads_and_writes_and_release_every_key`
 
-批次：【批次 2062】 依赖批次 2061
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

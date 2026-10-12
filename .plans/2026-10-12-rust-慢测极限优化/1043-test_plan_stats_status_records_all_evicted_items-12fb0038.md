@@ -1,6 +1,8 @@
 # 任务 1043: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_status_records_all_evicted_items`
 
-批次：【批次 1043】 依赖批次 1042
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1036: 优化 `astersql-server::pg_client_integration_test::pg_introspection_clients_mysql_only`
 
-批次：【批次 1036】 依赖批次 1035
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

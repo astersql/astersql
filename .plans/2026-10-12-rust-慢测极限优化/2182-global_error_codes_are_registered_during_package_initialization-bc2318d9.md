@@ -1,6 +1,8 @@
 # 任务 2182: 优化 `astersql-parser-terror::parser_terror_test::global_error_codes_are_registered_during_package_initialization`
 
-批次：【批次 2182】 依赖批次 2181
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

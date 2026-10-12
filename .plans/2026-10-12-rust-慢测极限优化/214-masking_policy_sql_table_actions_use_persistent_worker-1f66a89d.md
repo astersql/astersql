@@ -1,6 +1,8 @@
 # 任务 214: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_table_actions_use_persistent_worker`
 
-批次：【批次 214】 依赖批次 213
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

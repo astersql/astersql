@@ -1,6 +1,8 @@
 # 任务 1390: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_zero_date_time`
 
-批次：【批次 1390】 依赖批次 1389
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

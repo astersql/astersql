@@ -1,6 +1,8 @@
 # 任务 457: 优化 `astersql-executor-test-fktest::foreign_key_test::TestDMLExplainAnalyzeFKInfo`
 
-批次：【批次 457】 依赖批次 456
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

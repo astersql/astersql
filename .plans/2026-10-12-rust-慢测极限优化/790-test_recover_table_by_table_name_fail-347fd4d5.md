@@ -1,6 +1,8 @@
 # 任务 790: 优化 `astersql-ddl-tests-serial::serial_test::test_recover_table_by_table_name_fail`
 
-批次：【批次 790】 依赖批次 789
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

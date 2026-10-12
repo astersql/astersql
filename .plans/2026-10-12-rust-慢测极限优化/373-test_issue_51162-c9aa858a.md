@@ -1,6 +1,8 @@
 # 任务 373: 优化 `astersql-tests-realtikvtest-addindextest::add_index_test::test_issue_51162`
 
-批次：【批次 373】 依赖批次 372
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

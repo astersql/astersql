@@ -1,6 +1,8 @@
 # 任务 469: 优化 `astersql-dxf-framework-handle::handle_test::test_handles_preserve_go_cloud_storage_prefix_matrix`
 
-批次：【批次 469】 依赖批次 468
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

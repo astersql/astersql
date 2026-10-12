@@ -1,6 +1,8 @@
 # 任务 1057: 优化 `astersql-session::mysql_ddl_compat_test::common_mysql_ddl_round_trips_through_catalog_and_storage`
 
-批次：【批次 1057】 依赖批次 1056
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

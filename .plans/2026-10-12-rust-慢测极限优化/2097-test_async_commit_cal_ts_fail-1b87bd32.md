@@ -1,6 +1,8 @@
 # 任务 2097: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_async_commit_cal_ts_fail`
 
-批次：【批次 2097】 依赖批次 2096
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2242: 优化 `astersql-store-driver-error::migration_aster_unit_test::official_tikv_client_and_unknown_errors_are_not_simplified`
 
-批次：【批次 2242】 依赖批次 2241
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1282: 优化 `astersql-ddl-notifier::testkit_test::test_handlers_see_pessimistic_txn_error`
 
-批次：【批次 1282】 依赖批次 1281
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

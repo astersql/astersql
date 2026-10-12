@@ -1,6 +1,8 @@
 # 任务 1864: 优化 `astersql-tests-realtikvtest-txntest::shared_lock_test::test_shared_lock_cascade_update_explicit_pessimistic_transaction`
 
-批次：【批次 1864】 依赖批次 1863
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

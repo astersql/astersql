@@ -1,6 +1,8 @@
 # 任务 1294: 优化 `astersql-session-test-temporarytabletest::main_test::temporarytabletest_harness_waits_for_mvcc_cleanup`
 
-批次：【批次 1294】 依赖批次 1293
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1879: 优化 `astersql-session::runtime_admin_test::show_regions_deduplicates_unsplit_index_ranges_like_go_mockstore`
 
-批次：【批次 1879】 依赖批次 1878
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

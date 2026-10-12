@@ -1,6 +1,8 @@
 # 任务 198: 优化 `astersql-tests-realtikvtest-addindextest::multi_schema_change_test::test_multi_schema_change_create_non_unique_index`
 
-批次：【批次 198】 依赖批次 197
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

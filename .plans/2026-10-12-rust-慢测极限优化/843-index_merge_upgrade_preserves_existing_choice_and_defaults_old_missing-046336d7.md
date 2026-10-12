@@ -1,6 +1,8 @@
 # 任务 843: 优化 `astersql-session-test-bootstraptest::boot_test::index_merge_upgrade_preserves_existing_choice_and_defaults_old_missing_to_off`
 
-批次：【批次 843】 依赖批次 842
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

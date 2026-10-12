@@ -1,6 +1,8 @@
 # 任务 1494: 优化 `astersql-testkit::mockstore_domain_ddl_test::ddl_is_visible_across_sessions_through_versioned_infoschema`
 
-批次：【批次 1494】 依赖批次 1493
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

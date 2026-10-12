@@ -1,6 +1,8 @@
 # 任务 1041: 优化 `astersql-statistics-handle-updatetest::main_test::support_common_setup_and_database_cleanup_wrap_the_session`
 
-批次：【批次 1041】 依赖批次 1040
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

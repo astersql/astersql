@@ -1,6 +1,8 @@
 # 任务 344: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_shared_validator_checks_related_table_deltas`
 
-批次：【批次 344】 依赖批次 343
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

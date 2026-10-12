@@ -1,6 +1,8 @@
 # 任务 1710: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_keeps_multi_schema_skip_version_in_worker_transaction`
 
-批次：【批次 1710】 依赖批次 1709
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

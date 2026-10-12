@@ -1,6 +1,8 @@
 # 任务 1462: 优化 `astersql-server::conn_test::ttl_import_precheck_error_is_encoded_as_8173`
 
-批次：【批次 1462】 依赖批次 1461
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

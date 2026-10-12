@@ -1,6 +1,8 @@
 # 任务 2080: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_non_auto_commit_with_pessimistic_mode`
 
-批次：【批次 2080】 依赖批次 2079
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

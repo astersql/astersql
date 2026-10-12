@@ -1,6 +1,8 @@
 # 任务 1231: 优化 `astersql-session::mysql_metadata_compat_test::performance_schema_mysql_introspection_uses_registered_empty_tables`
 
-批次：【批次 1231】 依赖批次 1230
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

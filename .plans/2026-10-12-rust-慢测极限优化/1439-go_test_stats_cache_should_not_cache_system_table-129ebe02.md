@@ -1,6 +1,8 @@
 # 任务 1439: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_stats_cache_should_not_cache_system_table`
 
-批次：【批次 1439】 依赖批次 1438
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

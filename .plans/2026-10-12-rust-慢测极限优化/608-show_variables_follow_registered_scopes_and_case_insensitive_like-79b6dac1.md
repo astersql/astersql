@@ -1,6 +1,8 @@
 # 任务 608: 优化 `astersql-executor-test-showtest::show_test::show_variables_follow_registered_scopes_and_case_insensitive_like`
 
-批次：【批次 608】 依赖批次 607
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

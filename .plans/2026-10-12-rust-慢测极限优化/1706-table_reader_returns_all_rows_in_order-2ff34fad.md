@@ -1,6 +1,8 @@
 # 任务 1706: 优化 `astersql-session-test-schematest::schema_test::table_reader_returns_all_rows_in_order`
 
-批次：【批次 1706】 依赖批次 1705
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

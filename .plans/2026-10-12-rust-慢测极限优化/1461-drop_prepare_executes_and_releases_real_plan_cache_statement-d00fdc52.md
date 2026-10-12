@@ -1,6 +1,8 @@
 # 任务 1461: 优化 `astersql-planner-core-casetest-plancache::plan_cache_test::drop_prepare_executes_and_releases_real_plan_cache_statement`
 
-批次：【批次 1461】 依赖批次 1460
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

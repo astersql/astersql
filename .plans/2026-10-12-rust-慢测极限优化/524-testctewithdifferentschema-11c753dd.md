@@ -1,6 +1,8 @@
 # 任务 524: 优化 `astersql-planner-core-tests-cte::cte_test::TestCTEWithDifferentSchema`
 
-批次：【批次 524】 依赖批次 523
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 670: 优化 `astersql-executor-test-jointest::join_test::test_issue20779`
 
-批次：【批次 670】 依赖批次 669
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

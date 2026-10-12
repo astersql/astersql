@@ -1,6 +1,8 @@
 # 任务 1889: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_notifier_duplicate_commit_error_rolls_back_metadata`
 
-批次：【批次 1889】 依赖批次 1888
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

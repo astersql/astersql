@@ -1,6 +1,8 @@
 # 任务 746: 优化 `astersql-executor-test-showtest::show_test::show_create_table_strips_deprecated_integer_widths_and_reports_warnings`
 
-批次：【批次 746】 依赖批次 745
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

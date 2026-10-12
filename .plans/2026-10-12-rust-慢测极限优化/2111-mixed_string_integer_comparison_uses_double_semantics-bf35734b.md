@@ -1,6 +1,8 @@
 # 任务 2111: 优化 `astersql-session::runtime_test::query::mixed_string_integer_comparison_uses_double_semantics`
 
-批次：【批次 2111】 依赖批次 2110
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

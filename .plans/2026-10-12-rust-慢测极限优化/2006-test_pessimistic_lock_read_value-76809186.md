@@ -1,6 +1,8 @@
 # 任务 2006: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_pessimistic_lock_read_value`
 
-批次：【批次 2006】 依赖批次 2005
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

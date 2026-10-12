@@ -1,6 +1,8 @@
 # 任务 1837: 优化 `astersql-session::runtime::ttl_worker_session_test::ttl_sql_session_preparation_restores_real_variables`
 
-批次：【批次 1837】 依赖批次 1836
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

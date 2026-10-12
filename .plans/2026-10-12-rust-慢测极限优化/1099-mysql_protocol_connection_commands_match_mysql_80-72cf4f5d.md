@@ -1,6 +1,8 @@
 # 任务 1099: 优化 `astersql-server::mysql_protocol_compat_test::mysql_protocol_connection_commands_match_mysql_80`
 
-批次：【批次 1099】 依赖批次 1098
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

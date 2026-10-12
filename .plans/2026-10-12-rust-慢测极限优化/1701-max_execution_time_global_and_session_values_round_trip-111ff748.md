@@ -1,6 +1,8 @@
 # 任务 1701: 优化 `astersql-session-test-variable::variable_test::max_execution_time_global_and_session_values_round_trip`
 
-批次：【批次 1701】 依赖批次 1700
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 651: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_exposes_system_schema_catalog_for_jdbc_clients`
 
-批次：【批次 651】 依赖批次 650
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

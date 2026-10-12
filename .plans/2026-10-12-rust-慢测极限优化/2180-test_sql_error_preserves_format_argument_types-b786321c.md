@@ -1,6 +1,8 @@
 # 任务 2180: 优化 `astersql-parser-mysql::error_test::test_sql_error_preserves_format_argument_types`
 
-批次：【批次 2180】 依赖批次 2179
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

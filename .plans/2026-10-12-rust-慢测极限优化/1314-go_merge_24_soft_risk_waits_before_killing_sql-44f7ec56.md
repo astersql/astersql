@@ -1,6 +1,8 @@
 # 任务 1314: 优化 `astersql-util-memory::arbitrator_test::go_merge_24_soft_risk_waits_before_killing_sql`
 
-批次：【批次 1314】 依赖批次 1313
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

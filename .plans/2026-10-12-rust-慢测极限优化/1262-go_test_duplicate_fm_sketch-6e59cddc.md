@@ -1,6 +1,8 @@
 # 任务 1262: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_duplicate_fm_sketch`
 
-批次：【批次 1262】 依赖批次 1261
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

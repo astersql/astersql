@@ -1,6 +1,8 @@
 # 任务 2148: 优化 `astersql-testkit::mockstore_domain_stats_test::stats_gc_timestamp_survives_store_recreation`
 
-批次：【批次 2148】 依赖批次 2147
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

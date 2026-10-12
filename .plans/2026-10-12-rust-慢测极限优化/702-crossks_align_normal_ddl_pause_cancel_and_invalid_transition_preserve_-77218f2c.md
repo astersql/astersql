@@ -1,6 +1,8 @@
 # 任务 702: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_pause_cancel_and_invalid_transition_preserve_metadata`
 
-批次：【批次 702】 依赖批次 701
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

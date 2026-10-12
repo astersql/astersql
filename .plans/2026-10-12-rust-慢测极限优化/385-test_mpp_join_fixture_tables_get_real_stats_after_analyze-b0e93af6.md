@@ -1,6 +1,8 @@
 # 任务 385: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_fixture_tables_get_real_stats_after_analyze`
 
-批次：【批次 385】 依赖批次 384
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

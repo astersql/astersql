@@ -1,6 +1,8 @@
 # 任务 2078: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_ingest_writer_count_on_partition_table`
 
-批次：【批次 2078】 依赖批次 2077
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1266: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_plan_cache_union_scan`
 
-批次：【批次 1266】 依赖批次 1265
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

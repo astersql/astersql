@@ -1,6 +1,8 @@
 # 任务 1662: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_upgrade_from_189_recreates_missing_table_after_restart`
 
-批次：【批次 1662】 依赖批次 1661
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

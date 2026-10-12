@@ -1,6 +1,8 @@
 # 任务 237: 优化 `astersql-executor::show_stats_test::TestShowAnalyzeStatus`
 
-批次：【批次 237】 依赖批次 236
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

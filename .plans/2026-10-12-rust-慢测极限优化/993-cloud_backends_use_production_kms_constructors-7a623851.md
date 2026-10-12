@@ -1,6 +1,8 @@
 # 任务 993: 优化 `astersql-br-pkg-encryption-master-key::parity_test::cloud_backends_use_production_kms_constructors`
 
-批次：【批次 993】 依赖批次 992
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

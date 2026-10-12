@@ -1,6 +1,8 @@
 # 任务 1781: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_shared_system_store_survives_idle_eviction`
 
-批次：【批次 1781】 依赖批次 1780
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1495: 优化 `astersql-executor-test-ddl::ddl_test::test_in_txn_exec_ddl_fail`
 
-批次：【批次 1495】 依赖批次 1494
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 699: 优化 `astersql-executor::temporary_table_test::normal_global_temporary_table_no_network`
 
-批次：【批次 699】 依赖批次 698
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 191: 优化 `astersql-server::server_test::real_listener_serves_handshake_ping_select_and_drains_connection`
 
-批次：【批次 191】 依赖批次 190
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1703: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_push_down_projection_for_tiflash`
 
-批次：【批次 1703】 依赖批次 1702
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

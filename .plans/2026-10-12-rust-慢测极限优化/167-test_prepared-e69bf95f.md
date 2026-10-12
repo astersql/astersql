@@ -1,6 +1,8 @@
 # 任务 167: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared`
 
-批次：【批次 167】 依赖批次 166
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

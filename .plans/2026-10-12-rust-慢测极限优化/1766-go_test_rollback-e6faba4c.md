@@ -1,6 +1,8 @@
 # 任务 1766: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_rollback`
 
-批次：【批次 1766】 依赖批次 1765
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

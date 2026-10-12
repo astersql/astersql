@@ -1,6 +1,8 @@
 # 任务 883: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_projection_coprocessor_plan_goldens`
 
-批次：【批次 883】 依赖批次 882
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

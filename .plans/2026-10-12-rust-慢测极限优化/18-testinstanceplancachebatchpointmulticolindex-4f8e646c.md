@@ -1,6 +1,8 @@
 # 任务 18: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheBatchPointMultiColIndex`
 
-批次：【批次 18】 依赖批次 17
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1785: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_opens_store_before_virtual_registration`
 
-批次：【批次 1785】 依赖批次 1784
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

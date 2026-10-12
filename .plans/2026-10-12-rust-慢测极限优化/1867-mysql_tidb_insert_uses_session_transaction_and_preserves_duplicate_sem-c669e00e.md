@@ -1,6 +1,8 @@
 # 任务 1867: 优化 `astersql-session::runtime_admin_test::mysql_tidb_insert_uses_session_transaction_and_preserves_duplicate_semantics`
 
-批次：【批次 1867】 依赖批次 1866
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

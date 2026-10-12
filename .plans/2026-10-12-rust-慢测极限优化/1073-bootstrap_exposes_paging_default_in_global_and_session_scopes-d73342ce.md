@@ -1,6 +1,8 @@
 # 任务 1073: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_exposes_paging_default_in_global_and_session_scopes`
 
-批次：【批次 1073】 依赖批次 1072
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

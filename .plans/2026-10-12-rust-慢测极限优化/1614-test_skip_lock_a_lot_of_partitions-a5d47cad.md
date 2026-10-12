@@ -1,6 +1,8 @@
 # 任务 1614: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_skip_lock_a_lot_of_partitions`
 
-批次：【批次 1614】 依赖批次 1613
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

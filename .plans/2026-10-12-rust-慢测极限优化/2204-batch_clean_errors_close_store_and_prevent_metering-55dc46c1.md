@@ -1,6 +1,8 @@
 # 任务 2204: 优化 `astersql-dxf-importinto::clean_up_test::batch_clean_errors_close_store_and_prevent_metering`
 
-批次：【批次 2204】 依赖批次 2203
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

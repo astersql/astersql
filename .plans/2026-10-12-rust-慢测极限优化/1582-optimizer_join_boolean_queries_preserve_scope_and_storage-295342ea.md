@@ -1,6 +1,8 @@
 # 任务 1582: 优化 `astersql-session-test-bootstraptest::boot_test::optimizer_join_boolean_queries_preserve_scope_and_storage`
 
-批次：【批次 1582】 依赖批次 1581
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 829: 优化 `astersql-ddl-tests-partition::modify_column_test::real_partition_rows_remain_visible_across_column_metadata_rebuild`
 
-批次：【批次 829】 依赖批次 828
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

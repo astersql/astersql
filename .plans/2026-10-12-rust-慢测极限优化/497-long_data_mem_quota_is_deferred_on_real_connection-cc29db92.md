@@ -1,6 +1,8 @@
 # 任务 497: 优化 `astersql-server::runtime_test::long_data_mem_quota_is_deferred_on_real_connection`
 
-批次：【批次 497】 依赖批次 496
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

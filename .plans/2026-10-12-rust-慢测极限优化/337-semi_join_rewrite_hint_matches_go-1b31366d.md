@@ -1,6 +1,8 @@
 # 任务 337: 优化 `astersql-planner-core-casetest-rule::rule_outer_to_semi_join_test::semi_join_rewrite_hint_matches_go`
 
-批次：【批次 337】 依赖批次 336
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

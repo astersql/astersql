@@ -1,6 +1,8 @@
 # 任务 354: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_order_by_limit_above_preallocation_cap_returns_all_rows`
 
-批次：【批次 354】 依赖批次 353
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

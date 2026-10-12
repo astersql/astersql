@@ -1,6 +1,8 @@
 # 任务 1261: 优化 `astersql-session::mysql_transaction_compat_test::common_mysql_transactions_preserve_visibility_savepoints_and_status`
 
-批次：【批次 1261】 依赖批次 1260
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

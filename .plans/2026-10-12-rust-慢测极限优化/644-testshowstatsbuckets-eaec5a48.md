@@ -1,6 +1,8 @@
 # 任务 644: 优化 `astersql-executor::show_stats_test::TestShowStatsBuckets`
 
-批次：【批次 644】 依赖批次 643
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

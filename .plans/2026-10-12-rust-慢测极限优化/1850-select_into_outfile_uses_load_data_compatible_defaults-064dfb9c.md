@@ -1,6 +1,8 @@
 # 任务 1850: 优化 `astersql-session::load_data_runtime_test::select_into_outfile_uses_load_data_compatible_defaults`
 
-批次：【批次 1850】 依赖批次 1849
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

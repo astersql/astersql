@@ -1,6 +1,8 @@
 # 任务 951: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning4_join_tables_and_hash_join_version`
 
-批次：【批次 951】 依赖批次 950
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

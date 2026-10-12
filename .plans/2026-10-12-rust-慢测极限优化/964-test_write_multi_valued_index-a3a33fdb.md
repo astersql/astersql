@@ -1,6 +1,8 @@
 # 任务 964: 优化 `astersql-expression-test-multivaluedindex::multi_valued_index_test::test_write_multi_valued_index`
 
-批次：【批次 964】 依赖批次 963
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

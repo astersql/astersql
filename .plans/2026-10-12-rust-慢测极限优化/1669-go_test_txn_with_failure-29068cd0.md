@@ -1,6 +1,8 @@
 # 任务 1669: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_txn_with_failure`
 
-批次：【批次 1669】 依赖批次 1668
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1040: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_enable_auto_analyze_priority_queue`
 
-批次：【批次 1040】 依赖批次 1039
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

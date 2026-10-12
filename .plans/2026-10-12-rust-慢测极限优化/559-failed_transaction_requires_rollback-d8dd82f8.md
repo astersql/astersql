@@ -1,6 +1,8 @@
 # 任务 559: 优化 `astersql-server::pg_transaction_test::failed_transaction_requires_rollback`
 
-批次：【批次 559】 依赖批次 558
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

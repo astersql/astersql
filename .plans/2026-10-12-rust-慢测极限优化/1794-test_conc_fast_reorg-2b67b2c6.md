@@ -1,6 +1,8 @@
 # 任务 1794: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_conc_fast_reorg`
 
-批次：【批次 1794】 依赖批次 1793
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

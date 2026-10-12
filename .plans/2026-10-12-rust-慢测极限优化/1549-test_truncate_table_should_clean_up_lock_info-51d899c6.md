@@ -1,6 +1,8 @@
 # 任务 1549: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_truncate_table_should_clean_up_lock_info`
 
-批次：【批次 1549】 依赖批次 1548
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

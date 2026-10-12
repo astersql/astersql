@@ -1,6 +1,8 @@
 # 任务 700: 优化 `astersql-executor-test-plancache::plan_cache_test::point_update_prepared_plan_reuses_current_parameters_and_schema`
 
-批次：【批次 700】 依赖批次 699
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

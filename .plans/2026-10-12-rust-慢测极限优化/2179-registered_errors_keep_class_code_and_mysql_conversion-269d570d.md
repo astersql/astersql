@@ -1,6 +1,8 @@
 # 任务 2179: 优化 `astersql-parser-terror::migration_aster_unit_test::registered_errors_keep_class_code_and_mysql_conversion`
 
-批次：【批次 2179】 依赖批次 2178
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

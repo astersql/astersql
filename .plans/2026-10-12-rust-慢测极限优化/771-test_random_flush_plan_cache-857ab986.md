@@ -1,6 +1,8 @@
 # 任务 771: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_random_flush_plan_cache`
 
-批次：【批次 771】 依赖批次 770
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

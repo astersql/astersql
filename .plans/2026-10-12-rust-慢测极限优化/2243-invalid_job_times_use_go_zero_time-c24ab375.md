@@ -1,6 +1,8 @@
 # 任务 2243: 优化 `astersql-importsdk::job_manager_test::invalid_job_times_use_go_zero_time`
 
-批次：【批次 2243】 依赖批次 2242
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

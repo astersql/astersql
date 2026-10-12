@@ -1,6 +1,8 @@
 # 任务 648: 优化 `astersql-session-test-common::common_test::affected_rows_match_go_for_duplicate_key_updates`
 
-批次：【批次 648】 依赖批次 647
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

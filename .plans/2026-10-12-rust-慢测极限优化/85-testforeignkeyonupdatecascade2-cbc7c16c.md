@@ -1,6 +1,8 @@
 # 任务 85: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnUpdateCascade2`
 
-批次：【批次 85】 依赖批次 84
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

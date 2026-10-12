@@ -1,6 +1,8 @@
 # 任务 2274: 优化 `astersql-types-datum::migration_aster_unit_test::json_casts_preserve_best_effort_values`
 
-批次：【批次 2274】 依赖批次 2273
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

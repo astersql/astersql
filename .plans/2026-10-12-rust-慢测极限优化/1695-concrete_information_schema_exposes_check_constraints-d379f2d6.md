@@ -1,6 +1,8 @@
 # 任务 1695: 优化 `astersql-session::runtime_test::query::concrete_information_schema_exposes_check_constraints`
 
-批次：【批次 1695】 依赖批次 1694
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

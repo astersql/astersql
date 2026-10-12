@@ -1,6 +1,8 @@
 # 任务 1748: 优化 `astersql-session::runtime_test::ddl::concrete_composite_predicates_and_anonymous_indexes_follow_mysql_ddl_dml`
 
-批次：【批次 1748】 依赖批次 1747
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

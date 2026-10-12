@@ -1,6 +1,8 @@
 # 任务 2281: 优化 `astersql-store-driver-error::error_test::test_convert_error`
 
-批次：【批次 2281】 依赖批次 2280
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1673: 优化 `astersql-session::runtime_test::session::plan_replayer_dump_sql_writes_a_downloadable_zip`
 
-批次：【批次 1673】 依赖批次 1672
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

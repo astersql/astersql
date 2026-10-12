@@ -1,6 +1,8 @@
 # 任务 1961: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestStaleSelect`
 
-批次：【批次 1961】 依赖批次 1960
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

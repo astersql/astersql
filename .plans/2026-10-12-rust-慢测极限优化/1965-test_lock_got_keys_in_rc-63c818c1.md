@@ -1,6 +1,8 @@
 # 任务 1965: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_lock_got_keys_in_rc`
 
-批次：【批次 1965】 依赖批次 1964
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

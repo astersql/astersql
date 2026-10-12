@@ -1,6 +1,8 @@
 # 任务 2219: 优化 `astersql-dxf-importinto::clean_up_test::registered_import_cleaner_exposes_batch_and_writes_redaction_on_error`
 
-批次：【批次 2219】 依赖批次 2218
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

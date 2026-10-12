@@ -1,6 +1,8 @@
 # 任务 212: 优化 `astersql-planner-core-casetest-rule::rule_cdc_join_reorder_test::dp_join_reorder_leading_hint_reports_go_warning`
 
-批次：【批次 212】 依赖批次 211
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

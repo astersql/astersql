@@ -1,6 +1,8 @@
 # 任务 295: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeGlobalStatsWithOpts1`
 
-批次：【批次 295】 依赖批次 294
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

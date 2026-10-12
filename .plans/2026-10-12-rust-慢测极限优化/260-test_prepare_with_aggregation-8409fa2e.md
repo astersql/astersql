@@ -1,6 +1,8 @@
 # 任务 260: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepare_with_aggregation`
 
-批次：【批次 260】 依赖批次 259
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

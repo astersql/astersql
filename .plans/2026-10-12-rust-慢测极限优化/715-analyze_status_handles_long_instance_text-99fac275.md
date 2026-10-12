@@ -1,6 +1,8 @@
 # 任务 715: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_handles_long_instance_text`
 
-批次：【批次 715】 依赖批次 714
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

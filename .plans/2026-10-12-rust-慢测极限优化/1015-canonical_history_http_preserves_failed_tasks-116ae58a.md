@@ -1,6 +1,8 @@
 # 任务 1015: 优化 `astersql-server-handler-tests::dxf_test::canonical_history_http_preserves_failed_tasks`
 
-批次：【批次 1015】 依赖批次 1014
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

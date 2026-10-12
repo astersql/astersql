@@ -1,6 +1,8 @@
 # 任务 679: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_range_time_pruning_extract`
 
-批次：【批次 679】 依赖批次 678
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

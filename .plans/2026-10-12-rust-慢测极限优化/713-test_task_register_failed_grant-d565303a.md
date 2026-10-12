@@ -1,6 +1,8 @@
 # 任务 713: 优化 `astersql-br-pkg-utils::register_test::test_task_register_failed_grant`
 
-批次：【批次 713】 依赖批次 712
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

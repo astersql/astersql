@@ -1,6 +1,8 @@
 # 任务 1228: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_sync_failure_restart_and_same_mode_are_idempotent`
 
-批次：【批次 1228】 依赖批次 1227
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

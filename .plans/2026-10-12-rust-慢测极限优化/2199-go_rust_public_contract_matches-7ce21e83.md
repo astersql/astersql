@@ -1,6 +1,8 @@
 # 任务 2199: 优化 `astersql-tests-globalkilltest::parity_test::go_rust_public_contract_matches`
 
-批次：【批次 2199】 依赖批次 2198
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

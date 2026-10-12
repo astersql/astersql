@@ -1,6 +1,8 @@
 # 任务 1158: 优化 `astersql-server::mysql_metadata_protocol_test::show_processlist_reports_integer_scale_over_mysql_protocol`
 
-批次：【批次 1158】 依赖批次 1157
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

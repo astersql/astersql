@@ -1,6 +1,8 @@
 # 任务 1938: 优化 `astersql-tests-realtikvtest-addindextest3::operator_test::test_backfill_operator_pipeline_exception`
 
-批次：【批次 1938】 依赖批次 1937
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

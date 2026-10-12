@@ -1,6 +1,8 @@
 # 任务 2021: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_ingest_gc_safepoint_blocking`
 
-批次：【批次 2021】 依赖批次 2020
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

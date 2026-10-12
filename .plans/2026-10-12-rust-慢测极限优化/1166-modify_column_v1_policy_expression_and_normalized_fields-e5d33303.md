@@ -1,6 +1,8 @@
 # 任务 1166: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_v1_policy_expression_and_normalized_fields`
 
-批次：【批次 1166】 依赖批次 1165
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 544: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_extracts_topn_for_columns_and_indexes`
 
-批次：【批次 544】 依赖批次 543
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 472: 优化 `astersql-session::runtime::ttl_sysvar_test::set_global_gc_lifetime_notifies_effective_value`
 
-批次：【批次 472】 依赖批次 471
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

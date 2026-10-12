@@ -1,6 +1,8 @@
 # 任务 1330: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_full_mode_flag_defaults_to_false`
 
-批次：【批次 1330】 依赖批次 1329
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

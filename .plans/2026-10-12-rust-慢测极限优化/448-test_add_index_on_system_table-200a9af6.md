@@ -1,6 +1,8 @@
 # 任务 448: 优化 `astersql-tests-realtikvtest-addindextest1::cross_ks_test::test_add_index_on_system_table`
 
-批次：【批次 448】 依赖批次 447
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

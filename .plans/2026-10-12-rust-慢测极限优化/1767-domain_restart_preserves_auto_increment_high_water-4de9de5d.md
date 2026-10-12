@@ -1,6 +1,8 @@
 # 任务 1767: 优化 `astersql-testkit::mockstore_domain_ddl_test::domain_restart_preserves_auto_increment_high_water`
 
-批次：【批次 1767】 依赖批次 1766
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

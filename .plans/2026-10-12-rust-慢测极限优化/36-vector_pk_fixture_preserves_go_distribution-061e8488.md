@@ -1,6 +1,8 @@
 # 任务 36: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::vector_pk_fixture_preserves_go_distribution`
 
-批次：【批次 36】 依赖批次 35
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

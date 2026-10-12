@@ -1,6 +1,8 @@
 # 任务 1105: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestCastJSONTimeDuration`
 
-批次：【批次 1105】 依赖批次 1104
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

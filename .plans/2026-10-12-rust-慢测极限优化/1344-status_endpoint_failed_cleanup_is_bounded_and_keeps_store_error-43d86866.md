@@ -1,6 +1,8 @@
 # 任务 1344: 优化 `astersql-domain-serverinfo::syncer_test::status_endpoint_failed_cleanup_is_bounded_and_keeps_store_error`
 
-批次：【批次 1344】 依赖批次 1343
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

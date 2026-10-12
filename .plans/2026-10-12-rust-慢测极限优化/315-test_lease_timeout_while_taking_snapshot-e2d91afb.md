@@ -1,6 +1,8 @@
 # 任务 315: 优化 `astersql-br-pkg-backup-prepare-snap::prepare_test::test_lease_timeout_while_taking_snapshot`
 
-批次：【批次 315】 依赖批次 314
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

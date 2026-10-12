@@ -1,6 +1,8 @@
 # 任务 1345: 优化 `astersql-session::runtime_statistics_test::combined_merge_global_index_exact_topn_estimates`
 
-批次：【批次 1345】 依赖批次 1344
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

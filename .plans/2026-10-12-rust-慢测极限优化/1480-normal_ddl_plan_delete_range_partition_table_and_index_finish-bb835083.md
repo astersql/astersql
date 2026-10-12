@@ -1,6 +1,8 @@
 # 任务 1480: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_delete_range_partition_table_and_index_finish`
 
-批次：【批次 1480】 依赖批次 1479
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 863: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_null_param_selects_table_dual`
 
-批次：【批次 863】 依赖批次 862
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

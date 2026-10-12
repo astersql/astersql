@@ -1,6 +1,8 @@
 # 任务 44: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheConcurrencyPointNoTxn`
 
-批次：【批次 44】 依赖批次 43
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

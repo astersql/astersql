@@ -1,6 +1,8 @@
 # 任务 745: 优化 `astersql-ddl-tests-partition::multi_domain_part1_aster_unit_test::concurrent_read_observes_committed_partition_rows`
 
-批次：【批次 745】 依赖批次 744
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

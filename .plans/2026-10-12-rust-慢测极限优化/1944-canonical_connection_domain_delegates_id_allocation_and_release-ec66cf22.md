@@ -1,6 +1,8 @@
 # 任务 1944: 优化 `astersql-server::runtime_test::canonical_connection_domain_delegates_id_allocation_and_release`
 
-批次：【批次 1944】 依赖批次 1943
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

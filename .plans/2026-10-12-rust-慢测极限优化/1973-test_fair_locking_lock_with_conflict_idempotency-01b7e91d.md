@@ -1,6 +1,8 @@
 # 任务 1973: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_fair_locking_lock_with_conflict_idempotency`
 
-批次：【批次 1973】 依赖批次 1972
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

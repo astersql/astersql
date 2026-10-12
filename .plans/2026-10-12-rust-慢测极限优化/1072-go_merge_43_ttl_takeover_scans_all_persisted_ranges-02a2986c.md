@@ -1,6 +1,8 @@
 # 任务 1072: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_takeover_scans_all_persisted_ranges`
 
-批次：【批次 1072】 依赖批次 1071
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

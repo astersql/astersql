@@ -1,6 +1,8 @@
 # 任务 327: 优化 `astersql-session::runtime::normal_ddl_create_table_test::external_ttl_two_managers_elect_one_owner_and_release_on_close`
 
-批次：【批次 327】 依赖批次 326
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

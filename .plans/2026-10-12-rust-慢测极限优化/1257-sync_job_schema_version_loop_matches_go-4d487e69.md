@@ -1,6 +1,8 @@
 # 任务 1257: 优化 `astersql-ddl-schemaver::syncer_nokit_test::sync_job_schema_version_loop_matches_go`
 
-批次：【批次 1257】 依赖批次 1256
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

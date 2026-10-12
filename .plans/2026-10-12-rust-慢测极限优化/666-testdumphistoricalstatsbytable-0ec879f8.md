@@ -1,6 +1,8 @@
 # 任务 666: 优化 `astersql-executor::historical_stats_test::TestDumpHistoricalStatsByTable`
 
-批次：【批次 666】 依赖批次 665
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

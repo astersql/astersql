@@ -1,6 +1,8 @@
 # 任务 1147: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_test::normal_ddl_plan_create_materialized_view_2_commit_conflict`
 
-批次：【批次 1147】 依赖批次 1146
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

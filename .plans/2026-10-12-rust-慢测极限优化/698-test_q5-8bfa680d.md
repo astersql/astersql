@@ -1,6 +1,8 @@
 # 任务 698: 优化 `astersql-planner-core-casetest-tpch::tpch_test::test_q5`
 
-批次：【批次 698】 依赖批次 697
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 934: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_skewed_group_distinct_rewrite_fixture`
 
-批次：【批次 934】 依赖批次 933
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

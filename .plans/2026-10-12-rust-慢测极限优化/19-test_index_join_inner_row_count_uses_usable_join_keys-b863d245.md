@@ -1,6 +1,8 @@
 # 任务 19: 优化 `astersql-planner-core-casetest-join::join_test::test_index_join_inner_row_count_uses_usable_join_keys`
 
-批次：【批次 19】 依赖批次 18
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

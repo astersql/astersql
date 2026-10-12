@@ -1,6 +1,8 @@
 # 任务 1698: 优化 `astersql-session::runtime::scan_adapter_runtime_test::adapter_dml_preserves_canonical_fk_parent_check_and_delete_cascade`
 
-批次：【批次 1698】 依赖批次 1697
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

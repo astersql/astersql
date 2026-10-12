@@ -1,6 +1,8 @@
 # 任务 2175: 优化 `astersql-parser-mysql::error_test::test_sql_error`
 
-批次：【批次 2175】 依赖批次 2174
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

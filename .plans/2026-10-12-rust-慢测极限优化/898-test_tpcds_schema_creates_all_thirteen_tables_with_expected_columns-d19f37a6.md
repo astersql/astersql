@@ -1,6 +1,8 @@
 # 任务 898: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_creates_all_thirteen_tables_with_expected_columns`
 
-批次：【批次 898】 依赖批次 897
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

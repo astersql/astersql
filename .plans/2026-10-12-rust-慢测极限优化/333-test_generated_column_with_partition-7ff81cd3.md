@@ -1,6 +1,8 @@
 # 任务 333: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_generated_column_with_partition`
 
-批次：【批次 333】 依赖批次 332
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

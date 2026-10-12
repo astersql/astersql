@@ -1,6 +1,8 @@
 # 任务 1155: 优化 `astersql-executor-test-executor::executor_test::check_index_preserves_success_and_missing_index_errors`
 
-批次：【批次 1155】 依赖批次 1154
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

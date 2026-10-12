@@ -1,6 +1,8 @@
 # 任务 576: 优化 `astersql-ddl-tests-serial::serial_test::test_create_table_with_like_at_temporary_mode`
 
-批次：【批次 576】 依赖批次 575
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

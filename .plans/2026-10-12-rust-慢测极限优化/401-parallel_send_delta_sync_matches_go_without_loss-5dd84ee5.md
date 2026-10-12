@@ -1,6 +1,8 @@
 # 任务 401: 优化 `astersql-statistics-handle-usage-collector::migration_aster_unit_test::parallel_send_delta_sync_matches_go_without_loss`
 
-批次：【批次 401】 依赖批次 400
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

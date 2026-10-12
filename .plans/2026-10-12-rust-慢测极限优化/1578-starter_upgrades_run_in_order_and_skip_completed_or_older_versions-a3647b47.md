@@ -1,6 +1,8 @@
 # 任务 1578: 优化 `astersql-session::starter_bootstrap_file_test::starter_upgrades_run_in_order_and_skip_completed_or_older_versions`
 
-批次：【批次 1578】 依赖批次 1577
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

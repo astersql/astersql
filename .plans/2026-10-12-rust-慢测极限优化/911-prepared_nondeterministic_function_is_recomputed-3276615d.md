@@ -1,6 +1,8 @@
 # 任务 911: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_nondeterministic_function_is_recomputed`
 
-批次：【批次 911】 依赖批次 910
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

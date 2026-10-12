@@ -1,6 +1,8 @@
 # 任务 35: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheConcurrencyPointPartitioning`
 
-批次：【批次 35】 依赖批次 34
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

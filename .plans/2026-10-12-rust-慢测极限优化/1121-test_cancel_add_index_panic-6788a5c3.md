@@ -1,6 +1,8 @@
 # 任务 1121: 优化 `astersql-ddl-tests-serial::serial_test::test_cancel_add_index_panic`
 
-批次：【批次 1121】 依赖批次 1120
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

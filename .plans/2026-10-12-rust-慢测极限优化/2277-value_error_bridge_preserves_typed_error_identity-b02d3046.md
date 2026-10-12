@@ -1,6 +1,8 @@
 # 任务 2277: 优化 `astersql-types-datum::migration_aster_unit_test::value_error_bridge_preserves_typed_error_identity`
 
-批次：【批次 2277】 依赖批次 2276
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

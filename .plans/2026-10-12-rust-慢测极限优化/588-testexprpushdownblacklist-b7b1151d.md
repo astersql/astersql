@@ -1,6 +1,8 @@
 # 任务 588: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestExprPushdownBlacklist`
 
-批次：【批次 588】 依赖批次 587
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 857: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_partition_structure_and_expression_loading`
 
-批次：【批次 857】 依赖批次 856
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 726: 优化 `astersql-ingestor-ingestctrl::localhelper_test::store_write_limiter_matches_go_burst_chunking_and_store_isolation`
 
-批次：【批次 726】 依赖批次 725
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

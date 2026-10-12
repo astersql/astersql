@@ -1,6 +1,8 @@
 # 任务 467: 优化 `astersql-dxf-framework-handle::handle_test::test_metering_and_object_store_hooks`
 
-批次：【批次 467】 依赖批次 466
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

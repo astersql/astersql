@@ -1,6 +1,8 @@
 # 任务 1633: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_delete_range_gc_commit_conflict_rolls_back_batch`
 
-批次：【批次 1633】 依赖批次 1632
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1746: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_drop_foreign_key_preserves_other_keys_and_missing_error`
 
-批次：【批次 1746】 依赖批次 1745
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

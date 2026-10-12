@@ -1,6 +1,8 @@
 # 任务 601: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_normalized_plan_digest_inputs`
 
-批次：【批次 601】 依赖批次 600
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

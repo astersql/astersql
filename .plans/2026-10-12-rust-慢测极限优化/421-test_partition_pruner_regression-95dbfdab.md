@@ -1,6 +1,8 @@
 # 任务 421: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_partition_pruner_regression`
 
-批次：【批次 421】 依赖批次 420
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

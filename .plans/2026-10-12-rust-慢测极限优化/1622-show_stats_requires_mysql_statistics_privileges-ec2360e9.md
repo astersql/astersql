@@ -1,6 +1,8 @@
 # 任务 1622: 优化 `astersql-executor-test-showtest::show_test::show_stats_requires_mysql_statistics_privileges`
 
-批次：【批次 1622】 依赖批次 1621
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

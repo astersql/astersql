@@ -1,6 +1,8 @@
 # 任务 984: 优化 `astersql-parser-terror::parser_terror_test::terror_helpers_match_go_terminal_and_logging_semantics`
 
-批次：【批次 984】 依赖批次 983
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

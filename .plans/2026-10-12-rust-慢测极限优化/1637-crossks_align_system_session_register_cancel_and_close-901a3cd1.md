@@ -1,6 +1,8 @@
 # 任务 1637: 优化 `astersql-session::system_session_alignment_test::crossks_align_system_session_register_cancel_and_close`
 
-批次：【批次 1637】 依赖批次 1636
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

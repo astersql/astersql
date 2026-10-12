@@ -1,6 +1,8 @@
 # 任务 800: 优化 `astersql-executor-test-ddl::ddl_test::test_add_not_null_column_no_default`
 
-批次：【批次 800】 依赖批次 799
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

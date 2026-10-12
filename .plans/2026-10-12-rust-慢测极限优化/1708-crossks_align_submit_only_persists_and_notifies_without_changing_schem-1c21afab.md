@@ -1,6 +1,8 @@
 # 任务 1708: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_persists_and_notifies_without_changing_schema`
 
-批次：【批次 1708】 依赖批次 1707
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

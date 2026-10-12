@@ -1,6 +1,8 @@
 # 任务 856: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorSearchPreparedStatement`
 
-批次：【批次 856】 依赖批次 855
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

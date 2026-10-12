@@ -1,6 +1,8 @@
 # 任务 978: 优化 `astersql-parser-terror::parser_terror_test::terror_constructors_register_codes_and_freeze_in_subprocess`
 
-批次：【批次 978】 依赖批次 977
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1188: 优化 `astersql-server::conn_stmt_test::cursor_failed_row_write_is_accounted`
 
-批次：【批次 1188】 依赖批次 1187
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

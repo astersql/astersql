@@ -1,6 +1,8 @@
 # 任务 1642: 优化 `astersql-server-tests::tidb_serial_test::test_stmt_count`
 
-批次：【批次 1642】 依赖批次 1641
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

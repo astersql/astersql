@@ -1,6 +1,8 @@
 # 任务 943: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestCompareBuiltin`
 
-批次：【批次 943】 依赖批次 942
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 896: 优化 `astersql-executor-test-infoschema::infoschema_test::statistics_only_exposes_public_indexes`
 
-批次：【批次 896】 依赖批次 895
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

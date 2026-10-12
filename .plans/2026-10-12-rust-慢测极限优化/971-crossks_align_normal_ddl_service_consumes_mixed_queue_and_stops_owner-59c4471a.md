@@ -1,6 +1,8 @@
 # 任务 971: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_service_consumes_mixed_queue_and_stops_owner`
 
-批次：【批次 971】 依赖批次 970
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1323: 优化 `astersql-tests-realtikvtest-importintotest::job_test::test_show_import_job_timing_around_prepare`
 
-批次：【批次 1323】 依赖批次 1322
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

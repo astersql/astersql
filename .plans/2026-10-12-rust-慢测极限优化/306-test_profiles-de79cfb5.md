@@ -1,6 +1,8 @@
 # 任务 306: 优化 `astersql-util-profile::profile_test::test_profiles`
 
-批次：【批次 306】 依赖批次 305
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

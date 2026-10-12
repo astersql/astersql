@@ -1,6 +1,8 @@
 # 任务 1978: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_pessimistic_lock_non_exists_key`
 
-批次：【批次 1978】 依赖批次 1977
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

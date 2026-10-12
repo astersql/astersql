@@ -1,6 +1,8 @@
 # 任务 646: 优化 `astersql-ddl-tests-partition::db_partition_test::creates_range_partition_metadata_and_routes_boundary_rows`
 
-批次：【批次 646】 依赖批次 645
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 869: 优化 `astersql-executor::show_stats_test::TestShowStatsHistograms`
 
-批次：【批次 869】 依赖批次 868
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

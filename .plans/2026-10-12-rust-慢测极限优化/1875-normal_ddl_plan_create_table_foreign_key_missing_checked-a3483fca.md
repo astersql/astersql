@@ -1,6 +1,8 @@
 # 任务 1875: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_foreign_key_missing_checked`
 
-批次：【批次 1875】 依赖批次 1874
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

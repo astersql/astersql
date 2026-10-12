@@ -1,6 +1,8 @@
 # 任务 825: 优化 `astersql-ddl-tests-fk::foreign_key_test::create_table_rejects_missing_foreign_key_parent`
 
-批次：【批次 825】 依赖批次 824
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

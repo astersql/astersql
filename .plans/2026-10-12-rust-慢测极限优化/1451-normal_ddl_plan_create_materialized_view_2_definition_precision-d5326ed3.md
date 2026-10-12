@@ -1,6 +1,8 @@
 # 任务 1451: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_test::normal_ddl_plan_create_materialized_view_2_definition_precision`
 
-批次：【批次 1451】 依赖批次 1450
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

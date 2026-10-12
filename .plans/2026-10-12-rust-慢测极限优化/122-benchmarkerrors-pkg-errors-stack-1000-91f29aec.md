@@ -1,6 +1,8 @@
 # 任务 122: 优化 `astersql::bench/errors::BenchmarkErrors/pkg-errors-stack/1000`
 
-批次：【批次 122】 依赖批次 121
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

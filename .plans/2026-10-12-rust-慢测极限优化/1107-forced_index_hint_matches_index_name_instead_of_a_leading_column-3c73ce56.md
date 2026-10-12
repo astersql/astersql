@@ -1,6 +1,8 @@
 # 任务 1107: 优化 `astersql-session::runtime_test::planning::forced_index_hint_matches_index_name_instead_of_a_leading_column`
 
-批次：【批次 1107】 依赖批次 1106
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

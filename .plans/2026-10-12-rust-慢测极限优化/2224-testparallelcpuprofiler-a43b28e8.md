@@ -1,6 +1,8 @@
 # 任务 2224: 优化 `astersql-util-cpuprofile::cpuprofile_test::TestParallelCPUProfiler`
 
-批次：【批次 2224】 依赖批次 2223
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

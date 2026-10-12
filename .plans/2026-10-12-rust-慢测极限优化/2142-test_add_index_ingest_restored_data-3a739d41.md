@@ -1,6 +1,8 @@
 # 任务 2142: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_ingest_restored_data`
 
-批次：【批次 2142】 依赖批次 2141
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

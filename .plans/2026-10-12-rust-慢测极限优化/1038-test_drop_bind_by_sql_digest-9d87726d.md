@@ -1,6 +1,8 @@
 # 任务 1038: 优化 `astersql-bindinfo-tests::bind_test::test_drop_bind_by_sql_digest`
 
-批次：【批次 1038】 依赖批次 1037
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

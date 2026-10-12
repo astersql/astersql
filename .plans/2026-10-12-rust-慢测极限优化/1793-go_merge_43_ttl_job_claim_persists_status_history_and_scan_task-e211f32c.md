@@ -1,6 +1,8 @@
 # 任务 1793: 优化 `astersql-session::runtime::ttl_worker_session_test::go_merge_43_ttl_job_claim_persists_status_history_and_scan_task`
 
-批次：【批次 1793】 依赖批次 1792
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

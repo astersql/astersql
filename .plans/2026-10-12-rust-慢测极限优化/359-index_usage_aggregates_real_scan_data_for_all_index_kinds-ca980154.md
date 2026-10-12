@@ -1,6 +1,8 @@
 # 任务 359: 优化 `astersql-executor-test-infoschema::infoschema_test::index_usage_aggregates_real_scan_data_for_all_index_kinds`
 
-批次：【批次 359】 依赖批次 358
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

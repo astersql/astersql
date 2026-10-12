@@ -1,6 +1,8 @@
 # 任务 2246: 优化 `astersql-importsdk::file_scanner_test::get_total_size_and_table_metas_match_go`
 
-批次：【批次 2246】 依赖批次 2245
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 575: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::hnsw_query_plan_matches_execution`
 
-批次：【批次 575】 依赖批次 574
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

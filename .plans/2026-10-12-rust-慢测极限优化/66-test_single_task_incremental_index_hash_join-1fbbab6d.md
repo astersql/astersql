@@ -1,6 +1,8 @@
 # 任务 66: 优化 `astersql-executor-test-jointest::join_test::test_single_task_incremental_index_hash_join`
 
-批次：【批次 66】 依赖批次 65
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

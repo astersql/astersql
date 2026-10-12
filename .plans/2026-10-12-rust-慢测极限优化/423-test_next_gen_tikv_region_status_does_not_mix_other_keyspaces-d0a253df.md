@@ -1,6 +1,8 @@
 # 任务 423: 优化 `astersql-tests-realtikvtest-sessiontest::infoschema_test::test_next_gen_tikv_region_status_does_not_mix_other_keyspaces`
 
-批次：【批次 423】 依赖批次 422
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

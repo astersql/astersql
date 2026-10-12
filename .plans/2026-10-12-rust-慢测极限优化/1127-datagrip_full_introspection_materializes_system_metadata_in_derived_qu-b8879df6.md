@@ -1,6 +1,8 @@
 # 任务 1127: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_full_introspection_materializes_system_metadata_in_derived_queries`
 
-批次：【批次 1127】 依赖批次 1126
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

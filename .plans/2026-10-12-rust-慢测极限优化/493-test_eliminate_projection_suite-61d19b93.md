@@ -1,6 +1,8 @@
 # 任务 493: 优化 `astersql-planner-core-casetest-rule::rule_eliminate_projection_test::test_eliminate_projection_suite`
 
-批次：【批次 493】 依赖批次 492
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

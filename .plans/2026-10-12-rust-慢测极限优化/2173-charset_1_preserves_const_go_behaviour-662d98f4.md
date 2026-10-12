@@ -1,6 +1,8 @@
 # 任务 2173: 优化 `astersql-parser-mysql::charset_1_aster_unit_test::charset_1_preserves_const_go_behaviour`
 
-批次：【批次 2173】 依赖批次 2172
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

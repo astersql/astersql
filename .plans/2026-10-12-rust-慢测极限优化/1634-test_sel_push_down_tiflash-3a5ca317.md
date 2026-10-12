@@ -1,6 +1,8 @@
 # 任务 1634: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_sel_push_down_tiflash`
 
-批次：【批次 1634】 依赖批次 1633
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

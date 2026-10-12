@@ -1,6 +1,8 @@
 # 任务 533: 优化 `astersql-executor::show_stats_test::TestShowStatsMeta`
 
-批次：【批次 533】 依赖批次 532
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

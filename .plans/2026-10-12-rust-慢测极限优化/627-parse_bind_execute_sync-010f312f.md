@@ -1,6 +1,8 @@
 # 任务 627: 优化 `astersql-server::pg_extended_test::parse_bind_execute_sync`
 
-批次：【批次 627】 依赖批次 626
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

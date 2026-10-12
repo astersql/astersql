@@ -1,6 +1,8 @@
 # 任务 2145: 优化 `astersql-session::dml_runtime_test::go_merge_49_canonical_bootstrap_installs_purge_history`
 
-批次：【批次 2145】 依赖批次 2144
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

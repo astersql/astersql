@@ -1,6 +1,8 @@
 # 任务 1399: 优化 `astersql-session::runtime::normal_ddl_drop_materialized_view_test::drop_materialized_view_v1_cleans_dependencies_and_maintenance_state`
 
-批次：【批次 1399】 依赖批次 1398
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

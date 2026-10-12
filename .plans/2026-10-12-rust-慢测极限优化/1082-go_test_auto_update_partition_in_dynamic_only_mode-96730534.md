@@ -1,6 +1,8 @@
 # 任务 1082: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update_partition_in_dynamic_only_mode`
 
-批次：【批次 1082】 依赖批次 1081
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

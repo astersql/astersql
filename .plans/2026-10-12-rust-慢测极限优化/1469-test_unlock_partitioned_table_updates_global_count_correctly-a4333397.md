@@ -1,6 +1,8 @@
 # 任务 1469: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_unlock_partitioned_table_updates_global_count_correctly`
 
-批次：【批次 1469】 依赖批次 1468
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

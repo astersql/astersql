@@ -1,6 +1,8 @@
 # 任务 481: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_list_managed_nodes`
 
-批次：【批次 481】 依赖批次 480
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

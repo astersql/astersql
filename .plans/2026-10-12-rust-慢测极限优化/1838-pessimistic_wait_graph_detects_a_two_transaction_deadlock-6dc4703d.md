@@ -1,6 +1,8 @@
 # 任务 1838: 优化 `astersql-session::runtime_pessimistic_test::pessimistic_wait_graph_detects_a_two_transaction_deadlock`
 
-批次：【批次 1838】 依赖批次 1837
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

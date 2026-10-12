@@ -1,6 +1,8 @@
 # 任务 280: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared_limit_offset`
 
-批次：【批次 280】 依赖批次 279
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 997: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_tiflash_fastscan_rejects_ordered_scan`
 
-批次：【批次 997】 依赖批次 996
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

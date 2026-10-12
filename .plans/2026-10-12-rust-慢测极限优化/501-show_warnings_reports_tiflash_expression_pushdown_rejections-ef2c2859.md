@@ -1,6 +1,8 @@
 # 任务 501: 优化 `astersql-executor-test-showtest::show_test::show_warnings_reports_tiflash_expression_pushdown_rejections`
 
-批次：【批次 501】 依赖批次 500
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

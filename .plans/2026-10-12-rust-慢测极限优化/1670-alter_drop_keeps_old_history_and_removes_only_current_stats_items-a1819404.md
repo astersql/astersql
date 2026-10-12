@@ -1,6 +1,8 @@
 # 任务 1670: 优化 `astersql-testkit::stats_runtime_aster_unit_test::alter_drop_keeps_old_history_and_removes_only_current_stats_items`
 
-批次：【批次 1670】 依赖批次 1669
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

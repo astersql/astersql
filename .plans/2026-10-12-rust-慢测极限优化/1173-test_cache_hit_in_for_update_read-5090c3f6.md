@@ -1,6 +1,8 @@
 # 任务 1173: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_cache_hit_in_for_update_read`
 
-批次：【批次 1173】 依赖批次 1172
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

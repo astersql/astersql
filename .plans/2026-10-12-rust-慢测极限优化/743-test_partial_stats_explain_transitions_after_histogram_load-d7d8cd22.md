@@ -1,6 +1,8 @@
 # 任务 743: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_partial_stats_explain_transitions_after_histogram_load`
 
-批次：【批次 743】 依赖批次 742
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

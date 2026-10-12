@@ -1,6 +1,8 @@
 # 任务 1235: 优化 `astersql-tests-realtikvtest-addindextest::failpoints_test::default_mode_skips_failpoint_workload`
 
-批次：【批次 1235】 依赖批次 1234
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

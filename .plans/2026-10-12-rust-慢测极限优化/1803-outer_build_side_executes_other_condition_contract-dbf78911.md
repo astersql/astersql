@@ -1,6 +1,8 @@
 # 任务 1803: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::outer_build_side_executes_other_condition_contract`
 
-批次：【批次 1803】 依赖批次 1802
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1897: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_supports_references_privilege_on_columns`
 
-批次：【批次 1897】 依赖批次 1896
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1795: 优化 `astersql-tests-realtikvtest-txntest::shared_lock_test::shared_lock_test_config_guard_enables_and_restores_sql_gate`
 
-批次：【批次 1795】 依赖批次 1794
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

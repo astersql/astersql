@@ -1,6 +1,8 @@
 # 任务 2220: 优化 `astersql-importsdk::sql_generator_test::generate_import_sql_matches_go_table`
 
-批次：【批次 2220】 依赖批次 2219
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

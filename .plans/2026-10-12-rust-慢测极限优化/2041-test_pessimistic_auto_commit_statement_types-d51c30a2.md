@@ -1,6 +1,8 @@
 # 任务 2041: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_pessimistic_auto_commit_statement_types`
 
-批次：【批次 2041】 依赖批次 2040
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

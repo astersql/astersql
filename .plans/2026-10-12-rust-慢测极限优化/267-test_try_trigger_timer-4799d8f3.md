@@ -1,6 +1,8 @@
 # 任务 267: 优化 `astersql-timer-runtime::runtime_test::test_try_trigger_timer`
 
-批次：【批次 267】 依赖批次 266
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

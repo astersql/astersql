@@ -1,6 +1,8 @@
 # 任务 542: 优化 `astersql-executor-test-loaddatatest::main_test::shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers`
 
-批次：【批次 542】 依赖批次 541
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

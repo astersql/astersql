@@ -1,6 +1,8 @@
 # 任务 1801: 优化 `astersql-session-test-common::common_test::rolled_back_session_closes_cleanly`
 
-批次：【批次 1801】 依赖批次 1800
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

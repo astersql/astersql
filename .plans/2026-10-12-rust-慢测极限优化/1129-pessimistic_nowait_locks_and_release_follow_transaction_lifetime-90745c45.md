@@ -1,6 +1,8 @@
 # 任务 1129: 优化 `astersql-session::runtime_pessimistic_test::pessimistic_nowait_locks_and_release_follow_transaction_lifetime`
 
-批次：【批次 1129】 依赖批次 1128
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

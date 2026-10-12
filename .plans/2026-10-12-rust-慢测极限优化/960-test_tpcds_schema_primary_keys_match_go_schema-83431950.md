@@ -1,6 +1,8 @@
 # 任务 960: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_primary_keys_match_go_schema`
 
-批次：【批次 960】 依赖批次 959
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

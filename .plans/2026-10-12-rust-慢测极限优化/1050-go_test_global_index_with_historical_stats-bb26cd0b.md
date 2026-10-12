@@ -1,6 +1,8 @@
 # 任务 1050: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_global_index_with_historical_stats`
 
-批次：【批次 1050】 依赖批次 1049
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

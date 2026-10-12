@@ -1,6 +1,8 @@
 # 任务 225: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_modify_dist_reorg_backfills_all_partitions`
 
-批次：【批次 225】 依赖批次 224
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1023: 优化 `astersql-planner-core-casetest-join::join_test::test_join_simplify_condition_runs_go_plan_contract`
 
-批次：【批次 1023】 依赖批次 1022
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

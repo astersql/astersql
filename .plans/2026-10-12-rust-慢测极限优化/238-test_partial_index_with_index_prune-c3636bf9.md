@@ -1,6 +1,8 @@
 # 任务 238: 优化 `astersql-planner-core-casetest-index::index_test::test_partial_index_with_index_prune`
 
-批次：【批次 238】 依赖批次 237
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

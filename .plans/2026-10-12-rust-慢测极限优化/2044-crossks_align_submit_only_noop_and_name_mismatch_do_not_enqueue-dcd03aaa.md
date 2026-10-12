@@ -1,6 +1,8 @@
 # 任务 2044: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_noop_and_name_mismatch_do_not_enqueue`
 
-批次：【批次 2044】 依赖批次 2043
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

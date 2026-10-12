@@ -1,6 +1,8 @@
 # 任务 787: 优化 `astersql-server::pg_query_test::datagrip_catalog_live_metadata`
 
-批次：【批次 787】 依赖批次 786
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2047: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_async_roll_back_no_wait`
 
-批次：【批次 2047】 依赖批次 2046
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

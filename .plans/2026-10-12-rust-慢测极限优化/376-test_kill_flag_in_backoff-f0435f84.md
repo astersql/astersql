@@ -1,6 +1,8 @@
 # 任务 376: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_kill_flag_in_backoff`
 
-批次：【批次 376】 依赖批次 375
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

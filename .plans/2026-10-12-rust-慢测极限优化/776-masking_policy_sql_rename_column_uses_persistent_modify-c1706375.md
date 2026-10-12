@@ -1,6 +1,8 @@
 # 任务 776: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_rename_column_uses_persistent_modify`
 
-批次：【批次 776】 依赖批次 775
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

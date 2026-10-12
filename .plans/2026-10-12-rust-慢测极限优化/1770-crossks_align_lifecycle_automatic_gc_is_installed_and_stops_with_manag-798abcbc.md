@@ -1,6 +1,8 @@
 # 任务 1770: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_automatic_gc_is_installed_and_stops_with_manager`
 
-批次：【批次 1770】 依赖批次 1769
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

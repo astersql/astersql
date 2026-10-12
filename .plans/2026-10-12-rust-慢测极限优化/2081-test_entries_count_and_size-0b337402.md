@@ -1,6 +1,8 @@
 # 任务 2081: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_entries_count_and_size`
 
-批次：【批次 2081】 依赖批次 2080
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

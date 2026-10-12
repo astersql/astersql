@@ -1,6 +1,8 @@
 # 任务 900: 优化 `astersql-executor::show_stats_test::TestShowStatsLocked`
 
-批次：【批次 900】 依赖批次 899
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 861: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_session_states_round_trip`
 
-批次：【批次 861】 依赖批次 860
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

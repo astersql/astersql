@@ -1,6 +1,8 @@
 # 任务 961: 优化 `astersql-executor::statement_ru_plan_walk_test::go_merge_20_187_195_197_production_ru_canonical_sql`
 
-批次：【批次 961】 依赖批次 960
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

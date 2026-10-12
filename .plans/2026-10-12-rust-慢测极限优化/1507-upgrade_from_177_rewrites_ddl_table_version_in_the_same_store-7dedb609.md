@@ -1,6 +1,8 @@
 # 任务 1507: 优化 `astersql-session-test-bootstraptest2::boot_test::upgrade_from_177_rewrites_ddl_table_version_in_the_same_store`
 
-批次：【批次 1507】 依赖批次 1506
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

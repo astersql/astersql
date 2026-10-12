@@ -1,6 +1,8 @@
 # 任务 2240: 优化 `astersql-planner-core-casetest-rule::rule_join_reorder_test::leading_hint_preserves_non_equality_conditions_and_outer_join_rows`
 
-批次：【批次 2240】 依赖批次 2239
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

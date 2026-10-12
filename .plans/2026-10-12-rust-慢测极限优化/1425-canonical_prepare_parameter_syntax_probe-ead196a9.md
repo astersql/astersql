@@ -1,6 +1,8 @@
 # 任务 1425: 优化 `astersql-server::pg_extended_test::canonical_prepare_parameter_syntax_probe`
 
-批次：【批次 1425】 依赖批次 1424
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

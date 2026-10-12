@@ -1,6 +1,8 @@
 # 任务 2098: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_lazy_uniqueness_check_with_inconsistent_read_result`
 
-批次：【批次 2098】 依赖批次 2097
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

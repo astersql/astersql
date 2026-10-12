@@ -1,6 +1,8 @@
 # 任务 1458: 优化 `astersql-session::runtime_test::ddl::concrete_repeat_create_index_and_admin_check_index_use_production_paths`
 
-批次：【批次 1458】 依赖批次 1457
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

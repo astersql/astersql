@@ -1,6 +1,8 @@
 # 任务 1720: 优化 `astersql-testkit::mockstore_domain_ddl_test::partition_ddl_replaces_only_target_physical_identities`
 
-批次：【批次 1720】 依赖批次 1719
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

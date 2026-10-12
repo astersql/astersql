@@ -1,6 +1,8 @@
 # 任务 879: 优化 `astersql-ddl-tests-serial::serial_test::test_issue23872`
 
-批次：【批次 879】 依赖批次 878
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

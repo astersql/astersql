@@ -1,6 +1,8 @@
 # 任务 2278: 优化 `astersql-dxf-importinto::planner_test::external_conflict_info_is_loaded_and_missing_object_propagates_error`
 
-批次：【批次 2278】 依赖批次 2277
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1774: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_dist_auto_pause_on_kv_disk_full`
 
-批次：【批次 1774】 依赖批次 1773
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

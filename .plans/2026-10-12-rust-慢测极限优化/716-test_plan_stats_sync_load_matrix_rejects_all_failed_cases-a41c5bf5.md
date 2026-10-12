@@ -1,6 +1,8 @@
 # 任务 716: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_load_matrix_rejects_all_failed_cases`
 
-批次：【批次 716】 依赖批次 715
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

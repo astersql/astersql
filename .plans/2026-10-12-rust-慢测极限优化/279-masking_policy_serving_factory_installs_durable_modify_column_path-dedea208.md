@@ -1,6 +1,8 @@
 # 任务 279: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_serving_factory_installs_durable_modify_column_path`
 
-批次：【批次 279】 依赖批次 278
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

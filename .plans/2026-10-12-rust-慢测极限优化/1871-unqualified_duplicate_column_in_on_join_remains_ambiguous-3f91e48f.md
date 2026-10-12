@@ -1,6 +1,8 @@
 # 任务 1871: 优化 `astersql-session::mysql_relational_query_compat_test::unqualified_duplicate_column_in_on_join_remains_ambiguous`
 
-批次：【批次 1871】 依赖批次 1870
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1016: 优化 `astersql-session-test::session_test::fix_set_tidb_snapshot_ts_matches_go`
 
-批次：【批次 1016】 依赖批次 1015
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

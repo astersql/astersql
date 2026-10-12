@@ -1,6 +1,8 @@
 # 任务 1623: 优化 `astersql-server::pg_error_test::sqlstate_unique_syntax_and_recovery`
 
-批次：【批次 1623】 依赖批次 1622
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

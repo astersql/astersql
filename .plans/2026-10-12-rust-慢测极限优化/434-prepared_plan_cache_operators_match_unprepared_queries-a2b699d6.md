@@ -1,6 +1,8 @@
 # 任务 434: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_operators_match_unprepared_queries`
 
-批次：【批次 434】 依赖批次 433
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

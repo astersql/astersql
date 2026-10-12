@@ -1,6 +1,8 @@
 # 任务 507: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_partition_not_cancelled`
 
-批次：【批次 507】 依赖批次 506
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

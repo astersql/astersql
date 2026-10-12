@@ -1,6 +1,8 @@
 # 任务 872: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestPointGetPlanCache`
 
-批次：【批次 872】 依赖批次 871
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

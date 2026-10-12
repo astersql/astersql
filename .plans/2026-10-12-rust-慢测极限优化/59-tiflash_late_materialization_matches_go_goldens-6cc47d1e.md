@@ -1,6 +1,8 @@
 # 任务 59: 优化 `astersql-planner-core-casetest::tiflash_predicate_push_down_test::tiflash_late_materialization_matches_go_goldens`
 
-批次：【批次 59】 依赖批次 58
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

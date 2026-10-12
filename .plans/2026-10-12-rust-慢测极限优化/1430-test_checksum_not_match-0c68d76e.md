@@ -1,6 +1,8 @@
 # 任务 1430: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_checksum_not_match`
 
-批次：【批次 1430】 依赖批次 1429
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

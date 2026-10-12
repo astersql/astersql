@@ -1,6 +1,8 @@
 # 任务 388: 优化 `astersql-planner-core-casetest-instanceplancache::builtin_func_test::test_builtin_decimal_is_true_false`
 
-批次：【批次 388】 依赖批次 387
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

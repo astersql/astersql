@@ -1,6 +1,8 @@
 # 任务 671: 优化 `astersql-executor-test-memtest::mem_test::TestInsertUpdateTrackerOnCleanUp`
 
-批次：【批次 671】 依赖批次 670
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

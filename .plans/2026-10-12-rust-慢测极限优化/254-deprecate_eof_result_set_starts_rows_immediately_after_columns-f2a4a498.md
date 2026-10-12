@@ -1,6 +1,8 @@
 # 任务 254: 优化 `astersql-server::server_test::deprecate_eof_result_set_starts_rows_immediately_after_columns`
 
-批次：【批次 254】 依赖批次 253
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

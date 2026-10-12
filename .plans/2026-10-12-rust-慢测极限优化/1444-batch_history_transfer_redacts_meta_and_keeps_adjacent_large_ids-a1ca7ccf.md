@@ -1,6 +1,8 @@
 # 任务 1444: 优化 `astersql-server-handler-tests::dxf_test::batch_history_transfer_redacts_meta_and_keeps_adjacent_large_ids`
 
-批次：【批次 1444】 依赖批次 1443
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

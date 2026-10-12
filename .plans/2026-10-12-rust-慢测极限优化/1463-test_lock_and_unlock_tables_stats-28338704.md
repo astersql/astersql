@@ -1,6 +1,8 @@
 # 任务 1463: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_lock_and_unlock_tables_stats`
 
-批次：【批次 1463】 依赖批次 1462
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

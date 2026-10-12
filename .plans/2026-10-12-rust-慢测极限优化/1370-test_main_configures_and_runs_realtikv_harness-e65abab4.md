@@ -1,6 +1,8 @@
 # 任务 1370: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_main_configures_and_runs_realtikv_harness`
 
-批次：【批次 1370】 依赖批次 1369
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

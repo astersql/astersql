@@ -1,6 +1,8 @@
 # 任务 233: 优化 `astersql-planner-core-casetest-index::index_test::index_range_quota_preserves_table_and_prefix_residuals`
 
-批次：【批次 233】 依赖批次 232
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

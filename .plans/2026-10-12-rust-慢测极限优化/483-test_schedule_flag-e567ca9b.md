@@ -1,6 +1,8 @@
 # 任务 483: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_schedule_flag`
 
-批次：【批次 483】 依赖批次 482
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

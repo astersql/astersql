@@ -1,6 +1,8 @@
 # 任务 2104: 优化 `astersql-session::runtime::ttl_worker_session_test::go_merge_43_ttl_worker_uses_real_sql_session_and_binds_values`
 
-批次：【批次 2104】 依赖批次 2103
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2032: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_batch_point_get_already_locked`
 
-批次：【批次 2032】 依赖批次 2031
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

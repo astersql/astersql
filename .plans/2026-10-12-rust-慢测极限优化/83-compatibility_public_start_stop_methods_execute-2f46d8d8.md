@@ -1,6 +1,8 @@
 # 任务 83: 优化 `astersql-tests-realtikvtest-testutils::parity_test::compatibility_public_start_stop_methods_execute`
 
-批次：【批次 83】 依赖批次 82
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

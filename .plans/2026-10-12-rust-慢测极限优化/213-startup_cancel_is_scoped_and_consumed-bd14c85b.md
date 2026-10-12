@@ -1,6 +1,8 @@
 # 任务 213: 优化 `astersql-server::pg_conn_test::startup_cancel_is_scoped_and_consumed`
 
-批次：【批次 213】 依赖批次 212
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

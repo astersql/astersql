@@ -1,6 +1,8 @@
 # 任务 273: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_test::test_index_merge_path_generation`
 
-批次：【批次 273】 依赖批次 272
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

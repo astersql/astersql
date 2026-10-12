@@ -1,6 +1,8 @@
 # 任务 1488: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_stats_lock_for_delta`
 
-批次：【批次 1488】 依赖批次 1487
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

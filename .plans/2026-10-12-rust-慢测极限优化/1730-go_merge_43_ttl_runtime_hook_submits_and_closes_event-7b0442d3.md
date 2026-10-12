@@ -1,6 +1,8 @@
 # 任务 1730: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_runtime_hook_submits_and_closes_event`
 
-批次：【批次 1730】 依赖批次 1729
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

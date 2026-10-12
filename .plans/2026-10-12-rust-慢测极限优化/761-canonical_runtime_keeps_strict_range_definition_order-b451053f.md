@@ -1,6 +1,8 @@
 # 任务 761: 优化 `astersql-ddl-tests-partition::db_partition_test::canonical_runtime_keeps_strict_range_definition_order`
 
-批次：【批次 761】 依赖批次 760
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

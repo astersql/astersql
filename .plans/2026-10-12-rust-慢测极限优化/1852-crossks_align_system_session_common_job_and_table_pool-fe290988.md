@@ -1,6 +1,8 @@
 # 任务 1852: 优化 `astersql-session::system_session::crossks_align_system_session_common_job_and_table_pool`
 
-批次：【批次 1852】 依赖批次 1851
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

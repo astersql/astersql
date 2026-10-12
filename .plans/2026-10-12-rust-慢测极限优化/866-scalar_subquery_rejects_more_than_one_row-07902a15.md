@@ -1,6 +1,8 @@
 # 任务 866: 优化 `astersql-executor-test-executor::executor_test::scalar_subquery_rejects_more_than_one_row`
 
-批次：【批次 866】 依赖批次 865
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

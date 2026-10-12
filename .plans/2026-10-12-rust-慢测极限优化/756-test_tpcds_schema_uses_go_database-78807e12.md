@@ -1,6 +1,8 @@
 # 任务 756: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_uses_go_database`
 
-批次：【批次 756】 依赖批次 755
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

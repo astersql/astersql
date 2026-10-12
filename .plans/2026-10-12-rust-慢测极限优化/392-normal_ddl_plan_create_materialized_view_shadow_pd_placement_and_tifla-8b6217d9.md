@@ -1,6 +1,8 @@
 # 任务 392: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_shadow_test::normal_ddl_plan_create_materialized_view_shadow_pd_placement_and_tiflash_requests`
 
-批次：【批次 392】 依赖批次 391
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

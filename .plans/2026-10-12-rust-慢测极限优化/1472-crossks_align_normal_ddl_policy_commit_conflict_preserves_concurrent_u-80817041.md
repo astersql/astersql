@@ -1,6 +1,8 @@
 # 任务 1472: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_policy_commit_conflict_preserves_concurrent_user_pause`
 
-批次：【批次 1472】 依赖批次 1471
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

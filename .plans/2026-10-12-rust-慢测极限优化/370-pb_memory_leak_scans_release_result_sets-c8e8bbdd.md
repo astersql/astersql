@@ -1,6 +1,8 @@
 # 任务 370: 优化 `astersql-executor-test-unstabletest::memory_test::pb_memory_leak_scans_release_result_sets`
 
-批次：【批次 370】 依赖批次 369
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

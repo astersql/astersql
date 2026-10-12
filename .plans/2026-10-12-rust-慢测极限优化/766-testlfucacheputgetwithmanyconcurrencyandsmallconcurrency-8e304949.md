@@ -1,6 +1,8 @@
 # 任务 766: 优化 `astersql-statistics-handle-cache-internal-lfu::lfu_cache_test::TestLFUCachePutGetWithManyConcurrencyAndSmallConcurrency`
 
-批次：【批次 766】 依赖批次 765
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

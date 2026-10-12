@@ -1,6 +1,8 @@
 # 任务 1162: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_session_variables_accept_real_set_statements`
 
-批次：【批次 1162】 依赖批次 1161
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 202: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestEnumIndex`
 
-批次：【批次 202】 依赖批次 201
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 157: 优化 `astersql-br-pkg-checkpoint::external_storage_test::update_lock_preserves_go_post_write_failpoint`
 
-批次：【批次 157】 依赖批次 156
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

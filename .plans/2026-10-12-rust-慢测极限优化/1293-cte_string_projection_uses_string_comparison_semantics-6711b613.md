@@ -1,6 +1,8 @@
 # 任务 1293: 优化 `astersql-session::runtime_test::query::cte_string_projection_uses_string_comparison_semantics`
 
-批次：【批次 1293】 依赖批次 1292
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

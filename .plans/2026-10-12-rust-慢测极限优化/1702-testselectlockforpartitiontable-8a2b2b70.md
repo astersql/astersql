@@ -1,6 +1,8 @@
 # 任务 1702: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestSelectLockForPartitionTable`
 
-批次：【批次 1702】 依赖批次 1701
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

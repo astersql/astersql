@@ -1,6 +1,8 @@
 # 任务 803: 优化 `astersql-planner-core-casetest-parallelapply::parallel_apply_test::test_parallel_apply_ordered_plan`
 
-批次：【批次 803】 依赖批次 802
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

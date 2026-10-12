@@ -1,6 +1,8 @@
 # 任务 1740: 优化 `astersql-session-test-common::prepare_dedup_cache_test::protocol_prepare_reuses_shape_but_keeps_statement_handles_independent`
 
-批次：【批次 1740】 依赖批次 1739
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

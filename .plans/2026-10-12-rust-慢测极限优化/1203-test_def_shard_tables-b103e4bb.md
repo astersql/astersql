@@ -1,6 +1,8 @@
 # 任务 1203: 优化 `astersql-executor-test-ddl::ddl_test::test_def_shard_tables`
 
-批次：【批次 1203】 依赖批次 1202
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

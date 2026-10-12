@@ -1,6 +1,8 @@
 # 任务 1929: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_mlog_updates_history_and_checkpoint`
 
-批次：【批次 1929】 依赖批次 1928
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

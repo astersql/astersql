@@ -1,6 +1,8 @@
 # 任务 1931: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_respects_dependent_view_read_tso`
 
-批次：【批次 1931】 依赖批次 1930
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

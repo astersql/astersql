@@ -1,6 +1,8 @@
 # 任务 910: 优化 `astersql-executor-test-loadremotetest::util_test::test_load_remote_suite_lifecycle`
 
-批次：【批次 910】 依赖批次 909
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1941: 优化 `astersql-session::runtime::crossks_session_pool_test::go_merge_43_crossks_jobsubmit_session_locks_and_allocates_global_ids`
 
-批次：【批次 1941】 依赖批次 1940
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

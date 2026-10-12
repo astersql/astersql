@@ -1,6 +1,8 @@
 # 任务 632: 优化 `astersql-executor-test-cte::cte_test::test_cte_iteration_memory_tracker_is_released_after_explain_analyze`
 
-批次：【批次 632】 依赖批次 631
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

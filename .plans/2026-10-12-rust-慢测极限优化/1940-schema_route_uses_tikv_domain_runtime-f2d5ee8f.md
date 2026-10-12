@@ -1,6 +1,8 @@
 # 任务 1940: 优化 `astersql-server::http_status_test::schema_route_uses_tikv_domain_runtime`
 
-批次：【批次 1940】 依赖批次 1939
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

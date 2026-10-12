@@ -1,6 +1,8 @@
 # 任务 711: 优化 `astersql-ddl-tests-serial::serial_test::test_flashback_database_uses_real_start_ts_for_queued_drop_schema`
 
-批次：【批次 711】 依赖批次 710
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

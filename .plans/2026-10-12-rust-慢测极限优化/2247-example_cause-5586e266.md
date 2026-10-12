@@ -1,6 +1,8 @@
 # 任务 2247: 优化 `astersql-errors::example_test::example_cause`
 
-批次：【批次 2247】 依赖批次 2246
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

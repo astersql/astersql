@@ -1,6 +1,8 @@
 # 任务 153: 优化 `astersql-tests-realtikvtest-importintotest::detach_test::test_same_behaviour_detached_or_not`
 
-批次：【批次 153】 依赖批次 152
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

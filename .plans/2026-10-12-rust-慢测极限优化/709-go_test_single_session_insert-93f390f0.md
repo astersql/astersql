@@ -1,6 +1,8 @@
 # 任务 709: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_single_session_insert`
 
-批次：【批次 709】 依赖批次 708
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2050: 优化 `astersql-session::runtime::ttl_metadata_test::go_merge_43_ttl_metadata_uses_canonical_table_and_calendar_interval`
 
-批次：【批次 2050】 依赖批次 2049
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

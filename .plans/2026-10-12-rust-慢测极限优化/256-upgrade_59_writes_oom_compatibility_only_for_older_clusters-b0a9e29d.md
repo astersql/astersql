@@ -1,6 +1,8 @@
 # 任务 256: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_59_writes_oom_compatibility_only_for_older_clusters`
 
-批次：【批次 256】 依赖批次 255
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

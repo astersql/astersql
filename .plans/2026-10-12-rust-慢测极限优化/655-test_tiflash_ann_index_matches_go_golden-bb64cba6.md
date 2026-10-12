@@ -1,6 +1,8 @@
 # 任务 655: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_tiflash_ann_index_matches_go_golden`
 
-批次：【批次 655】 依赖批次 654
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

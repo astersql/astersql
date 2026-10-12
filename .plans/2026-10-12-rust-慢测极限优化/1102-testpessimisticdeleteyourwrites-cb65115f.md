@@ -1,6 +1,8 @@
 # 任务 1102: 优化 `astersql-executor-test-writetest::write_test::TestPessimisticDeleteYourWrites`
 
-批次：【批次 1102】 依赖批次 1101
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

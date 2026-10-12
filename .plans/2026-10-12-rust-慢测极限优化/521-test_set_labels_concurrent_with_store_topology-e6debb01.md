@@ -1,6 +1,8 @@
 # 任务 521: 优化 `astersql-server-handler-tests::http_handler_test::test_set_labels_concurrent_with_store_topology`
 
-批次：【批次 521】 依赖批次 520
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

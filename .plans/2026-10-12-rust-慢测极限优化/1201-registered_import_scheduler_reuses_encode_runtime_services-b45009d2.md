@@ -1,6 +1,8 @@
 # 任务 1201: 优化 `astersql-dxf-importinto::scheduler_test::registered_import_scheduler_reuses_encode_runtime_services`
 
-批次：【批次 1201】 依赖批次 1200
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

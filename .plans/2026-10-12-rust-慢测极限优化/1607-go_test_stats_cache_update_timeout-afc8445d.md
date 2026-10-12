@@ -1,6 +1,8 @@
 # 任务 1607: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_stats_cache_update_timeout`
 
-批次：【批次 1607】 依赖批次 1606
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

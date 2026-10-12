@@ -1,6 +1,8 @@
 # 任务 347: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_relinquishes_election_for_other_ddl_types`
 
-批次：【批次 347】 依赖批次 346
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

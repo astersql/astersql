@@ -1,6 +1,8 @@
 # 任务 1159: 优化 `astersql-tests-realtikvtest-addindextest4::partial_index_test::test_validate_column_exists_in_add_index`
 
-批次：【批次 1159】 依赖批次 1158
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

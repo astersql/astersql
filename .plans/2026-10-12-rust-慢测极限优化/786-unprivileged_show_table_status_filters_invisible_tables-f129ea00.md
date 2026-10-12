@@ -1,6 +1,8 @@
 # 任务 786: 优化 `astersql-executor-test-showtest::show_test::unprivileged_show_table_status_filters_invisible_tables`
 
-批次：【批次 786】 依赖批次 785
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

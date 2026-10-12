@@ -1,6 +1,8 @@
 # 任务 1101: 优化 `astersql-session::runtime::normal_ddl_create_table_test::storage_class_config_gates_new_ddl_and_show_without_hiding_existing_data`
 
-批次：【批次 1101】 依赖批次 1100
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

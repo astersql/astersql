@@ -1,6 +1,8 @@
 # 任务 1681: 优化 `astersql-session::runtime_test::query::nested_window_and_scalar_subquery_use_window_evaluation`
 
-批次：【批次 1681】 依赖批次 1680
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

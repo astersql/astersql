@@ -1,6 +1,8 @@
 # 任务 1509: 优化 `astersql-planner-core-issuetest::panicrisk_tier2_test::skew_distinct_aggregate_constant_arguments_keep_values`
 
-批次：【批次 1509】 依赖批次 1508
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

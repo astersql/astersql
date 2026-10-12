@@ -1,6 +1,8 @@
 # 任务 356: 优化 `astersql-tests-realtikvtest-addindextest::add_index_test::test_add_index_on_gb18030_bin`
 
-批次：【批次 356】 依赖批次 355
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

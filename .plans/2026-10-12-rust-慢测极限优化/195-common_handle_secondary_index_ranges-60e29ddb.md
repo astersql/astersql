@@ -1,6 +1,8 @@
 # 任务 195: 优化 `astersql-planner-core-casetest-rule::rule_common_handle_range_test::common_handle_secondary_index_ranges`
 
-批次：【批次 195】 依赖批次 194
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

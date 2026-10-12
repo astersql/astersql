@@ -1,6 +1,8 @@
 # 任务 2000: 优化 `astersql-br-pkg-task::parity_test::go_rust_public_contract_matches`
 
-批次：【批次 2000】 依赖批次 1999
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

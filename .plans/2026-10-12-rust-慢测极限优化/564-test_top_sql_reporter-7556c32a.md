@@ -1,6 +1,8 @@
 # 任务 564: 优化 `astersql-util-topsql::topsql_test::test_top_sql_reporter`
 
-批次：【批次 564】 依赖批次 563
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

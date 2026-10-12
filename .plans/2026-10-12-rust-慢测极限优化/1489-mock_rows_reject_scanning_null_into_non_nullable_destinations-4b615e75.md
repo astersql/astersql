@@ -1,6 +1,8 @@
 # 任务 1489: 优化 `astersql-testkit::db_driver_test::mock_rows_reject_scanning_null_into_non_nullable_destinations`
 
-批次：【批次 1489】 依赖批次 1488
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

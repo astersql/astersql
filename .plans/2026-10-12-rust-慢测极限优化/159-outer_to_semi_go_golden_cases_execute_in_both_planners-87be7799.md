@@ -1,6 +1,8 @@
 # 任务 159: 优化 `astersql-planner-core-casetest-rule::rule_outer_to_semi_join_test::outer_to_semi_go_golden_cases_execute_in_both_planners`
 
-批次：【批次 159】 依赖批次 158
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

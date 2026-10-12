@@ -1,6 +1,8 @@
 # 任务 324: 优化 `astersql-privilege-privileges-ldap::ldap_common_test::tests::TestConnectThrough636`
 
-批次：【批次 324】 依赖批次 323
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2059: 优化 `astersql-session::dml_runtime_test::go_merge_49_create_mlog_purge_schedule_metadata`
 
-批次：【批次 2059】 依赖批次 2058
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

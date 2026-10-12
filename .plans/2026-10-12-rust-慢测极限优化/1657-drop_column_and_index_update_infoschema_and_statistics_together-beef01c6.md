@@ -1,6 +1,8 @@
 # 任务 1657: 优化 `astersql-testkit::mockstore_domain_ddl_test::drop_column_and_index_update_infoschema_and_statistics_together`
 
-批次：【批次 1657】 依赖批次 1656
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

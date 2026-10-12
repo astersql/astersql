@@ -1,6 +1,8 @@
 # 任务 808: 优化 `astersql-server::pg_catalog_test::catalog_database_description_semantics`
 
-批次：【批次 808】 依赖批次 807
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

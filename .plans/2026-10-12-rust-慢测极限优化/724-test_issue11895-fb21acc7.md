@@ -1,6 +1,8 @@
 # 任务 724: 优化 `astersql-executor-test-jointest::join_test::test_issue11895`
 
-批次：【批次 724】 依赖批次 723
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

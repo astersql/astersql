@@ -1,6 +1,8 @@
 # 任务 1928: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_add_index_show_analyze_progress`
 
-批次：【批次 1928】 依赖批次 1927
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

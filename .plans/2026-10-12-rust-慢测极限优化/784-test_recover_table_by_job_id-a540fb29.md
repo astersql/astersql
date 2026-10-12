@@ -1,6 +1,8 @@
 # 任务 784: 优化 `astersql-ddl-tests-serial::serial_test::test_recover_table_by_job_id`
 
-批次：【批次 784】 依赖批次 783
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

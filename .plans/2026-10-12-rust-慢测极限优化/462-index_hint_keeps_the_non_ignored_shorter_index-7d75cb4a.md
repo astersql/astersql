@@ -1,6 +1,8 @@
 # 任务 462: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::index_hint_keeps_the_non_ignored_shorter_index`
 
-批次：【批次 462】 依赖批次 461
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

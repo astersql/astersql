@@ -1,6 +1,8 @@
 # 任务 2216: 优化 `astersql-importsdk::sdk_test::sdk_scan_limitation_caps_discovered_files`
 
-批次：【批次 2216】 依赖批次 2215
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

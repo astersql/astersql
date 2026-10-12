@@ -1,6 +1,8 @@
 # 任务 1077: 优化 `astersql-planner-core-casetest-tpch::tpch_test::test_tpch_schema_matches_go_helpers`
 
-批次：【批次 1077】 依赖批次 1076
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

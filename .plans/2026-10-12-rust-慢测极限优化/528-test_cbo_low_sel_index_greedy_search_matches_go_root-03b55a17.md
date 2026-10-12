@@ -1,6 +1,8 @@
 # 任务 528: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_low_sel_index_greedy_search_matches_go_root`
 
-批次：【批次 528】 依赖批次 527
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

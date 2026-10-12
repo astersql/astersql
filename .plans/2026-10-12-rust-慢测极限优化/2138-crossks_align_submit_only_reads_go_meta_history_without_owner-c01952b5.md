@@ -1,6 +1,8 @@
 # 任务 2138: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_reads_go_meta_history_without_owner`
 
-批次：【批次 2138】 依赖批次 2137
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

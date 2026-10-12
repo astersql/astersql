@@ -1,6 +1,8 @@
 # 任务 2266: 优化 `astersql-br-pkg-restore-split::split_test::test_regions_not_fully_scatter`
 
-批次：【批次 2266】 依赖批次 2265
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

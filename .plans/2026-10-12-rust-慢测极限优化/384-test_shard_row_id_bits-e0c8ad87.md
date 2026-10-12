@@ -1,6 +1,8 @@
 # 任务 384: 优化 `astersql-executor-test-ddl::ddl_test::test_shard_row_id_bits`
 
-批次：【批次 384】 依赖批次 383
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

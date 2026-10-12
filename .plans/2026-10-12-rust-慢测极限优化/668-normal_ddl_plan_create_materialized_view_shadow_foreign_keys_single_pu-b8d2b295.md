@@ -1,6 +1,8 @@
 # 任务 668: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_shadow_test::normal_ddl_plan_create_materialized_view_shadow_foreign_keys_single_public_step`
 
-批次：【批次 668】 依赖批次 667
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 251: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared_insert`
 
-批次：【批次 251】 依赖批次 250
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

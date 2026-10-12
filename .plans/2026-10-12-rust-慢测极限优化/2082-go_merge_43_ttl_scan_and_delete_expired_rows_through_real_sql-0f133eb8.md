@@ -1,6 +1,8 @@
 # 任务 2082: 优化 `astersql-session::runtime::ttl_worker_session_test::go_merge_43_ttl_scan_and_delete_expired_rows_through_real_sql`
 
-批次：【批次 2082】 依赖批次 2081
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

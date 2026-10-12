@@ -1,6 +1,8 @@
 # 任务 974: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_single_sample_scales_topn_count`
 
-批次：【批次 974】 依赖批次 973
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

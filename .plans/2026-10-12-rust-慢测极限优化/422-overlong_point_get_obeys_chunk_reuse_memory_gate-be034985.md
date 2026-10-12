@@ -1,6 +1,8 @@
 # 任务 422: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::overlong_point_get_obeys_chunk_reuse_memory_gate`
 
-批次：【批次 422】 依赖批次 421
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

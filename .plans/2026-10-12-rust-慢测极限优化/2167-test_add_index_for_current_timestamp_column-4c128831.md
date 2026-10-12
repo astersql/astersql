@@ -1,6 +1,8 @@
 # 任务 2167: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_for_current_timestamp_column`
 
-批次：【批次 2167】 依赖批次 2166
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

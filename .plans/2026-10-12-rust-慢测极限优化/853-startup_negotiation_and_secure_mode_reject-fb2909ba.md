@@ -1,6 +1,8 @@
 # 任务 853: 优化 `astersql-server::pg_conn_test::startup_negotiation_and_secure_mode_reject`
 
-批次：【批次 853】 依赖批次 852
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

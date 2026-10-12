@@ -1,6 +1,8 @@
 # 任务 748: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_selection_replans_when_parameter_shape_changes`
 
-批次：【批次 748】 依赖批次 747
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

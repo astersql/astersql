@@ -1,6 +1,8 @@
 # 任务 1234: 优化 `astersql-session-test-common::common_test::affected_rows_reflect_matched_and_unchanged_updates`
 
-批次：【批次 1234】 依赖批次 1233
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

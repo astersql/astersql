@@ -1,6 +1,8 @@
 # 任务 147: 优化 `astersql-util-chunk::row_in_disk_test::TestDataInDiskByRowsWithChecksumAndEncrypt2`
 
-批次：【批次 147】 依赖批次 146
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 794: 优化 `astersql-executor-test-showtest::show_test::show_visibility_tracks_database_and_table_privileges`
 
-批次：【批次 794】 依赖批次 793
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

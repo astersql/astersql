@@ -1,6 +1,8 @@
 # 任务 605: 优化 `astersql-tests-realtikvtest-sessiontest::paging_test::test_index_reader_with_paging`
 
-批次：【批次 605】 依赖批次 604
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

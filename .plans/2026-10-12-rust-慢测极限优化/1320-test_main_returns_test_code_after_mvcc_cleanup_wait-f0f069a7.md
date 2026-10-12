@@ -1,6 +1,8 @@
 # 任务 1320: 优化 `astersql-store-copr::main_test::test_main_returns_test_code_after_mvcc_cleanup_wait`
 
-批次：【批次 1320】 依赖批次 1319
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

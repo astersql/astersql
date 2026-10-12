@@ -1,6 +1,8 @@
 # 任务 177: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_batch_point_get_partition_for_access_object`
 
-批次：【批次 177】 依赖批次 176
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

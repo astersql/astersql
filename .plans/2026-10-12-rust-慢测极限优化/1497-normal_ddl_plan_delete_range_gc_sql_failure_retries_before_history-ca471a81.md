@@ -1,6 +1,8 @@
 # 任务 1497: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_delete_range_gc_sql_failure_retries_before_history`
 
-批次：【批次 1497】 依赖批次 1496
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

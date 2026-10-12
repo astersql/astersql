@@ -1,6 +1,8 @@
 # 任务 1844: 优化 `astersql-server-handler-tests::dxf_test::cleanup_query_drains_real_finished_tasks_in_batches`
 
-批次：【批次 1844】 依赖批次 1843
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1753: 优化 `astersql-server::conn_stmt_test::worker_releases_domain_when_context_is_dropped`
 
-批次：【批次 1753】 依赖批次 1752
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 710: 优化 `astersql-ddl-tests-partition::multi_domain_part1_aster_unit_test::clients_share_real_partition_ddl_catalog_updates`
 
-批次：【批次 710】 依赖批次 709
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

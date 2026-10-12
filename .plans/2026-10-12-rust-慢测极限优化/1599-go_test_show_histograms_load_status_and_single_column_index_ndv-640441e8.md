@@ -1,6 +1,8 @@
 # 任务 1599: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_show_histograms_load_status_and_single_column_index_ndv`
 
-批次：【批次 1599】 依赖批次 1598
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

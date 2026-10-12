@@ -1,6 +1,8 @@
 # 任务 1905: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_transport_failure_closes_owned_store_before_registration`
 
-批次：【批次 1905】 依赖批次 1904
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

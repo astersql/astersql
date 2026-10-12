@@ -1,6 +1,8 @@
 # 任务 678: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_dynamic_merge_includes_all_rows`
 
-批次：【批次 678】 依赖批次 677
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

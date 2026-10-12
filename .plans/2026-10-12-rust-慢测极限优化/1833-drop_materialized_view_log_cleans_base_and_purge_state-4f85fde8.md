@@ -1,6 +1,8 @@
 # 任务 1833: 优化 `astersql-session::runtime::normal_ddl_drop_materialized_view_test::drop_materialized_view_log_cleans_base_and_purge_state`
 
-批次：【批次 1833】 依赖批次 1832
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

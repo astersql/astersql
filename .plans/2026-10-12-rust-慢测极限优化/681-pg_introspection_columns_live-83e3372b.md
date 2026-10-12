@@ -1,6 +1,8 @@
 # 任务 681: 优化 `astersql-server::pg_catalog_test::pg_introspection_columns_live`
 
-批次：【批次 681】 依赖批次 680
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

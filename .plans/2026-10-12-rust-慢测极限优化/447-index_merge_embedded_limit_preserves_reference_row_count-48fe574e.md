@@ -1,6 +1,8 @@
 # 任务 447: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_embedded_limit_preserves_reference_row_count`
 
-批次：【批次 447】 依赖批次 446
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

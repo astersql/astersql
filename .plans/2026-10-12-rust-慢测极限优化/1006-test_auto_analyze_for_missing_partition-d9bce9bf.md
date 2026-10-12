@@ -1,6 +1,8 @@
 # 任务 1006: 优化 `astersql-planner-core-tests-analyze::analyze_test::test_auto_analyze_for_missing_partition`
 
-批次：【批次 1006】 依赖批次 1005
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

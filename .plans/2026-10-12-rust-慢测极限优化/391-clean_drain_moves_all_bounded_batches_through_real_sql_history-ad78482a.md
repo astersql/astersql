@@ -1,6 +1,8 @@
 # 任务 391: 优化 `astersql-dxf-importinto::clean_up_test::clean_drain_moves_all_bounded_batches_through_real_sql_history`
 
-批次：【批次 391】 依赖批次 390
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

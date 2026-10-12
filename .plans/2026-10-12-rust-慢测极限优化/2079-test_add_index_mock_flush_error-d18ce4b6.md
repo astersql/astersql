@@ -1,6 +1,8 @@
 # 任务 2079: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_mock_flush_error`
 
-批次：【批次 2079】 依赖批次 2078
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

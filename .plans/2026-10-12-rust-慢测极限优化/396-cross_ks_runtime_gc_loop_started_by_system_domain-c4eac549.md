@@ -1,6 +1,8 @@
 # 任务 396: 优化 `astersql-tests-realtikvtest-sessiontest::cross_ks_gc_test::cross_ks_runtime_gc_loop_started_by_system_domain`
 
-批次：【批次 396】 依赖批次 395
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 200: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_decimal_tables_preserve_precision_and_scale`
 
-批次：【批次 200】 依赖批次 199
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

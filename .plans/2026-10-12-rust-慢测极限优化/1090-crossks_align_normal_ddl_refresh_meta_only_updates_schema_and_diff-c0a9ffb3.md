@@ -1,6 +1,8 @@
 # 任务 1090: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_refresh_meta_only_updates_schema_and_diff`
 
-批次：【批次 1090】 依赖批次 1089
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

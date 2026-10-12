@@ -1,6 +1,8 @@
 # 任务 1539: 优化 `astersql-ddl-tests-serial::serial_test::test_truncate_table_update_schema_version_err`
 
-批次：【批次 1539】 依赖批次 1538
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1164: 优化 `astersql-session-test::session_test::issue_60266_no_backslash_escapes_matches_go`
 
-批次：【批次 1164】 依赖批次 1163
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

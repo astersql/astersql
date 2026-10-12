@@ -1,6 +1,8 @@
 # 任务 751: 优化 `astersql-executor-test-loadremotetest::one_csv_test::test_multi_value_index_and_user_variables_contract`
 
-批次：【批次 751】 依赖批次 750
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

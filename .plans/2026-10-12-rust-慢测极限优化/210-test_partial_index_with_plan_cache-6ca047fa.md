@@ -1,6 +1,8 @@
 # 任务 210: 优化 `astersql-planner-core-casetest-index::index_test::test_partial_index_with_plan_cache`
 
-批次：【批次 210】 依赖批次 209
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

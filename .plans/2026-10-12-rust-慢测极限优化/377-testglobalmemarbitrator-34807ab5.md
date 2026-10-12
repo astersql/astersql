@@ -1,6 +1,8 @@
 # 任务 377: 优化 `astersql-executor-test-memtest::mem_test::TestGlobalMemArbitrator`
 
-批次：【批次 377】 依赖批次 376
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

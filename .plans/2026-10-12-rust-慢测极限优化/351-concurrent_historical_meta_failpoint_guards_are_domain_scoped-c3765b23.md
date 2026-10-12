@@ -1,6 +1,8 @@
 # 任务 351: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::concurrent_historical_meta_failpoint_guards_are_domain_scoped`
 
-批次：【批次 351】 依赖批次 350
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

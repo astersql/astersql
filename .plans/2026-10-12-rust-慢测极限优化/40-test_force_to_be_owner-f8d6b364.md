@@ -1,6 +1,8 @@
 # 任务 40: 优化 `astersql-owner::manager_test::test_force_to_be_owner`
 
-批次：【批次 40】 依赖批次 39
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

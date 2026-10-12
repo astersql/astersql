@@ -1,6 +1,8 @@
 # 任务 2218: 优化 `astersql-table::go_merge_49_test::go_merge_49_validates_log_metadata_and_tracked_offsets`
 
-批次：【批次 2218】 依赖批次 2217
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

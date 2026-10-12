@@ -1,6 +1,8 @@
 # 任务 889: 优化 `astersql-tests-readonlytest::readonly_test::test_restriction_with_connection_pool`
 
-批次：【批次 889】 依赖批次 888
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

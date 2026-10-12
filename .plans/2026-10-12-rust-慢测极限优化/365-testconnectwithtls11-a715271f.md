@@ -1,6 +1,8 @@
 # 任务 365: 优化 `astersql-privilege-privileges-ldap::ldap_common_test::tests::TestConnectWithTLS11`
 
-批次：【批次 365】 依赖批次 364
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

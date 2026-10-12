@@ -1,6 +1,8 @@
 # 任务 657: 优化 `astersql-executor-test-tiflashtest::tiflash_test::tiflash_replica_rejects_gbk_table_with_go_error`
 
-批次：【批次 657】 依赖批次 656
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1733: 优化 `astersql-session::runtime_statistics_test::analyze_default_resets_saved_table_and_partition_options`
 
-批次：【批次 1733】 依赖批次 1732
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 929: 优化 `astersql-br-pkg-gc::safepoint_test::test_keyspace_safepoint_keeper`
 
-批次：【批次 929】 依赖批次 928
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

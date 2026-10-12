@@ -1,6 +1,8 @@
 # 任务 2053: 优化 `astersql-tests-realtikvtest-ddltest::ddl_test::test_update_self_version_fail`
 
-批次：【批次 2053】 依赖批次 2052
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

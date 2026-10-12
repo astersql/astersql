@@ -1,6 +1,8 @@
 # 任务 1233: 优化 `astersql-server::mysql_protocol_stress_test::malformed_connections_are_isolated_from_following_ping_and_select`
 
-批次：【批次 1233】 依赖批次 1232
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2169: 优化 `astersql-util-extsort::disk_sorter_test::test_sst_reader_pool_parallel`
 
-批次：【批次 2169】 依赖批次 2168
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

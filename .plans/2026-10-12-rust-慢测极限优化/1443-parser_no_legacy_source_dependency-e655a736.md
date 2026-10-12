@@ -1,6 +1,8 @@
 # 任务 1443: 优化 `astersql-parser::parser_no_legacy_dependency_aster_unit_test::parser_no_legacy_source_dependency`
 
-批次：【批次 1443】 依赖批次 1442
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

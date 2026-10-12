@@ -1,6 +1,8 @@
 # 任务 468: 优化 `astersql-dxf-framework-handle::handle_test::test_handle`
 
-批次：【批次 468】 依赖批次 467
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

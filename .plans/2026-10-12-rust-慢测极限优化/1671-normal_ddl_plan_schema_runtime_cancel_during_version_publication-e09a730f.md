@@ -1,6 +1,8 @@
 # 任务 1671: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_schema_runtime_cancel_during_version_publication`
 
-批次：【批次 1671】 依赖批次 1670
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

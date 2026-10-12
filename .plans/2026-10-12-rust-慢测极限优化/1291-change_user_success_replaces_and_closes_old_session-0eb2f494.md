@@ -1,6 +1,8 @@
 # 任务 1291: 优化 `astersql-server::conn_test::change_user_success_replaces_and_closes_old_session`
 
-批次：【批次 1291】 依赖批次 1290
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

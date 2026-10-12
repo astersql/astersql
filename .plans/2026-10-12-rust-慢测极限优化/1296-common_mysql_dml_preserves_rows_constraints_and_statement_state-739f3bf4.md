@@ -1,6 +1,8 @@
 # 任务 1296: 优化 `astersql-session::mysql_dml_compat_test::common_mysql_dml_preserves_rows_constraints_and_statement_state`
 
-批次：【批次 1296】 依赖批次 1295
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

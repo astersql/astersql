@@ -1,6 +1,8 @@
 # 任务 1857: 优化 `astersql-session::runtime::normal_ddl_index_reorg_initialization_test::initialization_fences_replacement_owner`
 
-批次：【批次 1857】 依赖批次 1856
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

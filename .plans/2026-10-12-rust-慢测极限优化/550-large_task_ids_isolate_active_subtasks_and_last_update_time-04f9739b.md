@@ -1,6 +1,8 @@
 # 任务 550: 优化 `astersql-dxf-importinto::job_testkit_test::large_task_ids_isolate_active_subtasks_and_last_update_time`
 
-批次：【批次 550】 依赖批次 549
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

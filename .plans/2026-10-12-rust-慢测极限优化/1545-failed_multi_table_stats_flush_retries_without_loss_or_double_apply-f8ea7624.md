@@ -1,6 +1,8 @@
 # 任务 1545: 优化 `astersql-testkit::mockstore_domain_stats_test::failed_multi_table_stats_flush_retries_without_loss_or_double_apply`
 
-批次：【批次 1545】 依赖批次 1544
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

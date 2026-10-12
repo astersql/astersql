@@ -1,6 +1,8 @@
 # 任务 1086: 优化 `astersql-session::runtime_pessimistic_test::explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info`
 
-批次：【批次 1086】 依赖批次 1085
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

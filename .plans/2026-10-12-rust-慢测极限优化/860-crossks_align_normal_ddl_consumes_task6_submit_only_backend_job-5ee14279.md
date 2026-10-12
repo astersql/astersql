@@ -1,6 +1,8 @@
 # 任务 860: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_consumes_task6_submit_only_backend_job`
 
-批次：【批次 860】 依赖批次 859
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

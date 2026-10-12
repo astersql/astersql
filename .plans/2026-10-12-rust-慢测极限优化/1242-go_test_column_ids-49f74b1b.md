@@ -1,6 +1,8 @@
 # 任务 1242: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_column_ids`
 
-批次：【批次 1242】 依赖批次 1241
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

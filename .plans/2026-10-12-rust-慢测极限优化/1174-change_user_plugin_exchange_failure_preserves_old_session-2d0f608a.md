@@ -1,6 +1,8 @@
 # 任务 1174: 优化 `astersql-server::conn_test::change_user_plugin_exchange_failure_preserves_old_session`
 
-批次：【批次 1174】 依赖批次 1173
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

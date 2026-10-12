@@ -1,6 +1,8 @@
 # 任务 1191: 优化 `astersql-owner::manager_1_aster_unit_test::mock_managers_compete_resign_and_notify_like_go`
 
-批次：【批次 1191】 依赖批次 1190
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

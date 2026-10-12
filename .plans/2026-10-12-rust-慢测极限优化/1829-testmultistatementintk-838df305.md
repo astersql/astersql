@@ -1,6 +1,8 @@
 # 任务 1829: 优化 `astersql-testkit::testkit_test::TestMultiStatementInTk`
 
-批次：【批次 1829】 依赖批次 1828
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

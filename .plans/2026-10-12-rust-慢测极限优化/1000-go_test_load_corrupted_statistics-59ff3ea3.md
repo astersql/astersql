@@ -1,6 +1,8 @@
 # 任务 1000: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_corrupted_statistics`
 
-批次：【批次 1000】 依赖批次 999
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

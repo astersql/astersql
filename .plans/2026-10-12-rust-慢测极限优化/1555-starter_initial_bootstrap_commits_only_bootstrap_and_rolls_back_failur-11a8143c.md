@@ -1,6 +1,8 @@
 # 任务 1555: 优化 `astersql-session::starter_bootstrap_file_test::starter_initial_bootstrap_commits_only_bootstrap_and_rolls_back_failure`
 
-批次：【批次 1555】 依赖批次 1554
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 778: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_clustered_primary_builds_buckets_without_topn`
 
-批次：【批次 778】 依赖批次 777
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

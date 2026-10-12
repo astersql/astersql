@@ -1,6 +1,8 @@
 # 任务 1097: 优化 `astersql-server-tests::tidb_serial_test::test_load_data_auto_random_with_special_term`
 
-批次：【批次 1097】 依赖批次 1096
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

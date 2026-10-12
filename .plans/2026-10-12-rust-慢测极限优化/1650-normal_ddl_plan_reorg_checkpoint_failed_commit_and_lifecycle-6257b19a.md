@@ -1,6 +1,8 @@
 # 任务 1650: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_reorg_checkpoint_failed_commit_and_lifecycle`
 
-批次：【批次 1650】 依赖批次 1649
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

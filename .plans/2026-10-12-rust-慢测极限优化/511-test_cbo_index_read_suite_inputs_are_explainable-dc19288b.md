@@ -1,6 +1,8 @@
 # 任务 511: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_read_suite_inputs_are_explainable`
 
-批次：【批次 511】 依赖批次 510
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

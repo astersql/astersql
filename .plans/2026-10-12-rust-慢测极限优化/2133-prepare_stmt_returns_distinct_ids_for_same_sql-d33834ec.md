@@ -1,6 +1,8 @@
 # 任务 2133: 优化 `astersql-session-test-common::prepare_dedup_cache_test::prepare_stmt_returns_distinct_ids_for_same_sql`
 
-批次：【批次 2133】 依赖批次 2132
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

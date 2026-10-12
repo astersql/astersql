@@ -1,6 +1,8 @@
 # 任务 193: 优化 `astersql-planner-core-casetest-correlated::correlated_test::test_correlated_subquery`
 
-批次：【批次 193】 依赖批次 192
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

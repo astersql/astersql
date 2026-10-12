@@ -1,6 +1,8 @@
 # 任务 2168: 优化 `astersql-session::dml_runtime_test::go_merge_49_create_mlog_truncates_long_physical_name`
 
-批次：【批次 2168】 依赖批次 2167
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

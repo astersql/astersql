@@ -1,6 +1,8 @@
 # 任务 1080: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_load_timeout_and_pseudo_fallback`
 
-批次：【批次 1080】 依赖批次 1079
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

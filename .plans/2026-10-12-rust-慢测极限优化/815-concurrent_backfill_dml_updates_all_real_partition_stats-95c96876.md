@@ -1,6 +1,8 @@
 # 任务 815: 优化 `astersql-ddl-tests-partition::multi_domain_part3_aster_unit_test::concurrent_backfill_dml_updates_all_real_partition_stats`
 
-批次：【批次 815】 依赖批次 814
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

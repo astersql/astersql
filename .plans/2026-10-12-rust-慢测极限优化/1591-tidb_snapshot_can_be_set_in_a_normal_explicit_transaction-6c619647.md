@@ -1,6 +1,8 @@
 # 任务 1591: 优化 `astersql-session::runtime_test::ddl::tidb_snapshot_can_be_set_in_a_normal_explicit_transaction`
 
-批次：【批次 1591】 依赖批次 1590
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

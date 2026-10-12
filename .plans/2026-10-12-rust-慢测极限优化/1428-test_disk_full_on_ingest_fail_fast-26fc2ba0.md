@@ -1,6 +1,8 @@
 # 任务 1428: 优化 `astersql-tests-realtikvtest-importintotest2::from_select_test::test_disk_full_on_ingest_fail_fast`
 
-批次：【批次 1428】 依赖批次 1427
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1088: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_shadow_test::normal_ddl_plan_create_materialized_view_shadow_validates_source`
 
-批次：【批次 1088】 依赖批次 1087
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

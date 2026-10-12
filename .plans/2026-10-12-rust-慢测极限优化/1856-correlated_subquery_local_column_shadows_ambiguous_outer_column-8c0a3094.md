@@ -1,6 +1,8 @@
 # 任务 1856: 优化 `astersql-session::mysql_relational_query_compat_test::correlated_subquery_local_column_shadows_ambiguous_outer_column`
 
-批次：【批次 1856】 依赖批次 1855
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

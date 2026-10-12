@@ -1,6 +1,8 @@
 # 任务 1193: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_connector_j_discovers_complete_table_metadata`
 
-批次：【批次 1193】 依赖批次 1192
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

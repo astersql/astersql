@@ -1,6 +1,8 @@
 # 任务 491: 优化 `astersql-server::conn_stmt_test::text_metadata_and_eof_failures_are_accounted`
 
-批次：【批次 491】 依赖批次 490
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

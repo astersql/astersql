@@ -1,6 +1,8 @@
 # 任务 1163: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_rejects_none_states_atomically`
 
-批次：【批次 1163】 依赖批次 1162
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

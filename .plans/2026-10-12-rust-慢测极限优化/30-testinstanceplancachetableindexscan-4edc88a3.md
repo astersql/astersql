@@ -1,6 +1,8 @@
 # 任务 30: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheTableIndexScan`
 
-批次：【批次 30】 依赖批次 29
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 471: 优化 `astersql-server::pg_catalog_query_test::pg_introspection_oid_live_casts`
 
-批次：【批次 471】 依赖批次 470
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

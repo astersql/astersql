@@ -1,6 +1,8 @@
 # 任务 1946: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_p4_lost_update`
 
-批次：【批次 1946】 依赖批次 1945
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

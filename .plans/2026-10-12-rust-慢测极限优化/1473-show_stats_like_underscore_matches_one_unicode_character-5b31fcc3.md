@@ -1,6 +1,8 @@
 # 任务 1473: 优化 `astersql-session::runtime_statistics_test::show_stats_like_underscore_matches_one_unicode_character`
 
-批次：【批次 1473】 依赖批次 1472
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

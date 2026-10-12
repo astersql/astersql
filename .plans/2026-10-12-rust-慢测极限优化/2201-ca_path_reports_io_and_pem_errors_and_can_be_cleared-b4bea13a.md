@@ -1,6 +1,8 @@
 # 任务 2201: 优化 `astersql-privilege-privileges-ldap::migration_aster_unit_test::tests::ca_path_reports_io_and_pem_errors_and_can_be_cleared`
 
-批次：【批次 2201】 依赖批次 2200
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

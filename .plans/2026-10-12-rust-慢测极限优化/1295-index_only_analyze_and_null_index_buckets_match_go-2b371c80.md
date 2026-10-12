@@ -1,6 +1,8 @@
 # 任务 1295: 优化 `astersql-testkit::stats_runtime_aster_unit_test::index_only_analyze_and_null_index_buckets_match_go`
 
-批次：【批次 1295】 依赖批次 1294
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

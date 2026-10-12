@@ -1,6 +1,8 @@
 # 任务 1751: 优化 `astersql-session-test-temporarytabletest::temporary_table_test::local_temporary_table_update_commits_session_local_rows`
 
-批次：【批次 1751】 依赖批次 1750
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

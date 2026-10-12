@@ -1,6 +1,8 @@
 # 任务 1918: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_plan_replayer_with_multi_foreign_key`
 
-批次：【批次 1918】 依赖批次 1917
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1565: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_1_name_collision`
 
-批次：【批次 1565】 依赖批次 1564
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

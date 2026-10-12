@@ -1,6 +1,8 @@
 # 任务 1812: 优化 `astersql-session::runtime::scan_adapter_runtime_test::adapter_real_fk_trigger_error_restores_parent_delete_and_keeps_transaction_active`
 
-批次：【批次 1812】 依赖批次 1811
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1996: 优化 `astersql-session::mysql_relational_query_compat_test::grouped_projection_preserves_declared_identifier_case`
 
-批次：【批次 1996】 依赖批次 1995
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

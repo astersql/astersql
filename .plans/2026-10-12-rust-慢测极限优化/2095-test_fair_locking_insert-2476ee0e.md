@@ -1,6 +1,8 @@
 # 任务 2095: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_fair_locking_insert`
 
-批次：【批次 2095】 依赖批次 2094
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

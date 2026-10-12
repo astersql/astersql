@@ -1,6 +1,8 @@
 # 任务 1742: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_transaction_context_statement_cleanup_and_boundaries`
 
-批次：【批次 1742】 依赖批次 1741
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

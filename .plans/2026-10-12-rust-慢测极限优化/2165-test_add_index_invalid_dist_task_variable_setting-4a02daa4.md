@@ -1,6 +1,8 @@
 # 任务 2165: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_invalid_dist_task_variable_setting`
 
-批次：【批次 2165】 依赖批次 2164
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

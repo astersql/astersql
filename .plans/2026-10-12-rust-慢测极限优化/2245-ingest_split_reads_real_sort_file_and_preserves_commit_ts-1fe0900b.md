@@ -1,6 +1,8 @@
 # 任务 2245: 优化 `astersql-dxf-importinto::planner_test::ingest_split_reads_real_sort_file_and_preserves_commit_ts`
 
-批次：【批次 2245】 依赖批次 2244
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

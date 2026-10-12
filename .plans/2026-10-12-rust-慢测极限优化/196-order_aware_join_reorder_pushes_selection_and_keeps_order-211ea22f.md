@@ -1,6 +1,8 @@
 # 任务 196: 优化 `astersql-planner-core-casetest-rule::rule_cdc_join_reorder_test::order_aware_join_reorder_pushes_selection_and_keeps_order`
 
-批次：【批次 196】 依赖批次 195
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

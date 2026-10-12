@@ -1,6 +1,8 @@
 # 任务 753: 优化 `astersql-ddl-tests-partition::db_partition_test::creates_hash_partitions_and_updates_every_physical_partition`
 
-批次：【批次 753】 依赖批次 752
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

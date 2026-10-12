@@ -1,6 +1,8 @@
 # 任务 1069: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_invisible_explicit_and_implicit_primary`
 
-批次：【批次 1069】 依赖批次 1068
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

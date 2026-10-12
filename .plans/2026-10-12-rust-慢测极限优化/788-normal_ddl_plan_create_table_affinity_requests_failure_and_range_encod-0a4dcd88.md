@@ -1,6 +1,8 @@
 # 任务 788: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_affinity_requests_failure_and_range_encoding`
 
-批次：【批次 788】 依赖批次 787
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

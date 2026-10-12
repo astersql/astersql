@@ -1,6 +1,8 @@
 # 任务 594: 优化 `astersql-executor-test-cte::cte_test::test_cte_issue_49096_executes_insert_select_without_deadlock`
 
-批次：【批次 594】 依赖批次 593
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

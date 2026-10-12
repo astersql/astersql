@@ -1,6 +1,8 @@
 # 任务 1936: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_canceled_scan_preserves_durable_job`
 
-批次：【批次 1936】 依赖批次 1935
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

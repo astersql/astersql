@@ -1,6 +1,8 @@
 # 任务 1854: 优化 `astersql-session::load_data_runtime_test::local_infile_reads_client_file_but_server_infile_is_rejected`
 
-批次：【批次 1854】 依赖批次 1853
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

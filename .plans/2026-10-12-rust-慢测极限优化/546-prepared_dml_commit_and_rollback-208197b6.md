@@ -1,6 +1,8 @@
 # 任务 546: 优化 `astersql-server::pg_transaction_test::prepared_dml_commit_and_rollback`
 
-批次：【批次 546】 依赖批次 545
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

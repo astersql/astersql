@@ -1,6 +1,8 @@
 # 任务 289: 优化 `astersql-planner-core-casetest-parallelapply::parallel_apply_test::test_parallel_apply_warnning`
 
-批次：【批次 289】 依赖批次 288
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

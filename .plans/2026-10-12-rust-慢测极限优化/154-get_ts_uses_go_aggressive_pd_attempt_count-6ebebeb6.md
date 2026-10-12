@@ -1,6 +1,8 @@
 # 任务 154: 优化 `astersql-br-pkg-checkpoint::external_storage_test::get_ts_uses_go_aggressive_pd_attempt_count`
 
-批次：【批次 154】 依赖批次 153
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2172: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_cluster_table_send_error`
 
-批次：【批次 2172】 依赖批次 2171
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

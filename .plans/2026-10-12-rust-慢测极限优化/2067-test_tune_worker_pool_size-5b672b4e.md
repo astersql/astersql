@@ -1,6 +1,8 @@
 # 任务 2067: 优化 `astersql-tests-realtikvtest-addindextest3::operator_test::test_tune_worker_pool_size`
 
-批次：【批次 2067】 依赖批次 2066
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

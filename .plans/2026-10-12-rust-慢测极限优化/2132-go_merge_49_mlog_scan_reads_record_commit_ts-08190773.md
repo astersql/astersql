@@ -1,6 +1,8 @@
 # 任务 2132: 优化 `astersql-session::dml_runtime_test::go_merge_49_mlog_scan_reads_record_commit_ts`
 
-批次：【批次 2132】 依赖批次 2131
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

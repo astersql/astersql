@@ -1,6 +1,8 @@
 # 任务 186: 优化 `astersql-objstore::gcs_test::test_speed_read_many_files`
 
-批次：【批次 186】 依赖批次 185
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

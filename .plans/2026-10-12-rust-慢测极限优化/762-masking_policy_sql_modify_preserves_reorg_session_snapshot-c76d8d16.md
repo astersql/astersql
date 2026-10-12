@@ -1,6 +1,8 @@
 # 任务 762: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_modify_preserves_reorg_session_snapshot`
 
-批次：【批次 762】 依赖批次 761
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

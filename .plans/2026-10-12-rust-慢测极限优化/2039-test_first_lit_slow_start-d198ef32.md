@@ -1,6 +1,8 @@
 # 任务 2039: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_first_lit_slow_start`
 
-批次：【批次 2039】 依赖批次 2038
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

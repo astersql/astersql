@@ -1,6 +1,8 @@
 # 任务 1647: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_prepare_cache_rebuilds_after_schema_change`
 
-批次：【批次 1647】 依赖批次 1646
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

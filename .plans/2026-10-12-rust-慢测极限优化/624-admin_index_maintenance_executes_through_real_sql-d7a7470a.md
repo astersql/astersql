@@ -1,6 +1,8 @@
 # 任务 624: 优化 `astersql-executor-test-admintest::admin_test::admin_index_maintenance_executes_through_real_sql`
 
-批次：【批次 624】 依赖批次 623
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 714: 优化 `astersql-ddl-tests-partition::reorg_partition_test::reorg_partition_backfills_only_nonclustered_primary_index_entries`
 
-批次：【批次 714】 依赖批次 713
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2087: 优化 `astersql-tests-realtikvtest-addindextest4::partial_index_test::test_partial_index_requires_fast_reorg`
 
-批次：【批次 2087】 依赖批次 2086
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

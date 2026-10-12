@@ -1,6 +1,8 @@
 # 任务 435: 优化 `astersql-ddl-tests-partition::db_partition_test::invalid_partition_definition_rolls_back_without_catalog_residue`
 
-批次：【批次 435】 依赖批次 434
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

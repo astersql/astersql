@@ -1,6 +1,8 @@
 # 任务 1937: 优化 `astersql-testkit::mockstore_domain_stats_test::history_gc_retains_rows_newer_than_the_retention_cutoff`
 
-批次：【批次 1937】 依赖批次 1936
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

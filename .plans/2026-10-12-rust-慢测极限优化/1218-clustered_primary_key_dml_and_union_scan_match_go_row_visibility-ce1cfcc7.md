@@ -1,6 +1,8 @@
 # 任务 1218: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::clustered_primary_key_dml_and_union_scan_match_go_row_visibility`
 
-批次：【批次 1218】 依赖批次 1217
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

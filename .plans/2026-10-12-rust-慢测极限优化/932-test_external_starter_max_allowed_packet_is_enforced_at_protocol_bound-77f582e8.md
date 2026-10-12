@@ -1,6 +1,8 @@
 # 任务 932: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_max_allowed_packet_is_enforced_at_protocol_boundary`
 
-批次：【批次 932】 依赖批次 931
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

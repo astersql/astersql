@@ -1,6 +1,8 @@
 # 任务 895: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_job_status_records_completed_job`
 
-批次：【批次 895】 依赖批次 894
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

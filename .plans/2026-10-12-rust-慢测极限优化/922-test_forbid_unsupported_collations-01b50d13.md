@@ -1,6 +1,8 @@
 # 任务 922: 优化 `astersql-ddl-tests-serial::serial_test::test_forbid_unsupported_collations`
 
-批次：【批次 922】 依赖批次 921
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

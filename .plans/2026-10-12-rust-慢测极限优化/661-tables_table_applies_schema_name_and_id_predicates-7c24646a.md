@@ -1,6 +1,8 @@
 # 任务 661: 优化 `astersql-executor-test-infoschema::infoschema_test::tables_table_applies_schema_name_and_id_predicates`
 
-批次：【批次 661】 依赖批次 660
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

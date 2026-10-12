@@ -1,6 +1,8 @@
 # 任务 1862: 优化 `astersql-session::runtime_pessimistic_test::locking_read_merges_latest_commits_with_local_insert_update_and_delete`
 
-批次：【批次 1862】 依赖批次 1861
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

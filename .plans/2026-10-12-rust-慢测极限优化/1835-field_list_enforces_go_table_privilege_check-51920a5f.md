@@ -1,6 +1,8 @@
 # 任务 1835: 优化 `astersql-session::runtime_system_query_test::field_list_enforces_go_table_privilege_check`
 
-批次：【批次 1835】 依赖批次 1834
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1071: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_long_json_column_preserves_size_without_histogram_payload`
 
-批次：【批次 1071】 依赖批次 1070
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

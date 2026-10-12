@@ -1,6 +1,8 @@
 # 任务 741: 优化 `astersql-executor-test-infoschema::infoschema_test::show_columns_from_subquery_view_returns_view_metadata`
 
-批次：【批次 741】 依赖批次 740
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 650: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_global_snapshot_setting_is_observed`
 
-批次：【批次 650】 依赖批次 649
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

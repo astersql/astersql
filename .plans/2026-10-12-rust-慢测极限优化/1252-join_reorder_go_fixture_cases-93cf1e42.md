@@ -1,6 +1,8 @@
 # 任务 1252: 优化 `astersql-planner-core-casetest-rule::rule_join_reorder_test::join_reorder_go_fixture_cases`
 
-批次：【批次 1252】 依赖批次 1251
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

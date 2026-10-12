@@ -1,6 +1,8 @@
 # 任务 880: 优化 `astersql-executor::explain_test::explain_select_uses_live_catalog_and_flushed_row_count`
 
-批次：【批次 880】 依赖批次 879
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

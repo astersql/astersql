@@ -1,6 +1,8 @@
 # 任务 744: 优化 `astersql-util-topsql::topsql_test::test_top_sql_cpu_profile`
 
-批次：【批次 744】 依赖批次 743
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

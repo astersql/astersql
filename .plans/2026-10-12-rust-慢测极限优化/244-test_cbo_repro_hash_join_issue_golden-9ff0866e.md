@@ -1,6 +1,8 @@
 # 任务 244: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_repro_hash_join_issue_golden`
 
-批次：【批次 244】 依赖批次 243
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

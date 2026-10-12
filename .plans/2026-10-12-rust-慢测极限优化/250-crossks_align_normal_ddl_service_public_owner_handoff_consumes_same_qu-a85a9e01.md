@@ -1,6 +1,8 @@
 # 任务 250: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue`
 
-批次：【批次 250】 依赖批次 249
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

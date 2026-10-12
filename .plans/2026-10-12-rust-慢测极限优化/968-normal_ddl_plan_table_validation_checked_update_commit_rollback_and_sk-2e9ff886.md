@@ -1,6 +1,8 @@
 # 任务 968: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_checked_update_commit_rollback_and_skip_version`
 
-批次：【批次 968】 依赖批次 967
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

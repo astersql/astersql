@@ -1,6 +1,8 @@
 # 任务 1307: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_invisible_index_prepare`
 
-批次：【批次 1307】 依赖批次 1306
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

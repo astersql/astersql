@@ -1,6 +1,8 @@
 # 任务 1639: 优化 `astersql-executor-test-executor::executor_test::union_all_preserves_both_branches_before_limit`
 
-批次：【批次 1639】 依赖批次 1638
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

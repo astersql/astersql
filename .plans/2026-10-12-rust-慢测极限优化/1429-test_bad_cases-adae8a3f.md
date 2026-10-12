@@ -1,6 +1,8 @@
 # 任务 1429: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_bad_cases`
 
-批次：【批次 1429】 依赖批次 1428
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

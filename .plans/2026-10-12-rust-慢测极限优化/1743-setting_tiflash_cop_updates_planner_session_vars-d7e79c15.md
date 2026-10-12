@@ -1,6 +1,8 @@
 # 任务 1743: 优化 `astersql-session::runtime_test::session::setting_tiflash_cop_updates_planner_session_vars`
 
-批次：【批次 1743】 依赖批次 1742
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

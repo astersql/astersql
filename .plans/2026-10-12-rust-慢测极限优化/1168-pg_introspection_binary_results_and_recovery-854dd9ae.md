@@ -1,6 +1,8 @@
 # 任务 1168: 优化 `astersql-server::pg_extended_test::pg_introspection_binary_results_and_recovery`
 
-批次：【批次 1168】 依赖批次 1167
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

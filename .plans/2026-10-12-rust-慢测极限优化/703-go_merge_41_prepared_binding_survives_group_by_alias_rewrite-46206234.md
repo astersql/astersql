@@ -1,6 +1,8 @@
 # 任务 703: 优化 `astersql-bindinfo-tests::bind_test::go_merge_41_prepared_binding_survives_group_by_alias_rewrite`
 
-批次：【批次 703】 依赖批次 702
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

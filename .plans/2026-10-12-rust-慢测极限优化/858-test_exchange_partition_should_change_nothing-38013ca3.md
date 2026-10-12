@@ -1,6 +1,8 @@
 # 任务 858: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_exchange_partition_should_change_nothing`
 
-批次：【批次 858】 依赖批次 857
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

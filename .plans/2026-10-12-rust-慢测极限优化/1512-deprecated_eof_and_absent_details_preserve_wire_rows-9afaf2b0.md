@@ -1,6 +1,8 @@
 # 任务 1512: 优化 `astersql-server::conn_stmt_test::deprecated_eof_and_absent_details_preserve_wire_rows`
 
-批次：【批次 1512】 依赖批次 1511
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

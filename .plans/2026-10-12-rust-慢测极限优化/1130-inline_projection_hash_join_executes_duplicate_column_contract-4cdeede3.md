@@ -1,6 +1,8 @@
 # 任务 1130: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::inline_projection_hash_join_executes_duplicate_column_contract`
 
-批次：【批次 1130】 依赖批次 1129
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

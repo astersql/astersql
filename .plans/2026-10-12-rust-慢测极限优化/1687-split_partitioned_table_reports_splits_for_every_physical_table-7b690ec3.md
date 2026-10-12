@@ -1,6 +1,8 @@
 # 任务 1687: 优化 `astersql-session::runtime_pessimistic_test::split_partitioned_table_reports_splits_for_every_physical_table`
 
-批次：【批次 1687】 依赖批次 1686
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

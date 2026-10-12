@@ -1,6 +1,8 @@
 # 任务 2090: 优化 `astersql-session::runtime_test::storage::secondary_index_kv_tracks_relational_dml_and_backfill`
 
-批次：【批次 2090】 依赖批次 2089
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

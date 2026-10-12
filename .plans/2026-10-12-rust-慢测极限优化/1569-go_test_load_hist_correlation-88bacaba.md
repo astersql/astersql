@@ -1,6 +1,8 @@
 # 任务 1569: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_load_hist_correlation`
 
-批次：【批次 1569】 依赖批次 1568
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

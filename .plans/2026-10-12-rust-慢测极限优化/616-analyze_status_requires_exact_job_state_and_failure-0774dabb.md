@@ -1,6 +1,8 @@
 # 任务 616: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_requires_exact_job_state_and_failure`
 
-批次：【批次 616】 依赖批次 615
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1074: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_system_timezone_query_survives_ansi_sql_mode`
 
-批次：【批次 1074】 依赖批次 1073
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

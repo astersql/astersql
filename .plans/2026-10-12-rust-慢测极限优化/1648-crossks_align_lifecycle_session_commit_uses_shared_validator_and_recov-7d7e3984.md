@@ -1,6 +1,8 @@
 # 任务 1648: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_session_commit_uses_shared_validator_and_recovers`
 
-批次：【批次 1648】 依赖批次 1647
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

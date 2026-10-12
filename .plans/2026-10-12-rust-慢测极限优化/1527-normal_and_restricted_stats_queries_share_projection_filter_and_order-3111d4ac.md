@@ -1,6 +1,8 @@
 # 任务 1527: 优化 `astersql-testkit::mockstore_domain_stats_test::normal_and_restricted_stats_queries_share_projection_filter_and_order`
 
-批次：【批次 1527】 依赖批次 1526
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

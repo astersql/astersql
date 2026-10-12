@@ -1,6 +1,8 @@
 # 任务 139: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_partition_table_explain`
 
-批次：【批次 139】 依赖批次 138
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

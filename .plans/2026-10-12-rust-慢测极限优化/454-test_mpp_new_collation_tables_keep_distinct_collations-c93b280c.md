@@ -1,6 +1,8 @@
 # 任务 454: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_new_collation_tables_keep_distinct_collations`
 
-批次：【批次 454】 依赖批次 453
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

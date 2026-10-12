@@ -1,6 +1,8 @@
 # 任务 967: 优化 `astersql-executor-test-showtest::show_test::show_create_placement_policy_executes_sql_contract`
 
-批次：【批次 967】 依赖批次 966
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

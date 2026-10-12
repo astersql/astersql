@@ -1,6 +1,8 @@
 # 任务 1594: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestTxnEntrySizeLimit`
 
-批次：【批次 1594】 依赖批次 1593
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

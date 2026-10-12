@@ -1,6 +1,8 @@
 # 任务 1184: 优化 `astersql-server::pg_conn_test::startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients`
 
-批次：【批次 1184】 依赖批次 1183
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 368: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_innodb_lock_wait_timeout`
 
-批次：【批次 368】 依赖批次 367
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

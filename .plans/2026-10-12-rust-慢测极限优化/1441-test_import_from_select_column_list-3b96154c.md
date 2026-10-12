@@ -1,6 +1,8 @@
 # 任务 1441: 优化 `astersql-tests-realtikvtest-importintotest2::from_select_test::test_import_from_select_column_list`
 
-批次：【批次 1441】 依赖批次 1440
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

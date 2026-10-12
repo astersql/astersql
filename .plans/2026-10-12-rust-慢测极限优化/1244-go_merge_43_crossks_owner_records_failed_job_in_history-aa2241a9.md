@@ -1,6 +1,8 @@
 # 任务 1244: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_records_failed_job_in_history`
 
-批次：【批次 1244】 依赖批次 1243
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

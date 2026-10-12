@@ -1,6 +1,8 @@
 # 任务 2237: 优化 `astersql-importsdk-mock::sdk_mock_test::context_matcher_rejects_wrong_context_without_consuming_call`
 
-批次：【批次 2237】 依赖批次 2236
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

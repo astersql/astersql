@@ -1,6 +1,8 @@
 # 任务 1818: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_updates_mlog_stats_delta`
 
-批次：【批次 1818】 依赖批次 1817
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

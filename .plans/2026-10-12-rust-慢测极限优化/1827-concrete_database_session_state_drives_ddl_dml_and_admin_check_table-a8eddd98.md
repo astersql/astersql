@@ -1,6 +1,8 @@
 # 任务 1827: 优化 `astersql-session::runtime_test::ddl::concrete_database_session_state_drives_ddl_dml_and_admin_check_table`
 
-批次：【批次 1827】 依赖批次 1826
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

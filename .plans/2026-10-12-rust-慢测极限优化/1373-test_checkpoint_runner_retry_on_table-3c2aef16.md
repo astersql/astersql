@@ -1,6 +1,8 @@
 # 任务 1373: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_runner_retry_on_table`
 
-批次：【批次 1373】 依赖批次 1372
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

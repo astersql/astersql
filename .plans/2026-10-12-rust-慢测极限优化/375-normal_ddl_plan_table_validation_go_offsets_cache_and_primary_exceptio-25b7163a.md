@@ -1,6 +1,8 @@
 # 任务 375: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_table_validation_go_offsets_cache_and_primary_exceptions`
 
-批次：【批次 375】 依赖批次 374
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

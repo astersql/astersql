@@ -1,6 +1,8 @@
 # 任务 309: 优化 `astersql-tests-realtikvtest-importintotest::util_test::test_import_into_suite_fixtures`
 
-批次：【批次 309】 依赖批次 308
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1025: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_delete_range_subjobs_rollback_cancel_and_warning`
 
-批次：【批次 1025】 依赖批次 1024
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

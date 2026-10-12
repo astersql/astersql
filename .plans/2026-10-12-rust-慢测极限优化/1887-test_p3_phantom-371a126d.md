@@ -1,6 +1,8 @@
 # 任务 1887: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_p3_phantom`
 
-批次：【批次 1887】 依赖批次 1886
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

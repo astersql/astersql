@@ -1,6 +1,8 @@
 # 任务 2208: 优化 `astersql-dxf-importinto::clean_up_test::batch_clean_table_modes_precede_files_and_missing_table_is_ignored`
 
-批次：【批次 2208】 依赖批次 2207
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

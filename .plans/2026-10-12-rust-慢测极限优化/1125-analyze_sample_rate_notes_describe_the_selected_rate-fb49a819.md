@@ -1,6 +1,8 @@
 # 任务 1125: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_sample_rate_notes_describe_the_selected_rate`
 
-批次：【批次 1125】 依赖批次 1124
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

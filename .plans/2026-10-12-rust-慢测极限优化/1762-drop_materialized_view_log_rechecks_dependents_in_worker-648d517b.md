@@ -1,6 +1,8 @@
 # 任务 1762: 优化 `astersql-session::runtime::normal_ddl_drop_materialized_view_test::drop_materialized_view_log_rechecks_dependents_in_worker`
 
-批次：【批次 1762】 依赖批次 1761
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

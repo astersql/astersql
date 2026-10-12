@@ -1,6 +1,8 @@
 # 任务 7: 优化 `astersql-session::runtime_statistics_test::combined_merge_sql_100010_rows_seven_partitions`
 
-批次：【批次 7】 依赖批次 6
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

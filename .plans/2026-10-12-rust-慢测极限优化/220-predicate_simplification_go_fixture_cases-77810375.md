@@ -1,6 +1,8 @@
 # 任务 220: 优化 `astersql-planner-core-casetest-rule::rule_predicate_simplification_test::predicate_simplification_go_fixture_cases`
 
-批次：【批次 220】 依赖批次 219
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

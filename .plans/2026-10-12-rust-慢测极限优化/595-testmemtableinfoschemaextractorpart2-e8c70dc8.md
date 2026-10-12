@@ -1,6 +1,8 @@
 # 任务 595: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart2`
 
-批次：【批次 595】 依赖批次 594
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1400: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_persistent_reorg_final_syncs_new_column_id`
 
-批次：【批次 1400】 依赖批次 1399
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

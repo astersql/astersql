@@ -1,6 +1,8 @@
 # 任务 162: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_add_index_resumes_from_checkpoint_after_partial_scan`
 
-批次：【批次 162】 依赖批次 161
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

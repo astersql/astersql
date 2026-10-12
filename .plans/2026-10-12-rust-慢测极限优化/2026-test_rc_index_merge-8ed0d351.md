@@ -1,6 +1,8 @@
 # 任务 2026: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_rc_index_merge`
 
-批次：【批次 2026】 依赖批次 2025
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

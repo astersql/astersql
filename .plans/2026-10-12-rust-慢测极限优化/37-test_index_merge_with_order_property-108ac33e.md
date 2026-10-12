@@ -1,6 +1,8 @@
 # 任务 37: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_intersection_test::test_index_merge_with_order_property`
 
-批次：【批次 37】 依赖批次 36
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

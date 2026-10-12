@@ -1,6 +1,8 @@
 # 任务 855: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_collation_keys_build_stats_without_error`
 
-批次：【批次 855】 依赖批次 854
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

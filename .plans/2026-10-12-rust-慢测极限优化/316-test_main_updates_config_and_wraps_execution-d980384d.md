@@ -1,6 +1,8 @@
 # 任务 316: 优化 `astersql-tests-realtikvtest-importintotest2::main_test::test_main_updates_config_and_wraps_execution`
 
-批次：【批次 316】 依赖批次 315
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

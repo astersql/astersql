@@ -1,6 +1,8 @@
 # 任务 476: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_get_schedule_tune_factors`
 
-批次：【批次 476】 依赖批次 475
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

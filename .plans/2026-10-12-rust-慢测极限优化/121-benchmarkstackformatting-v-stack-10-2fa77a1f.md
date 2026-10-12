@@ -1,6 +1,8 @@
 # 任务 121: 优化 `astersql::bench/errors::BenchmarkStackFormatting/%+v-stack-10`
 
-批次：【批次 121】 依赖批次 120
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

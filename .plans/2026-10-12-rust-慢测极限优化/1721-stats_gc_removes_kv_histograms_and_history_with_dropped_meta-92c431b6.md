@@ -1,6 +1,8 @@
 # 任务 1721: 优化 `astersql-testkit::mockstore_domain_stats_test::stats_gc_removes_kv_histograms_and_history_with_dropped_meta`
 
-批次：【批次 1721】 依赖批次 1720
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

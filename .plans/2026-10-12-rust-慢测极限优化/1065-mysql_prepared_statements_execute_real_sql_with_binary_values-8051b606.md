@@ -1,6 +1,8 @@
 # 任务 1065: 优化 `astersql-server::mysql_prepared_protocol_test::mysql_prepared_statements_execute_real_sql_with_binary_values`
 
-批次：【批次 1065】 依赖批次 1064
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1290: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue54755_executes_symmetric_outer_join_aggregate_contract`
 
-批次：【批次 1290】 依赖批次 1289
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

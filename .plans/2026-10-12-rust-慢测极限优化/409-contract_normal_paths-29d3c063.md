@@ -1,6 +1,8 @@
 # 任务 409: 优化 `astersql-tests-realtikvtest-testutils::parity_test::contract_normal_paths`
 
-批次：【批次 409】 依赖批次 408
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

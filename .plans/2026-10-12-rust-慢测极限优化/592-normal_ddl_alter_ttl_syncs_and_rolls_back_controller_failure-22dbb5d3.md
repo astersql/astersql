@@ -1,6 +1,8 @@
 # 任务 592: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_alter_ttl_syncs_and_rolls_back_controller_failure`
 
-批次：【批次 592】 依赖批次 591
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

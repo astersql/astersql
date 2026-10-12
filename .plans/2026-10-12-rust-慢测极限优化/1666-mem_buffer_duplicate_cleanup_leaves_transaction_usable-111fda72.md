@@ -1,6 +1,8 @@
 # 任务 1666: 优化 `astersql-session-test-txn::txn_test::mem_buffer_duplicate_cleanup_leaves_transaction_usable`
 
-批次：【批次 1666】 依赖批次 1665
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

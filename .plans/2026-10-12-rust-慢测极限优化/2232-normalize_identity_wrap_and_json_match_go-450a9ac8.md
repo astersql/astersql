@@ -1,6 +1,8 @@
 # 任务 2232: 优化 `astersql-errors::normalize_identity_test::normalize_identity_wrap_and_json_match_go`
 
-批次：【批次 2232】 依赖批次 2231
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

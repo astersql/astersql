@@ -1,6 +1,8 @@
 # 任务 1831: 优化 `astersql-domain::canonical_domain_test::embedding_config_changes_invalidate_all_providers_but_identical_values_keep_cache`
 
-批次：【批次 1831】 依赖批次 1830
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

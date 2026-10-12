@@ -1,6 +1,8 @@
 # 任务 719: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_two_managers_single_event_and_takeover`
 
-批次：【批次 719】 依赖批次 718
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

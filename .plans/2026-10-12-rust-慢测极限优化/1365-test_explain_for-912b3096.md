@@ -1,6 +1,8 @@
 # 任务 1365: 优化 `astersql-server-tests::tidb_serial_test::test_explain_for`
 
-批次：【批次 1365】 依赖批次 1364
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

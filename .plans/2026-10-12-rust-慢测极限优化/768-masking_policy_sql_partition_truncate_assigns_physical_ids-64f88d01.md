@@ -1,6 +1,8 @@
 # 任务 768: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_partition_truncate_assigns_physical_ids`
 
-批次：【批次 768】 依赖批次 767
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

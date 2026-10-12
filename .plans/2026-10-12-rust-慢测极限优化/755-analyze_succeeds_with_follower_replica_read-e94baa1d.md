@@ -1,6 +1,8 @@
 # 任务 755: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_succeeds_with_follower_replica_read`
 
-批次：【批次 755】 依赖批次 754
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

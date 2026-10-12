@@ -1,6 +1,8 @@
 # 任务 109: 优化 `astersql-tests-graceshutdown::graceshutdown_test::test_graceful_shutdown`
 
-批次：【批次 109】 依赖批次 108
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

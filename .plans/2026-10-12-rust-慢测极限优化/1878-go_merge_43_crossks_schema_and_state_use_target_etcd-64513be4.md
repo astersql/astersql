@@ -1,6 +1,8 @@
 # 任务 1878: 优化 `astersql-session::runtime::crossks_schema_test::go_merge_43_crossks_schema_and_state_use_target_etcd`
 
-批次：【批次 1878】 依赖批次 1877
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

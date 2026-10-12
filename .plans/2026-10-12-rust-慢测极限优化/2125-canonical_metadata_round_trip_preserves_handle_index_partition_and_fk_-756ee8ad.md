@@ -1,6 +1,8 @@
 # 任务 2125: 优化 `astersql-testkit::mockstore_domain_ddl_test::canonical_metadata_round_trip_preserves_handle_index_partition_and_fk_fields`
 
-批次：【批次 2125】 依赖批次 2124
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

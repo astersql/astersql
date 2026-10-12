@@ -1,6 +1,8 @@
 # 任务 138: 优化 `astersql-planner-core-casetest-correlated::correlated_test::test_natural_join_with_correlated_subquery`
 
-批次：【批次 138】 依赖批次 137
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

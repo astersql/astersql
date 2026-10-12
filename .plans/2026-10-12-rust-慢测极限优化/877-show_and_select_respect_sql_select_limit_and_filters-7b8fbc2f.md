@@ -1,6 +1,8 @@
 # 任务 877: 优化 `astersql-executor-test-showtest::show_test::show_and_select_respect_sql_select_limit_and_filters`
 
-批次：【批次 877】 依赖批次 876
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

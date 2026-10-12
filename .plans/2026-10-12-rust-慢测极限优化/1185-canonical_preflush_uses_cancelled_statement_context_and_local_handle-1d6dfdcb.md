@@ -1,6 +1,8 @@
 # 任务 1185: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::canonical_preflush_uses_cancelled_statement_context_and_local_handle`
 
-批次：【批次 1185】 依赖批次 1184
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

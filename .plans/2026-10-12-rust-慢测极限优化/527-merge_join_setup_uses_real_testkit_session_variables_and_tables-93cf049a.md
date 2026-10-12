@@ -1,6 +1,8 @@
 # 任务 527: 优化 `astersql-executor-join-test-mergejoin::merge_join_test::merge_join_setup_uses_real_testkit_session_variables_and_tables`
 
-批次：【批次 527】 依赖批次 526
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

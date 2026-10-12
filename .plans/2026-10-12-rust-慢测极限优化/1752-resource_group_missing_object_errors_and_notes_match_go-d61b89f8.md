@@ -1,6 +1,8 @@
 # 任务 1752: 优化 `astersql-resourcegroup-tests::resource_group_test::resource_group_missing_object_errors_and_notes_match_go`
 
-批次：【批次 1752】 依赖批次 1751
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

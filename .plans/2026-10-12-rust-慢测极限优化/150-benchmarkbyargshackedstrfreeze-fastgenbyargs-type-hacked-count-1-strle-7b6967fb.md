@@ -1,6 +1,8 @@
 # 任务 150: 优化 `astersql::bench/errors::BenchmarkByArgsHackedStrFreeze/FastGenByArgs/type-hacked/count-1/strlen-1024`
 
-批次：【批次 150】 依赖批次 149
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

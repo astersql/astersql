@@ -1,6 +1,8 @@
 # 任务 287: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared_update`
 
-批次：【批次 287】 依赖批次 286
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

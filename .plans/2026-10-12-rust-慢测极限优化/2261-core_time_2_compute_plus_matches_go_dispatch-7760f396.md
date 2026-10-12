@@ -1,6 +1,8 @@
 # 任务 2261: 优化 `astersql-types-core-time::core_time_2_aster_unit_test::core_time_2_compute_plus_matches_go_dispatch`
 
-批次：【批次 2261】 依赖批次 2260
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

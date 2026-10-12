@@ -1,6 +1,8 @@
 # 任务 1363: 优化 `astersql-tests-realtikvtest-importintotest::precheck_test::test_pre_check_cdc_pitr_tasks`
 
-批次：【批次 1363】 依赖批次 1362
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

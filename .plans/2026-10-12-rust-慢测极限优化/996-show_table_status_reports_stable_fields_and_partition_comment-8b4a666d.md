@@ -1,6 +1,8 @@
 # 任务 996: 优化 `astersql-executor-test-showtest::show_test::show_table_status_reports_stable_fields_and_partition_comment`
 
-批次：【批次 996】 依赖批次 995
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1374: 优化 `astersql-session::load_data_runtime_test::local_infile_set_assignments_resolve_case_insensitive_user_variables`
 
-批次：【批次 1374】 依赖批次 1373
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

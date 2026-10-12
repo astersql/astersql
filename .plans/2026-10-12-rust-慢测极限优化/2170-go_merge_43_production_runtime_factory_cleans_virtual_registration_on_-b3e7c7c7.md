@@ -1,6 +1,8 @@
 # 任务 2170: 优化 `astersql-session::runtime::crossks_runtime_test::go_merge_43_production_runtime_factory_cleans_virtual_registration_on_store_error`
 
-批次：【批次 2170】 依赖批次 2169
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

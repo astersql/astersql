@@ -1,6 +1,8 @@
 # 任务 2284: 优化 `astersql-br-pkg-restore-split::split_test::test_scan_empty_region`
 
-批次：【批次 2284】 依赖批次 2283
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1199: 优化 `astersql-session-test::session_test::result_type_and_field_text_match_go`
 
-批次：【批次 1199】 依赖批次 1198
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

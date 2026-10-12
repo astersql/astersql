@@ -1,6 +1,8 @@
 # 任务 2124: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_refreshes_upgrade_state_and_rejects_bdr_and_flashback`
 
-批次：【批次 2124】 依赖批次 2123
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

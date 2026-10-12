@@ -1,6 +1,8 @@
 # 任务 209: 优化 `astersql-server::tidb_test::rc_read_check_ts_retries_text_and_prepared_execution`
 
-批次：【批次 209】 依赖批次 208
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

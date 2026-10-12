@@ -1,6 +1,8 @@
 # 任务 281: 优化 `astersql-session-test-meta::session_test::runtime_metadata_timestamps_follow_ddl_and_session_timezone`
 
-批次：【批次 281】 依赖批次 280
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

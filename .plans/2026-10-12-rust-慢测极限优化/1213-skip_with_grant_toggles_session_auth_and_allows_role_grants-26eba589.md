@@ -1,6 +1,8 @@
 # 任务 1213: 优化 `astersql-session-test-privileges::privileges_test::skip_with_grant_toggles_session_auth_and_allows_role_grants`
 
-批次：【批次 1213】 依赖批次 1212
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1210: 优化 `astersql-util-cpuprofile::cpuprofile_test::TestProfileHTTPHandler`
 
-批次：【批次 1210】 依赖批次 1209
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

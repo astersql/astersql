@@ -1,6 +1,8 @@
 # 任务 1171: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue52902_executes_correlated_exists_case_contract`
 
-批次：【批次 1171】 依赖批次 1170
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

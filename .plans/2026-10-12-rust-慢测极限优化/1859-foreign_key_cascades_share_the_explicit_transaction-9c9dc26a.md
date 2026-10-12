@@ -1,6 +1,8 @@
 # 任务 1859: 优化 `astersql-session::runtime_pessimistic_test::foreign_key_cascades_share_the_explicit_transaction`
 
-批次：【批次 1859】 依赖批次 1858
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2249: 优化 `astersql-importsdk-mock::sdk_mock_test::go_return_slots_preserve_value_even_when_error_is_present`
 
-批次：【批次 2249】 依赖批次 2248
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

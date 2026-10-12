@@ -1,6 +1,8 @@
 # 任务 1913: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_schema_reload_failure_cleans_registered_resources`
 
-批次：【批次 1913】 依赖批次 1912
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

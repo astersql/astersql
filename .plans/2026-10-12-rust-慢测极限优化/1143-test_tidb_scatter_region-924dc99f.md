@@ -1,6 +1,8 @@
 # 任务 1143: 优化 `astersql-tests-realtikvtest-ddltest::ddl_test::test_tidb_scatter_region`
 
-批次：【批次 1143】 依赖批次 1142
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

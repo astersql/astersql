@@ -1,6 +1,8 @@
 # 任务 769: 优化 `astersql-ddl-tests-serial::serial_test::test_create_table_with_like`
 
-批次：【批次 769】 依赖批次 768
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

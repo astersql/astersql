@@ -1,6 +1,8 @@
 # 任务 535: 优化 `astersql-executor::historical_stats_test::TestAssertHistoricalStatsAfterAlterTable`
 
-批次：【批次 535】 依赖批次 534
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

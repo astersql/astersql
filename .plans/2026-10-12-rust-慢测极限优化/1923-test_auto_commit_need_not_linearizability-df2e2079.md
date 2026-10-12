@@ -1,6 +1,8 @@
 # 任务 1923: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_auto_commit_need_not_linearizability`
 
-批次：【批次 1923】 依赖批次 1922
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

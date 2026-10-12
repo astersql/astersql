@@ -1,6 +1,8 @@
 # 任务 1773: 优化 `astersql-session-test-bootstraptest2::boot_test::upgrade_from_210_restores_background_subtask_history_summary_column`
 
-批次：【批次 1773】 依赖批次 1772
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

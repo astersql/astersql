@@ -1,6 +1,8 @@
 # 任务 125: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_list_partition_pruning_classic`
 
-批次：【批次 125】 依赖批次 124
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

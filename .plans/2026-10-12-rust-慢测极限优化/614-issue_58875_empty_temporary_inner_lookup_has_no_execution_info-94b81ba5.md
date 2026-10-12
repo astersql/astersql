@@ -1,6 +1,8 @@
 # 任务 614: 优化 `astersql-executor::temporary_table_test::issue_58875_empty_temporary_inner_lookup_has_no_execution_info`
 
-批次：【批次 614】 依赖批次 613
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

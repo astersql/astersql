@@ -1,6 +1,8 @@
 # 任务 1935: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_persistent_missing_policy_table_rolls_back`
 
-批次：【批次 1935】 依赖批次 1934
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

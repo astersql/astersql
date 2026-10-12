@@ -1,6 +1,8 @@
 # 任务 882: 优化 `astersql-executor-test-infoschema::infoschema_test::same_table_name_in_two_schemas_isolated_by_schema_and_id`
 
-批次：【批次 882】 依赖批次 881
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1707: 优化 `astersql-session-test-variable::variable_test::last_query_info_tracks_prepared_and_previous_query_ru`
 
-批次：【批次 1707】 依赖批次 1706
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

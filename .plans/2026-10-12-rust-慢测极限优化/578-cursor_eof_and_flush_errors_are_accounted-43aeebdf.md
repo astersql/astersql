@@ -1,6 +1,8 @@
 # 任务 578: 优化 `astersql-server::conn_stmt_test::cursor_eof_and_flush_errors_are_accounted`
 
-批次：【批次 578】 依赖批次 577
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

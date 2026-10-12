@@ -1,6 +1,8 @@
 # 任务 2200: 优化 `astersql-parser-terror::parser_terror_test::test_log`
 
-批次：【批次 2200】 依赖批次 2199
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

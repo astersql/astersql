@@ -1,6 +1,8 @@
 # 任务 1531: 优化 `astersql-planner-core-casetest-partition::list_partition_integration_test::test_bench_daily`
 
-批次：【批次 1531】 依赖批次 1530
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

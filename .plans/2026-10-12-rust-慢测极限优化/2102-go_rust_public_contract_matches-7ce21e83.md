@@ -1,6 +1,8 @@
 # 任务 2102: 优化 `astersql-br-pkg-utils::parity_test::go_rust_public_contract_matches`
 
-批次：【批次 2102】 依赖批次 2101
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

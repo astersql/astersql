@@ -1,6 +1,8 @@
 # 任务 1849: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_records_failure_before_delete`
 
-批次：【批次 1849】 依赖批次 1848
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

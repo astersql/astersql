@@ -1,6 +1,8 @@
 # 任务 1315: 优化 `astersql-planner-core-issuetest::panicrisk_tier2_test::push_down_sequence_with_table_dual_returns_empty_result`
 
-批次：【批次 1315】 依赖批次 1314
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

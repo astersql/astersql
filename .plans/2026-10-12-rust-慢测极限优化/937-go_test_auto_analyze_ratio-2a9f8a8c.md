@@ -1,6 +1,8 @@
 # 任务 937: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_analyze_ratio`
 
-批次：【批次 937】 依赖批次 936
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

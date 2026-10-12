@@ -1,6 +1,8 @@
 # 任务 1603: 优化 `astersql-session::system_session_alignment_test::crossks_align_system_session_transaction_sql_and_go_meta`
 
-批次：【批次 1603】 依赖批次 1602
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

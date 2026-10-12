@@ -1,6 +1,8 @@
 # 任务 2091: 优化 `astersql-tests-realtikvtest-ddltest::ddl_test::metadata_lock_is_restored_when_ddl_test_unwinds`
 
-批次：【批次 2091】 依赖批次 2090
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

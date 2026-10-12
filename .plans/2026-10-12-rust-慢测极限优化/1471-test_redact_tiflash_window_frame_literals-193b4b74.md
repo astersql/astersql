@@ -1,6 +1,8 @@
 # 任务 1471: 优化 `astersql-planner-core-tests-redact::redact_test::test_redact_tiflash_window_frame_literals`
 
-批次：【批次 1471】 依赖批次 1470
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 538: 优化 `astersql-planner-core-casetest-instanceplancache::dml_test::TestInstancePlanCacheDMLPartitioning`
 
-批次：【批次 538】 依赖批次 537
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

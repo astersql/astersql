@@ -1,6 +1,8 @@
 # 任务 660: 优化 `astersql-ddl-tests-partition::db_partition_test::partition_ddl_replaces_only_target_physical_ids`
 
-批次：【批次 660】 依赖批次 659
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

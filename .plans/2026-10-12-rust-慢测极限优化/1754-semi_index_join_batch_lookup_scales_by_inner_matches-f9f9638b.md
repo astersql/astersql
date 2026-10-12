@@ -1,6 +1,8 @@
 # 任务 1754: 优化 `astersql-session::cost_trace_runtime_test::semi_index_join_batch_lookup_scales_by_inner_matches`
 
-批次：【批次 1754】 依赖批次 1753
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

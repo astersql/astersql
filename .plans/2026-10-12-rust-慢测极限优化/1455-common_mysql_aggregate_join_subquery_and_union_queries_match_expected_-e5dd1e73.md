@@ -1,6 +1,8 @@
 # 任务 1455: 优化 `astersql-session::mysql_relational_query_compat_test::common_mysql_aggregate_join_subquery_and_union_queries_match_expected_rows`
 
-批次：【批次 1455】 依赖批次 1454
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

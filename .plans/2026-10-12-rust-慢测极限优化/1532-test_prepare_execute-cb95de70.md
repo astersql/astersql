@@ -1,6 +1,8 @@
 # 任务 1532: 优化 `astersql-server-tests::tidb_serial_test::test_prepare_execute`
 
-批次：【批次 1532】 依赖批次 1531
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

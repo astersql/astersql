@@ -1,6 +1,8 @@
 # 任务 1840: 优化 `astersql-testkit::mockstore_domain_stats_test::commit_succeeds_before_retryable_stats_outbox_flush`
 
-批次：【批次 1840】 依赖批次 1839
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 930: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_selected_columns_preserve_unselected_statistics`
 
-批次：【批次 930】 依赖批次 929
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

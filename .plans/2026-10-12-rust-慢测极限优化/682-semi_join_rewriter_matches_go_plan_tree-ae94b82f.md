@@ -1,6 +1,8 @@
 # 任务 682: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::semi_join_rewriter_matches_go_plan_tree`
 
-批次：【批次 682】 依赖批次 681
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

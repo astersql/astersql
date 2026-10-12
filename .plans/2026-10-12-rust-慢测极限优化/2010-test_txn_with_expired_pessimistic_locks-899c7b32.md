@@ -1,6 +1,8 @@
 # 任务 2010: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_txn_with_expired_pessimistic_locks`
 
-批次：【批次 2010】 依赖批次 2009
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

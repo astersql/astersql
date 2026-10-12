@@ -1,6 +1,8 @@
 # 任务 1459: 优化 `astersql-session-test-common::prepare_dedup_cache_test::protocol_prepare_after_schema_change_reports_current_projection`
 
-批次：【批次 1459】 依赖批次 1458
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

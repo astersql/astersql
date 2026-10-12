@@ -1,6 +1,8 @@
 # 任务 2194: 优化 `astersql-session::runtime_test::typed_adapter_bridge::canonical_session_exec_stmt_streams_typed_rows_and_finishes_statement`
 
-批次：【批次 2194】 依赖批次 2193
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

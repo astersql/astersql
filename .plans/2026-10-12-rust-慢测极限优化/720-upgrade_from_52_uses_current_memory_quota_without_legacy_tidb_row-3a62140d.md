@@ -1,6 +1,8 @@
 # 任务 720: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_from_52_uses_current_memory_quota_without_legacy_tidb_row`
 
-批次：【批次 720】 依赖批次 719
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

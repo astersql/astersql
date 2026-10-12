@@ -1,6 +1,8 @@
 # 任务 215: 优化 `astersql-executor-test-analyzetest-columns::analyze_columns_with_test::TestAnalyzeColumnsWithDynamicPartitionTable`
 
-批次：【批次 215】 依赖批次 214
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

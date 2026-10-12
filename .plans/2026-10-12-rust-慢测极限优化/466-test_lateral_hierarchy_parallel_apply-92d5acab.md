@@ -1,6 +1,8 @@
 # 任务 466: 优化 `astersql-planner-core-casetest-parallelapply::parallel_apply_test::test_lateral_hierarchy_parallel_apply`
 
-批次：【批次 466】 依赖批次 465
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

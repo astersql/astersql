@@ -1,6 +1,8 @@
 # 任务 1104: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_exec_auto_analyze_rewrites_legacy_stats_version_to_v2`
 
-批次：【批次 1104】 依赖批次 1103
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

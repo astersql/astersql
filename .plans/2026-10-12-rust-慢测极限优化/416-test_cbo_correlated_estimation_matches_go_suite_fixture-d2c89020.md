@@ -1,6 +1,8 @@
 # 任务 416: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_correlated_estimation_matches_go_suite_fixture`
 
-批次：【批次 416】 依赖批次 415
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

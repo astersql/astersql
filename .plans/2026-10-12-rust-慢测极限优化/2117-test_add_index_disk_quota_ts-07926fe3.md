@@ -1,6 +1,8 @@
 # 任务 2117: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_disk_quota_ts`
 
-批次：【批次 2117】 依赖批次 2116
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

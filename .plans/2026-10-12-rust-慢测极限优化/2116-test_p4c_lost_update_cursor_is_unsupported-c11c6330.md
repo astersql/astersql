@@ -1,6 +1,8 @@
 # 任务 2116: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_p4c_lost_update_cursor_is_unsupported`
 
-批次：【批次 2116】 依赖批次 2115
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

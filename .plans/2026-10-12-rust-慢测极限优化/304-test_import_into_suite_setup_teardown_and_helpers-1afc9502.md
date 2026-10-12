@@ -1,6 +1,8 @@
 # 任务 304: 优化 `astersql-tests-realtikvtest-importintotest2::main_test::test_import_into_suite_setup_teardown_and_helpers`
 
-批次：【批次 304】 依赖批次 303
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

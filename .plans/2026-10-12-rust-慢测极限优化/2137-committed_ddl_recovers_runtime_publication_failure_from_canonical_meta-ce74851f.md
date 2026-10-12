@@ -1,6 +1,8 @@
 # 任务 2137: 优化 `astersql-testkit::mockstore_domain_ddl_test::committed_ddl_recovers_runtime_publication_failure_from_canonical_metadata`
 
-批次：【批次 2137】 依赖批次 2136
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

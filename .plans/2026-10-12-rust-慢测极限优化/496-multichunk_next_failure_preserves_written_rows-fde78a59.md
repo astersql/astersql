@@ -1,6 +1,8 @@
 # 任务 496: 优化 `astersql-server::conn_stmt_test::multichunk_next_failure_preserves_written_rows`
 
-批次：【批次 496】 依赖批次 495
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

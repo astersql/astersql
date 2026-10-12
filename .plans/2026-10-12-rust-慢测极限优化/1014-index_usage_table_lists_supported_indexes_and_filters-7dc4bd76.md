@@ -1,6 +1,8 @@
 # 任务 1014: 优化 `astersql-executor-test-infoschema::infoschema_test::index_usage_table_lists_supported_indexes_and_filters`
 
-批次：【批次 1014】 依赖批次 1013
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

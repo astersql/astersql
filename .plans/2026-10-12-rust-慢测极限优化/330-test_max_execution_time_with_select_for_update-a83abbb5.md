@@ -1,6 +1,8 @@
 # 任务 330: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_max_execution_time_with_select_for_update`
 
-批次：【批次 330】 依赖批次 329
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

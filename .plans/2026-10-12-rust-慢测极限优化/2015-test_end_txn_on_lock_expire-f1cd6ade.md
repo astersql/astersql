@@ -1,6 +1,8 @@
 # 任务 2015: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_end_txn_on_lock_expire`
 
-批次：【批次 2015】 依赖批次 2014
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

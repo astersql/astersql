@@ -1,6 +1,8 @@
 # 任务 1011: 优化 `astersql-executor-test-oomtest::oom_test::TestMemTracker4UpdateExec`
 
-批次：【批次 1011】 依赖批次 1010
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

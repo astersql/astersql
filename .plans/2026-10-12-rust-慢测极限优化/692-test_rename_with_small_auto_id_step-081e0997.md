@@ -1,6 +1,8 @@
 # 任务 692: 优化 `astersql-executor-test-ddl::ddl_test::test_rename_with_small_auto_id_step`
 
-批次：【批次 692】 依赖批次 691
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

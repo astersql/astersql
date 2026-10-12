@@ -1,6 +1,8 @@
 # 任务 77: 优化 `astersql-dxf-importinto::write_ingest_backend::tests::physical_region_rewrite_increments_progress_without_recounting_logical_import`
 
-批次：【批次 77】 依赖批次 76
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

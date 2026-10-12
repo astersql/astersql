@@ -1,6 +1,8 @@
 # 任务 892: 优化 `astersql-executor-test-infoschema::infoschema_test::infoschema_conditions_filter_constraints_and_unpartitioned_tables`
 
-批次：【批次 892】 依赖批次 891
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1492: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_backfill_owner_handoff_recovers_committed_prefix_on_new_pool`
 
-批次：【批次 1492】 依赖批次 1491
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

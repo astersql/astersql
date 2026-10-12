@@ -1,6 +1,8 @@
 # 任务 1352: 优化 `astersql-testkit::stats_runtime_aster_unit_test::partition_history_dump_respects_dynamic_and_static_pruning`
 
-批次：【批次 1352】 依赖批次 1351
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

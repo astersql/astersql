@@ -1,6 +1,8 @@
 # 任务 772: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_68_restores_clustered_index_default`
 
-批次：【批次 772】 依赖批次 771
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

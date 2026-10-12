@@ -1,6 +1,8 @@
 # 任务 653: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::prepared_partition_index_cache_crosses_partitions`
 
-批次：【批次 653】 依赖批次 652
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1091: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_workflow_rejects_copied_newer_version_and_bad_pd_refresh`
 
-批次：【批次 1091】 依赖批次 1090
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1970: 优化 `astersql-testkit::mockstore_domain_stats_test::domain_stats_cache_capacity_uses_scoped_global_quota`
 
-批次：【批次 1970】 依赖批次 1969
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

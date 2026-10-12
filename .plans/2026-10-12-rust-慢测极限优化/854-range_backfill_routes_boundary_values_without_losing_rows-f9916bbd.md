@@ -1,6 +1,8 @@
 # 任务 854: 优化 `astersql-ddl-tests-partition::multi_domain_part3_aster_unit_test::range_backfill_routes_boundary_values_without_losing_rows`
 
-批次：【批次 854】 依赖批次 853
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

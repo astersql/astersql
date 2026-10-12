@@ -1,6 +1,8 @@
 # 任务 48: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_batch_point_get_table_partition`
 
-批次：【批次 48】 依赖批次 47
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

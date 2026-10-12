@@ -1,6 +1,8 @@
 # 任务 1874: 优化 `astersql-server::http_status_test::tiflash_report_updates_canonical_domain_replica`
 
-批次：【批次 1874】 依赖批次 1873
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

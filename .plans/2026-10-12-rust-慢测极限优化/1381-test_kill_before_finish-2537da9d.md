@@ -1,6 +1,8 @@
 # 任务 1381: 优化 `astersql-tests-realtikvtest-importintotest::job_test::test_kill_before_finish`
 
-批次：【批次 1381】 依赖批次 1380
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

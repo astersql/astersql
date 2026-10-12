@@ -1,6 +1,8 @@
 # 任务 529: 优化 `astersql-statistics-handle-usage-indexusage::collector_test::test_flush_concurrent_index_collector`
 
-批次：【批次 529】 依赖批次 528
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

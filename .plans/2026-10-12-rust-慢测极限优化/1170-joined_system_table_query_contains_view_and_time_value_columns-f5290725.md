@@ -1,6 +1,8 @@
 # 任务 1170: 优化 `astersql-executor-test-infoschema::infoschema_test::joined_system_table_query_contains_view_and_time_value_columns`
 
-批次：【批次 1170】 依赖批次 1169
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 906: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_keyspace_observability_from_activation_metadata`
 
-批次：【批次 906】 依赖批次 905
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

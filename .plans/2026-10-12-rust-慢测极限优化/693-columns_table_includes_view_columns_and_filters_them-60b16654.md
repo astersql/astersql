@@ -1,6 +1,8 @@
 # 任务 693: 优化 `astersql-executor-test-infoschema::infoschema_test::columns_table_includes_view_columns_and_filters_them`
 
-批次：【批次 693】 依赖批次 692
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 913: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_1_purge_table_missing_rolls_back`
 
-批次：【批次 913】 依赖批次 912
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

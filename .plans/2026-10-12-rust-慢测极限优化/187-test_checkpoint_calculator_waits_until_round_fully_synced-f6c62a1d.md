@@ -1,6 +1,8 @@
 # 任务 187: 优化 `astersql-br-pkg-stream-crr-internal-checkpoint::integration_test::test_checkpoint_calculator_waits_until_round_fully_synced`
 
-批次：【批次 187】 依赖批次 186
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

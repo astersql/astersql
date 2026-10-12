@@ -1,6 +1,8 @@
 # 任务 395: 优化 `astersql-executor-test-jointest::join_test::test_join2`
 
-批次：【批次 395】 依赖批次 394
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

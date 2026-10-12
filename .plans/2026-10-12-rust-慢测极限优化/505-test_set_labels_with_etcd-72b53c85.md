@@ -1,6 +1,8 @@
 # 任务 505: 优化 `astersql-server-handler-tests::http_handler_test::test_set_labels_with_etcd`
 
-批次：【批次 505】 依赖批次 504
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

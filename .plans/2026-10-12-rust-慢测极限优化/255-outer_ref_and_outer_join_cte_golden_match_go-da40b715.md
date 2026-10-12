@@ -1,6 +1,8 @@
 # 任务 255: 优化 `astersql-planner-core-casetest-windows::window_with_exist_subquery_test::outer_ref_and_outer_join_cte_golden_match_go`
 
-批次：【批次 255】 依赖批次 254
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

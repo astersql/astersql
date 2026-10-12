@@ -1,6 +1,8 @@
 # 任务 1331: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_import_into_with_mock_data_size`
 
-批次：【批次 1331】 依赖批次 1330
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

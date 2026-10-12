@@ -1,6 +1,8 @@
 # 任务 1313: 优化 `astersql-timer-runtime::runtime_test::go_merge_43_timer_watch_update_triggers_manual_request_promptly`
 
-批次：【批次 1313】 依赖批次 1312
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

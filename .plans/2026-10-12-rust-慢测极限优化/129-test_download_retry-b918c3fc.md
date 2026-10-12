@@ -1,6 +1,8 @@
 # 任务 129: 优化 `astersql-objstore::azblob_test::test_download_retry`
 
-批次：【批次 129】 依赖批次 128
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

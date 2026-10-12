@@ -1,6 +1,8 @@
 # 任务 261: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_issue65892_view_join_under_both_planners`
 
-批次：【批次 261】 依赖批次 260
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

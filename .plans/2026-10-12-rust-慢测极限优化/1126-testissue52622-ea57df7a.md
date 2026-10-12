@@ -1,6 +1,8 @@
 # 任务 1126: 优化 `astersql-executor-test-autoidtest::autoid_test::TestIssue52622`
 
-批次：【批次 1126】 依赖批次 1125
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

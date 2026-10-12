@@ -1,6 +1,8 @@
 # 任务 1437: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_stats_lock_unlock_for_auto_analyze`
 
-批次：【批次 1437】 依赖批次 1436
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

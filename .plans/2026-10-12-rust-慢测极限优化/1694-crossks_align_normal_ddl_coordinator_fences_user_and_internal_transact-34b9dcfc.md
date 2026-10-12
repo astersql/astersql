@@ -1,6 +1,8 @@
 # 任务 1694: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_coordinator_fences_user_and_internal_transactions`
 
-批次：【批次 1694】 依赖批次 1693
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

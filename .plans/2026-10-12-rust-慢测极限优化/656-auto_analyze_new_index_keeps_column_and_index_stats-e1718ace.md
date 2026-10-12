@@ -1,6 +1,8 @@
 # 任务 656: 优化 `astersql-executor-test-analyzetest::analyze_test::auto_analyze_new_index_keeps_column_and_index_stats`
 
-批次：【批次 656】 依赖批次 655
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

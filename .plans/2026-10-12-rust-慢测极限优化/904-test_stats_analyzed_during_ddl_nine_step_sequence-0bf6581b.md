@@ -1,6 +1,8 @@
 # 任务 904: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_stats_analyzed_during_ddl_nine_step_sequence`
 
-批次：【批次 904】 依赖批次 903
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

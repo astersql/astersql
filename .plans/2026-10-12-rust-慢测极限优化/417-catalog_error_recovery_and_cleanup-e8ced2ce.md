@@ -1,6 +1,8 @@
 # 任务 417: 优化 `astersql-server::pg_conn_test::catalog_error_recovery_and_cleanup`
 
-批次：【批次 417】 依赖批次 416
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

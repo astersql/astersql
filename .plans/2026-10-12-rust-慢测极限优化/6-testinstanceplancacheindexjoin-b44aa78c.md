@@ -1,6 +1,8 @@
 # 任务 6: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheIndexJoin`
 
-批次：【批次 6】 依赖批次 5
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

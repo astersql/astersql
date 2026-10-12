@@ -1,6 +1,8 @@
 # 任务 1083: 优化 `astersql-executor-test-showtest::show_test::show_stats_extended_reports_feature_removed`
 
-批次：【批次 1083】 依赖批次 1082
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

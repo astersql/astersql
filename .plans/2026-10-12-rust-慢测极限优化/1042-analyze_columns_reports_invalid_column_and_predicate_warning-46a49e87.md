@@ -1,6 +1,8 @@
 # 任务 1042: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_columns_reports_invalid_column_and_predicate_warning`
 
-批次：【批次 1042】 依赖批次 1041
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

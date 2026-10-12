@@ -1,6 +1,8 @@
 # 任务 1021: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::analyze_and_show_stats_share_canonical_session_state`
 
-批次：【批次 1021】 依赖批次 1020
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2225: 优化 `astersql-errors::format_test::all_source_format_cases_have_rust_equivalents`
 
-批次：【批次 2225】 依赖批次 2224
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

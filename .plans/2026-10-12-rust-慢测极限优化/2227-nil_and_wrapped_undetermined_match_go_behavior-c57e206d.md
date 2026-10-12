@@ -1,6 +1,8 @@
 # 任务 2227: 优化 `astersql-store-driver-error::migration_aster_unit_test::nil_and_wrapped_undetermined_match_go_behavior`
 
-批次：【批次 2227】 依赖批次 2226
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

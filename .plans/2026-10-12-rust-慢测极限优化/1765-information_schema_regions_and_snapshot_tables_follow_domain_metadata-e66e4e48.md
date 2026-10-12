@@ -1,6 +1,8 @@
 # 任务 1765: 优化 `astersql-session::runtime_pessimistic_test::information_schema_regions_and_snapshot_tables_follow_domain_metadata`
 
-批次：【批次 1765】 依赖批次 1764
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

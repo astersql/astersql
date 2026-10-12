@@ -1,6 +1,8 @@
 # 任务 1543: 优化 `astersql-session-test-common::common_test::protocol_prepare_executes_bound_select_and_releases_statement`
 
-批次：【批次 1543】 依赖批次 1542
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

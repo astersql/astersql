@@ -1,6 +1,8 @@
 # 任务 130: 优化 `astersql-br-pkg-backup::store_test::test_timeout_recv`
 
-批次：【批次 130】 依赖批次 129
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

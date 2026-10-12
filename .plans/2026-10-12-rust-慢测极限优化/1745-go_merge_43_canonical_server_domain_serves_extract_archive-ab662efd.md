@@ -1,6 +1,8 @@
 # 任务 1745: 优化 `astersql-server::runtime_test::go_merge_43_canonical_server_domain_serves_extract_archive`
 
-批次：【批次 1745】 依赖批次 1744
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

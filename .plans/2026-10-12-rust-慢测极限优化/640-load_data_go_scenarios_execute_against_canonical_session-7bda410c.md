@@ -1,6 +1,8 @@
 # 任务 640: 优化 `astersql-server-internal-testserverclient::server_client_test::load_data_go_scenarios_execute_against_canonical_session`
 
-批次：【批次 640】 依赖批次 639
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

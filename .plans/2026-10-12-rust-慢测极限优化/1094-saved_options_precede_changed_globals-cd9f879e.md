@@ -1,6 +1,8 @@
 # 任务 1094: 优化 `astersql-session::dml_runtime_test::saved_options_precede_changed_globals`
 
-批次：【批次 1094】 依赖批次 1093
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

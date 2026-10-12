@@ -1,6 +1,8 @@
 # 任务 536: 优化 `astersql-executor-test-unstabletest::memory_test::global_memory_control_kills_top1_session_tracker`
 
-批次：【批次 536】 依赖批次 535
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1037: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_index_statistics_after_table_drop`
 
-批次：【批次 1037】 依赖批次 1036
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

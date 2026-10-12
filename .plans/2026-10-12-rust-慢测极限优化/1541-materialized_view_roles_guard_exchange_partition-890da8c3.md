@@ -1,6 +1,8 @@
 # 任务 1541: 优化 `astersql-session::runtime::normal_ddl_materialized_view_partition_test::materialized_view_roles_guard_exchange_partition`
 
-批次：【批次 1541】 依赖批次 1540
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

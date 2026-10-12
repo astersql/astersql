@@ -1,6 +1,8 @@
 # 任务 1026: 优化 `astersql-session-test::session_test::schema_checker_sql_matches_go_normal_and_partition_paths`
 
-批次：【批次 1026】 依赖批次 1025
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

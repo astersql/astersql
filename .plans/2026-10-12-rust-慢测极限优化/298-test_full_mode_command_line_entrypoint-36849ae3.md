@@ -1,6 +1,8 @@
 # 任务 298: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_full_mode_command_line_entrypoint`
 
-批次：【批次 298】 依赖批次 297
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

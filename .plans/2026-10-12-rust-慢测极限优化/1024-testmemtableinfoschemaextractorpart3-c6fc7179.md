@@ -1,6 +1,8 @@
 # 任务 1024: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart3`
 
-批次：【批次 1024】 依赖批次 1023
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

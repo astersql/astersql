@@ -1,6 +1,8 @@
 # 任务 1003: 优化 `astersql-ttl-client::command_test::etcd_notification_expires_after_go_one_second_lease`
 
-批次：【批次 1003】 依赖批次 1002
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

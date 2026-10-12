@@ -1,6 +1,8 @@
 # 任务 545: 优化 `astersql-executor-test-loaddatatest::load_data_test::test_load_data_low_priority_sets_kv_low_priority`
 
-批次：【批次 545】 依赖批次 544
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

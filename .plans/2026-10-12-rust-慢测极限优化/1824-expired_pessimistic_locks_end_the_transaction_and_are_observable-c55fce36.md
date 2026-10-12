@@ -1,6 +1,8 @@
 # 任务 1824: 优化 `astersql-session::runtime_pessimistic_test::expired_pessimistic_locks_end_the_transaction_and_are_observable`
 
-批次：【批次 1824】 依赖批次 1823
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

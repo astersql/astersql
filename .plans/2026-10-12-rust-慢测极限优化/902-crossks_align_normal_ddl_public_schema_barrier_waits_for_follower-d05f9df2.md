@@ -1,6 +1,8 @@
 # 任务 902: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_public_schema_barrier_waits_for_follower`
 
-批次：【批次 902】 依赖批次 901
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

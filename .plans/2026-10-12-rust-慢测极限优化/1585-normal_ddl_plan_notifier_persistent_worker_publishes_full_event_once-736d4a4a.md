@@ -1,6 +1,8 @@
 # 任务 1585: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_notifier_persistent_worker_publishes_full_event_once`
 
-批次：【批次 1585】 依赖批次 1584
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

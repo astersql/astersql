@@ -1,6 +1,8 @@
 # 任务 2235: 优化 `astersql-executor::adapter_internal_test::written_shared_lock_keys_are_promoted_deduplicated_and_errors_propagate`
 
-批次：【批次 2235】 依赖批次 2234
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

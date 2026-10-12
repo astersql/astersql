@@ -1,6 +1,8 @@
 # 任务 886: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyLargeTxnErr`
 
-批次：【批次 886】 依赖批次 885
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

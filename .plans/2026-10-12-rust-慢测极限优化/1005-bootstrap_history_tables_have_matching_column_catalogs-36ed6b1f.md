@@ -1,6 +1,8 @@
 # 任务 1005: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_history_tables_have_matching_column_catalogs`
 
-批次：【批次 1005】 依赖批次 1004
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

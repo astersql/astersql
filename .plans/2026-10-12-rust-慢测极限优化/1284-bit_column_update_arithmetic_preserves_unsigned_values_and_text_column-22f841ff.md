@@ -1,6 +1,8 @@
 # 任务 1284: 优化 `astersql-session::mysql_dml_compat_test::bit_column_update_arithmetic_preserves_unsigned_values_and_text_columns`
 
-批次：【批次 1284】 依赖批次 1283
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

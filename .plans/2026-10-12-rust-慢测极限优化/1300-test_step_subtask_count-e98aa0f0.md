@@ -1,6 +1,8 @@
 # 任务 1300: 优化 `astersql-tests-realtikvtest-importintotest2::subtask_count_test::test_step_subtask_count`
 
-批次：【批次 1300】 依赖批次 1299
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

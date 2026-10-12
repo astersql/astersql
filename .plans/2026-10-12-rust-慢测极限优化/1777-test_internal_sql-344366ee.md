@@ -1,6 +1,8 @@
 # 任务 1777: 优化 `astersql-tests-readonlytest::readonly_test::test_internal_sql`
 
-批次：【批次 1777】 依赖批次 1776
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

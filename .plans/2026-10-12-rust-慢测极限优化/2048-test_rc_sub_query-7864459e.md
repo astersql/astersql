@@ -1,6 +1,8 @@
 # 任务 2048: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_rc_sub_query`
 
-批次：【批次 2048】 依赖批次 2047
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

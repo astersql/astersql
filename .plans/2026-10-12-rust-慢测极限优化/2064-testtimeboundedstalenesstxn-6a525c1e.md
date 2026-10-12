@@ -1,6 +1,8 @@
 # 任务 2064: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestTimeBoundedStalenessTxn`
 
-批次：【批次 2064】 依赖批次 2063
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

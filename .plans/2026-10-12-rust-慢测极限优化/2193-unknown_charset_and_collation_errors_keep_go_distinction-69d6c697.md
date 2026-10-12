@@ -1,6 +1,8 @@
 # 任务 2193: 优化 `astersql-parser-charset::charset_1_aster_unit_test::unknown_charset_and_collation_errors_keep_go_distinction`
 
-批次：【批次 2193】 依赖批次 2192
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

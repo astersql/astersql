@@ -1,6 +1,8 @@
 # 任务 615: 优化 `astersql-tests-realtikvtest-addindextest4::failure_test::test_add_index_ingest_recover_partition`
 
-批次：【批次 615】 依赖批次 614
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

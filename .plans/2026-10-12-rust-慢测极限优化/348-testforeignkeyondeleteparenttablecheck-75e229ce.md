@@ -1,6 +1,8 @@
 # 任务 348: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnDeleteParentTableCheck`
 
-批次：【批次 348】 依赖批次 347
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

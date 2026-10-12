@@ -1,6 +1,8 @@
 # 任务 60: 优化 `astersql-planner-core-casetest-instanceplancache::dml_test::TestInstancePlanCacheDMLTPCC`
 
-批次：【批次 60】 依赖批次 59
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

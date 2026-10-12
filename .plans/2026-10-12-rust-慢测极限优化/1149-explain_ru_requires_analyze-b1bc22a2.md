@@ -1,6 +1,8 @@
 # 任务 1149: 优化 `astersql-session::runtime_dispatch_test::explain_ru_requires_analyze`
 
-批次：【批次 1149】 依赖批次 1148
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

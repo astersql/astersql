@@ -1,6 +1,8 @@
 # 任务 1586: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::historical_meta_failpoint_crosses_testkit_worker_thread`
 
-批次：【批次 1586】 依赖批次 1585
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

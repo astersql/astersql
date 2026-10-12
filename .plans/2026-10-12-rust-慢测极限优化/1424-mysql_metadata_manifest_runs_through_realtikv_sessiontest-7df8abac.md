@@ -1,6 +1,8 @@
 # 任务 1424: 优化 `astersql-tests-realtikvtest-sessiontest::mysql_metadata_compat_test::mysql_metadata_manifest_runs_through_realtikv_sessiontest`
 
-批次：【批次 1424】 依赖批次 1423
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

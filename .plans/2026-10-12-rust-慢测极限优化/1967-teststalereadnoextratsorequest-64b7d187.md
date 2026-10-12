@@ -1,6 +1,8 @@
 # 任务 1967: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestStaleReadNoExtraTSORequest`
 
-批次：【批次 1967】 依赖批次 1966
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

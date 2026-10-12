@@ -1,6 +1,8 @@
 # 任务 1548: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_skip_missing_partition_stats`
 
-批次：【批次 1548】 依赖批次 1547
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

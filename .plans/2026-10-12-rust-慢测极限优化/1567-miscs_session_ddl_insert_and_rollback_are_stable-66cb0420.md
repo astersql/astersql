@@ -1,6 +1,8 @@
 # 任务 1567: 优化 `astersql-session-test-common::common_test::miscs_session_ddl_insert_and_rollback_are_stable`
 
-批次：【批次 1567】 依赖批次 1566
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

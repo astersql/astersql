@@ -1,6 +1,8 @@
 # 任务 1780: 优化 `astersql-session::mysql_query_compat_test::common_mysql_single_table_queries_and_expressions_match_expected_rows`
 
-批次：【批次 1780】 依赖批次 1779
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

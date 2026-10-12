@@ -1,6 +1,8 @@
 # 任务 1316: 优化 `astersql-session::mysql_relational_query_compat_test::count_extrema_sql_duplicates_nulls_and_sliding_window`
 
-批次：【批次 1316】 依赖批次 1315
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

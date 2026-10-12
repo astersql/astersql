@@ -1,6 +1,8 @@
 # 任务 170: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_standard_golden_matches_go`
 
-批次：【批次 170】 依赖批次 169
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

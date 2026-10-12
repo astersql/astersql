@@ -1,6 +1,8 @@
 # 任务 2037: 优化 `astersql-session::runtime::ttl_metadata_test::go_merge_43_ttl_metadata_schedules_each_partition_by_physical_id`
 
-批次：【批次 2037】 依赖批次 2036
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

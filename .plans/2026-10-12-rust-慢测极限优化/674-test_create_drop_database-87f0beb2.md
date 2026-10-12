@@ -1,6 +1,8 @@
 # 任务 674: 优化 `astersql-executor-test-ddl::ddl_test::test_create_drop_database`
 
-批次：【批次 674】 依赖批次 673
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

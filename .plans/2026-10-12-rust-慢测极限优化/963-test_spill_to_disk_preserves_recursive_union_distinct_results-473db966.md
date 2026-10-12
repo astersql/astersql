@@ -1,6 +1,8 @@
 # 任务 963: 优化 `astersql-executor-test-cte::cte_test::test_spill_to_disk_preserves_recursive_union_distinct_results`
 
-批次：【批次 963】 依赖批次 962
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

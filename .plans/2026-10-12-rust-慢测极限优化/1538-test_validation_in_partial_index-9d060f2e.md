@@ -1,6 +1,8 @@
 # 任务 1538: 优化 `astersql-tests-realtikvtest-addindextest4::partial_index_test::test_validation_in_partial_index`
 
-批次：【批次 1538】 依赖批次 1537
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

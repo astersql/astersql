@@ -1,6 +1,8 @@
 # 任务 1448: 优化 `astersql-executor::slow_query_sql_test::tiflash_replica_with_tikv_hint_uses_tikv_plan`
 
-批次：【批次 1448】 依赖批次 1447
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

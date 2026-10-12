@@ -1,6 +1,8 @@
 # 任务 1183: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::static_partition_union_stays_uncacheable`
 
-批次：【批次 1183】 依赖批次 1182
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

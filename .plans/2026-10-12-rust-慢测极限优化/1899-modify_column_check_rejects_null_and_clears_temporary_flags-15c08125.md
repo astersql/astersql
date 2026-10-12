@@ -1,6 +1,8 @@
 # 任务 1899: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_check_rejects_null_and_clears_temporary_flags`
 
-批次：【批次 1899】 依赖批次 1898
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

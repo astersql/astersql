@@ -1,6 +1,8 @@
 # 任务 1536: 优化 `astersql-session::runtime_test::ddl::importinto_submission_uses_canonical_sql_and_classic_ddl_backend`
 
-批次：【批次 1536】 依赖批次 1535
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

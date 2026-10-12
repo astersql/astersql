@@ -1,6 +1,8 @@
 # 任务 1808: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestPessimisticLockLockView`
 
-批次：【批次 1808】 依赖批次 1807
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

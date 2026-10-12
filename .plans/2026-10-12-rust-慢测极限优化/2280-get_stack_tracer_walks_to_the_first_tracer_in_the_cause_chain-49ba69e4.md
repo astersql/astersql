@@ -1,6 +1,8 @@
 # 任务 2280: 优化 `astersql-errors::stack_test::get_stack_tracer_walks_to_the_first_tracer_in_the_cause_chain`
 
-批次：【批次 2280】 依赖批次 2279
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

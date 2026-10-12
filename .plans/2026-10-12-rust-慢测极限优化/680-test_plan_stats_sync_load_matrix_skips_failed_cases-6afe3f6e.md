@@ -1,6 +1,8 @@
 # 任务 680: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_load_matrix_skips_failed_cases`
 
-批次：【批次 680】 依赖批次 679
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

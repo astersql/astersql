@@ -1,6 +1,8 @@
 # 任务 875: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_auto_analyze_skip_column_types`
 
-批次：【批次 875】 依赖批次 874
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

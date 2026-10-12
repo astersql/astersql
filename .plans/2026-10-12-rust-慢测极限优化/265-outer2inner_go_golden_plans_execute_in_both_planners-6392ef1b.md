@@ -1,6 +1,8 @@
 # 任务 265: 优化 `astersql-planner-core-casetest-rule::rule_outer2inner_test::outer2inner_go_golden_plans_execute_in_both_planners`
 
-批次：【批次 265】 依赖批次 264
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

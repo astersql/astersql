@@ -1,6 +1,8 @@
 # 任务 1328: 优化 `astersql-testkit::db_driver_test::mock_stmt_query_row_is_first_row_and_reports_empty_result`
 
-批次：【批次 1328】 依赖批次 1327
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

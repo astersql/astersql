@@ -1,6 +1,8 @@
 # 任务 371: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_backfill_owner_fences_loss_cancel_pause_and_same_owner_new_term`
 
-批次：【批次 371】 依赖批次 370
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

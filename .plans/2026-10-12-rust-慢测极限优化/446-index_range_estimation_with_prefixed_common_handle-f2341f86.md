@@ -1,6 +1,8 @@
 # 任务 446: 优化 `astersql-planner-core-casetest-rule::rule_common_handle_range_test::index_range_estimation_with_prefixed_common_handle`
 
-批次：【批次 446】 依赖批次 445
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

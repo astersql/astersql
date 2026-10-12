@@ -1,6 +1,8 @@
 # 任务 1709: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_storage_class_worker_keeps_multi_schema_non_revertible_boundary`
 
-批次：【批次 1709】 依赖批次 1708
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

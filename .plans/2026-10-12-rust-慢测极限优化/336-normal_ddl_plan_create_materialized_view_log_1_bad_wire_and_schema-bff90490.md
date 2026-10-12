@@ -1,6 +1,8 @@
 # 任务 336: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_1_bad_wire_and_schema`
 
-批次：【批次 336】 依赖批次 335
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

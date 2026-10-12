@@ -1,6 +1,8 @@
 # 任务 1377: 优化 `astersql-testkit::mockstore_domain_stats_test::unlock_failure_rolls_back_meta_and_locked_row_together`
 
-批次：【批次 1377】 依赖批次 1376
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

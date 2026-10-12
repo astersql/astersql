@@ -1,6 +1,8 @@
 # 任务 2014: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_ingest_cancel_cleanup_order`
 
-批次：【批次 2014】 依赖批次 2013
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

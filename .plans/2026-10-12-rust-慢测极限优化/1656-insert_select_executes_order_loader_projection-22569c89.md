@@ -1,6 +1,8 @@
 # 任务 1656: 优化 `astersql-session::runtime_test::query::insert_select_executes_order_loader_projection`
 
-批次：【批次 1656】 依赖批次 1655
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

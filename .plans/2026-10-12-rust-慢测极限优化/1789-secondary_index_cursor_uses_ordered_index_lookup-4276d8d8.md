@@ -1,6 +1,8 @@
 # 任务 1789: 优化 `astersql-session::runtime_test::storage::secondary_index_cursor_uses_ordered_index_lookup`
 
-批次：【批次 1789】 依赖批次 1788
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

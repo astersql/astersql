@@ -1,6 +1,8 @@
 # 任务 1180: 优化 `astersql-ddl-tests-partition::main_test::partition_test_main_uses_real_session_and_partition_catalog`
 
-批次：【批次 1180】 依赖批次 1179
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

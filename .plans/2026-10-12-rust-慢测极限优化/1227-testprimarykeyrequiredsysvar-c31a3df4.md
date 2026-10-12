@@ -1,6 +1,8 @@
 # 任务 1227: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestPrimaryKeyRequiredSysvar`
 
-批次：【批次 1227】 依赖批次 1226
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1592: 优化 `astersql-session-test-txn::txn_test::autocommit_mode_switch_and_explicit_commit_rollback`
 
-批次：【批次 1592】 依赖批次 1591
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

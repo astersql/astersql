@@ -1,6 +1,8 @@
 # 任务 2203: 优化 `astersql-parser-terror::parser_terror_test::test_t_error`
 
-批次：【批次 2203】 依赖批次 2202
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

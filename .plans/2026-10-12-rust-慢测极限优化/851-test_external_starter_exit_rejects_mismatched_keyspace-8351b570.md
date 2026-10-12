@@ -1,6 +1,8 @@
 # 任务 851: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_exit_rejects_mismatched_keyspace`
 
-批次：【批次 851】 依赖批次 850
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

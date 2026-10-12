@@ -1,6 +1,8 @@
 # 任务 754: 优化 `astersql-executor-importer::precheck_test::async_prepare_checks_data_source_access_without_discovering_matches`
 
-批次：【批次 754】 依赖批次 753
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

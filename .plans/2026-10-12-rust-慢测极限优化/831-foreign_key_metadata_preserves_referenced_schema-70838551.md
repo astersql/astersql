@@ -1,6 +1,8 @@
 # 任务 831: 优化 `astersql-executor-test-infoschema::infoschema_test::foreign_key_metadata_preserves_referenced_schema`
 
-批次：【批次 831】 依赖批次 830
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2038: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_temp_dir_data_removed`
 
-批次：【批次 2038】 依赖批次 2037
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 522: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_analyze_produces_non_pseudo_stats_for_every_table`
 
-批次：【批次 522】 依赖批次 521
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 352: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_notifier_v1_multi_boundary_keys_and_validation`
 
-批次：【批次 352】 依赖批次 351
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

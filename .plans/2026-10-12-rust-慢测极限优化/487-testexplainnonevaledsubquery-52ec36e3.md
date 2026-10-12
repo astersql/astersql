@@ -1,6 +1,8 @@
 # 任务 487: 优化 `astersql-planner-core-casetest-scalarsubquery::cases_test::TestExplainNonEvaledSubquery`
 
-批次：【批次 487】 依赖批次 486
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

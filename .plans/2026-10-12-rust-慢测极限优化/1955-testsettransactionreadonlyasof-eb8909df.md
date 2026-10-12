@@ -1,6 +1,8 @@
 # 任务 1955: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestSetTransactionReadOnlyAsOf`
 
-批次：【批次 1955】 依赖批次 1954
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

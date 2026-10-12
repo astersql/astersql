@@ -1,6 +1,8 @@
 # 任务 1366: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_upgrade_fixture_forks_are_isolated`
 
-批次：【批次 1366】 依赖批次 1365
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

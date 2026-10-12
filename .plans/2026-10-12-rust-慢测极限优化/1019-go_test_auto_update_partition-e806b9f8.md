@@ -1,6 +1,8 @@
 # 任务 1019: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update_partition`
 
-批次：【批次 1019】 依赖批次 1018
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 155: 优化 `astersql-store::store_test::test_retry_open_store`
 
-批次：【批次 155】 依赖批次 154
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 158: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_backup_runner`
 
-批次：【批次 158】 依赖批次 157
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

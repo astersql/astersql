@@ -1,6 +1,8 @@
 # 任务 390: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_1_rejects_invalid_metadata`
 
-批次：【批次 390】 依赖批次 389
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

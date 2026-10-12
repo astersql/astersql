@@ -1,6 +1,8 @@
 # 任务 2113: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test::commit_failure_rolls_back_changes_and_releases_pessimistic_locks`
 
-批次：【批次 2113】 依赖批次 2112
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1506: 优化 `astersql-session::runtime_pessimistic_test::shared_lock_promotion_change_invalidates_named_prepared_plan_cache`
 
-批次：【批次 1506】 依赖批次 1505
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

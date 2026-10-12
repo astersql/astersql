@@ -1,6 +1,8 @@
 # 任务 1095: 优化 `astersql-session::runtime::normal_ddl_create_table_test::external_ttl_incomplete_job_prevents_recycling_other_finished_job`
 
-批次：【批次 1095】 依赖批次 1094
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

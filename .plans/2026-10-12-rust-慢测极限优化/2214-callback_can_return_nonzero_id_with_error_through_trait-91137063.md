@@ -1,6 +1,8 @@
 # 任务 2214: 优化 `astersql-importsdk-mock::sdk_mock_test::callback_can_return_nonzero_id_with_error_through_trait`
 
-批次：【批次 2214】 依赖批次 2213
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

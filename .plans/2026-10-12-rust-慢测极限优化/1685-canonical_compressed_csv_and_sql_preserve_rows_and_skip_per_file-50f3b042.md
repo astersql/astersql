@@ -1,6 +1,8 @@
 # 任务 1685: 优化 `astersql-session::runtime::import_compression::tests::canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file`
 
-批次：【批次 1685】 依赖批次 1684
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

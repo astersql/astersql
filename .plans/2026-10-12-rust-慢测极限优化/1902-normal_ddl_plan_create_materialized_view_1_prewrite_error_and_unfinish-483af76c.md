@@ -1,6 +1,8 @@
 # 任务 1902: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_test::normal_ddl_plan_create_materialized_view_1_prewrite_error_and_unfinished_stage`
 
-批次：【批次 1902】 依赖批次 1901
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

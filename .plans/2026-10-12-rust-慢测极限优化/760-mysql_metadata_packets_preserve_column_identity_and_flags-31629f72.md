@@ -1,6 +1,8 @@
 # 任务 760: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_metadata_packets_preserve_column_identity_and_flags`
 
-批次：【批次 760】 依赖批次 759
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 969: 优化 `astersql-session-test-common::common_test::index_column_length_is_visible_on_blob_prefix_index`
 
-批次：【批次 969】 依赖批次 968
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1658: 优化 `astersql-testkit::stats_runtime_aster_unit_test::show_stats_meta_evaluates_in_or_like_and_constant_predicates`
 
-批次：【批次 1658】 依赖批次 1657
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

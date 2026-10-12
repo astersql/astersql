@@ -1,6 +1,8 @@
 # 任务 1008: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_shadow_test::normal_ddl_plan_create_materialized_view_shadow_extra_row_and_random_bases`
 
-批次：【批次 1008】 依赖批次 1007
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

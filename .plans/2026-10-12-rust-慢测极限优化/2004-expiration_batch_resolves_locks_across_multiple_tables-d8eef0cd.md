@@ -1,6 +1,8 @@
 # 任务 2004: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test::expiration_batch_resolves_locks_across_multiple_tables`
 
-批次：【批次 2004】 依赖批次 2003
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

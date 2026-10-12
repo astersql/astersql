@@ -1,6 +1,8 @@
 # 任务 676: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertWideTableNoGC`
 
-批次：【批次 676】 依赖批次 675
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

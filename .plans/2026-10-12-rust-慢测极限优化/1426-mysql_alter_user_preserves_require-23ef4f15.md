@@ -1,6 +1,8 @@
 # 任务 1426: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_preserves_require`
 
-批次：【批次 1426】 依赖批次 1425
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

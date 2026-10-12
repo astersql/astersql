@@ -1,6 +1,8 @@
 # 任务 1934: 优化 `astersql-session::runtime::crossks_session_pool_test::go_merge_43_crossks_system_table_manager_reads_target_job_table`
 
-批次：【批次 1934】 依赖批次 1933
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

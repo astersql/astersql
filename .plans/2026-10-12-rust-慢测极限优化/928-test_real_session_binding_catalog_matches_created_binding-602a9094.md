@@ -1,6 +1,8 @@
 # 任务 928: 优化 `astersql-bindinfo-tests::bind_test::test_real_session_binding_catalog_matches_created_binding`
 
-批次：【批次 928】 依赖批次 927
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

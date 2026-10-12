@@ -1,6 +1,8 @@
 # 任务 2120: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_insert_same_origin_index_value`
 
-批次：【批次 2120】 依赖批次 2119
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

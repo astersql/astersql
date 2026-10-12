@@ -1,6 +1,8 @@
 # 任务 1589: 优化 `astersql-session-test-variable::variable_test::isolation_read_engines_can_be_set_to_tiflash_when_supported`
 
-批次：【批次 1589】 依赖批次 1588
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

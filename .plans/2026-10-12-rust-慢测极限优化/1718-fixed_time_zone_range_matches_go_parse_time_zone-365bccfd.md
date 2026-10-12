@@ -1,6 +1,8 @@
 # 任务 1718: 优化 `astersql-session::runtime_session_test::fixed_time_zone_range_matches_go_parse_time_zone`
 
-批次：【批次 1718】 依赖批次 1717
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

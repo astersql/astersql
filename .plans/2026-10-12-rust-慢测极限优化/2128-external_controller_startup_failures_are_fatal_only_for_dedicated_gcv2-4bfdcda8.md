@@ -1,6 +1,8 @@
 # 任务 2128: 优化 `astersql-session::runtime::ttl_sysvar_test::external_controller_startup_failures_are_fatal_only_for_dedicated_gcv2`
 
-批次：【批次 2128】 依赖批次 2127
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2033: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_txn_info_with_ps_protocol`
 
-批次：【批次 2033】 依赖批次 2032
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

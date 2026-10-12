@@ -1,6 +1,8 @@
 # 任务 936: 优化 `astersql-session::mlog_purge::purge_materialized_view_log_requires_a_database`
 
-批次：【批次 936】 依赖批次 935
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

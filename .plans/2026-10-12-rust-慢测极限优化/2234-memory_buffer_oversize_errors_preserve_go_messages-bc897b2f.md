@@ -1,6 +1,8 @@
 # 任务 2234: 优化 `astersql-store-driver-error::migration_aster_unit_test::memory_buffer_oversize_errors_preserve_go_messages`
 
-批次：【批次 2234】 依赖批次 2233
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

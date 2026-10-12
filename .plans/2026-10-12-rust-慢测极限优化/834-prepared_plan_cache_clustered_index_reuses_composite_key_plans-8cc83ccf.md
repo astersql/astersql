@@ -1,6 +1,8 @@
 # 任务 834: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_clustered_index_reuses_composite_key_plans`
 
-批次：【批次 834】 依赖批次 833
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

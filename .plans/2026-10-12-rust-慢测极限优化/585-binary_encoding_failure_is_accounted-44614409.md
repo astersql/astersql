@@ -1,6 +1,8 @@
 # 任务 585: 优化 `astersql-server::conn_stmt_test::binary_encoding_failure_is_accounted`
 
-批次：【批次 585】 依赖批次 584
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

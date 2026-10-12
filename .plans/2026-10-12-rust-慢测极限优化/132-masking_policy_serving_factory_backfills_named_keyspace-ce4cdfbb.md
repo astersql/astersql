@@ -1,6 +1,8 @@
 # 任务 132: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_serving_factory_backfills_named_keyspace`
 
-批次：【批次 132】 依赖批次 131
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

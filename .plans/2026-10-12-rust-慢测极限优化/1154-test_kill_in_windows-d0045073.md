@@ -1,6 +1,8 @@
 # 任务 1154: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_kill_in_windows`
 
-批次：【批次 1154】 依赖批次 1153
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

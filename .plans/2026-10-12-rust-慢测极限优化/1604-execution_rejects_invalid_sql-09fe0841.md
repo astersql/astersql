@@ -1,6 +1,8 @@
 # 任务 1604: 优化 `astersql-tests-realtikvtest-testutils::workload_test::execution_rejects_invalid_sql`
 
-批次：【批次 1604】 依赖批次 1603
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

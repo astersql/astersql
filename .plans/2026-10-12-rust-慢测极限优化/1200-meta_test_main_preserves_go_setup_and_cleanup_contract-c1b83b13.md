@@ -1,6 +1,8 @@
 # 任务 1200: 优化 `astersql-session-test-meta::main_test::meta_test_main_preserves_go_setup_and_cleanup_contract`
 
-批次：【批次 1200】 依赖批次 1199
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

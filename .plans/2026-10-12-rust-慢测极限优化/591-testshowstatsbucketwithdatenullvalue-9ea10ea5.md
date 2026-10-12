@@ -1,6 +1,8 @@
 # 任务 591: 优化 `astersql-executor::show_stats_test::TestShowStatsBucketWithDateNullValue`
 
-批次：【批次 591】 依赖批次 590
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

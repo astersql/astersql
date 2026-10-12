@@ -1,6 +1,8 @@
 # 任务 1481: 优化 `astersql-testkit::stats_runtime_aster_unit_test::typed_buckets_static_prune_and_partition_usage_match_go`
 
-批次：【批次 1481】 依赖批次 1480
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

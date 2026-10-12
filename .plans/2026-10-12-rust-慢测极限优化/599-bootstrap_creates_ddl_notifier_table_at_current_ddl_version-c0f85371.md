@@ -1,6 +1,8 @@
 # 任务 599: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_creates_ddl_notifier_table_at_current_ddl_version`
 
-批次：【批次 599】 依赖批次 598
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

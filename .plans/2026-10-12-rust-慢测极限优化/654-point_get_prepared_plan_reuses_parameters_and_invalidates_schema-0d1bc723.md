@@ -1,6 +1,8 @@
 # 任务 654: 优化 `astersql-executor-test-plancache::plan_cache_test::point_get_prepared_plan_reuses_parameters_and_invalidates_schema`
 
-批次：【批次 654】 依赖批次 653
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 560: 优化 `astersql-executor-test-ddl::ddl_test::test_create_table`
 
-批次：【批次 560】 依赖批次 559
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

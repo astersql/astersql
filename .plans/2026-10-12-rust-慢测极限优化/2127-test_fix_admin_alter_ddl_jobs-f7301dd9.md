@@ -1,6 +1,8 @@
 # 任务 2127: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_fix_admin_alter_ddl_jobs`
 
-批次：【批次 2127】 依赖批次 2126
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

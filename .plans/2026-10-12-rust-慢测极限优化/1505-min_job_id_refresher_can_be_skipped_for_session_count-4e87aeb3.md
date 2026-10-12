@@ -1,6 +1,8 @@
 # 任务 1505: 优化 `astersql-session::runtime::lifecycle_test::min_job_id_refresher_can_be_skipped_for_session_count`
 
-批次：【批次 1505】 依赖批次 1504
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

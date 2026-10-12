@@ -1,6 +1,8 @@
 # 任务 631: 优化 `astersql-server-tests-standby::standby_test::canonical_standby_activation_starts_status_server_and_controller_route`
 
-批次：【批次 631】 依赖批次 630
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

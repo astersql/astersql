@@ -1,6 +1,8 @@
 # 任务 1049: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_tables`
 
-批次：【批次 1049】 依赖批次 1048
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

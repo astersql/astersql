@@ -1,6 +1,8 @@
 # 任务 1617: 优化 `astersql-ddl-tests-serial::serial_test::test_change_max_index_length`
 
-批次：【批次 1617】 依赖批次 1616
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

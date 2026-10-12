@@ -1,6 +1,8 @@
 # 任务 2196: 优化 `astersql-util-topsql-reporter::reporter_test::test_top_ru_pipeline_in_process_integration`
 
-批次：【批次 2196】 依赖批次 2195
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

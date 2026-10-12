@@ -1,6 +1,8 @@
 # 任务 1618: 优化 `astersql-planner-core-issuetest::planner_issue_test::planner_issue_execution_regressions_preserve_query_results`
 
-批次：【批次 1618】 依赖批次 1617
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

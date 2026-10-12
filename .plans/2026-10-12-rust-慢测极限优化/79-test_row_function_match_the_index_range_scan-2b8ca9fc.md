@@ -1,6 +1,8 @@
 # 任务 79: 优化 `astersql-planner-core-casetest-index::index_test::test_row_function_match_the_index_range_scan`
 
-批次：【批次 79】 依赖批次 78
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

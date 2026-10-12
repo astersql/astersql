@@ -1,6 +1,8 @@
 # 任务 1271: 优化 `astersql-session::main_test::test_main_callback_waits_for_mvcc_cleanup_and_preserves_exit_code`
 
-批次：【批次 1271】 依赖批次 1270
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

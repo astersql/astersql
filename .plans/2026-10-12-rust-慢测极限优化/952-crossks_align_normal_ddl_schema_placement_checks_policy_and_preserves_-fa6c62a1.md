@@ -1,6 +1,8 @@
 # 任务 952: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_schema_placement_checks_policy_and_preserves_go_noop_rules`
 
-批次：【批次 952】 依赖批次 951
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

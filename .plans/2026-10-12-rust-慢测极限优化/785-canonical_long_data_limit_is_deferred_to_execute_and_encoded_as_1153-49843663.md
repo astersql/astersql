@@ -1,6 +1,8 @@
 # 任务 785: 优化 `astersql-server::conn_test::canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153`
 
-批次：【批次 785】 依赖批次 784
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

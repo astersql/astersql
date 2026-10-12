@@ -1,6 +1,8 @@
 # 任务 341: 优化 `astersql-planner-core-casetest-windows::window_with_exist_subquery_test::window_subquery_rewrite_matches_go_results`
 
-批次：【批次 341】 依赖批次 340
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

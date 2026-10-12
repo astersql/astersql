@@ -1,6 +1,8 @@
 # 任务 1910: 优化 `astersql-util-topsql-reporter::topru_generated_cases_test::test_top_ru_generated_cases`
 
-批次：【批次 1910】 依赖批次 1909
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

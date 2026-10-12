@@ -1,6 +1,8 @@
 # 任务 1360: 优化 `astersql-store-gcworker::gc_worker_test::TestRunGCJob`
 
-批次：【批次 1360】 依赖批次 1359
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

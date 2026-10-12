@@ -1,6 +1,8 @@
 # 任务 456: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::explain_expand_reports_grouping_argument_error`
 
-批次：【批次 456】 依赖批次 455
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

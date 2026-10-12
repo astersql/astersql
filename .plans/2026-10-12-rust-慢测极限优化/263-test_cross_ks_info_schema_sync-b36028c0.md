@@ -1,6 +1,8 @@
 # 任务 263: 优化 `astersql-tests-realtikvtest-addindextest1::cross_ks_test::test_cross_ks_info_schema_sync`
 
-批次：【批次 263】 依赖批次 262
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

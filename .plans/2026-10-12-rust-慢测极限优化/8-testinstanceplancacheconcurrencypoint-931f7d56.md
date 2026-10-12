@@ -1,6 +1,8 @@
 # 任务 8: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_test::TestInstancePlanCacheConcurrencyPoint`
 
-批次：【批次 8】 依赖批次 7
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

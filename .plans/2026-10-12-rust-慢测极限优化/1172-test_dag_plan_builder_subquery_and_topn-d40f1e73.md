@@ -1,6 +1,8 @@
 # 任务 1172: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_subquery_and_topn`
 
-批次：【批次 1172】 依赖批次 1171
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

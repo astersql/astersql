@@ -1,6 +1,8 @@
 # 任务 1389: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_table_mode`
 
-批次：【批次 1389】 依赖批次 1388
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

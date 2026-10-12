@@ -1,6 +1,8 @@
 # 任务 1044: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_tick_resumes_expired_owner_job_with_original_watermark`
 
-批次：【批次 1044】 依赖批次 1043
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

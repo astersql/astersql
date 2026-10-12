@@ -1,6 +1,8 @@
 # 任务 411: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_multi_schema_change_two_indexes`
 
-批次：【批次 411】 依赖批次 410
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

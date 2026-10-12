@@ -1,6 +1,8 @@
 # 任务 687: 优化 `astersql-executor::historical_stats_test::TestGCHistoryStatsAfterDropTable`
 
-批次：【批次 687】 依赖批次 686
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

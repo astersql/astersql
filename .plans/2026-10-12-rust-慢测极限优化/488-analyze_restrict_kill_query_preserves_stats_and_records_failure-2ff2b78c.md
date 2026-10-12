@@ -1,6 +1,8 @@
 # 任务 488: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_restrict_kill_query_preserves_stats_and_records_failure`
 
-批次：【批次 488】 依赖批次 487
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

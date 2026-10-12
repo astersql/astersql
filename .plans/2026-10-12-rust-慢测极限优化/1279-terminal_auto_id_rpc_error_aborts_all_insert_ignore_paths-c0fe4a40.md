@@ -1,6 +1,8 @@
 # 任务 1279: 优化 `astersql-session::runtime_session_test::terminal_auto_id_rpc_error_aborts_all_insert_ignore_paths`
 
-批次：【批次 1279】 依赖批次 1278
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1499: 优化 `astersql-ddl-tests-serial::serial_test::test_table_locks_disable`
 
-批次：【批次 1499】 依赖批次 1498
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

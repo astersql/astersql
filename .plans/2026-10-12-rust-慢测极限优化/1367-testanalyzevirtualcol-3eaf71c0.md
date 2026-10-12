@@ -1,6 +1,8 @@
 # 任务 1367: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeVirtualCol`
 
-批次：【批次 1367】 依赖批次 1366
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

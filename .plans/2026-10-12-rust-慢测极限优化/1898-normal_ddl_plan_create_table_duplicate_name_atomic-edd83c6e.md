@@ -1,6 +1,8 @@
 # 任务 1898: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_duplicate_name_atomic`
 
-批次：【批次 1898】 依赖批次 1897
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

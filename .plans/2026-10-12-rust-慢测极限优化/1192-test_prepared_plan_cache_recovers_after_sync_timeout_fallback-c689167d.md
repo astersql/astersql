@@ -1,6 +1,8 @@
 # 任务 1192: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_prepared_plan_cache_recovers_after_sync_timeout_fallback`
 
-批次：【批次 1192】 依赖批次 1191
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1719: 优化 `astersql-session-test-common::prepare_dedup_cache_test::prepare_parameterized_insert_works_after_create`
 
-批次：【批次 1719】 依赖批次 1718
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

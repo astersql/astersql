@@ -1,6 +1,8 @@
 # 任务 597: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::physical_plan_hint_is_reflected_in_real_explain`
 
-批次：【批次 597】 依赖批次 596
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

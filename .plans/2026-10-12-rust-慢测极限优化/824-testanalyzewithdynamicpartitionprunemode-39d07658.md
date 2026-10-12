@@ -1,6 +1,8 @@
 # 任务 824: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeWithDynamicPartitionPruneMode`
 
-批次：【批次 824】 依赖批次 823
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

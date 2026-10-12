@@ -1,6 +1,8 @@
 # 任务 2105: 优化 `astersql-session::runtime_session_test::session_read_staleness_honors_mock_stale_read_tso`
 
-批次：【批次 2105】 依赖批次 2104
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

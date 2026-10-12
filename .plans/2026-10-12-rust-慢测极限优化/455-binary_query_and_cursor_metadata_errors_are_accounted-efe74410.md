@@ -1,6 +1,8 @@
 # 任务 455: 优化 `astersql-server::conn_stmt_test::binary_query_and_cursor_metadata_errors_are_accounted`
 
-批次：【批次 455】 依赖批次 454
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

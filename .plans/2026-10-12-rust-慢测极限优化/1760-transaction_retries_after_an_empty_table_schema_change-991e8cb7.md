@@ -1,6 +1,8 @@
 # 任务 1760: 优化 `astersql-session-test-schematest::schema_test::transaction_retries_after_an_empty_table_schema_change`
 
-批次：【批次 1760】 依赖批次 1759
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

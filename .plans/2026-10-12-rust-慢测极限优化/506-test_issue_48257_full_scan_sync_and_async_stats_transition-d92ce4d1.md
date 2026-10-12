@@ -1,6 +1,8 @@
 # 任务 506: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_issue_48257_full_scan_sync_and_async_stats_transition`
 
-批次：【批次 506】 依赖批次 505
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

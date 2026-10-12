@@ -1,6 +1,8 @@
 # 任务 947: 优化 `astersql-ddl-tests-partition::reorg_partition_test::concurrent_dml_during_reorg_keeps_every_real_row`
 
-批次：【批次 947】 依赖批次 946
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

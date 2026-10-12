@@ -1,6 +1,8 @@
 # 任务 1919: 优化 `astersql-session::runtime_test::ddl::ddl_self_version_update_retries_three_injected_etcd_failures`
 
-批次：【批次 1919】 依赖批次 1918
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1484: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_drop_table_malformed_policy_prevents_partial_cleanup`
 
-批次：【批次 1484】 依赖批次 1483
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

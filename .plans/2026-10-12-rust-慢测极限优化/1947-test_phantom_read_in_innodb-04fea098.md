@@ -1,6 +1,8 @@
 # 任务 1947: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_phantom_read_in_innodb`
 
-批次：【批次 1947】 依赖批次 1946
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

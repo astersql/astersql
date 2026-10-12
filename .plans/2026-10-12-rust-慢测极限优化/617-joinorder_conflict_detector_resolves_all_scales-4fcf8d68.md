@@ -1,6 +1,8 @@
 # 任务 617: 优化 `astersql-planner-core-joinorder::bitset_bench_test::joinorder_conflict_detector_resolves_all_scales`
 
-批次：【批次 617】 依赖批次 616
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

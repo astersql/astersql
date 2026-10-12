@@ -1,6 +1,8 @@
 # 任务 439: 优化 `astersql-dxf-importinto::task_executor_testkit_test::import_step_run_subtask_cleans_real_local_engines_before_retry`
 
-批次：【批次 439】 依赖批次 438
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

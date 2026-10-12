@@ -1,6 +1,8 @@
 # 任务 1716: 优化 `astersql-testkit::mockstore_domain_ddl_test::exchange_partition_swaps_metadata_identity_without_rewriting_locks`
 
-批次：【批次 1716】 依赖批次 1715
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

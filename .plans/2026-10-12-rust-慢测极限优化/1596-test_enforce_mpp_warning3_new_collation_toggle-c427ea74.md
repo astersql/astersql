@@ -1,6 +1,8 @@
 # 任务 1596: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning3_new_collation_toggle`
 
-批次：【批次 1596】 依赖批次 1595
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

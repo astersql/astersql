@@ -1,6 +1,8 @@
 # 任务 1756: 优化 `astersql-session::runtime_test::session::transaction_schema_check_ignores_temporary_tables_but_rejects_changed_normal_tables`
 
-批次：【批次 1756】 依赖批次 1755
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

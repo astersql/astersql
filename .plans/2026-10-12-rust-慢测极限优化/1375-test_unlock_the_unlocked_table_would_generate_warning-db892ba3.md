@@ -1,6 +1,8 @@
 # 任务 1375: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_unlock_the_unlocked_table_would_generate_warning`
 
-批次：【批次 1375】 依赖批次 1374
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 312: 优化 `astersql-testkit::cascades_compatibility_test::runs_each_compatibility_helper_only_with_cascades_off`
 
-批次：【批次 312】 依赖批次 311
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 806: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_window_concurrency`
 
-批次：【批次 806】 依赖批次 805
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

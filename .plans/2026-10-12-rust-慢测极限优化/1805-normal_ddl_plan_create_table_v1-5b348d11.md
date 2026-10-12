@@ -1,6 +1,8 @@
 # 任务 1805: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_v1`
 
-批次：【批次 1805】 依赖批次 1804
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

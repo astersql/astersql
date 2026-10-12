@@ -1,6 +1,8 @@
 # 任务 2023: 优化 `astersql-br-pkg-task::restore_ebs_meta_test::marks_recovering_resets_ts_and_closes_controller_in_go_order`
 
-批次：【批次 2023】 依赖批次 2022
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

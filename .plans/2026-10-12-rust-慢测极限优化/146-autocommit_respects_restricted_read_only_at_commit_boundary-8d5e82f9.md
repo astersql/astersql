@@ -1,6 +1,8 @@
 # 任务 146: 优化 `astersql-session-test-txn::txn_test::autocommit_respects_restricted_read_only_at_commit_boundary`
 
-批次：【批次 146】 依赖批次 145
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

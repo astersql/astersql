@@ -1,6 +1,8 @@
 # 任务 1644: 优化 `astersql-session::runtime_test::query::concrete_information_schema_answers_connector_j_metadata_queries`
 
-批次：【批次 1644】 依赖批次 1643
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

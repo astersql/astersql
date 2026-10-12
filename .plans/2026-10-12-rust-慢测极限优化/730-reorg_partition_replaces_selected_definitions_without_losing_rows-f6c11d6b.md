@@ -1,6 +1,8 @@
 # 任务 730: 优化 `astersql-ddl-tests-partition::reorg_partition_test::reorg_partition_replaces_selected_definitions_without_losing_rows`
 
-批次：【批次 730】 依赖批次 729
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

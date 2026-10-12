@@ -1,6 +1,8 @@
 # 任务 1045: 优化 `astersql-session::system_session::crossks_align_infoschema_prepared_read_and_transaction_cleanup`
 
-批次：【批次 1045】 依赖批次 1044
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

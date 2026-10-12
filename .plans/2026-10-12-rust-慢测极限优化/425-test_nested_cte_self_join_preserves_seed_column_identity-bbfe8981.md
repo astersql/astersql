@@ -1,6 +1,8 @@
 # 任务 425: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_nested_cte_self_join_preserves_seed_column_identity`
 
-批次：【批次 425】 依赖批次 424
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

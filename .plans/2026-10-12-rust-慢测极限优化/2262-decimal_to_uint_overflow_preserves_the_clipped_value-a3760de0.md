@@ -1,6 +1,8 @@
 # 任务 2262: 优化 `astersql-types-datum::migration_aster_unit_test::decimal_to_uint_overflow_preserves_the_clipped_value`
 
-批次：【批次 2262】 依赖批次 2261
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

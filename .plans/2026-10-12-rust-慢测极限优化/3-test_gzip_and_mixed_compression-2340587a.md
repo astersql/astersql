@@ -1,6 +1,8 @@
 # 任务 3: 优化 `astersql-tests-realtikvtest-importintotest3::file_compression_test::test_gzip_and_mixed_compression`
 
-批次：【批次 3】 依赖批次 2
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

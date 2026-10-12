@@ -1,6 +1,8 @@
 # 任务 2101: 优化 `astersql-session::runtime::scan_adapter_runtime_test::canonical_locked_point_get_rejects_a_record_deleted_after_rr_read_ts_without_retaining_lock`
 
-批次：【批次 2101】 依赖批次 2100
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

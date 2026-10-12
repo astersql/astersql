@@ -1,6 +1,8 @@
 # 任务 1205: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_list_columns_partition_pruner`
 
-批次：【批次 1205】 依赖批次 1204
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1060: 优化 `astersql-executor-test-executor::executor_test::not_fill_cache_flag_matches_go_matrix`
 
-批次：【批次 1060】 依赖批次 1059
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

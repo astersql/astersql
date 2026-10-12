@@ -1,6 +1,8 @@
 # 任务 1289: 优化 `astersql-dxf-importinto::scheduler_testkit_test::scheduler_prepare_mode_runs_real_file_discovery_and_persists_chunks`
 
-批次：【批次 1289】 依赖批次 1288
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

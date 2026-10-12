@@ -1,6 +1,8 @@
 # 任务 1285: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_full_mode_boolean_values_and_errors`
 
-批次：【批次 1285】 依赖批次 1284
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

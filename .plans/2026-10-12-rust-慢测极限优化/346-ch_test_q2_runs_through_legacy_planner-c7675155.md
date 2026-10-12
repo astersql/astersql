@@ -1,6 +1,8 @@
 # 任务 346: 优化 `astersql-planner-core-casetest-ch::ch_test::ch_test_q2_runs_through_legacy_planner`
 
-批次：【批次 346】 依赖批次 345
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

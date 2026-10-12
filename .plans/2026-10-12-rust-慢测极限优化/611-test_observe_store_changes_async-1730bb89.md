@@ -1,6 +1,8 @@
 # 任务 611: 优化 `astersql-br-pkg-backup::client_test::test_observe_store_changes_async`
 
-批次：【批次 611】 依赖批次 610
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

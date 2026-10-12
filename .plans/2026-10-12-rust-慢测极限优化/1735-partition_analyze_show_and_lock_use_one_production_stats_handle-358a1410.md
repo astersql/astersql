@@ -1,6 +1,8 @@
 # 任务 1735: 优化 `astersql-testkit::stats_runtime_aster_unit_test::partition_analyze_show_and_lock_use_one_production_stats_handle`
 
-批次：【批次 1735】 依赖批次 1734
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

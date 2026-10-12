@@ -1,6 +1,8 @@
 # 任务 1676: 优化 `astersql-session-test-variable::variable_test::rate_limit_action_and_global_dml_batch_size_round_trip`
 
-批次：【批次 1676】 依赖批次 1675
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

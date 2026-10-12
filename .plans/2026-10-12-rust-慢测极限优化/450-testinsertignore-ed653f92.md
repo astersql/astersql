@@ -1,6 +1,8 @@
 # 任务 450: 优化 `astersql-executor-test-writetest::write_test::TestInsertIgnore`
 
-批次：【批次 450】 依赖批次 449
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

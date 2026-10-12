@@ -1,6 +1,8 @@
 # 任务 443: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::bootstrap_reserved_versions_preserve_compatibility_variables`
 
-批次：【批次 443】 依赖批次 442
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

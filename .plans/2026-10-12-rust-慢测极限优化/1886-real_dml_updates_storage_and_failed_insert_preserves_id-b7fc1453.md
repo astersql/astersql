@@ -1,6 +1,8 @@
 # 任务 1886: 优化 `astersql-tests-realtikvtest-testutils::workload_test::real_dml_updates_storage_and_failed_insert_preserves_id`
 
-批次：【批次 1886】 依赖批次 1885
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

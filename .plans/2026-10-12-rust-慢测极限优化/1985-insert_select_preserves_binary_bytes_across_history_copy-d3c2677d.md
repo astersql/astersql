@@ -1,6 +1,8 @@
 # 任务 1985: 优化 `astersql-session::runtime::query_binary_test::insert_select_preserves_binary_bytes_across_history_copy`
 
-批次：【批次 1985】 依赖批次 1984
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

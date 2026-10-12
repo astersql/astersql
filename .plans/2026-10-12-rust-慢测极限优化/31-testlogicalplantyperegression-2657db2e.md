@@ -1,6 +1,8 @@
 # 任务 31: 优化 `astersql-planner-core-casetest-logicalplan::logical_plan_builder_test::TestLogicalPlanTypeRegression`
 
-批次：【批次 31】 依赖批次 30
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

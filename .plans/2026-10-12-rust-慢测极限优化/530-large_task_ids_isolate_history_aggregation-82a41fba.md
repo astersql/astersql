@@ -1,6 +1,8 @@
 # 任务 530: 优化 `astersql-dxf-importinto::job_testkit_test::large_task_ids_isolate_history_aggregation`
 
-批次：【批次 530】 依赖批次 529
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

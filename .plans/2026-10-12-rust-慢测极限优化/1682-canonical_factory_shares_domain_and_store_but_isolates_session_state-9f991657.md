@@ -1,6 +1,8 @@
 # 任务 1682: 优化 `astersql-session::runtime_test::session::canonical_factory_shares_domain_and_store_but_isolates_session_state`
 
-批次：【批次 1682】 依赖批次 1681
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

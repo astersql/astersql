@@ -1,6 +1,8 @@
 # 任务 152: 优化 `astersql-server::conn_stmt_test::next_and_finish_are_excluded_and_errors_preserved`
 
-批次：【批次 152】 依赖批次 151
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

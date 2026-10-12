@@ -1,6 +1,8 @@
 # 任务 1680: 优化 `astersql-session::system_session::crossks_align_system_session_return_rolls_back`
 
-批次：【批次 1680】 依赖批次 1679
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

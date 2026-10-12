@@ -1,6 +1,8 @@
 # 任务 1953: 优化 `astersql-session::runtime::ttl_sysvar_test::go_merge_43_set_global_ttl_enable_forwards_to_master_controller`
 
-批次：【批次 1953】 依赖批次 1952
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

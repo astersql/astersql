@@ -1,6 +1,8 @@
 # 任务 258: 优化 `astersql-server::runtime_test::query_cancellation_completion_preserves_session_transaction`
 
-批次：【批次 258】 依赖批次 257
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

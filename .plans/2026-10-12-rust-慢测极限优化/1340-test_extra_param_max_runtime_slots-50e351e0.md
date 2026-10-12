@@ -1,6 +1,8 @@
 # 任务 1340: 优化 `astersql-tests-realtikvtest-importintotest3::extra_param_test::test_extra_param_max_runtime_slots`
 
-批次：【批次 1340】 依赖批次 1339
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

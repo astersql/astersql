@@ -1,6 +1,8 @@
 # 任务 13: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_vector_search_heavy_function_matches_go_golden`
 
-批次：【批次 13】 依赖批次 12
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1134: 优化 `astersql-br-pkg-registry::heartbeat::heartbeat_test::ticker_starts_before_the_initial_heartbeat_like_go`
 
-批次：【批次 1134】 依赖批次 1133
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

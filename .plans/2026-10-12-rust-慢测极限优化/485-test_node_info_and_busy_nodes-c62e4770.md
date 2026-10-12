@@ -1,6 +1,8 @@
 # 任务 485: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_node_info_and_busy_nodes`
 
-批次：【批次 485】 依赖批次 484
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1133: 优化 `astersql-session-test-schematest::schema_test::batch_insert_updates_realtime_row_count_for_table_statistics`
 
-批次：【批次 1133】 依赖批次 1132
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

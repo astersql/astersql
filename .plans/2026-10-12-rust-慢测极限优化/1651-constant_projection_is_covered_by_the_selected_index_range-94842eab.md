@@ -1,6 +1,8 @@
 # 任务 1651: 优化 `astersql-session::runtime_test::planning::constant_projection_is_covered_by_the_selected_index_range`
 
-批次：【批次 1651】 依赖批次 1650
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

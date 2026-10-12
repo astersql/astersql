@@ -1,6 +1,8 @@
 # 任务 305: 优化 `astersql-tests-realtikvtest-importintotest::sdk_test::test_import_sdk`
 
-批次：【批次 305】 依赖批次 304
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

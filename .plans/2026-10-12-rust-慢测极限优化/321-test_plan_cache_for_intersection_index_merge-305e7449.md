@@ -1,6 +1,8 @@
 # 任务 321: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_intersection_test::test_plan_cache_for_intersection_index_merge`
 
-批次：【批次 321】 依赖批次 320
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

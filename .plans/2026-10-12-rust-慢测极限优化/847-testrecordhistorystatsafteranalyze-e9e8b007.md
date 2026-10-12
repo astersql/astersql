@@ -1,6 +1,8 @@
 # 任务 847: 优化 `astersql-executor::historical_stats_test::TestRecordHistoryStatsAfterAnalyze`
 
-批次：【批次 847】 依赖批次 846
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

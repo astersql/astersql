@@ -1,6 +1,8 @@
 # 任务 2164: 优化 `astersql-session::dml_runtime_test::go_merge_49_create_mlog_sql_installs_executable_metadata`
 
-批次：【批次 2164】 依赖批次 2163
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

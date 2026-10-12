@@ -1,6 +1,8 @@
 # 任务 1321: 优化 `astersql-tests-realtikvtest-importintotest3::cleanup_on_error_test::test_cleanup_on_data_engine_import_error`
 
-批次：【批次 1321】 依赖批次 1320
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

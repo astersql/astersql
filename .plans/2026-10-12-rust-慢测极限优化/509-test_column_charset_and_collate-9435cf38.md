@@ -1,6 +1,8 @@
 # 任务 509: 优化 `astersql-executor-test-ddl::ddl_test::test_column_charset_and_collate`
 
-批次：【批次 509】 依赖批次 508
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

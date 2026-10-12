@@ -1,6 +1,8 @@
 # 任务 894: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_shared_cte_scan_tpch_like_tables`
 
-批次：【批次 894】 依赖批次 893
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

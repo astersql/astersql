@@ -1,6 +1,8 @@
 # 任务 369: 优化 `astersql-testkit::stats_runtime_aster_unit_test::analyze_batch_save_failure_is_atomic_and_records_failed_jobs`
 
-批次：【批次 369】 依赖批次 368
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

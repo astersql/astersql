@@ -1,6 +1,8 @@
 # 任务 972: 优化 `astersql-ddl-tests-partition::reorg_partition_test::missing_reorg_handle_returns_error_and_retry_preserves_rows_and_local_indexes`
 
-批次：【批次 972】 依赖批次 971
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

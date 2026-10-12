@@ -1,6 +1,8 @@
 # 任务 2191: 优化 `astersql-domain-affinity::interface_test::final_delete_failure_is_logged_once_with_error_and_group_ids`
 
-批次：【批次 2191】 依赖批次 2190
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

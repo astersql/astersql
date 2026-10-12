@@ -1,6 +1,8 @@
 # 任务 10: 优化 `astersql-planner-core-casetest-instanceplancache::concurrency_tpcc_test::TestInstancePlanCacheConcurrencyTPCC`
 
-批次：【批次 10】 依赖批次 9
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

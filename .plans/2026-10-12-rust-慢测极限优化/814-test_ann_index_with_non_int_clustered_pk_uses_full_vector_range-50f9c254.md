@@ -1,6 +1,8 @@
 # 任务 814: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_with_non_int_clustered_pk_uses_full_vector_range`
 
-批次：【批次 814】 依赖批次 813
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

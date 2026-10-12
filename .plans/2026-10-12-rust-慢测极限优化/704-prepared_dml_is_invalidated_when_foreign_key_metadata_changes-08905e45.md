@@ -1,6 +1,8 @@
 # 任务 704: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_dml_is_invalidated_when_foreign_key_metadata_changes`
 
-批次：【批次 704】 依赖批次 703
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 207: 优化 `astersql-server::server_test::write_sql_resp_cursor_execute_and_fetch_use_production_lifecycle`
 
-批次：【批次 207】 依赖批次 206
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1076: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_table_test::prepared_point_get_reads_the_selected_partition`
 
-批次：【批次 1076】 依赖批次 1075
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

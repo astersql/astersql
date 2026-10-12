@@ -1,6 +1,8 @@
 # 任务 393: 优化 `astersql-session::runtime::normal_ddl_create_table_test::external_ttl_completed_batch_recycles_original_max_create_time_only_from_worker`
 
-批次：【批次 393】 依赖批次 392
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

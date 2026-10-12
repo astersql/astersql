@@ -1,6 +1,8 @@
 # 任务 1202: 优化 `astersql-executor::slow_query_sql_test::slow_query_without_slow_log_is_empty`
 
-批次：【批次 1202】 依赖批次 1201
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

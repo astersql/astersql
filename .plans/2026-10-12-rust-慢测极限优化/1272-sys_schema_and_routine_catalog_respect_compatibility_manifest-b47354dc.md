@@ -1,6 +1,8 @@
 # 任务 1272: 优化 `astersql-session::mysql_sys_schema_compat_test::sys_schema_and_routine_catalog_respect_compatibility_manifest`
 
-批次：【批次 1272】 依赖批次 1271
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

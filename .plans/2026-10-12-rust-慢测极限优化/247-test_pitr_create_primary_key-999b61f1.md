@@ -1,6 +1,8 @@
 # 任务 247: 优化 `astersql-tests-realtikvtest-addindextest::pitr_test::test_pitr_create_primary_key`
 
-批次：【批次 247】 依赖批次 246
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

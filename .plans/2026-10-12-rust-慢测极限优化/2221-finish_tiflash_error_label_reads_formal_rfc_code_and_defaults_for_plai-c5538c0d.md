@@ -1,6 +1,8 @@
 # 任务 2221: 优化 `astersql-executor::adapter_internal_test::finish_tiflash_error_label_reads_formal_rfc_code_and_defaults_for_plain_errors`
 
-批次：【批次 2221】 依赖批次 2220
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

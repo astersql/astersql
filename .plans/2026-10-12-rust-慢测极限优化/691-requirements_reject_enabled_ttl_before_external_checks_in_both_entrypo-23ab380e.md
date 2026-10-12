@@ -1,6 +1,8 @@
 # 任务 691: 优化 `astersql-executor-importer::precheck_test::requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints`
 
-批次：【批次 691】 依赖批次 690
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

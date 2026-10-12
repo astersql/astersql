@@ -1,6 +1,8 @@
 # 任务 1466: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_masking_policy_table_schema_is_complete`
 
-批次：【批次 1466】 依赖批次 1465
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

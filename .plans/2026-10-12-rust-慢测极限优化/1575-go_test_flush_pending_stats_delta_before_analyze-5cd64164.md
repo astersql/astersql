@@ -1,6 +1,8 @@
 # 任务 1575: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_flush_pending_stats_delta_before_analyze`
 
-批次：【批次 1575】 依赖批次 1574
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

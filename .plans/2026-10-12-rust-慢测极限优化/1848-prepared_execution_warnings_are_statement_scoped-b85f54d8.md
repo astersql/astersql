@@ -1,6 +1,8 @@
 # 任务 1848: 优化 `astersql-planner-core-casetest-plancache::plan_cache_suite_test::prepared_execution_warnings_are_statement_scoped`
 
-批次：【批次 1848】 依赖批次 1847
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

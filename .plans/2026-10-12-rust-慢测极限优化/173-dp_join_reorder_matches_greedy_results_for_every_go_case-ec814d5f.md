@@ -1,6 +1,8 @@
 # 任务 173: 优化 `astersql-planner-core-casetest-rule::rule_cdc_join_reorder_test::dp_join_reorder_matches_greedy_results_for_every_go_case`
 
-批次：【批次 173】 依赖批次 172
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

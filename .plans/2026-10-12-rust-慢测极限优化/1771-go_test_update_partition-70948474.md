@@ -1,6 +1,8 @@
 # 任务 1771: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_update_partition`
 
-批次：【批次 1771】 依赖批次 1770
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

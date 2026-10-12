@@ -1,6 +1,8 @@
 # 任务 274: 优化 `astersql-store-mockstore-unistore-lockstore::lockstore_test::tests::test_mem_store_concurrent`
 
-批次：【批次 274】 依赖批次 273
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

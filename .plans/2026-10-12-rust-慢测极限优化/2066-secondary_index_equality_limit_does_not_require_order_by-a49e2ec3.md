@@ -1,6 +1,8 @@
 # 任务 2066: 优化 `astersql-session::runtime_test::storage::secondary_index_equality_limit_does_not_require_order_by`
 
-批次：【批次 2066】 依赖批次 2065
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

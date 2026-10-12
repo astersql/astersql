@@ -1,6 +1,8 @@
 # 任务 1738: 优化 `astersql-session::runtime_test::ddl::concrete_alter_index_and_foreign_key_paths_use_persisted_rows`
 
-批次：【批次 1738】 依赖批次 1737
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 299: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_partition_prune_with_predicate_simplification`
 
-批次：【批次 299】 依赖批次 298
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

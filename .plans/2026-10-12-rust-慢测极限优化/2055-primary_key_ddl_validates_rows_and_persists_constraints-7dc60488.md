@@ -1,6 +1,8 @@
 # 任务 2055: 优化 `astersql-tests-realtikvtest-testutils::workload_test::primary_key_ddl_validates_rows_and_persists_constraints`
 
-批次：【批次 2055】 依赖批次 2054
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

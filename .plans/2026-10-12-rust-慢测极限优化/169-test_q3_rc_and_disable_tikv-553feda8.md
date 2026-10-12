@@ -1,6 +1,8 @@
 # 任务 169: 优化 `astersql-planner-core-casetest-tpch::tpch_test::test_q3_rc_and_disable_tikv`
 
-批次：【批次 169】 依赖批次 168
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

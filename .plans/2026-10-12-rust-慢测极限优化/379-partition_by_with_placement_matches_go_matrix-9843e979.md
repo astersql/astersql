@@ -1,6 +1,8 @@
 # 任务 379: 优化 `astersql-ddl-tests-partition::placement_test::partition_by_with_placement_matches_go_matrix`
 
-批次：【批次 379】 依赖批次 378
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

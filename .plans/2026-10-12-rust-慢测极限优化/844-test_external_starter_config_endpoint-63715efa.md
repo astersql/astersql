@@ -1,6 +1,8 @@
 # 任务 844: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_config_endpoint`
 
-批次：【批次 844】 依赖批次 843
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

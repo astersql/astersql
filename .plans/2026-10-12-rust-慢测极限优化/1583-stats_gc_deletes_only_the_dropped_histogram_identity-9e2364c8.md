@@ -1,6 +1,8 @@
 # 任务 1583: 优化 `astersql-testkit::mockstore_domain_stats_test::stats_gc_deletes_only_the_dropped_histogram_identity`
 
-批次：【批次 1583】 依赖批次 1582
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

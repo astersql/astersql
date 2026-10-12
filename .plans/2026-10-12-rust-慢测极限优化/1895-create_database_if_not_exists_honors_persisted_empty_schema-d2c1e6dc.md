@@ -1,6 +1,8 @@
 # 任务 1895: 优化 `astersql-session::runtime::ddl::tests::create_database_if_not_exists_honors_persisted_empty_schema`
 
-批次：【批次 1895】 依赖批次 1894
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

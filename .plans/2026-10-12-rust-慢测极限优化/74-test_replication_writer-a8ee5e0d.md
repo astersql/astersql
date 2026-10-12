@@ -1,6 +1,8 @@
 # 任务 74: 优化 `astersql-tests-readonlytest::readonly_test::test_replication_writer`
 
-批次：【批次 74】 依赖批次 73
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

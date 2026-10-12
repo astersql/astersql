@@ -1,6 +1,8 @@
 # 任务 1883: 优化 `astersql-session::runtime::scan_adapter_runtime_test::foreign_key_shared_lock_sql_gate_and_persisted_initialization`
 
-批次：【批次 1883】 依赖批次 1882
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

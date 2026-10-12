@@ -1,6 +1,8 @@
 # 任务 2264: 优化 `astersql-types-core-time::migration_aster_unit_test::adjusted_go_time_matches_go_dst_boundaries`
 
-批次：【批次 2264】 依赖批次 2263
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

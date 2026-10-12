@@ -1,6 +1,8 @@
 # 任务 404: 优化 `astersql-planner-core-casetest-scalarsubquery::cases_test::TestSubqueryInExplainAnalyze`
 
-批次：【批次 404】 依赖批次 403
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

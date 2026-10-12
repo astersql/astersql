@@ -1,6 +1,8 @@
 # 任务 216: 优化 `astersql-planner-core-casetest-index::index_test::test_ordered_index_with_is_null`
 
-批次：【批次 216】 依赖批次 215
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

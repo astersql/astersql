@@ -1,6 +1,8 @@
 # 任务 2108: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_generate_col_point_get`
 
-批次：【批次 2108】 依赖批次 2107
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

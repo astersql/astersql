@@ -1,6 +1,8 @@
 # 任务 357: 优化 `astersql-session-test-txn::txn_test::txn_lazy_initialize_matches_optimistic_and_pessimistic_modes`
 
-批次：【批次 357】 依赖批次 356
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1959: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_schema_init_failure_removes_registration_and_store`
 
-批次：【批次 1959】 依赖批次 1958
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

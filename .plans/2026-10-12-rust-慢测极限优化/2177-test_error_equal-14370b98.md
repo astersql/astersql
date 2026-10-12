@@ -1,6 +1,8 @@
 # 任务 2177: 优化 `astersql-parser-terror::parser_terror_test::test_error_equal`
 
-批次：【批次 2177】 依赖批次 2176
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

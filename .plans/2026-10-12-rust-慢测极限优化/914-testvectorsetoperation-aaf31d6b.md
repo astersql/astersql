@@ -1,6 +1,8 @@
 # 任务 914: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorSetOperation`
 
-批次：【批次 914】 依赖批次 913
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

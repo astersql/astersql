@@ -1,6 +1,8 @@
 # 任务 1517: 优化 `astersql-session-test-txn::txn_test::txn_retry_error_keeps_retryable_diagnostic`
 
-批次：【批次 1517】 依赖批次 1516
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

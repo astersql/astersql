@@ -1,6 +1,8 @@
 # 任务 1457: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_schema_runtime_reads_user_kv_and_closes_loops`
 
-批次：【批次 1457】 依赖批次 1456
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1332: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_on_update_column`
 
-批次：【批次 1332】 依赖批次 1331
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

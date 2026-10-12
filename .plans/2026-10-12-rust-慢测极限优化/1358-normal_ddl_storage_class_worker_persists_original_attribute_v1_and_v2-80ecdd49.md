@@ -1,6 +1,8 @@
 # 任务 1358: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_storage_class_worker_persists_original_attribute_v1_and_v2`
 
-批次：【批次 1358】 依赖批次 1357
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

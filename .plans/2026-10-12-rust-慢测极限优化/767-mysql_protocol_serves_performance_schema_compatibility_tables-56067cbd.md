@@ -1,6 +1,8 @@
 # 任务 767: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_serves_performance_schema_compatibility_tables`
 
-批次：【批次 767】 依赖批次 766
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

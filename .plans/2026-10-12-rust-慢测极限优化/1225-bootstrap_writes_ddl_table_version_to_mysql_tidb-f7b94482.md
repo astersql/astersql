@@ -1,6 +1,8 @@
 # 任务 1225: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_writes_ddl_table_version_to_mysql_tidb`
 
-批次：【批次 1225】 依赖批次 1224
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

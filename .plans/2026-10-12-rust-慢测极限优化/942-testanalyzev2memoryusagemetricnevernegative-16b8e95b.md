@@ -1,6 +1,8 @@
 # 任务 942: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestAnalyzeV2MemoryUsageMetricNeverNegative`
 
-批次：【批次 942】 依赖批次 941
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1544: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_merge_idx_hist`
 
-批次：【批次 1544】 依赖批次 1543
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

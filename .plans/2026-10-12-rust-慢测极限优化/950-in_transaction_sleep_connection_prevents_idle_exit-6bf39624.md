@@ -1,6 +1,8 @@
 # 任务 950: 优化 `astersql-standby::idle_watcher_test::in_transaction_sleep_connection_prevents_idle_exit`
 
-批次：【批次 950】 依赖批次 949
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 905: 优化 `astersql-session::runtime::scan_adapter_runtime_test::explain_statement_ru_post_compile_outcome_and_terminal`
 
-批次：【批次 905】 依赖批次 904
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

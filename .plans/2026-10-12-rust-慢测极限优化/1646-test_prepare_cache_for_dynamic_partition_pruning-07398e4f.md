@@ -1,6 +1,8 @@
 # 任务 1646: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_prepare_cache_for_dynamic_partition_pruning`
 
-批次：【批次 1646】 依赖批次 1645
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

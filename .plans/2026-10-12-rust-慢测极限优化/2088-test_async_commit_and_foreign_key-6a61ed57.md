@@ -1,6 +1,8 @@
 # 任务 2088: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_async_commit_and_foreign_key`
 
-批次：【批次 2088】 依赖批次 2087
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

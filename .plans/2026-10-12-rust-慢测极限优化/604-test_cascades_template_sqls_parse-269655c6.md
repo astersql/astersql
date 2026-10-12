@@ -1,6 +1,8 @@
 # 任务 604: 优化 `astersql-planner-core-casetest-cascades::memo_test::test_cascades_template_sqls_parse`
 
-批次：【批次 604】 依赖批次 603
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

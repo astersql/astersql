@@ -1,6 +1,8 @@
 # 任务 717: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_unsupported_join_plan_goldens`
 
-批次：【批次 717】 依赖批次 716
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

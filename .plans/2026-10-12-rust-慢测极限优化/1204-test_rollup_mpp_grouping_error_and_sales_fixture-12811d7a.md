@@ -1,6 +1,8 @@
 # 任务 1204: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_rollup_mpp_grouping_error_and_sales_fixture`
 
-批次：【批次 1204】 依赖批次 1203
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

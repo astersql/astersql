@@ -1,6 +1,8 @@
 # 任务 451: 优化 `astersql-session::runtime::ttl_worker_session_test::ttl_timestamp_pagination_preserves_instants_across_time_zones`
 
-批次：【批次 451】 依赖批次 450
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 313: 优化 `astersql-tests-realtikvtest-importintotest::main_test::test_main`
 
-批次：【批次 313】 依赖批次 312
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

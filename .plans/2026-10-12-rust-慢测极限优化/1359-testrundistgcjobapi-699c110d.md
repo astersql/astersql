@@ -1,6 +1,8 @@
 # 任务 1359: 优化 `astersql-store-gcworker::gc_worker_test::TestRunDistGCJobAPI`
 
-批次：【批次 1359】 依赖批次 1358
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

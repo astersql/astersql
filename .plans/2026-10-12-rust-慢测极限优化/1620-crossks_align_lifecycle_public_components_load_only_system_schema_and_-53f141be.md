@@ -1,6 +1,8 @@
 # 任务 1620: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_public_components_load_only_system_schema_and_close_once`
 
-批次：【批次 1620】 依赖批次 1619
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

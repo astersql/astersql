@@ -1,6 +1,8 @@
 # 任务 270: 优化 `astersql-executor-test-analyzetest-columns::analyze_columns_with_test::TestAnalyzeColumnsWithPrimaryKey`
 
-批次：【批次 270】 依赖批次 269
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

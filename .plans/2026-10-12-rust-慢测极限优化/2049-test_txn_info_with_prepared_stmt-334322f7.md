@@ -1,6 +1,8 @@
 # 任务 2049: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_txn_info_with_prepared_stmt`
 
-批次：【批次 2049】 依赖批次 2048
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

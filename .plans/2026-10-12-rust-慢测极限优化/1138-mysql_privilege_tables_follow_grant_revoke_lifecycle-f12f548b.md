@@ -1,6 +1,8 @@
 # 任务 1138: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_privilege_tables_follow_grant_revoke_lifecycle`
 
-批次：【批次 1138】 依赖批次 1137
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

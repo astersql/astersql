@@ -1,6 +1,8 @@
 # 任务 288: 优化 `astersql-util-extsort::migration_aster_unit_test::multiple_writers_flush_concurrently`
 
-批次：【批次 288】 依赖批次 287
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

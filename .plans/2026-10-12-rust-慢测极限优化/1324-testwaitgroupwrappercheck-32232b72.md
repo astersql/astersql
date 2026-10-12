@@ -1,6 +1,8 @@
 # 任务 1324: 优化 `astersql-util::wait_group_wrapper_test::TestWaitGroupWrapperCheck`
 
-批次：【批次 1324】 依赖批次 1323
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

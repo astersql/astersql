@@ -1,6 +1,8 @@
 # 任务 622: 优化 `astersql-session-test-schematest::schema_test::batch_update_preserves_row_count_after_rewriting_every_row`
 
-批次：【批次 622】 依赖批次 621
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

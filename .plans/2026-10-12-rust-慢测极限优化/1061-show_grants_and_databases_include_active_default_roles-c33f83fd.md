@@ -1,6 +1,8 @@
 # 任务 1061: 优化 `astersql-executor-test-showtest::show_test::show_grants_and_databases_include_active_default_roles`
 
-批次：【批次 1061】 依赖批次 1060
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

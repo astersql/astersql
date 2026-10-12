@@ -1,6 +1,8 @@
 # 任务 1303: 优化 `astersql-session::mysql_metadata_compat_test::information_schema_table_ids_keep_pairs_when_schema_is_dropped`
 
-批次：【批次 1303】 依赖批次 1302
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

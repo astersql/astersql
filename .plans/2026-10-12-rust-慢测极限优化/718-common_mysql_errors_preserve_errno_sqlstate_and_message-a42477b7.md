@@ -1,6 +1,8 @@
 # 任务 718: 优化 `astersql-server::mysql_error_protocol_test::common_mysql_errors_preserve_errno_sqlstate_and_message`
 
-批次：【批次 718】 依赖批次 717
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

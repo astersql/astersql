@@ -1,6 +1,8 @@
 # 任务 642: 优化 `astersql-executor-test-oomtest::oom_test::TestMemTracker4InsertAndReplaceExec`
 
-批次：【批次 642】 依赖批次 641
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

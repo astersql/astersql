@@ -1,6 +1,8 @@
 # 任务 408: 优化 `astersql-sessionctx-sessionstates::session_token_test::signing_algorithm_matrix_matches_go`
 
-批次：【批次 408】 依赖批次 407
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

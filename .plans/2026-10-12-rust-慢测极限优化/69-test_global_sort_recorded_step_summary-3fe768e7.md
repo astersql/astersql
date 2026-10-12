@@ -1,6 +1,8 @@
 # 任务 69: 优化 `astersql-tests-realtikvtest-importintotest4::global_sort_test::test_global_sort_recorded_step_summary`
 
-批次：【批次 69】 依赖批次 68
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

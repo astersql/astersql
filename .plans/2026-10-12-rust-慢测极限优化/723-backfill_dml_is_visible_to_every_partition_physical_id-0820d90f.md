@@ -1,6 +1,8 @@
 # 任务 723: 优化 `astersql-ddl-tests-partition::multi_domain_part2_aster_unit_test::backfill_dml_is_visible_to_every_partition_physical_id`
 
-批次：【批次 723】 依赖批次 722
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

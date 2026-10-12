@@ -1,6 +1,8 @@
 # 任务 1416: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_new_partition_should_be_locked_if_whole_table_locked`
 
-批次：【批次 1416】 依赖批次 1415
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

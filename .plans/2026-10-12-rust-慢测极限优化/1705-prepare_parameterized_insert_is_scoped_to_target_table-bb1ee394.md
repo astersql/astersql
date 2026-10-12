@@ -1,6 +1,8 @@
 # 任务 1705: 优化 `astersql-session-test-common::prepare_dedup_cache_test::prepare_parameterized_insert_is_scoped_to_target_table`
 
-批次：【批次 1705】 依赖批次 1704
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

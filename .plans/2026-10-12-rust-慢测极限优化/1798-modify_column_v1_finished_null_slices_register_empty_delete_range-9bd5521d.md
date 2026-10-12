@@ -1,6 +1,8 @@
 # 任务 1798: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_v1_finished_null_slices_register_empty_delete_range`
 
-批次：【批次 1798】 依赖批次 1797
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

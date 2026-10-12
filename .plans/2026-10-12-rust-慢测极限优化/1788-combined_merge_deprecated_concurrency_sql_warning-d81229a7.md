@@ -1,6 +1,8 @@
 # 任务 1788: 优化 `astersql-session::runtime_statistics_test::combined_merge_deprecated_concurrency_sql_warning`
 
-批次：【批次 1788】 依赖批次 1787
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1813: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_init_stats_lite_records_synthesized_column_stats`
 
-批次：【批次 1813】 依赖批次 1812
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

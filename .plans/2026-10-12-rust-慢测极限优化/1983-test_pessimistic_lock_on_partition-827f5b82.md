@@ -1,6 +1,8 @@
 # 任务 1983: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_pessimistic_lock_on_partition`
 
-批次：【批次 1983】 依赖批次 1982
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1432: 优化 `astersql-tests-realtikvtest-importintotest::precheck_test::test_pre_check_table_not_empty`
 
-批次：【批次 1432】 依赖批次 1431
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

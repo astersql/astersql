@@ -1,6 +1,8 @@
 # 任务 1124: 优化 `astersql-server::conn_test::change_user_malformed_packet_preserves_identity`
 
-批次：【批次 1124】 依赖批次 1123
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

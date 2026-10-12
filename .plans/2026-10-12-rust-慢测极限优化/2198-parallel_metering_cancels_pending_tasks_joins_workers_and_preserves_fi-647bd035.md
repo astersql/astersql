@@ -1,6 +1,8 @@
 # 任务 2198: 优化 `astersql-dxf-importinto::clean_up_test::parallel_metering_cancels_pending_tasks_joins_workers_and_preserves_first_error`
 
-批次：【批次 2198】 依赖批次 2197
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

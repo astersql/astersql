@@ -1,6 +1,8 @@
 # 任务 382: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_modify_index_reorg_preserves_column_and_row_ids`
 
-批次：【批次 382】 依赖批次 381
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

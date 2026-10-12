@@ -1,6 +1,8 @@
 # 任务 665: 优化 `astersql-server::pg_types_test::common_type_oids_and_values`
 
-批次：【批次 665】 依赖批次 664
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

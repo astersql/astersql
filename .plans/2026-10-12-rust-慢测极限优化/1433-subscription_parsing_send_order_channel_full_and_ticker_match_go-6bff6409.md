@@ -1,6 +1,8 @@
 # 任务 1433: 优化 `astersql-util-topsql-reporter::datamodel_1_aster_unit_test::subscription_parsing_send_order_channel_full_and_ticker_match_go`
 
-批次：【批次 1433】 依赖批次 1432
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

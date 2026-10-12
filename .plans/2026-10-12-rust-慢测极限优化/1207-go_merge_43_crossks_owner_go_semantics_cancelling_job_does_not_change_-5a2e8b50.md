@@ -1,6 +1,8 @@
 # 任务 1207: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_go_semantics_cancelling_job_does_not_change_table`
 
-批次：【批次 1207】 依赖批次 1206
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

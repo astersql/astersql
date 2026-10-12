@@ -1,6 +1,8 @@
 # 任务 1888: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_cancel_mlog_purge_checks_log_privilege`
 
-批次：【批次 1888】 依赖批次 1887
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

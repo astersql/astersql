@@ -1,6 +1,8 @@
 # 任务 25: 优化 `astersql-executor-test-distsqltest::distsql_test::TestDistSQLSharedKVRequestRace`
 
-批次：【批次 25】 依赖批次 24
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

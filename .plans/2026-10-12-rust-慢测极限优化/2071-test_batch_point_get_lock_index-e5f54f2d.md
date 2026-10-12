@@ -1,6 +1,8 @@
 # 任务 2071: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_batch_point_get_lock_index`
 
-批次：【批次 2071】 依赖批次 2070
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

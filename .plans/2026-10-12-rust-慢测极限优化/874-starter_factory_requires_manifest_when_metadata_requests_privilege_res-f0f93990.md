@@ -1,6 +1,8 @@
 # 任务 874: 优化 `astersql-session::starter_bootstrap_file_test::starter_factory_requires_manifest_when_metadata_requests_privilege_reset`
 
-批次：【批次 874】 依赖批次 873
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

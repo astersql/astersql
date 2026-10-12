@@ -1,6 +1,8 @@
 # 任务 149: 优化 `astersql-br-pkg-pdutil::pd_serial_test::test_pause_schedulers_by_key_range`
 
-批次：【批次 149】 依赖批次 148
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

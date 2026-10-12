@@ -1,6 +1,8 @@
 # 任务 1841: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_empty_multi_value_index`
 
-批次：【批次 1841】 依赖批次 1840
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

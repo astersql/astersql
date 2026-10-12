@@ -1,6 +1,8 @@
 # 任务 647: 优化 `astersql-session::runtime::normal_ddl_index_reorg_initialization_test::normal_dispatch_initializes_and_reports_next_stage`
 
-批次：【批次 647】 依赖批次 646
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

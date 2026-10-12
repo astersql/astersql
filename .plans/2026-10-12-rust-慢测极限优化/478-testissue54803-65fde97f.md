@@ -1,6 +1,8 @@
 # 任务 478: 优化 `astersql-planner-core-tests-null::null_test::TestIssue54803`
 
-批次：【批次 478】 依赖批次 477
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

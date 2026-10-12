@@ -1,6 +1,8 @@
 # 任务 1839: 优化 `astersql-session::runtime_test::statistics::analyze_session_initializes_and_executes_against_mysql_stats_top_n`
 
-批次：【批次 1839】 依赖批次 1838
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

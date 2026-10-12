@@ -1,6 +1,8 @@
 # 任务 204: 优化 `astersql-br-pkg-utils::backoff_test::test_new_import_sst_backoffer_with_success`
 
-批次：【批次 204】 依赖批次 203
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

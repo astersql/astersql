@@ -1,6 +1,8 @@
 # 任务 779: 优化 `astersql-executor-test-loadremotetest::one_csv_test::test_load_csv_and_transaction_contract`
 
-批次：【批次 779】 依赖批次 778
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2156: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_resolves_actual_meta_instead_of_cached_user_schema`
 
-批次：【批次 2156】 依赖批次 2155
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

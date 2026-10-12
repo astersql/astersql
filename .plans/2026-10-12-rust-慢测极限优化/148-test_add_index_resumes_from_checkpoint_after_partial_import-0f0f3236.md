@@ -1,6 +1,8 @@
 # 任务 148: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_add_index_resumes_from_checkpoint_after_partial_import`
 
-批次：【批次 148】 依赖批次 147
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

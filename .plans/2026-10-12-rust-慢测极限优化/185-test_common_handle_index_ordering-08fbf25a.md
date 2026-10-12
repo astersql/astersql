@@ -1,6 +1,8 @@
 # 任务 185: 优化 `astersql-planner-core-casetest-rule::rule_common_handle_ordering_test::test_common_handle_index_ordering`
 
-批次：【批次 185】 依赖批次 184
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

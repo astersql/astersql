@@ -1,6 +1,8 @@
 # 任务 2002: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_plan_cache_schema_change`
 
-批次：【批次 2002】 依赖批次 2001
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

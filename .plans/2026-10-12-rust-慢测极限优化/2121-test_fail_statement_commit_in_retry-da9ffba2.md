@@ -1,6 +1,8 @@
 # 任务 2121: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_fail_statement_commit_in_retry`
 
-批次：【批次 2121】 依赖批次 2120
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

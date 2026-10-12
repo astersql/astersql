@@ -1,6 +1,8 @@
 # 任务 1714: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_join_not_supported_by_tiflash`
 
-批次：【批次 1714】 依赖批次 1713
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

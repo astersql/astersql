@@ -1,6 +1,8 @@
 # 任务 2012: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestStatementErrorInTransaction`
 
-批次：【批次 2012】 依赖批次 2011
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

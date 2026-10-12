@@ -1,6 +1,8 @@
 # 任务 1834: 优化 `astersql-session::runtime_test::query::insert_select_executes_derived_union_cross_join_filter_and_order_expressions`
 
-批次：【批次 1834】 依赖批次 1833
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 492: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_get_ts_fail_dirty_state`
 
-批次：【批次 492】 依赖批次 491
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

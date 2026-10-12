@@ -1,6 +1,8 @@
 # 任务 1868: 优化 `astersql-session::runtime_pessimistic_test::autocommit_delete_waits_for_indexed_update_without_lock_order_deadlock`
 
-批次：【批次 1868】 依赖批次 1867
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

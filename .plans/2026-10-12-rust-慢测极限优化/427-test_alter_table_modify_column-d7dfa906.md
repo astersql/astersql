@@ -1,6 +1,8 @@
 # 任务 427: 优化 `astersql-executor-test-ddl::ddl_test::test_alter_table_modify_column`
 
-批次：【批次 427】 依赖批次 426
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

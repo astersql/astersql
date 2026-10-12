@@ -1,6 +1,8 @@
 # 任务 639: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_the_join_column_resolution_regression`
 
-批次：【批次 639】 依赖批次 638
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

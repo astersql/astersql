@@ -1,6 +1,8 @@
 # 任务 175: 优化 `astersql-planner-core-casetest-rule::dual_test::test_dual`
 
-批次：【批次 175】 依赖批次 174
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

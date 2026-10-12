@@ -1,6 +1,8 @@
 # 任务 1501: 优化 `astersql-session::runtime::normal_ddl_index_reorg_initialization_test::persisted_worker_cloud_skips_real_disk_fault`
 
-批次：【批次 1501】 依赖批次 1500
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 683: 优化 `astersql-executor-test-showtest::show_test::show_full_columns_tables_and_collations_use_metadata_contract`
 
-批次：【批次 683】 依赖批次 682
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

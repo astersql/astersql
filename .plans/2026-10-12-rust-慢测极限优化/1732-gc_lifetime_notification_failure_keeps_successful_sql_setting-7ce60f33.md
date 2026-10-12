@@ -1,6 +1,8 @@
 # 任务 1732: 优化 `astersql-session::runtime::ttl_sysvar_test::gc_lifetime_notification_failure_keeps_successful_sql_setting`
 
-批次：【批次 1732】 依赖批次 1731
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

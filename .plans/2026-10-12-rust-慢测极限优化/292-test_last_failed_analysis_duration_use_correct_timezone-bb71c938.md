@@ -1,6 +1,8 @@
 # 任务 292: 优化 `astersql-statistics-handle-autoanalyze-priorityqueue-intervaltimezone::interval_timezone_test::test_last_failed_analysis_duration_use_correct_timezone`
 
-批次：【批次 292】 依赖批次 291
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

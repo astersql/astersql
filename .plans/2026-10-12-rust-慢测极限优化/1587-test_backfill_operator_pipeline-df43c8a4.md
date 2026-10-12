@@ -1,6 +1,8 @@
 # 任务 1587: 优化 `astersql-tests-realtikvtest-addindextest3::operator_test::test_backfill_operator_pipeline`
 
-批次：【批次 1587】 依赖批次 1586
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

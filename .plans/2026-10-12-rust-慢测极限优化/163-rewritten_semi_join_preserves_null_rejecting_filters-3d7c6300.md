@@ -1,6 +1,8 @@
 # 任务 163: 优化 `astersql-planner-core-casetest-mpp::mpp_test::rewritten_semi_join_preserves_null_rejecting_filters`
 
-批次：【批次 163】 依赖批次 162
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

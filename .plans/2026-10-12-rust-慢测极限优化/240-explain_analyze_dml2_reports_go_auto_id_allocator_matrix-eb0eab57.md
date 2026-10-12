@@ -1,6 +1,8 @@
 # 任务 240: 优化 `astersql-session::dml_runtime_test::explain_analyze_dml2_reports_go_auto_id_allocator_matrix`
 
-批次：【批次 240】 依赖批次 239
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

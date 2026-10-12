@@ -1,6 +1,8 @@
 # 任务 878: 优化 `astersql-tests-realtikvtest-startertest::starter_external_test::test_external_starter_exit_wait_and_manager_notifier_contracts`
 
-批次：【批次 878】 依赖批次 877
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

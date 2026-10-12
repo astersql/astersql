@@ -1,6 +1,8 @@
 # 任务 269: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeGlobalStatsWithOpts2`
 
-批次：【批次 269】 依赖批次 268
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

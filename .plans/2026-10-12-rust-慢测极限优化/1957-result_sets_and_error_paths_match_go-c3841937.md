@@ -1,6 +1,8 @@
 # 任务 1957: 优化 `astersql-tests-realtikvtest-testutils::workload_test::result_sets_and_error_paths_match_go`
 
-批次：【批次 1957】 依赖批次 1956
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

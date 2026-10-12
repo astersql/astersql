@@ -1,6 +1,8 @@
 # 任务 1496: 优化 `astersql-planner-core-issuetest::panicrisk_tier2_test::non_prepared_plan_cache_zero_argument_date_functions_do_not_panic`
 
-批次：【批次 1496】 依赖批次 1495
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

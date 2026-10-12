@@ -1,6 +1,8 @@
 # 任务 1653: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_commit_conflict_and_restart`
 
-批次：【批次 1653】 依赖批次 1652
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 781: 优化 `astersql-server::pg_extended_test::postgres_create_table_extended_query`
 
-批次：【批次 781】 依赖批次 780
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

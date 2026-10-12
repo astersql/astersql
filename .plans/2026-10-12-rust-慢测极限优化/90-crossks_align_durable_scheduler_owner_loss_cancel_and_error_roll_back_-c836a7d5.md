@@ -1,6 +1,8 @@
 # 任务 90: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_owner_loss_cancel_and_error_roll_back_meta_and_job`
 
-批次：【批次 90】 依赖批次 89
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

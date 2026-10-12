@@ -1,6 +1,8 @@
 # 任务 1417: 优化 `astersql-testkit::mockstore_domain_stats_test::restricted_stats_rows_are_shared_by_normal_sessions`
 
-批次：【批次 1417】 依赖批次 1416
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

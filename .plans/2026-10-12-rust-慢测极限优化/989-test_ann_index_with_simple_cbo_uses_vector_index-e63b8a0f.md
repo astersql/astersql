@@ -1,6 +1,8 @@
 # 任务 989: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_with_simple_cbo_uses_vector_index`
 
-批次：【批次 989】 依赖批次 988
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

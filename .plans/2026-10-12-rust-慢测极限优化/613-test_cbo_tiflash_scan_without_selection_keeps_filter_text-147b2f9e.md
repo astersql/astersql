@@ -1,6 +1,8 @@
 # 任务 613: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_tiflash_scan_without_selection_keeps_filter_text`
 
-批次：【批次 613】 依赖批次 612
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1804: 优化 `astersql-session::mysql_query_compat_test::string_function_comparisons_use_string_values_like_go`
 
-批次：【批次 1804】 依赖批次 1803
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

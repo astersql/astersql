@@ -1,6 +1,8 @@
 # 任务 420: 优化 `astersql-session::bench_test::benchmark_entrypoints_execute_canonical_paths`
 
-批次：【批次 420】 依赖批次 419
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 841: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_generated_columns_and_indexes`
 
-批次：【批次 841】 依赖批次 840
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

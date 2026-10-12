@@ -1,6 +1,8 @@
 # 任务 593: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::masking_policy_sql_modify_reorg_keeps_nonempty_rows_and_changes_column_id`
 
-批次：【批次 593】 依赖批次 592
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

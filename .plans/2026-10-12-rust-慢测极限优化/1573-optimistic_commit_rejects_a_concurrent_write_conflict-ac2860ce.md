@@ -1,6 +1,8 @@
 # 任务 1573: 优化 `astersql-session::runtime_pessimistic_test::optimistic_commit_rejects_a_concurrent_write_conflict`
 
-批次：【批次 1573】 依赖批次 1572
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1491: 优化 `astersql-server::mysql_metadata_protocol_test::performance_schema_account_summaries_follow_connection_lifecycle`
 
-批次：【批次 1491】 依赖批次 1490
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

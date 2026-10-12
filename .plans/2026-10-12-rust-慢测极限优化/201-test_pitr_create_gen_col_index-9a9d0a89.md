@@ -1,6 +1,8 @@
 # 任务 201: 优化 `astersql-tests-realtikvtest-addindextest::pitr_test::test_pitr_create_gen_col_index`
 
-批次：【批次 201】 依赖批次 200
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

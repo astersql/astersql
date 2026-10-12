@@ -1,6 +1,8 @@
 # 任务 1230: 优化 `astersql-server-internal-testserverclient::server_client_test::prepared_result_type_executes_against_canonical_store`
 
-批次：【批次 1230】 依赖批次 1229
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

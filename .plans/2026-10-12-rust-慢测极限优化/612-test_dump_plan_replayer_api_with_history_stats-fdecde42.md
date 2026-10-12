@@ -1,6 +1,8 @@
 # 任务 612: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_dump_plan_replayer_api_with_history_stats`
 
-批次：【批次 612】 依赖批次 611
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

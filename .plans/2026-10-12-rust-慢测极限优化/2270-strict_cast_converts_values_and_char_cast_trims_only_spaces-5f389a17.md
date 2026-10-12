@@ -1,6 +1,8 @@
 # 任务 2270: 优化 `astersql-table::migration_aster_unit_test::strict_cast_converts_values_and_char_cast_trims_only_spaces`
 
-批次：【批次 2270】 依赖批次 2269
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

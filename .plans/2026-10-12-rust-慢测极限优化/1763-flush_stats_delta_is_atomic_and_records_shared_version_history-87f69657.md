@@ -1,6 +1,8 @@
 # 任务 1763: 优化 `astersql-testkit::stats_runtime_aster_unit_test::flush_stats_delta_is_atomic_and_records_shared_version_history`
 
-批次：【批次 1763】 依赖批次 1762
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

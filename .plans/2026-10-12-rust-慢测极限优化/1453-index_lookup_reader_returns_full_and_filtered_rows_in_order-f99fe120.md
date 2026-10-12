@@ -1,6 +1,8 @@
 # 任务 1453: 优化 `astersql-session-test-schematest::schema_test::index_lookup_reader_returns_full_and_filtered_rows_in_order`
 
-批次：【批次 1453】 依赖批次 1452
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

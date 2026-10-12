@@ -1,6 +1,8 @@
 # 任务 33: 优化 `astersql-executor-test-cte::cte_test::test_cte_exec_error_reports_integer_overflow`
 
-批次：【批次 33】 依赖批次 32
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1273: 优化 `astersql-session::mysql_system_catalog_compat_test::mysql_system_catalog_manifest_matches_canonical_session`
 
-批次：【批次 1273】 依赖批次 1272
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1256: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeMetricsCounters`
 
-批次：【批次 1256】 依赖批次 1255
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 581: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_factory_submits_durable_job_without_consuming_it`
 
-批次：【批次 581】 依赖批次 580
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

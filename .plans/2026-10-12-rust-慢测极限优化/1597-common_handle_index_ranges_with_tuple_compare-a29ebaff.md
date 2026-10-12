@@ -1,6 +1,8 @@
 # 任务 1597: 优化 `astersql-planner-core-casetest-rule::rule_common_handle_range_test::common_handle_index_ranges_with_tuple_compare`
 
-批次：【批次 1597】 依赖批次 1596
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

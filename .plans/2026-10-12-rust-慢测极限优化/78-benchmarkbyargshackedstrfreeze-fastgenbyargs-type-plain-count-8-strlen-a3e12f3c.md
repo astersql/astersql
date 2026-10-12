@@ -1,6 +1,8 @@
 # 任务 78: 优化 `astersql::bench/errors::BenchmarkByArgsHackedStrFreeze/FastGenByArgs/type-plain/count-8/strlen-16`
 
-批次：【批次 78】 依赖批次 77
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2202: 优化 `astersql-dxf-importinto::clean_up_test::batch_clean_empty_local_and_malformed_inputs_follow_go_order`
 
-批次：【批次 2202】 依赖批次 2201
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

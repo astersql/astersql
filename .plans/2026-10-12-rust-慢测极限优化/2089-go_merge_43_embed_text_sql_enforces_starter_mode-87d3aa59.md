@@ -1,6 +1,8 @@
 # 任务 2089: 优化 `astersql-session::runtime::inference_test::go_merge_43_embed_text_sql_enforces_starter_mode`
 
-批次：【批次 2089】 依赖批次 2088
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

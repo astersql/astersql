@@ -1,6 +1,8 @@
 # 任务 2007: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_pessimistic_union_for_update`
 
-批次：【批次 2007】 依赖批次 2006
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

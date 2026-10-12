@@ -1,6 +1,8 @@
 # 任务 2110: 优化 `astersql-session::dml_runtime_test::go_merge_49_sql_purge_respects_history_cutoff_fence`
 
-批次：【批次 2110】 依赖批次 2109
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2244: 优化 `astersql-importsdk::sdk_test::canonical_sdk_rejects_invalid_source_without_leaking_credentials`
 
-批次：【批次 2244】 依赖批次 2243
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

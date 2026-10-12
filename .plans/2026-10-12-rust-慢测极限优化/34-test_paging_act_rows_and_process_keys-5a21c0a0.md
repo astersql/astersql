@@ -1,6 +1,8 @@
 # 任务 34: 优化 `astersql-tests-realtikvtest-sessiontest::paging_test::test_paging_act_rows_and_process_keys`
 
-批次：【批次 34】 依赖批次 33
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1712: 优化 `astersql-session-test-variable::variable_test::last_query_info_exposes_zero_without_ru_v2_evidence`
 
-批次：【批次 1712】 依赖批次 1711
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

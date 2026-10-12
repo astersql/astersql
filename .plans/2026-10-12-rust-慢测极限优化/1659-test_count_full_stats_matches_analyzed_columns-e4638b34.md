@@ -1,6 +1,8 @@
 # 任务 1659: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_count_full_stats_matches_analyzed_columns`
 
-批次：【批次 1659】 依赖批次 1658
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1768: 优化 `astersql-server::pg_dml_test::prepared_crud_roundtrip`
 
-批次：【批次 1768】 依赖批次 1767
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

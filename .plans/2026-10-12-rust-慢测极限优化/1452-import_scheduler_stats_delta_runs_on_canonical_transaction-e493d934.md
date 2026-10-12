@@ -1,6 +1,8 @@
 # 任务 1452: 优化 `astersql-session::runtime_test::ddl::import_scheduler_stats_delta_runs_on_canonical_transaction`
 
-批次：【批次 1452】 依赖批次 1451
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

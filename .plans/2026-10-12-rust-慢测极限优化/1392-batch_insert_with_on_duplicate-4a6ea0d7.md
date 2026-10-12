@@ -1,6 +1,8 @@
 # 任务 1392: 优化 `astersql-executor::write_concurrent_test::batch_insert_with_on_duplicate`
 
-批次：【批次 1392】 依赖批次 1391
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

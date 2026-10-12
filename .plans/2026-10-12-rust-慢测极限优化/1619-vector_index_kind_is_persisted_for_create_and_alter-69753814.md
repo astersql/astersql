@@ -1,6 +1,8 @@
 # 任务 1619: 优化 `astersql-session::mysql_ddl_compat_test::vector_index_kind_is_persisted_for_create_and_alter`
 
-批次：【批次 1619】 依赖批次 1618
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

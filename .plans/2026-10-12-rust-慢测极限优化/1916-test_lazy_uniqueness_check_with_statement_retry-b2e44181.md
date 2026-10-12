@@ -1,6 +1,8 @@
 # 任务 1916: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_lazy_uniqueness_check_with_statement_retry`
 
-批次：【批次 1916】 依赖批次 1915
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

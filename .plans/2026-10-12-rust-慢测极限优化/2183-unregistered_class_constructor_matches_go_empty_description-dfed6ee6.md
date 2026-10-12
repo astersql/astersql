@@ -1,6 +1,8 @@
 # 任务 2183: 优化 `astersql-parser-terror::migration_aster_unit_test::unregistered_class_constructor_matches_go_empty_description`
 
-批次：【批次 2183】 依赖批次 2182
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

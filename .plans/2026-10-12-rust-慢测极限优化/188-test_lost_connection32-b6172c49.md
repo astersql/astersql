@@ -1,6 +1,8 @@
 # 任务 188: 优化 `astersql-tests-globalkilltest::global_kill_test::test_lost_connection32`
 
-批次：【批次 188】 依赖批次 187
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

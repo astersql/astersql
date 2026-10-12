@@ -1,6 +1,8 @@
 # 任务 582: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::sql_killer_cancels_parallel_build_workers_without_leaking_active_count`
 
-批次：【批次 582】 依赖批次 581
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

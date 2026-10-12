@@ -1,6 +1,8 @@
 # 任务 331: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::partitioned_clustered_tables_match_normal_table_queries`
 
-批次：【批次 331】 依赖批次 330
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

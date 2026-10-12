@@ -1,6 +1,8 @@
 # 任务 998: 优化 `astersql-server::pg_catalog_test::catalog_projection_variants`
 
-批次：【批次 998】 依赖批次 997
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

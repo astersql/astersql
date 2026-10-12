@@ -1,6 +1,8 @@
 # 任务 2074: 优化 `astersql-tests-realtikvtest-importintotest4::split_file_test::task_history_uses_independent_sql_sessions_and_real_transactions`
 
-批次：【批次 2074】 依赖批次 2073
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

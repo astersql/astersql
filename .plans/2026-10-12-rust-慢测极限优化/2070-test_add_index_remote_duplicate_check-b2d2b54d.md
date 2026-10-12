@@ -1,6 +1,8 @@
 # 任务 2070: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_remote_duplicate_check`
 
-批次：【批次 2070】 依赖批次 2069
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

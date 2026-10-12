@@ -1,6 +1,8 @@
 # 任务 1911: 优化 `astersql-session::runtime::system_session::normal_ddl_create_materialized_view_log_test::normal_ddl_plan_create_materialized_view_log_1_utc_sqlmode_and_statement_vars`
 
-批次：【批次 1911】 依赖批次 1910
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

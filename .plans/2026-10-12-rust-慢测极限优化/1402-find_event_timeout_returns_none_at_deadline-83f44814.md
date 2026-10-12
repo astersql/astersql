@@ -1,6 +1,8 @@
 # 任务 1402: 优化 `astersql-statistics-handle-ddl-testutil::util_test::find_event_timeout_returns_none_at_deadline`
 
-批次：【批次 1402】 依赖批次 1401
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

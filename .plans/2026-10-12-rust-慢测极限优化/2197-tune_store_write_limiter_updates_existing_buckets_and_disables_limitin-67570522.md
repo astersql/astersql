@@ -1,6 +1,8 @@
 # 任务 2197: 优化 `astersql-ingestor-ingestctrl::localhelper_test::tune_store_write_limiter_updates_existing_buckets_and_disables_limiting`
 
-批次：【批次 2197】 依赖批次 2196
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

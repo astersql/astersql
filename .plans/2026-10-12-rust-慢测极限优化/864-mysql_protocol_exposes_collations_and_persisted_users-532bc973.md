@@ -1,6 +1,8 @@
 # 任务 864: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_exposes_collations_and_persisted_users`
 
-批次：【批次 864】 依赖批次 863
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

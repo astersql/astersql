@@ -1,6 +1,8 @@
 # 任务 2233: 优化 `astersql-store-driver-error::migration_aster_unit_test::field_errors_and_query_signals_keep_go_arguments`
 
-批次：【批次 2233】 依赖批次 2232
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

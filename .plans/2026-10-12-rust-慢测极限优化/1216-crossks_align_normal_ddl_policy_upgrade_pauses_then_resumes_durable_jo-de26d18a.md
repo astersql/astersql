@@ -1,6 +1,8 @@
 # 任务 1216: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_policy_upgrade_pauses_then_resumes_durable_job`
 
-批次：【批次 1216】 依赖批次 1215
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

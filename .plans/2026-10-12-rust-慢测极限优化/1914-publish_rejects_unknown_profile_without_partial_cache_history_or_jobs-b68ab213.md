@@ -1,6 +1,8 @@
 # 任务 1914: 优化 `astersql-testkit::stats_runtime_aster_unit_test::publish_rejects_unknown_profile_without_partial_cache_history_or_jobs`
 
-批次：【批次 1914】 依赖批次 1913
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

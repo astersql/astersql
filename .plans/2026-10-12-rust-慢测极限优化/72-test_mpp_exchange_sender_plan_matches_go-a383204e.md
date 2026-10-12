@@ -1,6 +1,8 @@
 # 任务 72: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_exchange_sender_plan_matches_go`
 
-批次：【批次 72】 依赖批次 71
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

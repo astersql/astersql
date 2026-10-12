@@ -1,6 +1,8 @@
 # 任务 1769: 优化 `astersql-testkit::stats_fixture_test::load_table_stats_populates_real_histograms_and_indexes`
 
-批次：【批次 1769】 依赖批次 1768
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

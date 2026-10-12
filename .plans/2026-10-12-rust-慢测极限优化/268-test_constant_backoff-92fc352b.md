@@ -1,6 +1,8 @@
 # 任务 268: 优化 `astersql-br-pkg-utils::backoff_test::test_constant_backoff`
 
-批次：【批次 268】 依赖批次 267
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

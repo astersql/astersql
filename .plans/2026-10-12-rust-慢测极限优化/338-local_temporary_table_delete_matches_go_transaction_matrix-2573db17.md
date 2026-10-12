@@ -1,6 +1,8 @@
 # 任务 338: 优化 `astersql-session-test-temporarytabletest::temporary_table_test::local_temporary_table_delete_matches_go_transaction_matrix`
 
-批次：【批次 338】 依赖批次 337
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

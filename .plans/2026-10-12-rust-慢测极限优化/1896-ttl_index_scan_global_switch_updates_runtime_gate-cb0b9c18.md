@@ -1,6 +1,8 @@
 # 任务 1896: 优化 `astersql-session::runtime::ttl_sysvar_test::ttl_index_scan_global_switch_updates_runtime_gate`
 
-批次：【批次 1896】 依赖批次 1895
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

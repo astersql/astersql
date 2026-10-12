@@ -1,6 +1,8 @@
 # 任务 1514: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_ddl_bumps_stats_meta_version_for_single_table`
 
-批次：【批次 1514】 依赖批次 1513
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

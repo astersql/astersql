@@ -1,6 +1,8 @@
 # 任务 2272: 优化 `astersql-dxf-importinto::conflict_resolution_test::conflict_resolution_propagates_reader_error_and_cancellation`
 
-批次：【批次 2272】 依赖批次 2271
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

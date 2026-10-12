@@ -1,6 +1,8 @@
 # 任务 2265: 优化 `astersql-importsdk::file_scanner_test::estimate_import_data_size_skip_invalid_files_matches_go`
 
-批次：【批次 2265】 依赖批次 2264
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

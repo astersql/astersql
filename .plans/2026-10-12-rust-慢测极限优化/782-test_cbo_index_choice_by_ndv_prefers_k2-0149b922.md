@@ -1,6 +1,8 @@
 # 任务 782: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_choice_by_ndv_prefers_k2`
 
-批次：【批次 782】 依赖批次 781
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 773: 优化 `astersql-session::scatter_presplit::create_table_presplit_sends_physical_keys_and_scatter_group_to_storage`
 
-批次：【批次 773】 依赖批次 772
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

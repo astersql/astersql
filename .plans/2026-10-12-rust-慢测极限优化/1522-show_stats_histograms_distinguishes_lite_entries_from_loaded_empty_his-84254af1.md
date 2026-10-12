@@ -1,6 +1,8 @@
 # 任务 1522: 优化 `astersql-session::runtime_statistics_test::show_stats_histograms_distinguishes_lite_entries_from_loaded_empty_histograms`
 
-批次：【批次 1522】 依赖批次 1521
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

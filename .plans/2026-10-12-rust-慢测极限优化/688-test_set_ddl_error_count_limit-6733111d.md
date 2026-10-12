@@ -1,6 +1,8 @@
 # 任务 688: 优化 `astersql-executor-test-ddl::ddl_test::test_set_ddl_error_count_limit`
 
-批次：【批次 688】 依赖批次 687
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

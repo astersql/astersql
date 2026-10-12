@@ -1,6 +1,8 @@
 # 任务 494: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_waits_for_go_history_errors_and_reports_unexpected_states`
 
-批次：【批次 494】 依赖批次 493
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

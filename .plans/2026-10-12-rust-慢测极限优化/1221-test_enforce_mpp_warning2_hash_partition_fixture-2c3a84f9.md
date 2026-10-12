@@ -1,6 +1,8 @@
 # 任务 1221: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning2_hash_partition_fixture`
 
-批次：【批次 1221】 依赖批次 1220
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

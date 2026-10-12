@@ -1,6 +1,8 @@
 # 任务 1318: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_exec_auto_analyzes`
 
-批次：【批次 1318】 依赖批次 1317
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

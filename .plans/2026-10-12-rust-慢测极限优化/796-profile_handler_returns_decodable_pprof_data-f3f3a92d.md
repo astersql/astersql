@@ -1,6 +1,8 @@
 # 任务 796: 优化 `astersql-br-pkg-utils::pprof_test::profile_handler_returns_decodable_pprof_data`
 
-批次：【批次 796】 依赖批次 795
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

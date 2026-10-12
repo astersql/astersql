@@ -1,6 +1,8 @@
 # 任务 1096: 优化 `astersql-dxf-importinto::scheduler_test::import_extension_dispatches_done_and_prepared_local_import_batches`
 
-批次：【批次 1096】 依赖批次 1095
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

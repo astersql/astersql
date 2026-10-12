@@ -1,6 +1,8 @@
 # 任务 955: 优化 `astersql-executor-test-showtest::show_test::show_create_user_restores_authentication_and_account_options`
 
-批次：【批次 955】 依赖批次 954
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 430: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_empty_table_matches_go_suite_roots`
 
-批次：【批次 430】 依赖批次 429
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

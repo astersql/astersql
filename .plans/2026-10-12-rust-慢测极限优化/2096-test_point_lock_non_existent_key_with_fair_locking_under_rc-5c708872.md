@@ -1,6 +1,8 @@
 # 任务 2096: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_point_lock_non_existent_key_with_fair_locking_under_rc`
 
-批次：【批次 2096】 依赖批次 2095
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

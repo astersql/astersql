@@ -1,6 +1,8 @@
 # 任务 1655: 优化 `astersql-session::runtime_test::ddl::empty_database_is_visible_to_other_sessions_and_can_be_cleaned_up`
 
-批次：【批次 1655】 依赖批次 1654
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

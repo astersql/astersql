@@ -1,6 +1,8 @@
 # 任务 1921: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_plan_replayer_load_with_semicolon_in_column_comment`
 
-批次：【批次 1921】 依赖批次 1920
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

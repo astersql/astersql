@@ -1,6 +1,8 @@
 # 任务 1997: 优化 `astersql-session::runtime::normal_ddl_create_table_test::external_ttl_worker_campaigns_separate_owner_and_closes_it_with_domain`
 
-批次：【批次 1997】 依赖批次 1996
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

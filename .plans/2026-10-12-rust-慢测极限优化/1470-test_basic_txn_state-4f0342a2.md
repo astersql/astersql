@@ -1,6 +1,8 @@
 # 任务 1470: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_basic_txn_state`
 
-批次：【批次 1470】 依赖批次 1469
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

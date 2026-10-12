@@ -1,6 +1,8 @@
 # 任务 2152: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_dist_cancel`
 
-批次：【批次 2152】 依赖批次 2151
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

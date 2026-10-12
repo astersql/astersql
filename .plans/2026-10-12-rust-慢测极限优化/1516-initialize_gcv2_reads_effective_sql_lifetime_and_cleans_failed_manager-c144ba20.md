@@ -1,6 +1,8 @@
 # 任务 1516: 优化 `astersql-session::runtime::ttl_sysvar_test::initialize_gcv2_reads_effective_sql_lifetime_and_cleans_failed_manager`
 
-批次：【批次 1516】 依赖批次 1515
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

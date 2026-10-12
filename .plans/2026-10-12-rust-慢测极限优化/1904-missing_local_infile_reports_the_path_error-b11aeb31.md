@@ -1,6 +1,8 @@
 # 任务 1904: 优化 `astersql-session::load_data_runtime_test::missing_local_infile_reports_the_path_error`
 
-批次：【批次 1904】 依赖批次 1903
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1581: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_reorg_checkpoint_restart_and_conflict`
 
-批次：【批次 1581】 依赖批次 1580
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

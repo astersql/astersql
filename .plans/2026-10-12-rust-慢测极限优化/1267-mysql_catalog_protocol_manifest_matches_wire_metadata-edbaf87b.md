@@ -1,6 +1,8 @@
 # 任务 1267: 优化 `astersql-server::mysql_catalog_protocol_test::mysql_catalog_protocol_manifest_matches_wire_metadata`
 
-批次：【批次 1267】 依赖批次 1266
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2157: 优化 `astersql-planner-core::cbo_test::construct_insert_sql_matches_the_go_benchmark_fixture`
 
-批次：【批次 2157】 依赖批次 2156
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

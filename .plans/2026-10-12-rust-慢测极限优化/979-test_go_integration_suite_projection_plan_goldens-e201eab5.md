@@ -1,6 +1,8 @@
 # 任务 979: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_projection_plan_goldens`
 
-批次：【批次 979】 依赖批次 978
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

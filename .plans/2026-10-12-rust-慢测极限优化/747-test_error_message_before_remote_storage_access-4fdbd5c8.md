@@ -1,6 +1,8 @@
 # 任务 747: 优化 `astersql-executor-test-loadremotetest::error_test::test_error_message_before_remote_storage_access`
 
-批次：【批次 747】 依赖批次 746
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

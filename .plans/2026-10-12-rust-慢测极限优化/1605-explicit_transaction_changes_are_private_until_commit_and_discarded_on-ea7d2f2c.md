@@ -1,6 +1,8 @@
 # 任务 1605: 优化 `astersql-session::runtime_pessimistic_test::explicit_transaction_changes_are_private_until_commit_and_discarded_on_rollback`
 
-批次：【批次 1605】 依赖批次 1604
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

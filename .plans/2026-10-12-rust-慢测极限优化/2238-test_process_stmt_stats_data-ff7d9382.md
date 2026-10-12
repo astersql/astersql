@@ -1,6 +1,8 @@
 # 任务 2238: 优化 `astersql-util-topsql-reporter::reporter_test::test_process_stmt_stats_data`
 
-批次：【批次 2238】 依赖批次 2237
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

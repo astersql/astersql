@@ -1,6 +1,8 @@
 # 任务 2174: 优化 `astersql-parser-mysql::error_3_aster_unit_test::sql_error_matches_go_state_formatting_and_redaction`
 
-批次：【批次 2174】 依赖批次 2173
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

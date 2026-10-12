@@ -1,6 +1,8 @@
 # 任务 525: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_61389_explain_golden`
 
-批次：【批次 525】 依赖批次 524
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

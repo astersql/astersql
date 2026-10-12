@@ -1,6 +1,8 @@
 # 任务 1747: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_user_mdl_real_internal_pool_preserves_go_restricted_bypass`
 
-批次：【批次 1747】 依赖批次 1746
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

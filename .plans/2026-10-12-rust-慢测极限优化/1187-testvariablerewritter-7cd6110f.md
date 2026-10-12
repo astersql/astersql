@@ -1,6 +1,8 @@
 # 任务 1187: 优化 `astersql-planner-core-tests-rewriter::rewriter_test::TestVariableRewritter`
 
-批次：【批次 1187】 依赖批次 1186
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

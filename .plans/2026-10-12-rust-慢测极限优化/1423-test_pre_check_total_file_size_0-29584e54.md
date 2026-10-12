@@ -1,6 +1,8 @@
 # 任务 1423: 优化 `astersql-tests-realtikvtest-importintotest::precheck_test::test_pre_check_total_file_size_0`
 
-批次：【批次 1423】 依赖批次 1422
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

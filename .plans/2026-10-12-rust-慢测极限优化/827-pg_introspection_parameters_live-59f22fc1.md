@@ -1,6 +1,8 @@
 # 任务 827: 优化 `astersql-server::pg_extended_test::pg_introspection_parameters_live`
 
-批次：【批次 827】 依赖批次 826
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

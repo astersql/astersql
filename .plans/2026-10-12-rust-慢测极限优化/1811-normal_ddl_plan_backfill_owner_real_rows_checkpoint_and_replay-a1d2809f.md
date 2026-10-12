@@ -1,6 +1,8 @@
 # 任务 1811: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_backfill_owner_real_rows_checkpoint_and_replay`
 
-批次：【批次 1811】 依赖批次 1810
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

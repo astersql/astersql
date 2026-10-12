@@ -1,6 +1,8 @@
 # 任务 584: 优化 `astersql-executor-test-jointest::join_test::test_issue30211`
 
-批次：【批次 584】 依赖批次 583
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1683: 优化 `astersql-util-traceevent-test::integration_test::test_prev_trace_id_persistence`
 
-批次：【批次 1683】 依赖批次 1682
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

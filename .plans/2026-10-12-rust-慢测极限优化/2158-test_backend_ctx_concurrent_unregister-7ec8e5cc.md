@@ -1,6 +1,8 @@
 # 任务 2158: 优化 `astersql-tests-realtikvtest-addindextest3::functional_test::test_backend_ctx_concurrent_unregister`
 
-批次：【批次 2158】 依赖批次 2157
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

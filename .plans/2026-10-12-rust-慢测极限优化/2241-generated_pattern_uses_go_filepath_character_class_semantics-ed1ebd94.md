@@ -1,6 +1,8 @@
 # 任务 2241: 优化 `astersql-importsdk::pattern_test::generated_pattern_uses_go_filepath_character_class_semantics`
 
-批次：【批次 2241】 依赖批次 2240
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

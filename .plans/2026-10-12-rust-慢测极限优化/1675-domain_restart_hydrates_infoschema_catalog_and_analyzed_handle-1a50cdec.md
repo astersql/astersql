@@ -1,6 +1,8 @@
 # 任务 1675: 优化 `astersql-testkit::mockstore_domain_ddl_test::domain_restart_hydrates_infoschema_catalog_and_analyzed_handle`
 
-批次：【批次 1675】 依赖批次 1674
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1787: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_p0_dirty_write`
 
-批次：【批次 1787】 依赖批次 1786
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

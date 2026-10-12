@@ -1,6 +1,8 @@
 # 任务 618: 优化 `astersql-executor::temporary_table_test::local_temporary_table_no_network_with_create_outside_txn`
 
-批次：【批次 618】 依赖批次 617
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

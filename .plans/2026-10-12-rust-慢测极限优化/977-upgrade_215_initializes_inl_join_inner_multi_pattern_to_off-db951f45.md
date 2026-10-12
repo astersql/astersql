@@ -1,6 +1,8 @@
 # 任务 977: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_215_initializes_inl_join_inner_multi_pattern_to_off`
 
-批次：【批次 977】 依赖批次 976
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

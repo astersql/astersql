@@ -1,6 +1,8 @@
 # 任务 1968: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestDMLWithAddForeignKey`
 
-批次：【批次 1968】 依赖批次 1967
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

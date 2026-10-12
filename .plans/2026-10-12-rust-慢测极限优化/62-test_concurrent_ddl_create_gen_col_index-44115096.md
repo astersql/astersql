@@ -1,6 +1,8 @@
 # 任务 62: 优化 `astersql-tests-realtikvtest-addindextest::concurrent_ddl_test::test_concurrent_ddl_create_gen_col_index`
 
-批次：【批次 62】 依赖批次 61
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

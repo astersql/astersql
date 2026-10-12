@@ -1,6 +1,8 @@
 # 任务 71: 优化 `astersql-server::pg_client_integration_test::postgres_client_protocol_versions`
 
-批次：【批次 71】 依赖批次 70
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

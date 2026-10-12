@@ -1,6 +1,8 @@
 # 任务 229: 优化 `astersql-planner-core-casetest-index::index_test::test_analyze_columnar_index`
 
-批次：【批次 229】 依赖批次 228
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

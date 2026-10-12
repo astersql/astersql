@@ -1,6 +1,8 @@
 # 任务 547: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_schema_barrier_mdl_old_transaction_and_second_node_hold_history`
 
-批次：【批次 547】 依赖批次 546
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

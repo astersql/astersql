@@ -1,6 +1,8 @@
 # 任务 2054: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_push_condition_check_for_pessimistic_txn`
 
-批次：【批次 2054】 依赖批次 2053
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

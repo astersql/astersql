@@ -1,6 +1,8 @@
 # 任务 1141: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_restore_public_and_legacy_write_only`
 
-批次：【批次 1141】 依赖批次 1140
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1783: 优化 `astersql-session-test-txn::txn_test::error_rollback_keeps_subsequent_updates_working`
 
-批次：【批次 1783】 依赖批次 1782
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

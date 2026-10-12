@@ -1,6 +1,8 @@
 # 任务 567: 优化 `astersql-ddl-tests-partition::reorg_partition_test::reorg_non_touched_phase_preserves_all_four_global_entries`
 
-批次：【批次 567】 依赖批次 566
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1797: 优化 `astersql-session::runtime::explain_select::tests::list_partition_write_explain_only_adds_lock_for_locking_reads`
 
-批次：【批次 1797】 依赖批次 1796
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

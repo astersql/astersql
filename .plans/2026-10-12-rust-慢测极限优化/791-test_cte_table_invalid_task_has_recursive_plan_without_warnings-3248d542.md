@@ -1,6 +1,8 @@
 # 任务 791: 优化 `astersql-executor-test-cte::cte_test::test_cte_table_invalid_task_has_recursive_plan_without_warnings`
 
-批次：【批次 791】 依赖批次 790
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1684: 优化 `astersql-session::runtime::crossks_runtime_test::go_merge_43_crossks_production_backend_submits_notifies_and_waits_for_history`
 
-批次：【批次 1684】 依赖批次 1683
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1253: 优化 `astersql-session::runtime_test::session::show_collation_and_mysql_user_catalog_match_go_metadata`
 
-批次：【批次 1253】 依赖批次 1252
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

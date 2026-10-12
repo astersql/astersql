@@ -1,6 +1,8 @@
 # 任务 990: 优化 `astersql-executor-test-infoschema::infoschema_test::infoschema_tables_projection_and_count_queries_return_correct_results`
 
-批次：【批次 990】 依赖批次 989
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

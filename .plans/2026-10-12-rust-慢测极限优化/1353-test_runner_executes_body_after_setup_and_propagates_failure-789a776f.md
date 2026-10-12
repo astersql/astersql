@@ -1,6 +1,8 @@
 # 任务 1353: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_runner_executes_body_after_setup_and_propagates_failure`
 
-批次：【批次 1353】 依赖批次 1352
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

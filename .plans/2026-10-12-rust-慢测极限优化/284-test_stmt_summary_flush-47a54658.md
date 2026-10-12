@@ -1,6 +1,8 @@
 # 任务 284: 优化 `astersql-util-stmtsummary-v2::stmtsummary_test::test_stmt_summary_flush`
 
-批次：【批次 284】 依赖批次 283
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

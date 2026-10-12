@@ -1,6 +1,8 @@
 # 任务 712: 优化 `astersql-session-test-schematest::schema_test::batch_delete_leaves_exactly_the_expected_remaining_row_count`
 
-批次：【批次 712】 依赖批次 711
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

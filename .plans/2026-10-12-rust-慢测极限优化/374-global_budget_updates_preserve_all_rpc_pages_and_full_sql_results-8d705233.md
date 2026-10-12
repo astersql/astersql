@@ -1,6 +1,8 @@
 # 任务 374: 优化 `astersql-session::paging_rpc::global_budget_updates_preserve_all_rpc_pages_and_full_sql_results`
 
-批次：【批次 374】 依赖批次 373
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

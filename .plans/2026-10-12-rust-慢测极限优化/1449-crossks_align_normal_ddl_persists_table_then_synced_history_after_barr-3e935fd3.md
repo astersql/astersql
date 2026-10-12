@@ -1,6 +1,8 @@
 # 任务 1449: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_persists_table_then_synced_history_after_barrier`
 
-批次：【批次 1449】 依赖批次 1448
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

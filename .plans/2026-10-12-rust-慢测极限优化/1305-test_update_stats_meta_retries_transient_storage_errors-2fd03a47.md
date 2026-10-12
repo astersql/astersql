@@ -1,6 +1,8 @@
 # 任务 1305: 优化 `astersql-br-pkg-restore-snap-client::pipeline_items_test::test_update_stats_meta_retries_transient_storage_errors`
 
-批次：【批次 1305】 依赖批次 1304
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

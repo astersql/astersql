@@ -1,6 +1,8 @@
 # 任务 583: 优化 `astersql-executor-test-infoschema::infoschema_test::analyze_status_matches_show_analyze_status_after_analyze`
 
-批次：【批次 583】 依赖批次 582
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

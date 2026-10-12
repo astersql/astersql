@@ -1,6 +1,8 @@
 # 任务 1239: 优化 `astersql-tests-realtikvtest-importintotest::job_test::test_detached_job_without_prepare_mode_still_succeeds`
 
-批次：【批次 1239】 依赖批次 1238
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

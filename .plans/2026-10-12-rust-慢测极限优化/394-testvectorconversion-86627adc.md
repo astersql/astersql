@@ -1,6 +1,8 @@
 # 任务 394: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorConversion`
 
-批次：【批次 394】 依赖批次 393
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

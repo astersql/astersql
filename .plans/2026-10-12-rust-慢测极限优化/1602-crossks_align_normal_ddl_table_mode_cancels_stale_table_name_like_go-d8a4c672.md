@@ -1,6 +1,8 @@
 # 任务 1602: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_table_mode_cancels_stale_table_name_like_go`
 
-批次：【批次 1602】 依赖批次 1601
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

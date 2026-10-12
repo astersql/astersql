@@ -1,6 +1,8 @@
 # 任务 840: 优化 `astersql-br-pkg-backup::client_test::test_main_backup_loop`
 
-批次：【批次 840】 依赖批次 839
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

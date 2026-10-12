@@ -1,6 +1,8 @@
 # 任务 816: 优化 `astersql-ddl-tests-partition::multi_domain_part3_aster_unit_test::duplicate_rows_without_primary_key_survive_partition_storage`
 
-批次：【批次 816】 依赖批次 815
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

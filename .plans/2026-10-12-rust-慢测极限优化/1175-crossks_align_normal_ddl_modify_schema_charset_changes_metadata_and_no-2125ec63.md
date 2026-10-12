@@ -1,6 +1,8 @@
 # 任务 1175: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_modify_schema_charset_changes_metadata_and_noop_has_no_diff`
 
-批次：【批次 1175】 依赖批次 1174
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

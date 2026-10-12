@@ -1,6 +1,8 @@
 # 任务 1177: 优化 `astersql-session-test::session_test::prepare_zero_matches_go`
 
-批次：【批次 1177】 依赖批次 1176
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

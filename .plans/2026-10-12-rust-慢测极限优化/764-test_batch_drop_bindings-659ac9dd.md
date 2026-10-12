@@ -1,6 +1,8 @@
 # 任务 764: 优化 `astersql-bindinfo-tests::bind_test::test_batch_drop_bindings`
 
-批次：【批次 764】 依赖批次 763
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

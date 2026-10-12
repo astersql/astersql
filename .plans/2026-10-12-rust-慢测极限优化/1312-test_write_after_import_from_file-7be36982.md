@@ -1,6 +1,8 @@
 # 任务 1312: 优化 `astersql-tests-realtikvtest-importintotest2::write_after_import_test::test_write_after_import_from_file`
 
-批次：【批次 1312】 依赖批次 1311
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 45: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_index_join_usable_keys_direct_optimizer_boundary`
 
-批次：【批次 45】 依赖批次 44
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

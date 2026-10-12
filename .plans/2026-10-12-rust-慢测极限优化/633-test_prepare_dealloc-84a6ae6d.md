@@ -1,6 +1,8 @@
 # 任务 633: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepare_dealloc`
 
-批次：【批次 633】 依赖批次 632
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

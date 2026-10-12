@@ -1,6 +1,8 @@
 # 任务 205: 优化 `astersql-session::tidb_test::global_variable_init_domain_skips_claim_and_serving_domain_warns_once`
 
-批次：【批次 205】 依赖批次 204
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

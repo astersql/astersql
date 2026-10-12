@@ -1,6 +1,8 @@
 # 任务 549: 优化 `astersql-ddl-tests-partition::modify_column_test::modify_column_rebuild_keeps_rows_partitions_and_index_accessible`
 
-批次：【批次 549】 依赖批次 548
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

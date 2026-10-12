@@ -1,6 +1,8 @@
 # 任务 400: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnInsertOnDuplicateParentTableCheck`
 
-批次：【批次 400】 依赖批次 399
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

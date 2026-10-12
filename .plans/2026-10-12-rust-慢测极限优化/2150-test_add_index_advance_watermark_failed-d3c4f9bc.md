@@ -1,6 +1,8 @@
 # 任务 2150: 优化 `astersql-tests-realtikvtest-addindextest3::ingest_test::test_add_index_advance_watermark_failed`
 
-批次：【批次 2150】 依赖批次 2149
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

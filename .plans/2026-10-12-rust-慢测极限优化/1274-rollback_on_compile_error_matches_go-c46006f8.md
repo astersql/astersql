@@ -1,6 +1,8 @@
 # 任务 1274: 优化 `astersql-session-test::session_test::rollback_on_compile_error_matches_go`
 
-批次：【批次 1274】 依赖批次 1273
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

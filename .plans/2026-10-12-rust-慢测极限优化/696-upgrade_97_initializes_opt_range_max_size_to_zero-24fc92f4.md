@@ -1,6 +1,8 @@
 # 任务 696: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_97_initializes_opt_range_max_size_to_zero`
 
-批次：【批次 696】 依赖批次 695
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

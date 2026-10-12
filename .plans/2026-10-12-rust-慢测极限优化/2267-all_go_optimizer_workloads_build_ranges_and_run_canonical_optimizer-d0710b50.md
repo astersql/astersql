@@ -1,6 +1,8 @@
 # 任务 2267: 优化 `astersql-planner-core::cbo_test::all_go_optimizer_workloads_build_ranges_and_run_canonical_optimizer`
 
-批次：【批次 2267】 依赖批次 2266
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

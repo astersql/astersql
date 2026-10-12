@@ -1,6 +1,8 @@
 # 任务 2061: 优化 `astersql-tests-realtikvtest-ddltest::ddl_test::go_init_sets_pd_path_before_ddl_tests`
 
-批次：【批次 2061】 依赖批次 2060
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

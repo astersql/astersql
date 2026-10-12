@@ -1,6 +1,8 @@
 # 任务 2192: 优化 `astersql-parser-charset::charset_test::test_get_collation_by_name`
 
-批次：【批次 2192】 依赖批次 2191
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

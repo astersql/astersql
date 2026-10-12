@@ -1,6 +1,8 @@
 # 任务 1397: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_other_charset`
 
-批次：【批次 1397】 依赖批次 1396
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

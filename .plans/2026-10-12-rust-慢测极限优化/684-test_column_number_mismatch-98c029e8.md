@@ -1,6 +1,8 @@
 # 任务 684: 优化 `astersql-executor-test-loadremotetest::error_test::test_column_number_mismatch`
 
-批次：【批次 684】 依赖批次 683
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

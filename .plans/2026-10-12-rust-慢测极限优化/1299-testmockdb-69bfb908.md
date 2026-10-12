@@ -1,6 +1,8 @@
 # 任务 1299: 优化 `astersql-testkit::db_driver_test::TestMockDB`
 
-批次：【批次 1299】 依赖批次 1298
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

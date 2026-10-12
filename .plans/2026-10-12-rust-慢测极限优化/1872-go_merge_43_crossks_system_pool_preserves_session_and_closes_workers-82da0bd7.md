@@ -1,6 +1,8 @@
 # 任务 1872: 优化 `astersql-session::runtime::crossks_session_pool_test::go_merge_43_crossks_system_pool_preserves_session_and_closes_workers`
 
-批次：【批次 1872】 依赖批次 1871
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

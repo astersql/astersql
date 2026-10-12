@@ -1,6 +1,8 @@
 # 任务 1245: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_persistent_reorg_advances_real_rows`
 
-批次：【批次 1245】 依赖批次 1244
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

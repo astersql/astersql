@@ -1,6 +1,8 @@
 # 任务 1593: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test::commit_and_rollback_text_and_binary_are_safe_after_lock_expiry`
 
-批次：【批次 1593】 依赖批次 1592
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

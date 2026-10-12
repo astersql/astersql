@@ -1,6 +1,8 @@
 # 任务 677: 优化 `astersql-executor-test-admintest::admin_test::partial_multi_valued_indexes_reject_admin_checks`
 
-批次：【批次 677】 依赖批次 676
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

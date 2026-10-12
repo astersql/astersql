@@ -1,6 +1,8 @@
 # 任务 1643: 优化 `astersql-session::runtime_pessimistic_test::managed_pessimistic_lock_ttl_is_renewed_while_the_session_is_active`
 
-批次：【批次 1643】 依赖批次 1642
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

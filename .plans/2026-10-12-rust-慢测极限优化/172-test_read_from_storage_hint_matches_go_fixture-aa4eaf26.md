@@ -1,6 +1,8 @@
 # 任务 172: 优化 `astersql-planner-core-casetest-hint::hint_test::test_read_from_storage_hint_matches_go_fixture`
 
-批次：【批次 172】 依赖批次 171
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

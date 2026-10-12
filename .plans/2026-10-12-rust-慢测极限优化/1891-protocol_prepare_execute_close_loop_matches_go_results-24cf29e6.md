@@ -1,6 +1,8 @@
 # 任务 1891: 优化 `astersql-session-test-common::prepare_dedup_cache_test::protocol_prepare_execute_close_loop_matches_go_results`
 
-批次：【批次 1891】 依赖批次 1890
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

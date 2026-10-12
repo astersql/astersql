@@ -1,6 +1,8 @@
 # 任务 94: 优化 `astersql-tests-realtikvtest-testutils::parity_test::contract_resource_cleanup`
 
-批次：【批次 94】 依赖批次 93
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 901: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_without_analyze_matches_go_suite_fixture`
 
-批次：【批次 901】 依赖批次 900
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

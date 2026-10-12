@@ -1,6 +1,8 @@
 # 任务 1885: 优化 `astersql-testkit::mockstore_domain_stats_test::mock_store_and_domain_expose_real_analyzed_and_flushed_physical_stats`
 
-批次：【批次 1885】 依赖批次 1884
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

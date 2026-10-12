@@ -1,6 +1,8 @@
 # 任务 317: 优化 `astersql-br-pkg-restore-snap-client::import_test::test_snapshot_client_factory_probes_peer_retry_and_falls_back_on_probe_error`
 
-批次：【批次 317】 依赖批次 316
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

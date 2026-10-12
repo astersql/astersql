@@ -1,6 +1,8 @@
 # 任务 2282: 优化 `astersql-table::column_test::check_row_constraint_uses_formal_expression_evaluation`
 
-批次：【批次 2282】 依赖批次 2281
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

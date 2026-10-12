@@ -1,6 +1,8 @@
 # 任务 1051: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_fast_reorg_merges_concurrent_mutations`
 
-批次：【批次 1051】 依赖批次 1050
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

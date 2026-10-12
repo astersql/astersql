@@ -1,6 +1,8 @@
 # 任务 1002: 优化 `astersql-tests-realtikvtest-addindextest4::integration_test::test_multi_schema_change_analyze_only_once`
 
-批次：【批次 1002】 依赖批次 1001
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

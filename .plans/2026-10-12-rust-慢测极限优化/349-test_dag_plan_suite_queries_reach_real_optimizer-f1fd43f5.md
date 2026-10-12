@@ -1,6 +1,8 @@
 # 任务 349: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_suite_queries_reach_real_optimizer`
 
-批次：【批次 349】 依赖批次 348
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

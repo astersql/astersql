@@ -1,6 +1,8 @@
 # 任务 1190: 优化 `astersql-session::runtime_test::ddl::dxf_backend_exposes_current_transaction_start_ts_for_import_stats`
 
-批次：【批次 1190】 依赖批次 1189
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

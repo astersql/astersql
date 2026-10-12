@@ -1,6 +1,8 @@
 # 任务 1119: 优化 `astersql-server::mysql_type_protocol_test::mysql_type_packets_expose_correct_type_flags_charset_and_decimal`
 
-批次：【批次 1119】 依赖批次 1118
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

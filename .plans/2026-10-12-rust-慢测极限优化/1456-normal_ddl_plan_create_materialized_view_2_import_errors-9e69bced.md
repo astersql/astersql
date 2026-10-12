@@ -1,6 +1,8 @@
 # 任务 1456: 优化 `astersql-session::runtime::normal_ddl_create_materialized_view_test::normal_ddl_plan_create_materialized_view_2_import_errors`
 
-批次：【批次 1456】 依赖批次 1455
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

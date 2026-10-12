@@ -1,6 +1,8 @@
 # 任务 797: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertYCSBLike`
 
-批次：【批次 797】 依赖批次 796
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

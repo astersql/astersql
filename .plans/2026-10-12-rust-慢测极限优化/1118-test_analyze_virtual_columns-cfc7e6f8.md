@@ -1,6 +1,8 @@
 # 任务 1118: 优化 `astersql-planner-core-tests-analyze::analyze_test::test_analyze_virtual_columns`
 
-批次：【批次 1118】 依赖批次 1117
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

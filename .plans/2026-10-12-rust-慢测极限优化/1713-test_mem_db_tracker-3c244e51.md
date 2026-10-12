@@ -1,6 +1,8 @@
 # 任务 1713: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_mem_db_tracker`
 
-批次：【批次 1713】 依赖批次 1712
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

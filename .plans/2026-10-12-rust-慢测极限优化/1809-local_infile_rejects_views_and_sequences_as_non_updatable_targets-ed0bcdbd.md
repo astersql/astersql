@@ -1,6 +1,8 @@
 # 任务 1809: 优化 `astersql-session::load_data_runtime_test::local_infile_rejects_views_and_sequences_as_non_updatable_targets`
 
-批次：【批次 1809】 依赖批次 1808
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

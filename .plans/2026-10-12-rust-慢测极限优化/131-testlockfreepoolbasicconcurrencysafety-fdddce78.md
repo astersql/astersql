@@ -1,6 +1,8 @@
 # 任务 131: 优化 `astersql-util-globalconn::pool_test::TestLockFreePoolBasicConcurrencySafety`
 
-批次：【批次 131】 依赖批次 130
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

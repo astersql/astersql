@@ -1,6 +1,8 @@
 # 任务 981: 优化 `astersql-session::runtime_test::typed_adapter_bridge::sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_explain`
 
-批次：【批次 981】 依赖批次 980
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

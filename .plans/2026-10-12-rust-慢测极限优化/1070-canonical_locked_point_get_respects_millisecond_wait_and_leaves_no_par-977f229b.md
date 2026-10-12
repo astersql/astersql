@@ -1,6 +1,8 @@
 # 任务 1070: 优化 `astersql-session::runtime::scan_adapter_runtime_test::canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_partial_row`
 
-批次：【批次 1070】 依赖批次 1069
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

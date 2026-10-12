@@ -1,6 +1,8 @@
 # 任务 573: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_policy_validation_preserves_metadata_and_policy`
 
-批次：【批次 573】 依赖批次 572
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

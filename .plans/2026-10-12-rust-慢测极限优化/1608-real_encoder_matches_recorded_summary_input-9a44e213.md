@@ -1,6 +1,8 @@
 # 任务 1608: 优化 `astersql-tests-realtikvtest-importintotest4::global_sort_test::recorded_summary_harness::real_encoder_matches_recorded_summary_input`
 
-批次：【批次 1608】 依赖批次 1607
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

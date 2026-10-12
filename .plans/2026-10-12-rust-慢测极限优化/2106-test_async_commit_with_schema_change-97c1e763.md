@@ -1,6 +1,8 @@
 # 任务 2106: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_test::test_async_commit_with_schema_change`
 
-批次：【批次 2106】 依赖批次 2105
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

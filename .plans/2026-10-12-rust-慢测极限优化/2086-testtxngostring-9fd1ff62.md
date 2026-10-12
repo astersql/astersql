@@ -1,6 +1,8 @@
 # 任务 2086: 优化 `astersql-tests-realtikvtest-txntest::txn_test::TestTxnGoString`
 
-批次：【批次 2086】 依赖批次 2085
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

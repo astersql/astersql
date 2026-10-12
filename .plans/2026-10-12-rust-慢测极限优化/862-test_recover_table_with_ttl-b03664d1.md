@@ -1,6 +1,8 @@
 # 任务 862: 优化 `astersql-ddl-tests-serial::serial_test::test_recover_table_with_ttl`
 
-批次：【批次 862】 依赖批次 861
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

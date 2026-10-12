@@ -1,6 +1,8 @@
 # 任务 2018: 优化 `astersql-tests-realtikvtest-txntest::stale_read_test::TestStalenessTransactionSchemaVer`
 
-批次：【批次 2018】 依赖批次 2017
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

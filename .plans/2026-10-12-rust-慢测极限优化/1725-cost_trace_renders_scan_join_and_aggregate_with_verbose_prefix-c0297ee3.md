@@ -1,6 +1,8 @@
 # 任务 1725: 优化 `astersql-session::cost_trace_runtime_test::cost_trace_renders_scan_join_and_aggregate_with_verbose_prefix`
 
-批次：【批次 1725】 依赖批次 1724
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

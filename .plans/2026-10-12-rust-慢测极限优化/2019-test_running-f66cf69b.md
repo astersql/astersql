@@ -1,6 +1,8 @@
 # 任务 2019: 优化 `astersql-tests-realtikvtest-txntest::txn_state_test::test_running`
 
-批次：【批次 2019】 依赖批次 2018
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

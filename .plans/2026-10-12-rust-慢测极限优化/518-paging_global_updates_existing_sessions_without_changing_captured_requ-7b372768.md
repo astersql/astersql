@@ -1,6 +1,8 @@
 # 任务 518: 优化 `astersql-session::paging_global::paging_global_updates_existing_sessions_without_changing_captured_requests`
 
-批次：【批次 518】 依赖批次 517
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

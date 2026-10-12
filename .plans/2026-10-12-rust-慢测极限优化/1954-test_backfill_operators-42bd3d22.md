@@ -1,6 +1,8 @@
 # 任务 1954: 优化 `astersql-tests-realtikvtest-addindextest3::operator_test::test_backfill_operators`
 
-批次：【批次 1954】 依赖批次 1953
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

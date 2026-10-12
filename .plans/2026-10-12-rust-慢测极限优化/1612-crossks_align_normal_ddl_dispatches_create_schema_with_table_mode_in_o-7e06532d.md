@@ -1,6 +1,8 @@
 # 任务 1612: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_dispatches_create_schema_with_table_mode_in_one_queue`
 
-批次：【批次 1612】 依赖批次 1611
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

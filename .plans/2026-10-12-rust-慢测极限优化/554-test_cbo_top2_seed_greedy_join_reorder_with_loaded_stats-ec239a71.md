@@ -1,6 +1,8 @@
 # 任务 554: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_top2_seed_greedy_join_reorder_with_loaded_stats`
 
-批次：【批次 554】 依赖批次 553
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

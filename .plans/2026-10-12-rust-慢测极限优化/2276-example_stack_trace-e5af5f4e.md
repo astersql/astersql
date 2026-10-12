@@ -1,6 +1,8 @@
 # 任务 2276: 优化 `astersql-errors::example_test::example_stack_trace`
 
-批次：【批次 2276】 依赖批次 2275
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 572: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_path_test::test_mv_index_random`
 
-批次：【批次 572】 依赖批次 571
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

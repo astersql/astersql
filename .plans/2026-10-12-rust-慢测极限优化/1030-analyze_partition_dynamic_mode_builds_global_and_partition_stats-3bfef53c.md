@@ -1,6 +1,8 @@
 # 任务 1030: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_dynamic_mode_builds_global_and_partition_stats`
 
-批次：【批次 1030】 依赖批次 1029
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2215: 优化 `astersql-importsdk::file_scanner_test::new_file_scanner_redacts_or_hides_source_in_parse_errors`
 
-批次：【批次 2215】 依赖批次 2214
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

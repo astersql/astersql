@@ -1,6 +1,8 @@
 # 任务 1972: 优化 `astersql-standby::standby_nextgen_test::test_on_server_shutdown_starter_retries_manager_free`
 
-批次：【批次 1972】 依赖批次 1971
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

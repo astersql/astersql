@@ -1,6 +1,8 @@
 # 任务 873: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::bootstrap_binding_digest_refresh_runs_until_version282`
 
-批次：【批次 873】 依赖批次 872
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

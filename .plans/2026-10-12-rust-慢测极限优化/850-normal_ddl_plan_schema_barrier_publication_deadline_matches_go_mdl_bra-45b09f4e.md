@@ -1,6 +1,8 @@
 # 任务 850: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_schema_barrier_publication_deadline_matches_go_mdl_branch`
 
-批次：【批次 850】 依赖批次 849
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

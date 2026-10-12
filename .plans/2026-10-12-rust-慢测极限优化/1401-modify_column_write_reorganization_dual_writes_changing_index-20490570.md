@@ -1,6 +1,8 @@
 # 任务 1401: 优化 `astersql-session::runtime::normal_ddl_masking_policy_test::modify_column_write_reorganization_dual_writes_changing_index`
 
-批次：【批次 1401】 依赖批次 1400
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

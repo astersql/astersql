@@ -1,6 +1,8 @@
 # 任务 1674: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_analyze_snapshot`
 
-批次：【批次 1674】 依赖批次 1673
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

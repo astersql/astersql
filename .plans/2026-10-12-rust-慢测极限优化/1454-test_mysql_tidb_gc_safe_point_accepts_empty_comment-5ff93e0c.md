@@ -1,6 +1,8 @@
 # 任务 1454: 优化 `astersql-ddl-tests-serial::serial_test::test_mysql_tidb_gc_safe_point_accepts_empty_comment`
 
-批次：【批次 1454】 依赖批次 1453
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

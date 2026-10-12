@@ -1,6 +1,8 @@
 # 任务 893: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_static_to_dynamic_rebuilds_global_stats`
 
-批次：【批次 893】 依赖批次 892
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 752: 优化 `astersql-planner-core-casetest-hint::hint_test::test_qb_hint_handler_duplicate_objects`
 
-批次：【批次 752】 依赖批次 751
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

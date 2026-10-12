@@ -1,6 +1,8 @@
 # 任务 1308: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_require_mutations_are_atomic`
 
-批次：【批次 1308】 依赖批次 1307
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

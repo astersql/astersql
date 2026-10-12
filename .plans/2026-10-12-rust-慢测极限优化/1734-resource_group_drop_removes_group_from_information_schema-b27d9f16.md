@@ -1,6 +1,8 @@
 # 任务 1734: 优化 `astersql-resourcegroup-tests::resource_group_test::resource_group_drop_removes_group_from_information_schema`
 
-批次：【批次 1734】 依赖批次 1733
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

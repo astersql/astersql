@@ -1,6 +1,8 @@
 # 任务 1845: 优化 `astersql-session::runtime::ddl::tests::pre_split_skips_global_temporary_tables_like_go`
 
-批次：【批次 1845】 依赖批次 1844
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

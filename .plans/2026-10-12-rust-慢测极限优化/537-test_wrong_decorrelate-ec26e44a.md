@@ -1,6 +1,8 @@
 # 任务 537: 优化 `astersql-planner-core-casetest-correlated::correlated_test::test_wrong_decorrelate`
 
-批次：【批次 537】 依赖批次 536
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

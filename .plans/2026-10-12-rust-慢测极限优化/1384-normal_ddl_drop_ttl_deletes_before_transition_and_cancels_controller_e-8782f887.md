@@ -1,6 +1,8 @@
 # 任务 1384: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_drop_ttl_deletes_before_transition_and_cancels_controller_error`
 
-批次：【批次 1384】 依赖批次 1383
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

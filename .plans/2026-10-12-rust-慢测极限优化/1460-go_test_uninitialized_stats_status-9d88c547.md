@@ -1,6 +1,8 @@
 # 任务 1460: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_uninitialized_stats_status`
 
-批次：【批次 1460】 依赖批次 1459
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 566: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_straight_join_creates_four_tables`
 
-批次：【批次 566】 依赖批次 565
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

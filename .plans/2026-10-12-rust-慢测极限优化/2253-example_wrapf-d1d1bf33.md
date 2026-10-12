@@ -1,6 +1,8 @@
 # 任务 2253: 优化 `astersql-errors::example_test::example_wrapf`
 
-批次：【批次 2253】 依赖批次 2252
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

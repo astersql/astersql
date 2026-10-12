@@ -1,6 +1,8 @@
 # 任务 2153: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_dist_lock_acquire_failed`
 
-批次：【批次 2153】 依赖批次 2152
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

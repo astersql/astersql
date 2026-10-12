@@ -1,6 +1,8 @@
 # 任务 1322: 优化 `astersql-tests-realtikvtest-importintotest::import_into_test::test_disk_quota`
 
-批次：【批次 1322】 依赖批次 1321
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

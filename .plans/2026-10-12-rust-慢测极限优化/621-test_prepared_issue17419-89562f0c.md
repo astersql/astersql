@@ -1,6 +1,8 @@
 # 任务 621: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared_issue17419`
 
-批次：【批次 621】 依赖批次 620
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

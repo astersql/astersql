@@ -1,6 +1,8 @@
 # 任务 1250: 优化 `astersql-tests-realtikvtest-addindextest::main_test::test_configuration_at_process_entry`
 
-批次：【批次 1250】 依赖批次 1249
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

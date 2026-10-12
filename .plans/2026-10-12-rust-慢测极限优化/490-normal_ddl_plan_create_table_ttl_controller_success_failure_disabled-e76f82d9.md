@@ -1,6 +1,8 @@
 # 任务 490: 优化 `astersql-session::runtime::normal_ddl_create_table_test::normal_ddl_plan_create_table_ttl_controller_success_failure_disabled`
 
-批次：【批次 490】 依赖批次 489
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

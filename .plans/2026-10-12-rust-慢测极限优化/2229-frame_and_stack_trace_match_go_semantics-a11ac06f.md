@@ -1,6 +1,8 @@
 # 任务 2229: 优化 `astersql-errors::stack_test::frame_and_stack_trace_match_go_semantics`
 
-批次：【批次 2229】 依赖批次 2228
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

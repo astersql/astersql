@@ -1,6 +1,8 @@
 # 任务 1369: 优化 `astersql-tests-realtikvtest-addindextest::failpoints_test::test_failpoints_create_non_unique_index`
 
-批次：【批次 1369】 依赖批次 1368
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

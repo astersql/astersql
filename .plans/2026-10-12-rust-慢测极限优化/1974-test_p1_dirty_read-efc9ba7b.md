@@ -1,6 +1,8 @@
 # 任务 1974: 优化 `astersql-tests-realtikvtest-txntest::isolation_test::test_p1_dirty_read`
 
-批次：【批次 1974】 依赖批次 1973
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

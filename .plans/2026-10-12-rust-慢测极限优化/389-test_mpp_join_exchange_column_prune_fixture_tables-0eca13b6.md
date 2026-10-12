@@ -1,6 +1,8 @@
 # 任务 389: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_exchange_column_prune_fixture_tables`
 
-批次：【批次 389】 依赖批次 388
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1288: 优化 `astersql-session::exchange_partition_privileges::exchange_partition_rejects_reserved_system_table_target`
 
-批次：【批次 1288】 依赖批次 1287
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

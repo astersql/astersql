@@ -1,6 +1,8 @@
 # 任务 586: 优化 `astersql-ddl-tests-partition::db_partition_test::exchange_partition_preserves_both_physical_identities_and_auto_ids`
 
-批次：【批次 586】 依赖批次 585
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

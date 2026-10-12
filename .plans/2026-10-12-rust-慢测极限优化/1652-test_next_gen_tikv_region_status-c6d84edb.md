@@ -1,6 +1,8 @@
 # 任务 1652: 优化 `astersql-tests-realtikvtest-sessiontest::infoschema_test::test_next_gen_tikv_region_status`
 
-批次：【批次 1652】 依赖批次 1651
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

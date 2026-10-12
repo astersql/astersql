@@ -1,6 +1,8 @@
 # 任务 1486: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_load_hist`
 
-批次：【批次 1486】 依赖批次 1485
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

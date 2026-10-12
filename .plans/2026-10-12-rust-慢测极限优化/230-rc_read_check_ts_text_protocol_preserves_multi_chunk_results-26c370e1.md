@@ -1,6 +1,8 @@
 # 任务 230: 优化 `astersql-server::tidb_test::rc_read_check_ts_text_protocol_preserves_multi_chunk_results`
 
-批次：【批次 230】 依赖批次 229
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1110: 优化 `astersql-planner-core-tests-partition::bench_test::partitioned_batch_point_get_wrapper_uses_table_reader_plan`
 
-批次：【批次 1110】 依赖批次 1109
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

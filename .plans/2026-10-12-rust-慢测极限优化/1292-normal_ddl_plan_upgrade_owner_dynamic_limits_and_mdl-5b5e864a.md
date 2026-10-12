@@ -1,6 +1,8 @@
 # 任务 1292: 优化 `astersql-session::runtime::normal_ddl_test::normal_ddl_plan_upgrade_owner_dynamic_limits_and_mdl`
 
-批次：【批次 1292】 依赖批次 1291
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

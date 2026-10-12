@@ -1,6 +1,8 @@
 # 任务 1243: 优化 `astersql-planner-core-tests-redact::redact_test::test_redact_explain_modes_and_fixture_tables`
 
-批次：【批次 1243】 依赖批次 1242
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1326: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_cache_hit_in_rc`
 
-批次：【批次 1326】 依赖批次 1325
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 1485: 优化 `astersql-session-test-meta::session_test::runtime_ttl_insert_rows_counter_tracks_inserted_rows`
 
-批次：【批次 1485】 依赖批次 1484
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

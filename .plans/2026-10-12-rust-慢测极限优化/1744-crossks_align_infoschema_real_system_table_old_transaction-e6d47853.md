@@ -1,6 +1,8 @@
 # 任务 1744: 优化 `astersql-session::system_session::crossks_align_infoschema_real_system_table_old_transaction`
 
-批次：【批次 1744】 依赖批次 1743
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

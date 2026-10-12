@@ -1,6 +1,8 @@
 # 任务 1711: 优化 `astersql-session-test-common::common_test::table_info_meta_tracks_affected_rows_and_visible_data`
 
-批次：【批次 1711】 依赖批次 1710
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

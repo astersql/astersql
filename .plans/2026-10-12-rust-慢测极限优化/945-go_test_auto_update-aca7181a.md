@@ -1,6 +1,8 @@
 # 任务 945: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update`
 
-批次：【批次 945】 依赖批次 944
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

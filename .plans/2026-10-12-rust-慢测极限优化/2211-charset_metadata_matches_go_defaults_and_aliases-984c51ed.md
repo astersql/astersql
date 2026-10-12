@@ -1,6 +1,8 @@
 # 任务 2211: 优化 `astersql-parser-charset::charset_1_aster_unit_test::charset_metadata_matches_go_defaults_and_aliases`
 
-批次：【批次 2211】 依赖批次 2210
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

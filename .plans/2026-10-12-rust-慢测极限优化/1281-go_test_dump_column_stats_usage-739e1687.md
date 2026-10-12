@@ -1,6 +1,8 @@
 # 任务 1281: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_dump_column_stats_usage`
 
-批次：【批次 1281】 依赖批次 1280
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

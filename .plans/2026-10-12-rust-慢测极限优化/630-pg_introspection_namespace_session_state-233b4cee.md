@@ -1,6 +1,8 @@
 # 任务 630: 优化 `astersql-server::pg_query_test::pg_introspection_namespace_session_state`
 
-批次：【批次 630】 依赖批次 629
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

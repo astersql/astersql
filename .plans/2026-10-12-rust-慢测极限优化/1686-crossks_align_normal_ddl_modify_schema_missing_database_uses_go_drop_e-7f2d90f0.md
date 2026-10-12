@@ -1,6 +1,8 @@
 # 任务 1686: 优化 `astersql-session::runtime::normal_ddl_test::crossks_align_normal_ddl_modify_schema_missing_database_uses_go_drop_exists_error`
 
-批次：【批次 1686】 依赖批次 1685
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

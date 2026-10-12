@@ -1,6 +1,8 @@
 # 任务 809: 优化 `astersql-ddl-tests-fk::foreign_key_test::create_table_foreign_key_parent_validation_honors_go_exceptions`
 
-批次：【批次 809】 依赖批次 808
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

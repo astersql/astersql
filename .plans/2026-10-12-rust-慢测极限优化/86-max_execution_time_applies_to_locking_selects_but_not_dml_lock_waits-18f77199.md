@@ -1,6 +1,8 @@
 # 任务 86: 优化 `astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test::max_execution_time_applies_to_locking_selects_but_not_dml_lock_waits`
 
-批次：【批次 86】 依赖批次 85
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

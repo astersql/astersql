@@ -1,6 +1,8 @@
 # 任务 1: 优化 `astersql-tests-realtikvtest-importintotest3::file_compression_test::test_corrupt_compressed_import_returns_error_without_rows`
 
-批次：【批次 1】 依赖无
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

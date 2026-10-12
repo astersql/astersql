@@ -1,6 +1,8 @@
 # 任务 1697: 优化 `astersql-session::runtime::normal_ddl_materialized_view_partition_test::materialized_view_rejects_unique_and_primary_indexes`
 
-批次：【批次 1697】 依赖批次 1696
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

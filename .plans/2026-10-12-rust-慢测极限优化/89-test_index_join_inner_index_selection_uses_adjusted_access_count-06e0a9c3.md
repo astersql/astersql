@@ -1,6 +1,8 @@
 # 任务 89: 优化 `astersql-planner-core-casetest-join::join_test::test_index_join_inner_index_selection_uses_adjusted_access_count`
 
-批次：【批次 89】 依赖批次 88
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

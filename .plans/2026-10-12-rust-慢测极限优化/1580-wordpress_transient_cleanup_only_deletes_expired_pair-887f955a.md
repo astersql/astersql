@@ -1,6 +1,8 @@
 # 任务 1580: 优化 `astersql-session::mysql_query_compat_test::wordpress_transient_cleanup_only_deletes_expired_pair`
 
-批次：【批次 1580】 依赖批次 1579
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 228: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_setup_supports_go_cascades_off_mode`
 
-批次：【批次 228】 依赖批次 227
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 477: 优化 `astersql-server::runtime_test::local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence`
 
-批次：【批次 477】 依赖批次 476
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

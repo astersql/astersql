@@ -1,6 +1,8 @@
 # 任务 1298: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::clustered_insert_ignore_on_varchar_primary_key_keeps_single_row`
 
-批次：【批次 1298】 依赖批次 1297
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

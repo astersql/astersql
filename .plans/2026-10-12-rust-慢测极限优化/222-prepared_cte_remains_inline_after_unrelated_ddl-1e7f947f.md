@@ -1,6 +1,8 @@
 # 任务 222: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_cte_remains_inline_after_unrelated_ddl`
 
-批次：【批次 222】 依赖批次 221
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 649: 优化 `astersql-br-pkg-metautil::load_test::benchmark_load_backup_meta_10240`
 
-批次：【批次 649】 依赖批次 648
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

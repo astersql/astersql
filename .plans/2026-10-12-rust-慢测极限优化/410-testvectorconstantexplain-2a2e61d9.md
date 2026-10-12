@@ -1,6 +1,8 @@
 # 任务 410: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorConstantExplain`
 
-批次：【批次 410】 依赖批次 409
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

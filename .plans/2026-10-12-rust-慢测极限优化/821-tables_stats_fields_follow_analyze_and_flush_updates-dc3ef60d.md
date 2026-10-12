@@ -1,6 +1,8 @@
 # 任务 821: 优化 `astersql-executor-test-infoschema::infoschema_test::tables_stats_fields_follow_analyze_and_flush_updates`
 
-批次：【批次 821】 依赖批次 820
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

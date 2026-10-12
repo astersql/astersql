@@ -1,6 +1,8 @@
 # 任务 1690: 优化 `astersql-expression-test-multivaluedindex::multi_valued_index_test::test_write_multi_valued_index_unique`
 
-批次：【批次 1690】 依赖批次 1689
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

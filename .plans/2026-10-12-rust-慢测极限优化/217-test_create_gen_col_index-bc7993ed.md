@@ -1,6 +1,8 @@
 # 任务 217: 优化 `astersql-tests-realtikvtest-addindextest::add_index_test::test_create_gen_col_index`
 
-批次：【批次 217】 依赖批次 216
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

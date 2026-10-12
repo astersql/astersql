@@ -1,6 +1,8 @@
 # 任务 2279: 优化 `astersql-executor-internal-mpp::local_mpp_coordinator_test::test_dispatch_cancel_race_cancel_wins_under_coordinator_lock`
 
-批次：【批次 2279】 依赖批次 2278
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

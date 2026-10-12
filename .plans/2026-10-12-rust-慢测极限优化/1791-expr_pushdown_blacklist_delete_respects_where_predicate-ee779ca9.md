@@ -1,6 +1,8 @@
 # 任务 1791: 优化 `astersql-session::runtime_admin_test::expr_pushdown_blacklist_delete_respects_where_predicate`
 
-批次：【批次 1791】 依赖批次 1790
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

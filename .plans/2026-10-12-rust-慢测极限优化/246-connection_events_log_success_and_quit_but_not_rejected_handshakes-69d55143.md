@@ -1,6 +1,8 @@
 # 任务 246: 优化 `astersql-server::server_test::connection_events_log_success_and_quit_but_not_rejected_handshakes`
 
-批次：【批次 246】 依赖批次 245
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

@@ -1,6 +1,8 @@
 # 任务 2063: 优化 `astersql-tests-realtikvtest-sessiontest::session_fail_test::test_index_lookup_with_static_prune`
 
-批次：【批次 2063】 依赖批次 2062
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

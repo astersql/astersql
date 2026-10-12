@@ -1,6 +1,8 @@
 # 任务 1700: 优化 `astersql-session::runtime_pessimistic_test::missing_unique_values_are_locked_for_nowait_batch_point_gets`
 
-批次：【批次 1700】 依赖批次 1699
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

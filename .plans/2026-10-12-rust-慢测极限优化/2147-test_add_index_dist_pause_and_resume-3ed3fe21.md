@@ -1,6 +1,8 @@
 # 任务 2147: 优化 `astersql-tests-realtikvtest-addindextest1::disttask_test::test_add_index_dist_pause_and_resume`
 
-批次：【批次 2147】 依赖批次 2146
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

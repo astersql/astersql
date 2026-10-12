@@ -1,6 +1,8 @@
 # 任务 916: 优化 `astersql-executor-test-cte::cte_test::test_cte_recursive_limit_error_is_recovered_and_reusable`
 
-批次：【批次 916】 依赖批次 915
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

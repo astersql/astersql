@@ -1,6 +1,8 @@
 # 任务 1922: 优化 `astersql-tests-realtikvtest-importintotest4::global_sort_test::recorded_summary_harness::real_manager_failure_persists_after_explicit_node_initialization`
 
-批次：【批次 1922】 依赖批次 1921
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

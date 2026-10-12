@@ -1,6 +1,8 @@
 # 任务 137: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_order_by_limit_matches_index_reference`
 
-批次：【批次 137】 依赖批次 136
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

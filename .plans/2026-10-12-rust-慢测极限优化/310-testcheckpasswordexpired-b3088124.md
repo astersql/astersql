@@ -1,6 +1,8 @@
 # 任务 310: 优化 `astersql-privilege-privileges::privileges_test::TestCheckPasswordExpired`
 
-批次：【批次 310】 依赖批次 309
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

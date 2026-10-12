@@ -1,6 +1,8 @@
 # 任务 1226: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_version`
 
-批次：【批次 1226】 依赖批次 1225
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 

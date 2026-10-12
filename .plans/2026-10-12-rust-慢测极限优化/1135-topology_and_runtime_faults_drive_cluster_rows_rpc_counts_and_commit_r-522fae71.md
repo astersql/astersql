@@ -1,6 +1,8 @@
 # 任务 1135: 优化 `astersql-session::runtime_pessimistic_test::topology_and_runtime_faults_drive_cluster_rows_rpc_counts_and_commit_retries`
 
-批次：【批次 1135】 依赖批次 1134
+调度：系统自动并行
+
+显式依赖：无
 
 状态：未开始
 
