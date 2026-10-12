@@ -621,8 +621,203 @@ fn query_flush_failure_is_accounted() {
 #[test]
 fn next_and_finish_are_excluded_and_errors_preserved() {
     use std::time::{Duration, Instant};
-    let (cc, _peer, fault) = sql_response_connection();
-    let ctx = cc.getCtx().unwrap().unwrap();
+    #[derive(Debug, Default)]
+    struct BoundaryState {
+        operation: &'static str,
+        at: usize,
+        delay: Duration,
+        fail: bool,
+        count: usize,
+        chunks: usize,
+        closed: bool,
+        events: Vec<&'static str>,
+    }
+
+    #[derive(Debug)]
+    struct BoundaryResult(Arc<Mutex<BoundaryState>>);
+
+    impl BoundaryResult {
+        fn before(&self, operation: &'static str) -> crate::conn::ConnResult<()> {
+            let mut state = self.0.lock().unwrap();
+            state.events.push(operation);
+            if state.operation == operation {
+                state.count += 1;
+                if state.count == state.at {
+                    std::thread::sleep(state.delay);
+                    if state.fail {
+                        return Err(crate::conn::ConnError::Session(format!(
+                            "injected {operation} failure"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl crate::conn::ProtocolResultSet for BoundaryResult {
+        fn next_chunk(&self) -> crate::conn::ConnResult<Vec<Vec<crate::conn::Value>>> {
+            self.before("Next")?;
+            let mut state = self.0.lock().unwrap();
+            state.chunks += 1;
+            Ok(if state.chunks == 1 {
+                vec![
+                    vec![crate::conn::Value::Signed(1)],
+                    vec![crate::conn::Value::Signed(2)],
+                ]
+            } else {
+                Vec::new()
+            })
+        }
+
+        fn current_row(&self) -> crate::conn::ConnResult<Option<Vec<crate::conn::Value>>> {
+            unreachable!()
+        }
+
+        fn advance(&self) -> crate::conn::ConnResult<()> {
+            unreachable!()
+        }
+
+        fn finish(&self) -> crate::conn::ConnResult<()> {
+            self.before("Finish")
+        }
+
+        fn on_fetch_returned(&self) -> crate::conn::ConnResult<()> {
+            unreachable!()
+        }
+
+        fn close(&self) -> crate::conn::ConnResult<()> {
+            let mut state = self.0.lock().unwrap();
+            if !state.closed {
+                state.events.push("Close");
+                state.closed = true;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for BoundaryResult {
+        fn drop(&mut self) {
+            let _ = crate::conn::ProtocolResultSet::close(self);
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryPacket(Arc<Mutex<ResponseWriteFault>>);
+
+    impl crate::conn::PacketIo for MemoryPacket {
+        fn read_packet(&mut self) -> crate::conn::ConnResult<Vec<u8>> {
+            unreachable!()
+        }
+
+        fn write_packet(&mut self, packet: &[u8]) -> crate::conn::ConnResult<()> {
+            let mut fault = self.0.lock().unwrap();
+            fault.writes += 1;
+            fault.packets.push(packet.to_vec());
+            Ok(())
+        }
+
+        fn flush(&mut self) -> crate::conn::ConnResult<()> {
+            Ok(())
+        }
+
+        fn reset_sequence(&mut self) {}
+
+        fn set_read_timeout(&mut self, _: Duration) -> crate::conn::ConnResult<()> {
+            Ok(())
+        }
+
+        fn set_compression(&mut self, _: crate::conn::CompressionAlgorithm, _: i32) {}
+
+        fn upgrade_to_tls(&mut self) -> crate::conn::ConnResult<crate::conn::TlsState> {
+            unreachable!()
+        }
+
+        fn peer_addr(&self) -> crate::conn::ConnResult<(String, String)> {
+            Ok(("127.0.0.1".into(), "4000".into()))
+        }
+
+        fn local_addr(&self) -> crate::conn::ConnResult<(String, String)> {
+            Ok(("127.0.0.1".into(), "4000".into()))
+        }
+
+        fn connection_alive(&self) -> bool {
+            true
+        }
+
+        fn close(&mut self) -> crate::conn::ConnResult<()> {
+            Ok(())
+        }
+    }
+
+    struct MemoryDomain;
+
+    impl crate::conn::ConnectionDomain for MemoryDomain {
+        fn next_connection_id(&self) -> u64 {
+            1
+        }
+
+        fn release_connection_id(&self, _: u64) {}
+    }
+
+    struct MemoryServer(Arc<MemoryDomain>);
+
+    impl crate::conn::ConnectionServer for MemoryServer {
+        fn register_connection(
+            &self,
+            _: Arc<crate::conn::ClientConn>,
+        ) -> crate::conn::ConnResult<()> {
+            Ok(())
+        }
+
+        fn unregister_connection(&self, _: u64) {}
+
+        fn connection_count(&self) -> usize {
+            0
+        }
+
+        fn config(&self) -> crate::conn::ServerConfig {
+            crate::conn::ServerConfig {
+                capability: 0,
+                default_collation: 45,
+                server_version: "test".into(),
+                default_auth_plugin: crate::conn::AUTH_NATIVE_PASSWORD.into(),
+                require_secure_transport: false,
+                init_connect: String::new(),
+                max_connections: 1,
+            }
+        }
+
+        fn driver(&self) -> Arc<dyn crate::conn::SessionDriver> {
+            unreachable!()
+        }
+
+        fn domain(&self) -> Arc<dyn crate::conn::ConnectionDomain> {
+            self.0.clone()
+        }
+
+        fn is_shutdown(&self) -> bool {
+            false
+        }
+
+        fn is_healthy(&self) -> bool {
+            true
+        }
+
+        fn connection_active(&self, _: u64) {}
+
+        fn connection_closed(&self, _: u64, _: &str) {}
+    }
+
+    let fault = Arc::new(Mutex::new(ResponseWriteFault::default()));
+    let cc = crate::conn::newClientConn(
+        Arc::new(MemoryServer(Arc::new(MemoryDomain))),
+        Box::new(MemoryPacket(Arc::clone(&fault))),
+        vec![7; 20],
+        false,
+    );
+    const INJECTED_DELAY: Duration = Duration::from_millis(10);
+    const MIN_EXCLUDED_DELAY: Duration = Duration::from_millis(5);
     for (operation, at, fail) in [
         ("Next", 1, false),
         ("Next", 2, false),
@@ -631,23 +826,55 @@ fn next_and_finish_are_excluded_and_errors_preserved() {
         ("Next", 2, true),
         ("Finish", 1, true),
     ] {
-        ctx.result_fault_for_test(operation, at, Duration::from_millis(300), fail);
+        let boundary = Arc::new(Mutex::new(BoundaryState {
+            operation,
+            at,
+            delay: INJECTED_DELAY,
+            fail,
+            ..Default::default()
+        }));
+        let measured = Arc::new(Mutex::new(Duration::ZERO));
+        let measured_result = Arc::clone(&measured);
+        let lifecycle = crate::conn::ResponseLifecycle::new(move |duration| {
+            *measured_result.lock().unwrap() = duration;
+        });
         {
             let mut f = fault.lock().unwrap();
             f.writes = 0;
             f.packets.clear();
         }
+        let result_set = Arc::new(BoundaryResult(Arc::clone(&boundary)));
+        let result = crate::conn::QueryResult {
+            columns: vec![crate::conn::ColumnInfo {
+                schema: String::new(),
+                table: String::new(),
+                org_table: String::new(),
+                name: "a".into(),
+                org_name: String::new(),
+                charset: 0,
+                column_length: 0,
+                column_type: 3,
+                flags: 0,
+                decimals: 0,
+                default_value: None,
+            }],
+            response_lifecycle: Some(Arc::clone(&lifecycle)),
+            result_set: Some(result_set),
+            ..Default::default()
+        };
         let start = Instant::now();
-        let result = cc.dispatch(b"\x03select * from response_t");
+        let write_result = cc.writeResultSet(&result);
+        lifecycle.finish();
+        drop(result);
         let elapsed = start.elapsed();
-        let measured = ctx.protocol_write_duration_for_test();
+        let measured = *measured.lock().unwrap();
         assert!(
-            elapsed.saturating_sub(measured) >= Duration::from_millis(250),
+            elapsed.saturating_sub(measured) >= MIN_EXCLUDED_DELAY,
             "{operation} elapsed {elapsed:?}, measured {measured:?}"
         );
         if fail {
             assert_eq!(
-                result,
+                write_result,
                 Err(crate::conn::ConnError::Session(format!(
                     "injected {operation} failure"
                 )))
@@ -656,14 +883,11 @@ fn next_and_finish_are_excluded_and_errors_preserved() {
                 assert!(fault.lock().unwrap().packets.is_empty());
             }
         } else {
-            result.unwrap();
+            write_result.unwrap();
         }
-        let events = ctx.result_events_for_test();
+        let events = boundary.lock().unwrap().events.clone();
         assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.as_str() == "Close")
-                .count(),
+            events.iter().filter(|event| **event == "Close").count(),
             1,
             "{events:?}"
         );
@@ -671,7 +895,6 @@ fn next_and_finish_are_excluded_and_errors_preserved() {
             assert_eq!(events, ["Next", "Next", "Finish", "Close"]);
         }
     }
-    cc.Close().unwrap();
 }
 #[test]
 fn cursor_iteration_is_timed_and_notification_excluded() {
