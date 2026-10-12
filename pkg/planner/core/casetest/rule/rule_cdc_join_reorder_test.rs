@@ -93,13 +93,17 @@ fn sql_cases(suite: &TestData, name: &str, cascades: bool) -> Vec<String> {
     input
 }
 
-fn setup_cdc_tables(tk: &mut TestKit) {
+fn ensure_analyze_options(tk: &mut TestKit) {
     // The planner fixture intentionally skips unrelated statistics system tables, but this
     // suite still runs the same ANALYZE statements as Go and therefore needs the options table.
     tk.MustExec(
         "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
         Vec::new(),
     );
+}
+
+fn setup_cdc_tables(tk: &mut TestKit) {
+    ensure_analyze_options(tk);
     tk.MustExec("drop table if exists t1,t2,t3,t4,t5", Vec::new());
     for table in ["t1", "t2", "t3", "t4", "t5"] {
         tk.MustExec(&format!("create table {table} (a int,b int)"), Vec::new());
@@ -207,6 +211,7 @@ fn selection_and_order_aware_goldens_preserve_go_contract() {
 fn order_aware_join_reorder_pushes_selection_and_keeps_order() {
     for cascades in [false, true] {
         let mut tk = new_testkit(cascades);
+        ensure_analyze_options(&mut tk);
         tk.MustExec("create table t6(id int not null,category varchar(20),payload int,key idx_category_id_payload(category,id,payload))", Vec::new());
         tk.MustExec(
             "create table t7(id int not null,payload int,key idx_id(id))",
