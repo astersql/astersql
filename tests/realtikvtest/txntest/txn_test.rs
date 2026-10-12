@@ -1623,7 +1623,6 @@ fn TestLockKeysInDML() {
     first.MustExec("begin", Vec::new());
     first.MustExec("insert into t2 values(1)", Vec::new());
 
-    let started = Instant::now();
     let (done_tx, done_rx) = mpsc::channel();
     let updater = thread::spawn(move || {
         let mut second = peer(store, &database);
@@ -1632,12 +1631,32 @@ fn TestLockKeysInDML() {
         second.MustExec("commit", Vec::new());
         done_tx.send(result).expect("send FK update result");
     });
-    assert!(done_rx.recv_timeout(Duration::from_millis(500)).is_err());
+    let wait_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match done_rx.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => {}
+            result => panic!("FK updater completed before its lock wait was observed: {result:?}"),
+        }
+        if !first
+            .MustQuery(
+                "select trx_id from information_schema.data_lock_waits",
+                Vec::new(),
+            )
+            .Rows()
+            .is_empty()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < wait_deadline,
+            "FK updater did not enter the lock wait before {wait_deadline:?}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     first.MustExec("commit", Vec::new());
     let update = done_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("FK updater resumes");
-    assert!(started.elapsed() >= Duration::from_millis(500));
     assert!(update.is_err(), "parent-key update must violate FK");
     updater.join().expect("FK updater");
     first
