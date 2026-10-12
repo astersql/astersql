@@ -99,12 +99,15 @@
 - 隔离 `before` 五次均正确通过且每次精确选中 1 个测试，耗时为 `1.188102s`、`1.056859s`、`1.094817s`、`1.138572s`、`1.174730s`，最大值 `1.188102s`，严格门槛退出码 `1`。
 - 临时阶段插桩显示 setup 约 `185ms`；10 个 worker 的 prepare 各约 `6ms`、100 次 `SET` 累计约 `101–129ms`，100 次 `EXECUTE`/结果断言累计约 `837–898ms`，瓶颈在真实复合批量点查执行路径。插桩已全部删除。
 - Rust `execute_simple_prepared_select_through_adapter` 的 typed KV 快路仅接受单表、单列等值/整数 handle；本测试的 `(a,b) IN ((?,?),(?,?))` 和 `(c,d) IN ((?,?),(?,?))` 均回退到完整关系解析与执行。
+- 2026-10-13 基于共享工作区新增的真实 TestKit batch API 重试了两种等价方案：二进制协议 `PrepareStmt` + `QueryPreparedStmtBatch` 五次为 `0.940364s`、`1.069981s`、`0.991283s`、`0.822371s`、`0.964860s`；保留文本 `PREPARE/SET/EXECUTE` 的 `QueryStatementBatch` 五次为 `2.183239s`、`1.313792s`、`1.190693s`、`1.036708s`、`1.275972s`。两者均每次精确 1 项、功能通过、零超时，但仍超过 `0.499s`。
+- 重试证明 session-owner channel 往返和顶层多语句解析不是可单独突破门槛的瓶颈；`execute_protocol_statement` 仍对每组参数执行 `bind_parameter_markers` 后调用完整 `self.execute(&bound)`。试验性测试改动已全部撤回。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
 - 决策：不通过减少 10 worker 或每 worker 100 次执行、删除复合主键/复合唯一索引任一分支、替换真实 `PREPARE`/`SET`/`EXECUTE` 边界或放宽门槛达标。理由：这些都会削弱 Go 对齐语义。日期/作者：2026-10-12 / Codex。
 - 决策：本任务标记为 `已阻塞`，不在本提交递归扩建复合 handle/复合唯一索引 typed range 子系统。理由：该扩展需新增计划编码、唯一索引读取、schema/参数形状失效和独立回归覆盖，超出本 Go commit 增量及最小局部接线范围。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 恢复后允许扩大必要局部范围，已验证二进制协议批处理和文本协议批处理；两者均失败后不保留无效 diff。剩余等价解法需同时修改 protocol prepared 计划生命周期、`PreparedPlannedKVSelect` 映射、common-handle 多列 range 编码和唯一索引回表；当前这些基础 TestKit 文件仍有其他任务未提交改动，无法安全隔离为本任务独立提交。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
@@ -113,3 +116,4 @@
 - 分解与源码证据确认真实下界来自当前未覆盖复合行值 `IN` 的 typed KV adapter；没有可以在本任务范围内完成且保持 Go 规模/语义的局部优化。
 - 生产与测试 Rust 源文件最终均无 diff；临时插桩删除后 `cargo fmt --all` 退出码 `0`，目标文件 `git diff --exit-code` 退出码 `0`。因无交付代码改动，Ready `make lint` 不适用；无 after 成功证据，任务文件按协议保留。
 - 后续建议：单独规划 `PreparePlannedKVSelect` / `ExecutePreparedPlannedKVSelectThroughAdapter` 对复合主键和复合唯一索引行值 `IN` 的等价扩展，完整覆盖 catalog version、参数形状、事务上下文和 plan-cache invalidation 后再回归本任务。
+- 2026-10-13 重试使用 Cargo 共享槽位 `9`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；两个候选方案均完成 `cargo fmt --all`、目标编译预热与五次真实执行。最终 `target/rust-performance/task-0018-after.tsv` 记录文本 batch 方案最大值 `2.183239s`、退出码 `1`；二进制 batch 数据上述已记录。两个候选 diff 均已撤回，不运行 `make lint`。
