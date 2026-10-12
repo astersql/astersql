@@ -2005,7 +2005,7 @@ pub fn CreateCrossKeyspaceTestCluster(keyspaces: &[(&str, bool)]) -> CrossKeyspa
     let stores = configurations
         .into_iter()
         .map(|(keyspace, new_collation)| {
-            let (store, domain) = CreateMockStoreAndDomain();
+            let (store, domain) = CreatePlannerTestStoreAndDomain();
             domain.bind_cross_keyspace(Arc::clone(&coordinator), keyspace.clone(), new_collation);
             (keyspace, store)
         })
