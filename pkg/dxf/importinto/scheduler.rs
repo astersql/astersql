@@ -285,21 +285,36 @@ pub fn withImportJobSession(
 pub fn withImportJobSessionRetry(
     context: &framework_scheduler::Context,
     manager: &framework_storage::TaskManager,
-    mut operation: impl FnMut(&mut ImportJobStorageSession) -> Result<(), String>,
+    operation: impl FnMut(&mut ImportJobStorageSession) -> Result<(), String>,
 ) -> Result<(), errors::SharedError> {
-    retryImportSQL(context, || {
-        manager.WithNewSession(|session| {
-            let mut adapter = ImportJobStorageSession {
-                executor: session.GetSQLExecutor(),
-            };
-            operation(&mut adapter).map_err(framework_storage::Error::new)
-        })
+    withImportJobSessionRetryAndWait(manager, operation, |duration| {
+        context
+            .wait(duration)
+            .map_err(|error| errors::New(error.to_string()))
     })
 }
 
-fn retryImportSQL(
-    context: &framework_scheduler::Context,
+pub(crate) fn withImportJobSessionRetryAndWait(
+    manager: &framework_storage::TaskManager,
+    mut operation: impl FnMut(&mut ImportJobStorageSession) -> Result<(), String>,
+    wait: impl FnMut(Duration) -> Result<(), errors::SharedError>,
+) -> Result<(), errors::SharedError> {
+    retryImportSQLWithWait(
+        || {
+            manager.WithNewSession(|session| {
+                let mut adapter = ImportJobStorageSession {
+                    executor: session.GetSQLExecutor(),
+                };
+                operation(&mut adapter).map_err(framework_storage::Error::new)
+            })
+        },
+        wait,
+    )
+}
+
+fn retryImportSQLWithWait(
     mut operation: impl FnMut() -> Result<(), framework_storage::Error>,
+    mut wait: impl FnMut(Duration) -> Result<(), errors::SharedError>,
 ) -> Result<(), errors::SharedError> {
     let mut last_error = None;
     for retry in 0..framework_scheduler::RETRY_SQL_TIMES {
@@ -308,13 +323,22 @@ fn retryImportSQL(
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error.to_string());
-                context
-                    .wait(Duration::from_secs((3_u64 << retry.min(4)).min(30)))
-                    .map_err(|error| errors::New(error.to_string()))?;
+                wait(Duration::from_secs((3_u64 << retry.min(4)).min(30)))?;
             }
         }
     }
     Err(errors::New(last_error.unwrap_or_default()))
+}
+
+fn retryImportSQL(
+    context: &framework_scheduler::Context,
+    operation: impl FnMut() -> Result<(), framework_storage::Error>,
+) -> Result<(), errors::SharedError> {
+    retryImportSQLWithWait(operation, |duration| {
+        context
+            .wait(duration)
+            .map_err(|error| errors::New(error.to_string()))
+    })
 }
 
 /// NextGen may admit a task after its independently committed job was cancelled.

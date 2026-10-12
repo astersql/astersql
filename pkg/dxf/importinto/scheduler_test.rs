@@ -395,11 +395,12 @@ fn import_job_storage_session_uses_bound_backend_and_returns_session() {
 
 #[test]
 fn import_job_session_retry_recovers_and_cancel_interrupts_backoff() {
-    use crate::scheduler::withImportJobSessionRetry;
+    use crate::scheduler::withImportJobSessionRetryAndWait;
     use astersql_dxf_framework_scheduler::Context;
     use astersql_dxf_framework_storage as storage;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     struct Backend(Arc<AtomicUsize>);
     impl storage::SQLBackend for Backend {
@@ -427,18 +428,31 @@ fn import_job_session_retry_recovers_and_cancel_interrupts_backoff() {
             )))
         }
     }));
-    withImportJobSessionRetry(&Context::default(), &manager, |executor| {
-        astersql_executor_importer::StartJob(executor, 41, "importing")
-    })
+    let mut backoffs = Vec::new();
+    withImportJobSessionRetryAndWait(
+        &manager,
+        |executor| astersql_executor_importer::StartJob(executor, 41, "importing"),
+        |duration| {
+            backoffs.push(duration);
+            Ok(())
+        },
+    )
     .unwrap();
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(backoffs, [Duration::from_secs(3)]);
 
     attempts.store(0, Ordering::SeqCst);
     let context = Context::default();
     context.cancel();
-    let error = withImportJobSessionRetry(&context, &manager, |executor| {
-        astersql_executor_importer::StartJob(executor, 41, "importing")
-    })
+    let error = withImportJobSessionRetryAndWait(
+        &manager,
+        |executor| astersql_executor_importer::StartJob(executor, 41, "importing"),
+        |duration| {
+            context
+                .wait(duration)
+                .map_err(|error| astersql_errors::New(error.to_string()))
+        },
+    )
     .unwrap_err();
     assert!(error.to_string().contains("context canceled"));
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
