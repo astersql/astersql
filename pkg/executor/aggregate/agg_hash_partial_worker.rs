@@ -15,62 +15,6 @@
 // Partial 阶段对输入行计算 group key、维护 AggMap；内存超限时通过
 // `ParallelHashAggSpillHelper` 落盘。shuffle 阶段按 key 哈希分发给 Final Worker。
 
-// HashAggPartialWorker 负责从 child chunk 计算 group key、更新 partial result、按 final worker 分片并在需要时 spill。
-// 下面按文件顺序保留常量、变量、类型、函数和方法。
-// 关键分支、参数解析、资源收尾、错误处理，以及并发、异步、IO、外部依赖旁保留中文说明；跨包类型与调用均是后续接线占位。
-// HashAggPartialWorker indicates the partial workers of parallel hash agg execution,
-// the number of the worker can be set by `tidb_hashagg_partial_concurrency`.
-// HashAggPartialWorker 对应 Go struct，字段顺序保持不变；指针、slice、map、channel 的所有权语义均待后续接线。
-// pub struct HashAggPartialWorker {
-//     pub baseHashAggWorker: baseHashAggWorker,
-//     pub idForTest: i32,
-//     pub ctx: sessionctx::Context,
-//     pub inputCh: channel::Channel</* Go: chan *chunk.Chunk */>,
-//     pub outputChs: Vec<channel::Channel</* Go: chan aggfuncs.AggPartialResultMapper */>>,
-//     pub globalOutputCh: channel::Channel</* Go: chan *AfFinalResult */>,
-// Partial worker transmit the HashAggInput by this channel,
-// so that the data fetcher could get the partial worker's HashAggInput
-//     pub giveBackCh: channel::Channel</* Go: chan<- *HashAggInput */>,
-//     pub partialResultsBuffer: Vec<Vec<aggfuncs::PartialResult>>,
-//     pub partialResultNumInRow: i32,
-// Length of this map is equal to the number of final workers
-// All data in one AggPartialResultMapper are specifically sent to a target final worker.
-// e.g. all data in partialResultsMap[3] should be sent to final worker 3.
-//     pub partialResultsMap: Vec<aggfuncs::AggPartialResultMapper>,
-//     pub partialResultsMapMem: atomic::Int64,
-//     pub groupByItems: Vec<expression::Expression>,
-//     pub groupKeyBuf: Vec<Vec<byte>>,
-// chk stores the input data from child,
-// and is reused by childExec and partial worker.
-//     pub chk: Box<chunk::Chunk>,
-//     pub isSpillPrepared: bool,
-//     pub spillHelper: Box<parallelHashAggSpillHelper>,
-//     pub tmpChksForSpill: Vec<Box<chunk::Chunk>>,
-//     pub serializeHelpers: Box<aggfuncs::SerializeHelper>,
-//     pub spilledChunksIO: Vec<Box<chunk::DataInDiskByChunks>>,
-// It's useful when spill is triggered and the fetcher could know when partial workers finish their works.
-//     pub inflightChunkSync: Box<sync::WaitGroup>,
-//     pub fileNamePrefixForTest: String,
-// }
-// getChildInput 对应 Go 方法：接收者为 `w *HashAggPartialWorker`，保留控制流、错误返回和资源处理顺序。
-// impl HashAggPartialWorker {
-//     pub fn getChildInput(&mut self/* Go args:  */) /* Go returns: (*chunk.Chunk, bool) */ {
-// channel 说明：这里对应 Go channel 发送/接收或 select，不建立真实异步运行时。
-//     select {
-// channel 说明：这里对应 Go channel 发送/接收或 select，不建立真实异步运行时。
-//     case <-w.finishCh:
-//         return nil, false
-// channel 说明：这里对应 Go channel 发送/接收或 select，不建立真实异步运行时。
-//     case chk, ok := <-w.inputCh:
-// 分支说明：保留 Go 的条件判断顺序，涉及 nil/channel/state 的语义后续再接线。
-//         if !ok {
-//             return nil, false
-//         }
-//         return chk, true
-//     }
-// }
-// }
-// */
 use crate::agg_spill::ParallelHashAggSpillHelper;
 use crate::agg_util::{AggMap, AggState, Aggregation, Chunk, Row, get_group_key};
 use std::sync::Arc;
