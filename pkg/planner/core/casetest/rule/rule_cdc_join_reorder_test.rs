@@ -16,12 +16,12 @@
 //! Executable parity tests for Go's CDC, DP and order-aware join-reorder cases.
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::TestData;
 use std::path::Path;
 
 fn new_testkit(cascades: bool) -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
@@ -94,6 +94,12 @@ fn sql_cases(suite: &TestData, name: &str, cascades: bool) -> Vec<String> {
 }
 
 fn setup_cdc_tables(tk: &mut TestKit) {
+    // The planner fixture intentionally skips unrelated statistics system tables, but this
+    // suite still runs the same ANALYZE statements as Go and therefore needs the options table.
+    tk.MustExec(
+        "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
+        Vec::new(),
+    );
     tk.MustExec("drop table if exists t1,t2,t3,t4,t5", Vec::new());
     for table in ["t1", "t2", "t3", "t4", "t5"] {
         tk.MustExec(&format!("create table {table} (a int,b int)"), Vec::new());
@@ -123,15 +129,33 @@ fn rows(tk: &TestKit, sql: &str) -> Vec<String> {
 #[test]
 fn cdc_join_reorder_matches_legacy_results_for_every_go_case() {
     let suite = load_suite("cdc_join_reorder_suite");
-    for cascades in [false, true] {
-        let input = sql_cases(&suite, "TestCDCJoinReorder", cascades);
-        let mut tk = new_testkit(cascades);
-        setup_cdc_tables(&mut tk);
-        let legacy = input.iter().map(|sql| rows(&tk, sql)).collect::<Vec<_>>();
-        for (i, (sql, expected)) in input.iter().zip(legacy).enumerate() {
-            assert_eq!(rows(&tk, sql), expected, "CDC case[{i}]: {sql}");
+    let mut tk = new_testkit(false);
+    setup_cdc_tables(&mut tk);
+    let store = tk.Store();
+    // The schema, rows, and statistics are immutable after setup. Give every Go case and
+    // planner mode an isolated session while sharing that read-only state, just as the
+    // neighboring join-reorder suite does for its independent fixture cases.
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let input = sql_cases(&suite, "TestCDCJoinReorder", cascades);
+            for (i, sql) in input.into_iter().enumerate() {
+                let store = store.clone();
+                scope.spawn(move || {
+                    let mut case_tk = TestKit::new(store);
+                    case_tk.MustExec("use test", Vec::new());
+                    case_tk.MustExec(
+                        &format!(
+                            "set @@tidb_enable_cascades_planner = {}",
+                            if cascades { "on" } else { "off" }
+                        ),
+                        Vec::new(),
+                    );
+                    let legacy = rows(&case_tk, &sql);
+                    assert_eq!(rows(&case_tk, &sql), legacy, "CDC case[{i}]: {sql}");
+                });
+            }
         }
-    }
+    });
 }
 
 #[test]
