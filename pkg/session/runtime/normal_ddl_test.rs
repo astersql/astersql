@@ -5580,7 +5580,9 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
             astersql_ddl_serverstate::StateInfo::default(),
         )
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(650));
+    // Go's intest scheduler ticks every 50 ms. Keep more than two complete
+    // ownerless rounds so this is an absence check rather than an instant peek.
+    std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(f.queue(99701).unwrap().state, JobState::Paused);
     assert!(f.reader().get_history_ddl_job(99701).unwrap().is_none());
     runtime.block_on(owner.CampaignOwner(&[])).unwrap();

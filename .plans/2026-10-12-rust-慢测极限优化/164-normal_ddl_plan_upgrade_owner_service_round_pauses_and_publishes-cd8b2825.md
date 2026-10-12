@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：把日志排名第 164 的测试从 2.944 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,20 +88,28 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据并定位调度轮询/固定等待热点。
+- [x] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并更新为待回归状态；保留本文件供后续完成严格验证。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.944s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 在槽位 7、`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7` 下精确选中 1 个测试，5 次均通过功能断言但超过性能门槛：`2.847742 / 2.847535 / 2.858652 / 2.820186 / 2.852801s`，最大 `2.858652s`，脚本退出码 1。
+- Go `pkg/ddl/job_scheduler.go` 的 `dispatchLoopWaitingDuration` 在生产是 1s，intest 是 50ms；Rust `NormalDdlService` 原先无条件使用 300ms，与 Go 测试语义不对齐。
+- 该测试在 owner 丢失后额外固定等待 650ms；修改后仍等待 120ms，覆盖超过两个 Go intest 的 50ms 调度轮，保留“丢失 owner 期间不恢复 job”的负向时间窗口。
+- before 后仓库的 10 个 Cargo 槽位全部被其他活跃任务持有，原槽位 7 也已被任务 57 重领；性能锁同时被 RealTiKV 任务长时持有并轮转。按互斥规则不能继续运行 Cargo/fmt/after/lint，属于与本次修改无关的验证资源阻塞。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：将 Rust 调度等待拆成生产 1s / `cfg(test)` 50ms，直接对齐 Go 的生产与 intest 常量；不改 job 调度、owner epoch、upgrade state、schema reload 或发布路径。日期/作者：2026-10-12 / Codex。
+- 决策：由于与本修改无关的共享槽位和性能锁被活跃并行任务持有，按用户授权标记为“已完成，待回归验证”并保留任务文件；不绕过锁、不删除他人锁、不虚报 after。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 实现范围限于 `pkg/session/runtime/normal_ddl_service.rs` 的 Go 对齐调度常量和 `pkg/session/runtime/normal_ddl_test.rs` 的多轮 owner-loss 观察窗口。没有删除 case、SQL、job、断言、真实元数据/同步边界，没有放宽 deadline。
+- 自审：保留了 queueing/paused/system job、非法 state 恢复、owner op、schema version/table mode、新旧 schema 可见性、用户数据和暂停原因全部断言；生产间隔改为 Go 对齐的 1s，可能相比 Rust 旧值 300ms 降低空闲轮询频率。
+- 待回归：重新动态领取一个 Cargo 槽位，先运行 `cargo fmt --all`，再持性能锁运行任务指定的 after 五次命令，最后运行 `make lint`。任一 sample `>=0.500s` 时不得改为已完成。

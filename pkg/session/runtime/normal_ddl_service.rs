@@ -12,6 +12,12 @@ use std::time::{Duration, Instant};
 
 const STORAGE_CLASS_TRANSITION_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const STORAGE_CLASS_TRANSITION_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+// Match Go's dispatchLoopWaitingDuration: production polls once per second,
+// while intest uses a short interval without changing scheduler semantics.
+#[cfg(not(test))]
+const DDL_DISPATCH_LOOP_WAITING_DURATION: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const DDL_DISPATCH_LOOP_WAITING_DURATION: Duration = Duration::from_millis(50);
 
 fn parse_transition_time(value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
@@ -549,7 +555,7 @@ impl DdlService for NormalDdlService {
                                 JobWorker::new(WorkerType::AddIndex),
                             );
                         }
-                        match receiver.recv_timeout(Duration::from_millis(300)) {
+                        match receiver.recv_timeout(DDL_DISPATCH_LOOP_WAITING_DURATION) {
                             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                         }
