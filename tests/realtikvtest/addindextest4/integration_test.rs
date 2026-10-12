@@ -38,7 +38,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain,
+};
 use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use astersql_tests_realtikvtest_addindextest4::serial_guard;
@@ -68,6 +70,35 @@ fn prepare(database: &str) -> (Arc<AnalyzeStatsStore>, TestKit) {
     tk.MustExec(&format!("drop database if exists {database}"), Vec::new());
     tk.MustExec(&format!("create database {database}"), Vec::new());
     tk.MustExec(&format!("use {database}"), Vec::new());
+    (store, tk)
+}
+
+fn prepare_checkpoint_case(database: &str, dist_task: bool) -> (Arc<AnalyzeStatsStore>, TestKit) {
+    // Checkpoint recovery needs the production Domain, transactional KV, DDL,
+    // sessions, and optimizer, but not the unrelated statistics system tables.
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = NewTestKit(store.clone());
+    tk.MustExec(&format!("create database {database}"), Vec::new());
+    tk.MustExec(&format!("use {database}"), Vec::new());
+    tk.MustExec("set global tidb_ddl_enable_fast_reorg = 1", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set global tidb_enable_dist_task = {}",
+            i32::from(dist_task)
+        ),
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table t (a bigint primary key, b bigint)",
+        Vec::new(),
+    );
+    // Preserve the Go test's complete 2,000-row input while avoiding 2,000
+    // independent parser/session round trips that are unrelated to checkpointing.
+    let values = (0..2000)
+        .map(|value| format!("({value},{value})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(&format!("insert into t values {values}"), Vec::new());
     (store, tk)
 }
 
@@ -524,27 +555,11 @@ fn test_cancel_after_reorg_timeout() {
 // 一旦这里的默认行为改变，往往会同时影响多条用例，所以需要明确职责和约束。
 // 如果该函数涉及全局状态、failpoint 或外部存储，它还承担把副作用限制在局部的责任。
 
-fn run_checkpoint_case(database: &str, dist_task: bool, failpoint: &str, expression: &str) {
-    let (_store, mut tk) = prepare(database);
-    tk.MustExec("set global tidb_ddl_enable_fast_reorg = 1", Vec::new());
-    tk.MustExec(
-        &format!(
-            "set global tidb_enable_dist_task = {}",
-            i32::from(dist_task)
-        ),
-        Vec::new(),
-    );
-    tk.MustExec(
-        "create table t (a bigint primary key, b bigint)",
-        Vec::new(),
-    );
-    for value in 0..2000 {
-        tk.MustExec(
-            &format!("insert into t values ({value},{value})"),
-            Vec::new(),
-        );
-    }
-    let _fault = testfailpoint::enable(failpoint, expression);
+fn verify_checkpoint_case(
+    database: &str,
+    (_store, mut tk): (Arc<AnalyzeStatsStore>, TestKit),
+    failpoint: &str,
+) -> (Arc<AnalyzeStatsStore>, TestKit) {
     tk.MustExec("alter table t add unique index idx_b(b)", Vec::new());
     let (table, index) = table_index_count(&mut tk, "idx_b");
     assert_eq!((table, index), (2000, 2000));
@@ -571,8 +586,43 @@ fn run_checkpoint_case(database: &str, dist_task: bool, failpoint: &str, express
             job[12]
         );
     }
-    drop(_fault);
+    (_store, tk)
+}
+
+fn run_prepared_checkpoint_case(
+    database: &str,
+    prepared: (Arc<AnalyzeStatsStore>, TestKit),
+    failpoint: &str,
+    expression: &str,
+) -> (Arc<AnalyzeStatsStore>, TestKit) {
+    let fault = testfailpoint::enable(failpoint, expression);
+    let prepared = verify_checkpoint_case(database, prepared, failpoint);
+    drop(fault);
     assert!(!testfailpoint::is_active(failpoint));
+    prepared
+}
+
+fn run_checkpoint_case(database: &str, dist_task: bool, failpoint: &str, expression: &str) {
+    let (_store, mut tk) = prepare(database);
+    tk.MustExec("set global tidb_ddl_enable_fast_reorg = 1", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set global tidb_enable_dist_task = {}",
+            i32::from(dist_task)
+        ),
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table t (a bigint primary key, b bigint)",
+        Vec::new(),
+    );
+    for value in 0..2000 {
+        tk.MustExec(
+            &format!("insert into t values ({value},{value})"),
+            Vec::new(),
+        );
+    }
+    let _prepared = run_prepared_checkpoint_case(database, (_store, tk), failpoint, expression);
 }
 
 /// Go `TestAddIndexResumesFromCheckpointAfterPartialImport`.
@@ -586,15 +636,20 @@ fn run_checkpoint_case(database: &str, dist_task: bool, failpoint: &str, express
 #[test]
 fn test_add_index_resumes_from_checkpoint_after_partial_import() {
     let _serial = serial_guard();
-    run_checkpoint_case(
-        "integration_import_off",
-        false,
+    let prepared = prepare_checkpoint_case("integration_import", false);
+    let (store, mut tk) = run_prepared_checkpoint_case(
+        "integration_import",
+        prepared,
         PARTIAL_IMPORT,
         "1*return(true)",
     );
-    run_checkpoint_case(
-        "integration_import_on",
-        true,
+    // Reset the only DDL artifact before exercising the dist-task-on path over
+    // the same unchanged 2,000-row input and production Domain.
+    tk.MustExec("alter table t drop index idx_b", Vec::new());
+    tk.MustExec("set global tidb_enable_dist_task = 1", Vec::new());
+    let _prepared = run_prepared_checkpoint_case(
+        "integration_import",
+        (store, tk),
         PARTIAL_IMPORT,
         "1*return(true)",
     );
