@@ -427,7 +427,10 @@ fn test_shared_lock_blocked_by_exclusive_lock() {
 fn test_shared_lock_blocks_exclusive_lock_until_every_holder_commits() {
     let _serial = serial_guard();
     let _config = allow_foreign_key_check_in_shared_lock_for_test();
-    let (store, mut tk1, database) = prepare("test_shared_lock_block_exclusive_lock");
+    // The Go scenario validates lock compatibility only; it does not rely on
+    // waiting out a schema lease during Domain teardown.
+    let (store, mut tk1, database) =
+        prepare_with_schema_lease("test_shared_lock_block_exclusive_lock", Duration::ZERO);
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
     tk1.MustExec(
