@@ -178,7 +178,8 @@ struct RealSqlExecutor {
 
 impl RealSqlExecutor {
     fn new() -> Self {
-        let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+        let (store, _domain) =
+            astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
         let database = store
             .create_session()
             .expect("create canonical SQL session")

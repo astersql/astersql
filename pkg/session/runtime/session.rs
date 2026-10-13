@@ -2675,10 +2675,7 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
     Ok(session)
 }
 
-/// Builds the same concrete Domain/session pair used by the canonical runtime,
-/// backed by the real transactional mock KV storage rather than a SQL result map.
-/// 创建用于 ANALYZE 测试的 Domain 与 ConcreteSession。
-pub fn CreateAnalyzeSession() -> SessionResult<(Arc<Domain>, ConcreteSession)> {
+fn create_analyze_domain() -> SessionResult<Arc<Domain>> {
     let storage = Arc::try_unwrap(
         astersql_store_mockstore_mockstorage::NewMockStorage(
             astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
@@ -2704,6 +2701,25 @@ pub fn CreateAnalyzeSession() -> SessionResult<(Arc<Domain>, ConcreteSession)> {
     domain
         .init()
         .map_err(|error| session_error("initialize analyze Domain", error))?;
+    Ok(domain)
+}
+
+/// Builds a real transactional Domain/session without server system-schema bootstrap.
+///
+/// Tests that create every schema they use can exercise the canonical SQL, DDL,
+/// LOAD DATA, and transaction paths without paying for unrelated mysql/sys tables.
+pub fn CreateUnbootstrappedAnalyzeSessionForTest() -> SessionResult<(Arc<Domain>, ConcreteSession)>
+{
+    let domain = create_analyze_domain()?;
+    let session = ConcreteSession::new(Arc::clone(&domain));
+    Ok((domain, session))
+}
+
+/// Builds the same concrete Domain/session pair used by the canonical runtime,
+/// backed by the real transactional mock KV storage rather than a SQL result map.
+/// 创建用于 ANALYZE 测试的 Domain 与 ConcreteSession。
+pub fn CreateAnalyzeSession() -> SessionResult<(Arc<Domain>, ConcreteSession)> {
+    let domain = create_analyze_domain()?;
     let session = BootstrapCanonicalDomain(Arc::clone(&domain))?;
     if let Err(error) = domain.initialize_stats() {
         BgLogger().log(

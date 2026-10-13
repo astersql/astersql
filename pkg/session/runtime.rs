@@ -180,7 +180,7 @@ pub use session::{
     AddRecordWithoutAutoIDRebaseForTest, BootstrapCanonicalDomain, CanonicalSessionFactory,
     ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet, ConcreteResultField,
     ConcreteSession, ConcreteTestRuntime, CreateAnalyzeSession, CreateDanglingIndexForTest,
-    RuntimeDomain, SplitSQLStatements,
+    CreateUnbootstrappedAnalyzeSessionForTest, RuntimeDomain, SplitSQLStatements,
 };
 use session::{NamedPreparedStatement, SessionState, SessionWarning, build_bootstrap_view_table};
 pub use statistics::{

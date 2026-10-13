@@ -309,66 +309,83 @@ fn test_wrong_decorrelate() {
 fn test_natural_join_with_correlated_subquery() {
     verify_natural_join_parser_contract();
     let suite = crate::main_test::GetCorrelatedSubquerySuiteData();
-
-    for cascades in [false, true] {
-        // Go RunTestUnderCascades 为每种 planner 模式创建独立 TestKit，并在回调内
-        // 执行 golden 与替代逻辑计划场景；保持隔离以覆盖两种模式的完整副作用。
-        let mut tk = new_testkit();
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec("drop table if exists t", Vec::new());
-        tk.MustExec("create table t (a int)", Vec::new());
-        tk.MustExec("insert into t values (1), (1), (2), (null)", Vec::new());
-        tk.MustExec(
-            &format!(
-                "set @@tidb_enable_cascades_planner={}",
-                if cascades { "on" } else { "off" }
-            ),
-            Vec::new(),
-        );
-        let (input, output) = suite
-            .LoadTestCasesByName("TestNaturalJoinWithCorrelatedSubquery", cascades)
-            .expect("load natural join cases");
-        let input = input.as_array().expect("input cases");
-        let output = output.as_array().expect("output cases");
-        assert_eq!(input.len(), output.len());
-        for (sql, expected) in input.iter().zip(output) {
-            let sql = sql.as_str().expect("SQL case");
-            let expected_sql = expected["SQL"].as_str().expect("expected SQL");
-            assert_eq!(sql, expected_sql);
-            let expected_plan = expected["Plan"]
-                .as_array()
-                .expect("expected plan")
-                .iter()
-                .map(|line| line.as_str().expect("plan line").to_owned())
-                .collect::<Vec<_>>();
-            let actual_plan = tk
-                .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
-                .Rows()
-                .into_iter()
-                .map(|row| row.join(" "))
-                .collect::<Vec<_>>();
-            assert_eq!(expected_plan, actual_plan, "sql={sql}");
-
-            let expected_result = expected["Result"]
-                .as_array()
-                .expect("expected result")
-                .iter()
-                .map(|row| vec![row.as_str().expect("result row")])
-                .collect::<Vec<_>>();
-            tk.MustQuery(sql, Vec::new()).Check(expected_result);
-        }
-        verify_alternative_logical_plan_rounds(&mut tk);
-    }
-}
-
-fn verify_alternative_logical_plan_rounds(tk: &mut TestKit) {
-    const FAILPOINT: &str =
-        "github.com/pingcap/tidb/pkg/planner/failIfAlternativeLogicalPlanRoundTriggered";
-    tk.MustExec("use test", Vec::new());
-    tk.MustExec(
-        "drop table if exists alt_pick_t1, alt_pick_t2, alt_pick_t3",
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let database = "test";
+    let mut setup = TestKit::new(store.clone());
+    setup.MustExec(
+        "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
         Vec::new(),
     );
+    setup.MustExec(&format!("use {database}"), Vec::new());
+    setup.MustExec("create table t (a int)", Vec::new());
+    setup.MustExec("insert into t values (1), (1), (2), (null)", Vec::new());
+    prepare_alternative_logical_plan_fixture(&mut setup);
+    drop(setup);
+
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let (input, output) = suite
+                .LoadTestCasesByName("TestNaturalJoinWithCorrelatedSubquery", cascades)
+                .expect("load natural join cases");
+            let input = input.as_array().expect("input cases");
+            let output = output.as_array().expect("output cases");
+            assert_eq!(input.len(), output.len());
+            for (sql, expected) in input.iter().cloned().zip(output.iter().cloned()) {
+                let store = store.clone();
+                scope.spawn(move || {
+                    let sql = sql.as_str().expect("SQL case");
+                    let expected_sql = expected["SQL"].as_str().expect("expected SQL");
+                    assert_eq!(sql, expected_sql);
+                    let mut tk = TestKit::new(store);
+                    tk.MustExec(&format!("use {database}"), Vec::new());
+                    tk.MustExec(
+                        &format!(
+                            "set @@tidb_enable_cascades_planner={}",
+                            if cascades { "on" } else { "off" }
+                        ),
+                        Vec::new(),
+                    );
+                    let expected_plan = expected["Plan"]
+                        .as_array()
+                        .expect("expected plan")
+                        .iter()
+                        .map(|line| line.as_str().expect("plan line").to_owned())
+                        .collect::<Vec<_>>();
+                    let actual_plan = tk
+                        .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
+                        .Rows()
+                        .into_iter()
+                        .map(|row| row.join(" "))
+                        .collect::<Vec<_>>();
+                    assert_eq!(expected_plan, actual_plan, "sql={sql}");
+
+                    let expected_result = expected["Result"]
+                        .as_array()
+                        .expect("expected result")
+                        .iter()
+                        .map(|row| vec![row.as_str().expect("result row")])
+                        .collect::<Vec<_>>();
+                    tk.MustQuery(sql, Vec::new()).Check(expected_result);
+                });
+            }
+            let store = store.clone();
+            scope.spawn(move || {
+                let mut tk = TestKit::new(store);
+                tk.MustExec(&format!("use {database}"), Vec::new());
+                tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner={}",
+                        if cascades { "on" } else { "off" }
+                    ),
+                    Vec::new(),
+                );
+                verify_alternative_logical_plan_rounds(&mut tk);
+            });
+        }
+    });
+}
+
+fn prepare_alternative_logical_plan_fixture(tk: &mut TestKit) {
     tk.MustExec("create table alt_pick_t1(a int primary key)", Vec::new());
     tk.MustExec(
         "create table alt_pick_t2(a int, b int, key idx_a(a))",
@@ -395,6 +412,23 @@ fn verify_alternative_logical_plan_rounds(tk: &mut TestKit) {
         "analyze table alt_pick_t1, alt_pick_t2, alt_pick_t3",
         Vec::new(),
     );
+    tk.MustExec("create table alt_skip_t1(a int primary key)", Vec::new());
+    tk.MustExec(
+        "create table alt_skip_t2(a int, b int, key idx_a(a))",
+        Vec::new(),
+    );
+    tk.MustExec("insert into alt_skip_t1 values (1), (2), (3)", Vec::new());
+    tk.MustExec(
+        "insert into alt_skip_t2 values (1, 1), (1, 2), (2, 3), (3, 4)",
+        Vec::new(),
+    );
+    tk.MustExec("analyze table alt_skip_t1, alt_skip_t2", Vec::new());
+}
+
+fn verify_alternative_logical_plan_rounds(tk: &mut TestKit) {
+    const FAILPOINT: &str =
+        "github.com/pingcap/tidb/pkg/planner/failIfAlternativeLogicalPlanRoundTriggered";
+    static FAILPOINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     let sql = "select alt_pick_t1.a, (select count(*) from alt_pick_t2 join alt_pick_t3 on alt_pick_t2.a = alt_pick_t3.a where alt_pick_t2.a = alt_pick_t1.a) as cnt from alt_pick_t1 order by alt_pick_t1.a";
     let explain_sql = format!("explain format = 'brief' {sql}");
@@ -417,6 +451,9 @@ fn verify_alternative_logical_plan_rounds(tk: &mut TestKit) {
         Vec::new(),
     );
     {
+        let _failpoint_lock = FAILPOINT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let expected = format!("non-decorrelate:{sql}");
         let _guard =
             astersql_testkit_testfailpoint::enable(FAILPOINT, &format!("return({expected:?})"));
@@ -448,19 +485,10 @@ fn verify_alternative_logical_plan_rounds(tk: &mut TestKit) {
         .Check(astersql_testkit::Rows(&["1 4", "2 4"]));
     assert!(plan_contains_text(&on_plan, "Apply"), "{on_plan:#?}");
 
-    tk.MustExec("drop table if exists alt_skip_t1, alt_skip_t2", Vec::new());
-    tk.MustExec("create table alt_skip_t1(a int primary key)", Vec::new());
-    tk.MustExec(
-        "create table alt_skip_t2(a int, b int, key idx_a(a))",
-        Vec::new(),
-    );
-    tk.MustExec("insert into alt_skip_t1 values (1), (2), (3)", Vec::new());
-    tk.MustExec(
-        "insert into alt_skip_t2 values (1, 1), (1, 2), (2, 3), (3, 4)",
-        Vec::new(),
-    );
-    tk.MustExec("analyze table alt_skip_t1, alt_skip_t2", Vec::new());
     let skip_sql = "select alt_skip_t1.a from alt_skip_t1 where exists (select 1 from alt_skip_t2 where alt_skip_t2.a = alt_skip_t1.a and alt_skip_t2.b > 0) order by alt_skip_t1.a";
+    let _failpoint_lock = FAILPOINT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let expected = format!("non-decorrelate:{skip_sql}");
     let _guard =
         astersql_testkit_testfailpoint::enable(FAILPOINT, &format!("return({expected:?})"));
