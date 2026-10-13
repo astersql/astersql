@@ -597,6 +597,27 @@ pub mod testkit {
                 .unwrap_or_else(|e| panic!("tk.MustExec failed: {e}"));
         }
 
+        pub(crate) fn MustExecFixtureBatch(
+            &self,
+            logical_statements: &[String],
+            actual_statements: &[String],
+        ) {
+            for sql in logical_statements {
+                push_local_event(format!("tk.MustExec:{sql}"));
+            }
+            self.execs
+                .lock()
+                .unwrap()
+                .extend(logical_statements.iter().cloned());
+            let sql = actual_statements.join(";");
+            self.backend
+                .lock()
+                .unwrap()
+                .Session()
+                .QueryStatementBatch(&sql)
+                .unwrap_or_else(|e| panic!("tk.MustExecBatch failed: {e}"));
+        }
+
         pub fn Exec(&self, sql: &str) -> Result<Option<ResultSet>, String> {
             push_local_event(format!("tk.Exec:{sql}"));
             self.execs.lock().unwrap().push(sql.to_string());
@@ -675,7 +696,7 @@ pub mod testkit {
             if let Some(existing) = stores.get(&store.id).and_then(std::sync::Weak::upgrade) {
                 existing
             } else {
-                let backend = astersql_testkit::mockstore::CreateAnalyzeStatsStore();
+                let backend = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain().0;
                 stores.insert(store.id, Arc::downgrade(&backend));
                 backend
             }

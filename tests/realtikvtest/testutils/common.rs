@@ -366,16 +366,37 @@ pub fn InitTest(t: &TestCtx) -> SuiteContext {
 /// Build a fresh Go-equivalent SQL fixture on an existing mock store.
 pub(crate) fn InitTestWithStore(t: &TestCtx, store: Storage) -> SuiteContext {
     let tk = testkit::NewTestKit(t, store.clone());
-    tk.MustExec("drop database if exists addindex;");
-    tk.MustExec("create database addindex;");
-    tk.MustExec("use addindex;");
+    let mut logical_statements = vec![
+        "drop database if exists addindex;".to_owned(),
+        "create database addindex;".to_owned(),
+        "use addindex;".to_owned(),
+    ];
     if kerneltype::IsClassic() {
-        tk.MustExec("set global tidb_ddl_enable_fast_reorg=on;");
+        logical_statements.push("set global tidb_ddl_enable_fast_reorg=on;".to_owned());
     }
+    let mut actual_statements = logical_statements.clone();
+    for table_id in 0..NON_PART_TAB_NUM {
+        let table_def = genTableStr(&format!("t{table_id}"));
+        logical_statements.push(table_def.clone());
+        actual_statements.push(table_def);
+    }
+    for table_def in genPartTableStr() {
+        logical_statements.push(table_def.clone());
+        actual_statements.push(table_def);
+    }
+    let values = insert_row_values();
+    actual_statements.push("begin".to_owned());
+    for table_id in 0..TABLE_NUM {
+        let base = format!(
+            "insert into addindex.t{table_id} (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28) values"
+        );
+        logical_statements.extend(values.iter().map(|value| format!("{base}{value}")));
+        actual_statements.push(format!("{base}{}", values.join(",")));
+    }
+    actual_statements.push("commit".to_owned());
+    tk.MustExecFixtureBatch(&logical_statements, &actual_statements);
 
     let mut ctx = newSuiteContext(t, tk, store);
-    createTable(&ctx.tk);
-    insertRows(&ctx.tk);
     initWorkloadParams(&mut ctx);
     ctx
 }
@@ -534,11 +555,14 @@ pub(crate) fn insertRows(tk: &testkit::TestKit) {
         let base = format!(
             "insert into addindex.t{i} (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28) values"
         );
-        for value in values {
-            // Go shadows `insStr` each iteration: base + single value.
-            let ins_str = format!("{base}{value}");
-            tk.MustExec(&ins_str);
-        }
+        // Keep the same 64 Go statements and rows while crossing the owning
+        // canonical-session channel only once per table.
+        let statements = values
+            .iter()
+            .map(|value| format!("{base}{value}"))
+            .collect::<Vec<_>>();
+        let batch_sql = vec![format!("{base}{}", values.join(","))];
+        tk.MustExecFixtureBatch(&statements, &batch_sql);
     }
 }
 

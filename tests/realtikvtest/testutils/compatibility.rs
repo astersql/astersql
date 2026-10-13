@@ -176,12 +176,11 @@ pub(crate) struct Executor {
     rx: Mutex<Option<Receiver<ParaDDLChan>>>,
 }
 
-fn newExecutor(table_id: i32) -> Executor {
+fn newExecutor(table_id: i32, tk: testkit::TestKit) -> Executor {
     let (tx, rx) = mpsc::sync_channel(1);
     Executor {
         id: table_id,
-        // Placeholder; replaced in Start with a pooled TestKit.
-        tk: testkit::NewTestKit(&TestCtx::new(), Storage::new("pending")),
+        tk,
         tx: Mutex::new(Some(tx)),
         rx: Mutex::new(Some(rx)),
     }
@@ -227,9 +226,7 @@ impl CompatibilityContext {
         self.executor.clear();
         self.handles.clear();
         for i in 0..3 {
-            let mut er = newExecutor(i);
-            er.tk = ctx.getTestKit();
-            self.executor.push(er);
+            self.executor.push(newExecutor(i, ctx.getTestKit()));
         }
 
         let t_type = self.tType;
