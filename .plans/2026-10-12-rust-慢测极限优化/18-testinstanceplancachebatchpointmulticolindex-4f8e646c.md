@@ -101,6 +101,7 @@
 - Rust `execute_simple_prepared_select_through_adapter` 的 typed KV 快路仅接受单表、单列等值/整数 handle；本测试的 `(a,b) IN ((?,?),(?,?))` 和 `(c,d) IN ((?,?),(?,?))` 均回退到完整关系解析与执行。
 - 2026-10-13 基于共享工作区新增的真实 TestKit batch API 重试了两种等价方案：二进制协议 `PrepareStmt` + `QueryPreparedStmtBatch` 五次为 `0.940364s`、`1.069981s`、`0.991283s`、`0.822371s`、`0.964860s`；保留文本 `PREPARE/SET/EXECUTE` 的 `QueryStatementBatch` 五次为 `2.183239s`、`1.313792s`、`1.190693s`、`1.036708s`、`1.275972s`。两者均每次精确 1 项、功能通过、零超时，但仍超过 `0.499s`。
 - 重试证明 session-owner channel 往返和顶层多语句解析不是可单独突破门槛的瓶颈；`execute_protocol_statement` 仍对每组参数执行 `bind_parameter_markers` 后调用完整 `self.execute(&bound)`。试验性测试改动已全部撤回。
+- 2026-10-13 再次恢复后核对了最新提交 `0ab8d3be11`；该提交只将相邻的 `TestInstancePlanCacheConcurrencyPointMultipleColPKNoTxn` 改为二进制协议批处理，未修改本测试的复合键 row-`IN` 路径。在最新工作树上的严格五次为 `4.145421s`、`4.770811s`、`5.806708s`、`3.716429s`、`3.876869s`，每次精确 1 项、功能通过、零超时，但门槛退出码为 `1`。此轮运行时仍观察到其他任务的 Cargo package-cache 竞争，绝对数值不用于替代先前的低噪声结论。
 
 ## 决策日志
 
@@ -117,3 +118,4 @@
 - 生产与测试 Rust 源文件最终均无 diff；临时插桩删除后 `cargo fmt --all` 退出码 `0`，目标文件 `git diff --exit-code` 退出码 `0`。因无交付代码改动，Ready `make lint` 不适用；无 after 成功证据，任务文件按协议保留。
 - 后续建议：单独规划 `PreparePlannedKVSelect` / `ExecutePreparedPlannedKVSelectThroughAdapter` 对复合主键和复合唯一索引行值 `IN` 的等价扩展，完整覆盖 catalog version、参数形状、事务上下文和 plan-cache invalidation 后再回归本任务。
 - 2026-10-13 重试使用 Cargo 共享槽位 `9`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；两个候选方案均完成 `cargo fmt --all`、目标编译预热与五次真实执行。最终 `target/rust-performance/task-0018-after.tsv` 记录文本 batch 方案最大值 `2.183239s`、退出码 `1`；二进制 batch 数据上述已记录。两个候选 diff 均已撤回，不运行 `make lint`。
+- 2026-10-13 最新复测使用 Cargo 共享槽位 `6`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`且 `CARGO_BUILD_BUILD_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6/build`；目标 `--no-run` 预热退出码 `0`。`target/rust-performance/task-0018-current.tsv` 的 5 个 sample 均 `test_count=1`、零失败、零超时，最大值 `5.806708s`，严格门槛退出码 `1`。没有产生 Rust 代码 diff，因此 `cargo fmt --all` 和 Ready `make lint` 不适用；任务仍保持 `已阻塞`。
