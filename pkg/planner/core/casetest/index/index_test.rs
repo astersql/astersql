@@ -125,119 +125,271 @@ fn run_suite_cases(
             Vec::new(),
         );
         setup(&mut tk);
-        let (input, output) = suite
-            .LoadTestCasesByName(name, cascades)
-            .unwrap_or_else(|error| panic!("load {name} ({cascades}): {error}"));
-        let input = input.as_array().expect("suite input must be an array");
-        let output = output.as_array().expect("suite output must be an array");
-        assert_eq!(input.len(), output.len(), "{name} input/output length");
-        for (sql, expected) in input.iter().zip(output) {
-            let sql = sql.as_str().expect("suite SQL must be text");
-            let actual_plan = tk
-                .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
+        run_suite_cases_for_mode(suite, name, integration, cascades, &tk);
+    }
+}
+
+macro_rules! assert_suite_case {
+    ($tk:expr, $name:expr, $integration:expr, $sql:expr, $expected:expr) => {{
+        let sql = $sql.as_str().expect("suite SQL must be text");
+        let actual_plan = $tk
+            .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
+            .Rows()
+            .into_iter()
+            .map(|row| row.join(" "))
+            .collect::<Vec<_>>();
+        let expected_plan = $expected
+            .get("Plan")
+            .and_then(|value| value.as_array())
+            .unwrap_or_else(|| panic!("{} golden case lacks Plan", $name))
+            .iter()
+            .map(|row| {
+                row.as_str()
+                    .unwrap_or_else(|| panic!("{} Plan row is not text", $name))
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual_plan, expected_plan, "sql={sql}");
+        if $integration
+            && $expected
+                .get("Result")
+                .and_then(|value| value.as_array())
+                .is_some()
+        {
+            let mut actual = $tk.MustQuery(sql, Vec::new());
+            actual.Sort();
+            let expected_result = $expected
+                .get("Result")
+                .and_then(|value| value.as_array())
+                .unwrap_or_else(|| panic!("{} golden case lacks Result", $name))
+                .iter()
+                .map(|row| {
+                    row.as_str()
+                        .unwrap_or_else(|| panic!("{} Result row is not text", $name))
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            let actual_result = actual
                 .Rows()
                 .into_iter()
                 .map(|row| row.join(" "))
                 .collect::<Vec<_>>();
+            assert_eq!(actual_result, expected_result, "sql={sql}");
+        }
+    }};
+}
+
+fn run_suite_cases_for_mode(
+    suite: &astersql_testkit::testdata::TestData,
+    name: &str,
+    integration: bool,
+    cascades: bool,
+    tk: &TestKit,
+) {
+    let (input, output) = suite
+        .LoadTestCasesByName(name, cascades)
+        .unwrap_or_else(|error| panic!("load {name} ({cascades}): {error}"));
+    let input = input.as_array().expect("suite input must be an array");
+    let output = output.as_array().expect("suite output must be an array");
+    assert_eq!(input.len(), output.len(), "{name} input/output length");
+    for (sql, expected) in input.iter().zip(output) {
+        assert_suite_case!(tk, name, integration, sql, expected);
+    }
+}
+
+macro_rules! run_suite_case_batch {
+    ($store:expr, $name:expr, $cascades:expr, $input:expr, $output:expr) => {{
+        let mut tk = TestKit::new($store);
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if $cascades { 1 } else { 0 }
+            ),
+            Vec::new(),
+        );
+        let mut statements = String::new();
+        for (sql, expected) in $input.iter().zip($output) {
+            let sql = sql.as_str().expect("suite SQL must be text");
+            statements.push_str(&format!("explain format = 'plan_tree' {sql};"));
+            if expected
+                .get("Result")
+                .and_then(|value| value.as_array())
+                .is_some()
+            {
+                statements.push_str(sql);
+                statements.push(';');
+            }
+        }
+        let results = tk
+            .Session()
+            .QueryStatementBatch(&statements)
+            .unwrap_or_else(|error| {
+                panic!("run {} ({}) statement batch: {error}", $name, $cascades)
+            });
+        let expected_result_sets = $output
+            .iter()
+            .map(|expected| {
+                1 + usize::from(
+                    expected
+                        .get("Result")
+                        .and_then(|value| value.as_array())
+                        .is_some(),
+                )
+            })
+            .sum::<usize>();
+        assert_eq!(results.len(), expected_result_sets, "{} result sets", $name);
+
+        let mut result_index = 0;
+        for (sql, expected) in $input.iter().zip($output) {
+            let sql = sql.as_str().expect("suite SQL must be text");
+            let actual_plan = results[result_index]
+                .string_rows()
+                .into_iter()
+                .map(|row| row.join(" "))
+                .collect::<Vec<_>>();
+            result_index += 1;
             let expected_plan = expected
                 .get("Plan")
                 .and_then(|value| value.as_array())
-                .unwrap_or_else(|| panic!("{name} golden case lacks Plan"))
+                .unwrap_or_else(|| panic!("{} golden case lacks Plan", $name))
                 .iter()
                 .map(|row| {
                     row.as_str()
-                        .unwrap_or_else(|| panic!("{name} Plan row is not text"))
+                        .unwrap_or_else(|| panic!("{} Plan row is not text", $name))
                         .to_owned()
                 })
                 .collect::<Vec<_>>();
             assert_eq!(actual_plan, expected_plan, "sql={sql}");
-            if integration
-                && expected
-                    .get("Result")
-                    .and_then(|value| value.as_array())
-                    .is_some()
+            if let Some(expected_result) = expected.get("Result").and_then(|value| value.as_array())
             {
-                let mut actual = tk.MustQuery(sql, Vec::new());
-                actual.Sort();
-                let expected_result = expected
-                    .get("Result")
-                    .and_then(|value| value.as_array())
-                    .unwrap_or_else(|| panic!("{name} golden case lacks Result"))
-                    .iter()
-                    .map(|row| {
-                        row.as_str()
-                            .unwrap_or_else(|| panic!("{name} Result row is not text"))
-                            .to_owned()
-                    })
-                    .collect::<Vec<_>>();
-                let actual_result = actual
-                    .Rows()
+                let mut actual_result = results[result_index]
+                    .string_rows()
                     .into_iter()
                     .map(|row| row.join(" "))
                     .collect::<Vec<_>>();
+                result_index += 1;
+                actual_result.sort();
+                let mut expected_result = expected_result
+                    .iter()
+                    .map(|row| {
+                        row.as_str()
+                            .unwrap_or_else(|| panic!("{} Result row is not text", $name))
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>();
+                expected_result.sort();
                 assert_eq!(actual_result, expected_result, "sql={sql}");
             }
         }
-    }
+        assert_eq!(
+            result_index,
+            results.len(),
+            "{} consumed result sets",
+            $name
+        );
+    }};
+}
+
+fn run_suite_cases_for_mode_batched(
+    store: Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    suite: &astersql_testkit::testdata::TestData,
+    name: &str,
+    cascades: bool,
+) {
+    let (input, output) = suite
+        .LoadTestCasesByName(name, cascades)
+        .unwrap_or_else(|error| panic!("load {name} ({cascades}): {error}"));
+    let input = input.as_array().expect("suite input must be an array");
+    let output = output.as_array().expect("suite output must be an array");
+    assert_eq!(input.len(), output.len(), "{name} input/output length");
+    std::thread::scope(|scope| {
+        for (input, output) in input.chunks(4).zip(output.chunks(4)) {
+            let store = store.clone();
+            scope.spawn(move || {
+                run_suite_case_batch!(store, name, cascades, input, output);
+            });
+        }
+    });
 }
 
 fn prepare_prefix_index_fixture(tk: &mut TestKit) {
-    tk.MustExec("use test", Vec::new());
-    tk.MustExec(
-        "CREATE TABLE t1 (id char(1) DEFAULT NULL, c1 varchar(255) DEFAULT NULL, c2 text DEFAULT NULL, KEY idx1 (c1), KEY idx2 (c1,c2(5))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
-        Vec::new(),
-    );
-    tk.MustExec(
-        "create table t2(a int, b varchar(10), index idx(b(5)))",
-        Vec::new(),
-    );
-    tk.MustExec(
-        "create table t3(a int, b varchar(10), c int, primary key (a, b(5)) clustered)",
-        Vec::new(),
-    );
-    tk.MustExec("set tidb_opt_prefix_index_single_scan = 1", Vec::new());
-    tk.MustExec(
-        "insert into t1 values ('a', '0xfff', '111111'), ('b', '0xfff', '22    '), ('c', '0xfff', ''), ('d', '0xfff', null)",
-        Vec::new(),
-    );
-    tk.MustExec(
-        "insert into t2 values (1, 'aaaaaa'), (2, 'bb    '), (3, ''), (4, null)",
-        Vec::new(),
-    );
-    tk.MustExec(
-        "insert into t3 values (1, 'aaaaaa', 2), (1, 'bb    ', 3), (1, '', 4)",
-        Vec::new(),
-    );
+    let results = tk
+        .Session()
+        .QueryStatementBatch(
+            "use test;\
+             CREATE TABLE t1 (id char(1) DEFAULT NULL, c1 varchar(255) DEFAULT NULL, c2 text DEFAULT NULL, KEY idx1 (c1), KEY idx2 (c1,c2(5))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;\
+             create table t2(a int, b varchar(10), index idx(b(5)));\
+             create table t3(a int, b varchar(10), c int, primary key (a, b(5)) clustered);\
+             set tidb_opt_prefix_index_single_scan = 1;\
+             insert into t1 values ('a', '0xfff', '111111'), ('b', '0xfff', '22    '), ('c', '0xfff', ''), ('d', '0xfff', null);\
+             insert into t2 values (1, 'aaaaaa'), (2, 'bb    '), (3, ''), (4, null);\
+             insert into t3 values (1, 'aaaaaa', 2), (1, 'bb    ', 3), (1, '', 4)",
+        )
+        .expect("prepare prefix-index fixture batch");
+    assert!(results.is_empty(), "fixture must not return result sets");
 }
 
 #[test]
 fn test_null_condition_for_prefix_index() {
     let suite = load_suite("integration_suite");
-    run_suite_cases(
-        &suite,
-        "TestNullConditionForPrefixIndex",
-        true,
-        prepare_prefix_index_fixture,
-    );
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
+    let mut setup_tk = TestKit::new(store.clone());
+    prepare_prefix_index_fixture(&mut setup_tk);
+    drop(setup_tk);
 
-    run_under_cascades(|_, tk| {
-        prepare_prefix_index_fixture(tk);
-        tk.MustExec("set tidb_enable_prepared_plan_cache=1", Vec::new());
-        tk.MustExec("set @@tidb_enable_collect_execution_info=0", Vec::new());
-        tk.MustExec(
-            "prepare stmt from 'select count(1) from t1 where c1 = ? and c2 is not null'",
-            Vec::new(),
-        );
-        tk.MustExec("set @a = '0xfff'", Vec::new());
-        assert_query_rows(tk, "execute stmt using @a", &[&["3"]]);
-        assert_query_rows(tk, "execute stmt using @a", &[&["3"]]);
-        assert_query_rows(tk, "select @@last_plan_from_cache", &[&["1"]]);
-        assert_query_rows(tk, "execute stmt using @a", &[&["3"]]);
-        tk.MustUseIndex(
-            "select count(1) from t1 where c1 = '0xfff' and c2 is not null",
-            "idx2",
-        );
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let store = store.clone();
+            let suite = &suite;
+            scope.spawn(move || run_null_condition_for_prefix_index_round(store, suite, cascades));
+        }
     });
+}
+
+fn run_null_condition_for_prefix_index_round(
+    store: Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    suite: &astersql_testkit::testdata::TestData,
+    cascades: bool,
+) {
+    let mut tk = TestKit::new(store.clone());
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set @@tidb_enable_cascades_planner = {}",
+            if cascades { 1 } else { 0 }
+        ),
+        Vec::new(),
+    );
+    run_suite_cases_for_mode_batched(store, suite, "TestNullConditionForPrefixIndex", cascades);
+    let results = tk
+        .Session()
+        .QueryStatementBatch(
+            "set tidb_enable_prepared_plan_cache=1;\
+             set @@tidb_enable_collect_execution_info=0;\
+             prepare stmt from 'select count(1) from t1 where c1 = ? and c2 is not null';\
+             set @a = '0xfff';\
+             execute stmt using @a;\
+             execute stmt using @a;\
+             select @@last_plan_from_cache;\
+             execute stmt using @a;\
+             explain select count(1) from t1 where c1 = '0xfff' and c2 is not null",
+        )
+        .expect("run prefix-index plan-cache assertions batch");
+    assert_eq!(results.len(), 5, "plan-cache result sets");
+    for result in &results[..2] {
+        assert_eq!(result.string_rows(), vec![vec!["3".to_owned()]]);
+    }
+    assert_eq!(results[2].string_rows(), vec![vec!["1".to_owned()]]);
+    assert_eq!(results[3].string_rows(), vec![vec!["3".to_owned()]]);
+    let explain_rows = results[4].string_rows();
+    assert!(
+        explain_rows
+            .iter()
+            .flatten()
+            .any(|value| value.contains("index:idx2")),
+        "expected index idx2 in EXPLAIN: {explain_rows:?}"
+    );
 }
 
 #[test]
