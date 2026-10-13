@@ -36,8 +36,8 @@ use astersql_domain::{
 };
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
-    RegisterRuntimeTopology, RuntimeReplicaReadRequest, RuntimeSelectRequest,
-    RuntimeStaleReadState,
+    CreateUnbootstrappedAnalyzeSessionForTest, RegisterRuntimeTopology, RuntimeReplicaReadRequest,
+    RuntimeSelectRequest, RuntimeStaleReadState,
 };
 use astersql_session::testutil::{TestRecordSet, TestSession};
 
@@ -666,6 +666,13 @@ impl AnalyzeSessionDatabase {
     fn bootstrap(active_sessions: Arc<AtomicUsize>) -> Self {
         Self::spawn(active_sessions, 0, || {
             CreateAnalyzeSession().map_err(|error| error.to_string())
+        })
+    }
+
+    /// Start a real canonical session without bootstrapping unrelated system schemas.
+    fn bootstrap_without_system_schemas(active_sessions: Arc<AtomicUsize>) -> Self {
+        Self::spawn(active_sessions, 0, || {
+            CreateUnbootstrappedAnalyzeSessionForTest().map_err(|error| error.to_string())
         })
     }
 
@@ -1642,6 +1649,14 @@ impl AnalyzeStatsStore {
         Self::from_bootstrap(active_sessions, bootstrap)
     }
 
+    /// Build a real SQL store for tests that create all schemas they use.
+    fn new_without_system_schemas() -> Self {
+        let active_sessions = Arc::new(AtomicUsize::new(0));
+        let bootstrap =
+            AnalyzeSessionDatabase::bootstrap_without_system_schemas(Arc::clone(&active_sessions));
+        Self::from_bootstrap(active_sessions, bootstrap)
+    }
+
     /// Build the canonical mock store using the requested schema lease.
     fn new_with_schema_lease(schema_lease: Duration) -> Self {
         let active_sessions = Arc::new(AtomicUsize::new(0));
@@ -1926,6 +1941,15 @@ impl AutoAnalyzeExecutor for AnalyzeStatsStore {
 /// 创建 AnalyzeStatsStore 与 Domain，并注册自动分析执行器弱引用。
 pub fn CreateMockStoreAndDomain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
     let store = Arc::new(AnalyzeStatsStore::new());
+    let domain = store.domain();
+    domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
+    (store, domain)
+}
+
+/// Create a real canonical SQL store without unrelated mysql/sys bootstrap tables.
+pub fn CreateMockStoreAndDomainWithoutSystemSchemasForTest() -> (Arc<AnalyzeStatsStore>, Arc<Domain>)
+{
+    let store = Arc::new(AnalyzeStatsStore::new_without_system_schemas());
     let domain = store.domain();
     domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
     (store, domain)
