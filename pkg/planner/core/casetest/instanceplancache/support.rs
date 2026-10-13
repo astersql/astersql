@@ -71,6 +71,15 @@ impl Harness {
     /// Domain bootstrap 是进程级 fixture；各用例仍通过重建数据库获得与独立 store
     /// 相同的 schema/data 隔离，派生会话则继续共享同一实例级计划缓存。
     pub fn new() -> Self {
+        Self::new_with_databases(TEST_DATABASES)
+    }
+
+    /// 为仅访问 `test` schema 的热路径重建相关数据库，避免清理无关套件 fixture。
+    pub fn new_for_test_database() -> Self {
+        Self::new_with_databases(&["test"])
+    }
+
+    fn new_with_databases(databases: &[&str]) -> Self {
         let test_guard = TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -82,7 +91,7 @@ impl Harness {
             tk,
             _test_guard: test_guard,
         };
-        for database in TEST_DATABASES {
+        for database in databases {
             exec(
                 &mut harness.tk,
                 &format!("drop database if exists {database}"),

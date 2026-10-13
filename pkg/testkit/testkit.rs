@@ -146,9 +146,37 @@ impl TestSession {
             .execute_prepared_statement(statement_id, arguments)
     }
 
+    /// Execute setup/query pairs without crossing the session-owner channel between statements.
+    pub fn QueryStatementPairs(
+        &self,
+        statements: &[(String, String)],
+    ) -> TestResult<Vec<QueryRows>> {
+        self.database.query_statement_pairs(statements)
+    }
+
     /// Execute one multi-statement batch and retain every result set in order.
     pub fn QueryStatementBatch(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
         self.database.query_statement_batch(statement)
+    }
+
+    /// Execute a binary-protocol query and drain its result rows.
+    pub fn QueryPreparedStmt(
+        &self,
+        statement_id: u64,
+        arguments: &[DbValue],
+    ) -> TestResult<QueryRows> {
+        self.database
+            .query_prepared_statement(statement_id, arguments)
+    }
+
+    /// Execute the same binary-protocol query for each argument row and retain all results.
+    pub fn QueryPreparedStmtBatch(
+        &self,
+        statement_id: u64,
+        arguments: &[Vec<DbValue>],
+    ) -> TestResult<Vec<QueryRows>> {
+        self.database
+            .query_prepared_statements(statement_id, arguments)
     }
 
     /// Drop a statement returned by [`TestSession::PrepareStmt`].

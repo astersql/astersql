@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::thread;
 
 use astersql_testkit::TestKit;
+use astersql_testkit::db_driver::DbValue;
 
 use super::support::{Harness, exec, insert_rows, query, rand, rows};
 
@@ -223,7 +224,7 @@ pub fn TestInstancePlanCacheConcurrencyPointNoTxn() {
 
 #[test]
 pub fn TestInstancePlanCacheConcurrencyPointMultipleColPKNoTxn() {
-    let mut harness = Harness::new();
+    let mut harness = Harness::new_for_test_database();
     exec(&mut harness.tk, "use test");
     exec(
         &mut harness.tk,
@@ -237,16 +238,29 @@ pub fn TestInstancePlanCacheConcurrencyPointMultipleColPKNoTxn() {
     insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
-        exec(
-            &mut tk,
-            "prepare st from 'select * from t where a=? and b=?'",
-        );
-        for _ in 0..100 {
-            let value = rand::intn(100);
-            exec(&mut tk, &format!("set @a={value}, @b={value}"));
-            query(&tk, "execute st using @a,@b")
-                .Check(vec![vec![value.to_string(), value.to_string()]]);
+        let session = tk.Session();
+        let (statement_id, fields) = session
+            .PrepareStmt("select * from t where a=? and b=?")
+            .expect("prepare point query");
+        assert_eq!(fields.len(), 2);
+        let values = (0..100).map(|_| rand::intn(100)).collect::<Vec<_>>();
+        let arguments = values
+            .iter()
+            .map(|&value| vec![DbValue::I64(value.into()), DbValue::I64(value.into())])
+            .collect::<Vec<_>>();
+        let results = session
+            .QueryPreparedStmtBatch(statement_id, &arguments)
+            .expect("execute point queries");
+        assert_eq!(results.len(), values.len());
+        for (rows, value) in results.iter().zip(values) {
+            assert_eq!(
+                rows.string_rows(),
+                vec![vec![value.to_string(), value.to_string()]]
+            );
         }
+        session
+            .DropPreparedStmt(statement_id)
+            .expect("drop point query");
     });
 }
 

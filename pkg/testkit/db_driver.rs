@@ -189,10 +189,40 @@ pub trait Database: Send + Sync + 'static {
         ))
     }
 
+    /// Execute each setup statement followed by its query on the owning session thread.
+    fn query_statement_pairs(
+        &self,
+        _statements: &[(String, String)],
+    ) -> TestResult<Vec<QueryRows>> {
+        Err(TestError::new("database does not expose statement batches"))
+    }
+
     /// Execute one multi-statement batch and return every result set in order.
     fn query_statement_batch(&self, _statement: &str) -> TestResult<Vec<QueryRows>> {
         Err(TestError::new(
             "database does not expose multi-statement result batches",
+        ))
+    }
+
+    /// Query one statement previously returned by [`Database::prepare_statement`].
+    fn query_prepared_statement(
+        &self,
+        _statement_id: u64,
+        _arguments: &[DbValue],
+    ) -> TestResult<QueryRows> {
+        Err(TestError::new(
+            "database does not expose prepared statement queries",
+        ))
+    }
+
+    /// Query one prepared statement repeatedly while retaining every result set.
+    fn query_prepared_statements(
+        &self,
+        _statement_id: u64,
+        _arguments: &[Vec<DbValue>],
+    ) -> TestResult<Vec<QueryRows>> {
+        Err(TestError::new(
+            "database does not expose batched prepared statement queries",
         ))
     }
 

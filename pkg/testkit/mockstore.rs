@@ -464,8 +464,22 @@ enum SessionRequest {
         arguments: Vec<DbValue>,
         response: mpsc::SyncSender<TestResult<ExecutionResult>>,
     },
+    QueryStatementPairs {
+        statements: Vec<(String, String)>,
+        response: mpsc::SyncSender<TestResult<Vec<QueryRows>>>,
+    },
     QueryStatementBatch {
         statement: String,
+        response: mpsc::SyncSender<TestResult<Vec<QueryRows>>>,
+    },
+    ExecutePreparedQuery {
+        statement_id: u64,
+        arguments: Vec<DbValue>,
+        response: mpsc::SyncSender<TestResult<QueryRows>>,
+    },
+    ExecutePreparedQueries {
+        statement_id: u64,
+        arguments: Vec<Vec<DbValue>>,
         response: mpsc::SyncSender<TestResult<Vec<QueryRows>>>,
     },
     DropPrepared {
@@ -985,12 +999,81 @@ impl AnalyzeSessionDatabase {
                             });
                         let _ = response.send(result);
                     }
+                    SessionRequest::QueryStatementPairs {
+                        statements,
+                        response,
+                    } => {
+                        let result = statements
+                            .iter()
+                            .map(|(setup, query)| {
+                                execute_concrete_session(&session, setup, &[])?;
+                                let mut reply = execute_concrete_session(&session, query, &[])?;
+                                if reply.record_sets.len() != 1 {
+                                    return Err(TestError::new(format!(
+                                        "query returned {} record sets",
+                                        reply.record_sets.len()
+                                    )));
+                                }
+                                Ok(reply.record_sets.remove(0))
+                            })
+                            .collect();
+                        let _ = response.send(result);
+                    }
                     SessionRequest::QueryStatementBatch {
                         statement,
                         response,
                     } => {
                         let result = execute_concrete_session(&session, &statement, &[])
                             .map(|reply| reply.record_sets);
+                        let _ = response.send(result);
+                    }
+                    SessionRequest::ExecutePreparedQuery {
+                        statement_id,
+                        arguments,
+                        response,
+                    } => {
+                        let result = session
+                            .execute_protocol_statement(
+                                statement_id,
+                                &protocol_arguments(&arguments),
+                            )
+                            .map_err(|error| TestError::new(error.to_string()))
+                            .and_then(|mut record_sets| {
+                                if record_sets.len() != 1 {
+                                    return Err(TestError::new(format!(
+                                        "prepared query returned {} record sets",
+                                        record_sets.len()
+                                    )));
+                                }
+                                drain_record_set(Box::new(record_sets.remove(0)))
+                            });
+                        let _ = response.send(result);
+                    }
+                    SessionRequest::ExecutePreparedQueries {
+                        statement_id,
+                        arguments,
+                        response,
+                    } => {
+                        let result = arguments
+                            .iter()
+                            .map(|arguments| {
+                                session
+                                    .execute_protocol_statement(
+                                        statement_id,
+                                        &protocol_arguments(arguments),
+                                    )
+                                    .map_err(|error| TestError::new(error.to_string()))
+                                    .and_then(|mut record_sets| {
+                                        if record_sets.len() != 1 {
+                                            return Err(TestError::new(format!(
+                                                "prepared query returned {} record sets",
+                                                record_sets.len()
+                                            )));
+                                        }
+                                        drain_record_set(Box::new(record_sets.remove(0)))
+                                    })
+                            })
+                            .collect();
                         let _ = response.send(result);
                     }
                     SessionRequest::DropPrepared {
@@ -1080,10 +1163,47 @@ impl AnalyzeSessionDatabase {
             .map_err(|_| TestError::new("canonical analyze session dropped its response"))?
     }
 
+    fn query_statement_pairs_batch(
+        &self,
+        statements: &[(String, String)],
+    ) -> TestResult<Vec<QueryRows>> {
+        let statements = statements.to_vec();
+        self.send_test_request(|response| SessionRequest::QueryStatementPairs {
+            statements,
+            response,
+        })?
+    }
+
     fn query_statement_batch_rows(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
         let statement = statement.to_owned();
         self.send_test_request(|response| SessionRequest::QueryStatementBatch {
             statement,
+            response,
+        })?
+    }
+
+    fn query_prepared_statement_rows(
+        &self,
+        statement_id: u64,
+        arguments: &[DbValue],
+    ) -> TestResult<QueryRows> {
+        let arguments = arguments.to_vec();
+        self.send_test_request(|response| SessionRequest::ExecutePreparedQuery {
+            statement_id,
+            arguments,
+            response,
+        })?
+    }
+
+    fn query_prepared_statement_rows_batch(
+        &self,
+        statement_id: u64,
+        arguments: &[Vec<DbValue>],
+    ) -> TestResult<Vec<QueryRows>> {
+        let arguments = arguments.to_vec();
+        self.send_test_request(|response| SessionRequest::ExecutePreparedQueries {
+            statement_id,
+            arguments,
             response,
         })?
     }
@@ -1462,8 +1582,28 @@ impl Database for AnalyzeSessionDatabase {
         })?
     }
 
+    fn query_statement_pairs(&self, statements: &[(String, String)]) -> TestResult<Vec<QueryRows>> {
+        self.query_statement_pairs_batch(statements)
+    }
+
     fn query_statement_batch(&self, statement: &str) -> TestResult<Vec<QueryRows>> {
         self.query_statement_batch_rows(statement)
+    }
+
+    fn query_prepared_statement(
+        &self,
+        statement_id: u64,
+        arguments: &[DbValue],
+    ) -> TestResult<QueryRows> {
+        self.query_prepared_statement_rows(statement_id, arguments)
+    }
+
+    fn query_prepared_statements(
+        &self,
+        statement_id: u64,
+        arguments: &[Vec<DbValue>],
+    ) -> TestResult<Vec<QueryRows>> {
+        self.query_prepared_statement_rows_batch(statement_id, arguments)
     }
 
     fn drop_prepared_statement(&self, statement_id: u64) -> TestResult {
