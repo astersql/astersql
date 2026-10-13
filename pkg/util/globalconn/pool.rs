@@ -22,7 +22,6 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::thread;
 
 /// 池为空时 Get 返回的无效哨兵值（对齐 Go `math.MaxUint64`）。
 // IDPoolInvalidValue indicates invalid value from IDPool.
@@ -306,83 +305,82 @@ impl LockFreeCircularPool {
         self.cap.wrapping_sub(1) as i32
     }
 
-    /// CAS 抢占 tail 后写入；满则 false，等待可写时 `yield_now`。
+    /// 确认 slot 可写后 CAS 抢占 tail；满则返回 false。
     // Put implements IDPool interface.
-    // Put 先 CAS 抢占 tail，再等待对应 slot 进入 writable 状态；等待时用 yield_now 对应 runtime.Gosched。
+    // Put 在领取 tail ticket 前先确认对应 slot 可写，避免 ticket 持有者被抢占时阻塞所有消费者。
     pub fn Put(&self, val: u64) -> bool {
+        let mut tail = self.tail.load(Ordering::Relaxed);
         loop {
-            let tail = self.tail.load(Ordering::SeqCst); // `tail` should be loaded before `head`, to avoid "false full".
-            let head = self.head.load(Ordering::SeqCst);
+            // `tail` must be observed before `head` to avoid a false full result.
+            let head = self.head.load(Ordering::Acquire);
 
             if tail.wrapping_sub(head) == self.cap.wrapping_sub(1) {
                 return false;
             }
 
-            if self
-                .tail
-                .compare_exchange(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .is_err()
-            {
+            let slot = &self.slots[(tail & self.cap.wrapping_sub(1)) as usize];
+            let seq = slot.seq.load(Ordering::Acquire);
+            let difference = seq.wrapping_sub(tail) as i32;
+            if difference < 0 {
+                return false;
+            }
+            if difference > 0 {
+                tail = self.tail.load(Ordering::Relaxed);
                 continue;
             }
 
-            let slot = &self.slots[(tail & self.cap.wrapping_sub(1)) as usize];
-            loop {
-                let seq = slot.seq.load(Ordering::SeqCst);
-
-                if seq == tail {
-                    slot.value.store(val as u32, Ordering::SeqCst);
-                    slot.seq.store(tail.wrapping_add(1), Ordering::SeqCst);
+            match self.tail.compare_exchange_weak(
+                tail,
+                tail.wrapping_add(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    slot.value.store(val as u32, Ordering::Relaxed);
+                    slot.seq.store(tail.wrapping_add(1), Ordering::Release);
                     return true;
                 }
-
-                thread::yield_now();
+                Err(actual) => tail = actual,
             }
         }
     }
 
     /// CAS 抢占 head 后读取；空则返回 Invalid 哨兵与 false。
     // Get implements IDPool interface.
-    // Get 先 CAS 抢占 head，再等待 slot 从 written/readable 状态转为可读；读完后推进 seq 让该槽位可复用。
+    // Get 在领取 head ticket 前先确认对应 slot 可读；读完后以 Release 发布该 slot 可复用。
     pub fn Get(&self) -> (u64, bool) {
+        let mut head = self.head.load(Ordering::Relaxed);
         loop {
-            let head = self.head.load(Ordering::SeqCst);
-            let tail = self.tail.load(Ordering::SeqCst);
+            let tail = self.tail.load(Ordering::Acquire);
             if head == tail {
                 return (IDPoolInvalidValue, false);
             }
 
-            if self
-                .head
-                .compare_exchange(
-                    head,
-                    head.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .is_err()
-            {
+            let slot = &self.slots[(head & self.cap.wrapping_sub(1)) as usize];
+            let seq = slot.seq.load(Ordering::Acquire);
+            let difference = seq.wrapping_sub(head.wrapping_add(1)) as i32;
+            if difference < 0 {
+                return (IDPoolInvalidValue, false);
+            }
+            if difference > 0 {
+                head = self.head.load(Ordering::Relaxed);
                 continue;
             }
 
-            let slot = &self.slots[(head & self.cap.wrapping_sub(1)) as usize];
-            loop {
-                let seq = slot.seq.load(Ordering::SeqCst);
-
-                if seq == head.wrapping_add(1) {
-                    let val = slot.value.load(Ordering::SeqCst) as u64;
-                    slot.value.store(u32::MAX, Ordering::SeqCst);
+            match self.head.compare_exchange_weak(
+                head,
+                head.wrapping_add(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let val = slot.value.load(Ordering::Relaxed) as u64;
+                    slot.value.store(u32::MAX, Ordering::Relaxed);
                     slot.seq
-                        .store(head.wrapping_add(self.cap), Ordering::SeqCst);
+                        .store(head.wrapping_add(self.cap), Ordering::Release);
                     return (val, true);
                 }
-
-                thread::yield_now();
+                Err(actual) => head = actual,
             }
         }
     }
