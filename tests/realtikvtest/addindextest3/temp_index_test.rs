@@ -410,7 +410,9 @@ fn test_merge_temp_index_stuck() {
                         match worker.Exec(&statement, Vec::new()) {
                             Ok(_) => break,
                             Err(error)
-                                if error.to_string().contains("[kv:8022]") && retries < 100 =>
+                                if (error.to_string().contains("[kv:8022]")
+                                    || error.to_string().contains("[domain:8028]"))
+                                    && retries < 100 =>
                             {
                                 retries += 1;
                                 std::thread::yield_now();

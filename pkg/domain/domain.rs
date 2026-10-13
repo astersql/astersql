@@ -1359,6 +1359,26 @@ impl DomainStatsContext {
             .clone()
     }
 
+    /// Return whether any table in the current catalog references `database.table`.
+    pub fn has_referred_foreign_keys(&self, database: &str, table: &str) -> bool {
+        let database = database.to_lowercase();
+        let table = table.to_lowercase();
+        self.catalog
+            .read()
+            .expect("domain stats catalog lock poisoned")
+            .iter()
+            .any(|((child_database, _), (_, child))| {
+                child.ForeignKeys.iter().any(|foreign_key| {
+                    foreign_key.RefTable.L == table
+                        && if foreign_key.RefSchema.L.is_empty() {
+                            child_database == &database
+                        } else {
+                            foreign_key.RefSchema.L == database
+                        }
+                })
+            })
+    }
+
     /// 内存中的物理表统计。
     pub fn physical_stats(&self, physical_id: i64) -> Option<TableStats> {
         let mut stats = self

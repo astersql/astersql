@@ -1662,6 +1662,13 @@ impl ConcreteSession {
             return Ok(());
         }
         let current_database = self.current_database();
+        if !self
+            .domain
+            .stats_context()
+            .has_referred_foreign_keys(&current_database, &parent.Name.L)
+        {
+            return Ok(());
+        }
         let children = self
             .domain
             .stats_context()
@@ -1815,6 +1822,13 @@ impl ConcreteSession {
         after: &[HashMap<String, Option<String>>],
     ) -> SessionResult<()> {
         let current_database = self.current_database();
+        if !self
+            .domain
+            .stats_context()
+            .has_referred_foreign_keys(&current_database, &parent.Name.L)
+        {
+            return Ok(());
+        }
         for ((database, child_name), (_, child)) in self.domain.stats_context().catalog() {
             for foreign_key in child.ForeignKeys.iter().filter(|foreign_key| {
                 foreign_key.OnUpdate != 2
@@ -2244,6 +2258,8 @@ impl ConcreteSession {
         let mut deleted_rows = 0;
         let mut touched_rows = 0;
         let mut updated_record_rows = 0;
+        let mut updated_before = Vec::new();
+        let mut updated_after = Vec::new();
         let mut has_deferred_optimistic_constraint = false;
         let mut last_insert_id = 0;
         let mut alloc_count = 0;
@@ -2304,7 +2320,13 @@ impl ConcreteSession {
         }
         let check_insert_started = std::time::Instant::now();
         let prefetch_started = std::time::Instant::now();
-        let mut working_rows = if requires_existing_rows {
+        let point_prefetch_clustered_upsert = !plan.Replace
+            && !plan.Ignore
+            && !plan.OnDuplicate.is_empty()
+            && (table.PKIsHandle || table.IsCommonHandle)
+            && !has_secondary_unique_index
+            && statement_transaction.is_some();
+        let mut working_rows = if requires_existing_rows && !point_prefetch_clustered_upsert {
             if pessimistic_transaction {
                 self.scan_latest_with_transaction_overlay(&table)?
             } else if let Some(transaction) = statement_transaction.as_ref() {
@@ -2735,6 +2757,36 @@ impl ConcreteSession {
             plan.Ignore,
             embedding_load_row_count,
         )?;
+        if point_prefetch_clustered_upsert {
+            let keys = rows
+                .iter()
+                .filter_map(Option::as_ref)
+                .map(|row| encode_relational_row(&table, row, flags).map(|(key, _)| key))
+                .collect::<SessionResult<Vec<_>>>()?;
+            let transaction = statement_transaction
+                .as_ref()
+                .expect("clustered UPSERT point prefetch requires an autocommit transaction");
+            let values = transaction
+                .BatchGet(&kv::Context::default(), &keys, &[])
+                .map_err(|error| session_error("batch read clustered UPSERT rows", error))?;
+            let fields: HashMap<i64, Box<astersql_tablecodec::types::FieldType>> = table
+                .Columns
+                .iter()
+                .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                .collect();
+            for key in keys {
+                let Some(value) = values.get(&kv::KeyMapName(key.as_ref())) else {
+                    continue;
+                };
+                let (_, handle) = astersql_tablecodec::DecodeRecordKey(
+                    astersql_tablecodec::kv::Key(key.0.clone()),
+                )
+                .map_err(|error| session_error("decode clustered UPSERT row key", error))?;
+                let (_, row) =
+                    decode_relational_row_value(&table, &fields, handle.as_ref(), &value.Value)?;
+                working_rows.insert(key.0, row);
+            }
+        }
         for (row, (candidate_insert_id, row_columns)) in rows.into_iter().zip(prepared_metadata) {
             let mut row = row.expect("INSERT prepared a non-nil row before embedding evaluation");
             if let Some(value) = Self::unmatched_range_partition_value(&table, &row) {
@@ -3024,16 +3076,8 @@ impl ConcreteSession {
                 );
                 foreign_key_check_time += foreign_key_check_started.elapsed();
                 foreign_key_result?;
-                self.validate_restrict_foreign_key_updates(
-                    &table,
-                    std::slice::from_ref(&original),
-                    std::slice::from_ref(&updated),
-                )?;
-                self.cascade_foreign_key_updates(
-                    &table,
-                    std::slice::from_ref(&original),
-                    std::slice::from_ref(&updated),
-                )?;
+                updated_before.push(original.clone());
+                updated_after.push(updated.clone());
                 let (updated_key, updated_value) =
                     self.encode_relational_row_for_write(&table, &updated, flags)?;
                 if updated_key.0 != conflict_key && working_rows.contains_key(&updated_key.0) {
@@ -3194,6 +3238,10 @@ impl ConcreteSession {
                     &mut mutations,
                 )?;
             }
+        }
+        if !updated_before.is_empty() {
+            self.validate_restrict_foreign_key_updates(&table, &updated_before, &updated_after)?;
+            self.cascade_foreign_key_updates(&table, &updated_before, &updated_after)?;
         }
         if !has_deferred_optimistic_constraint {
             Self::validate_unique_indexes(&table, working_rows.values(), flags)?;
