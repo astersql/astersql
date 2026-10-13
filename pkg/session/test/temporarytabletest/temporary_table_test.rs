@@ -292,9 +292,9 @@ fn update_expected_rows(updates: &[&str], deleted: &[i32]) -> Vec<String> {
     result
 }
 
-/// Go `TestLocalTemporaryTableUpdate`：主键/唯一键、点查/范围扫描，以及四种事务边界。
-#[test]
-fn local_temporary_table_update_matches_go_transaction_matrix() {
+/// Run a contiguous subset of Go `TestLocalTemporaryTableUpdate` cases while
+/// retaining the complete four-transaction-boundary matrix for every case.
+fn run_local_temporary_table_update_cases(case_start: usize, case_end: usize) {
     struct Case {
         sql: &'static str,
         updates: &'static [&'static str],
@@ -555,6 +555,13 @@ fn local_temporary_table_update_matches_go_transaction_matrix() {
             old_unique_values: &[],
         },
     ];
+    assert_eq!(
+        cases.len(),
+        35,
+        "update case groups must cover every Go case"
+    );
+    assert!(case_start < case_end);
+    assert!(case_end <= cases.len());
     let ids = [1, 2, 3, 4, 5, 6, 7, 8, 9];
     let store = CreateMockStoreAndDomain().0;
     let mut tk = NewTestKit(store);
@@ -564,7 +571,11 @@ fn local_temporary_table_update_matches_go_transaction_matrix() {
         Vec::new(),
     );
 
-    for case in cases {
+    for case in cases
+        .into_iter()
+        .skip(case_start)
+        .take(case_end - case_start)
+    {
         let expected = update_expected_rows(case.updates, case.deleted);
         let execute = |tk: &mut astersql_testkit::TestKit| {
             if case.duplicate {
@@ -626,6 +637,42 @@ fn local_temporary_table_update_matches_go_transaction_matrix() {
         tk.MustExec("delete from tmp1", Vec::new());
         assert_temporary_rows(&mut tk, &[]);
     }
+}
+
+/// Go `TestLocalTemporaryTableUpdate`：主键/唯一键、点查/范围扫描，以及四种事务边界。
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_01_05() {
+    run_local_temporary_table_update_cases(0, 5);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_06_10() {
+    run_local_temporary_table_update_cases(5, 10);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_11_15() {
+    run_local_temporary_table_update_cases(10, 15);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_16_20() {
+    run_local_temporary_table_update_cases(15, 20);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_21_25() {
+    run_local_temporary_table_update_cases(20, 25);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_26_30() {
+    run_local_temporary_table_update_cases(25, 30);
+}
+
+#[test]
+fn local_temporary_table_update_matches_go_transaction_matrix_cases_31_35() {
+    run_local_temporary_table_update_cases(30, 35);
 }
 
 /// Go `TestLocalTemporaryTableDelete`：同一事务矩阵覆盖主键、唯一键与范围删除。
