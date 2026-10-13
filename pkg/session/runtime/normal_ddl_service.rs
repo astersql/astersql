@@ -6,18 +6,45 @@ use astersql_ddl::job_scheduler::JobScheduler;
 use astersql_ddl::job_worker::{DurableJobExecutor, JobLease, JobWorker, WorkerType};
 use astersql_domain::domain::{DdlService, StartMode};
 use astersql_owner::manager::{Context, Manager};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STORAGE_CLASS_TRANSITION_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const STORAGE_CLASS_TRANSITION_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
-// Match Go's dispatchLoopWaitingDuration: production polls once per second,
-// while intest uses a short interval without changing scheduler semantics.
-#[cfg(not(test))]
-const DDL_DISPATCH_LOOP_WAITING_DURATION: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const DDL_DISPATCH_LOOP_WAITING_DURATION: Duration = Duration::from_millis(50);
+// Match Go's dispatchLoopWaitingDuration. Dependency builds do not inherit
+// `cfg(test)`, so integration tests need a scoped override.
+static DDL_DISPATCH_LOOP_WAITING_MILLIS: AtomicU64 = AtomicU64::new(1_000);
+static DDL_DISPATCH_LOOP_WAITING_OVERRIDE: Mutex<()> = Mutex::new(());
+
+pub(super) fn ddl_dispatch_loop_waiting_duration() -> Duration {
+    Duration::from_millis(DDL_DISPATCH_LOOP_WAITING_MILLIS.load(Ordering::Relaxed))
+}
+
+/// Restores the production DDL scheduler polling interval when dropped.
+pub struct DdlDispatchLoopWaitingIntervalGuard {
+    previous_millis: u64,
+    _override: MutexGuard<'static, ()>,
+}
+
+impl Drop for DdlDispatchLoopWaitingIntervalGuard {
+    fn drop(&mut self) {
+        DDL_DISPATCH_LOOP_WAITING_MILLIS.store(self.previous_millis, Ordering::Relaxed);
+    }
+}
+
+/// Applies a short integration-test cadence without bypassing durable DDL.
+pub fn reduce_ddl_dispatch_loop_waiting_interval_for_test() -> DdlDispatchLoopWaitingIntervalGuard {
+    let override_guard = DDL_DISPATCH_LOOP_WAITING_OVERRIDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous_millis = DDL_DISPATCH_LOOP_WAITING_MILLIS.swap(1, Ordering::Relaxed);
+    DdlDispatchLoopWaitingIntervalGuard {
+        previous_millis,
+        _override: override_guard,
+    }
+}
 
 fn parse_transition_time(value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
@@ -555,7 +582,7 @@ impl DdlService for NormalDdlService {
                                 JobWorker::new(WorkerType::AddIndex),
                             );
                         }
-                        match receiver.recv_timeout(DDL_DISPATCH_LOOP_WAITING_DURATION) {
+                        match receiver.recv_timeout(ddl_dispatch_loop_waiting_duration()) {
                             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                         }

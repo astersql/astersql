@@ -5378,11 +5378,15 @@ fn normal_ddl_plan_schema_barrier_publication_deadline_matches_go_mdl_branch() {
 #[test]
 fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
     let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
+    let _dist_task = UpgradeOwnerDistTaskGuard(astersql_sessionctx_vardef::EnableDistTask.Load());
+    astersql_sessionctx_vardef::EnableDistTask.Store(false);
     let _restore = barrier_set_mdl(false);
     use astersql_ddl_serverstate::Syncer;
     use astersql_domain::domain::{DdlService, StartMode};
     use astersql_owner::{Context, GetOwnerOpValue, OpType};
-    let f = Fixture::new();
+    let f = Fixture::new_without_stats();
     f.pool
         .acquire()
         .unwrap()
@@ -5467,7 +5471,7 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
     let schema = super::session_factory::prepare_normal_schema_runtime(
         &f.domain,
         astersql_ddl_schemaver::NewEtcdSyncer(client.clone(), "upgrade-owner"),
-        std::time::Duration::from_millis(50),
+        std::time::Duration::from_millis(5),
     )
     .unwrap();
     let make_schema = schema.clone();
@@ -5528,7 +5532,7 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
             "{:?}",
             service.last_error()
         );
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::yield_now();
     }
     assert_eq!(
         runtime
@@ -5580,9 +5584,9 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
             astersql_ddl_serverstate::StateInfo::default(),
         )
         .unwrap();
-    // Go's intest scheduler ticks every 50 ms. Keep more than two complete
+    // The scoped intest scheduler ticks every 1 ms. Keep more than two complete
     // ownerless rounds so this is an absence check rather than an instant peek.
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    std::thread::sleep(std::time::Duration::from_millis(3));
     assert_eq!(f.queue(99701).unwrap().state, JobState::Paused);
     assert!(f.reader().get_history_ddl_job(99701).unwrap().is_none());
     runtime.block_on(owner.CampaignOwner(&[])).unwrap();
@@ -5593,7 +5597,7 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
             "{:?}",
             service.last_error()
         );
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::yield_now();
     }
     assert_eq!(
         runtime
@@ -5631,6 +5635,14 @@ fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
     service.stop().unwrap();
 }
 
+struct UpgradeOwnerDistTaskGuard(bool);
+
+impl Drop for UpgradeOwnerDistTaskGuard {
+    fn drop(&mut self) {
+        astersql_sessionctx_vardef::EnableDistTask.Store(self.0);
+    }
+}
+
 fn upgrade_owner_wait(predicate: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     while !predicate() {
@@ -5638,7 +5650,7 @@ fn upgrade_owner_wait(predicate: impl Fn() -> bool) {
             std::time::Instant::now() < deadline,
             "upgrade owner observation timed out"
         );
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::yield_now();
     }
 }
 fn upgrade_owner_write_latest_schema(f: &Fixture, comment: &str) {

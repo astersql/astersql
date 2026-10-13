@@ -1,6 +1,6 @@
 // Copyright 2026 AsterSQL.
 
-use super::{BootstrapCanonicalDomain, system_session::SystemSessionPool};
+use super::{BootstrapCanonicalDomain, ConcreteSession, system_session::SystemSessionPool};
 use astersql_meta_model::group_3::{Job, JobState};
 use std::{
     sync::{Arc, OnceLock},
@@ -26,7 +26,6 @@ fn bootstrap_store() -> &'static astersql_store_mockstore_mockstorage::KVStore {
         ));
         domain.init().unwrap();
         let session = BootstrapCanonicalDomain(domain.clone()).unwrap();
-        domain.initialize_stats().unwrap();
         domain.set_global_system_variable("tidb_cdc_write_source", "9");
         drop(session);
         domain.close();
@@ -54,7 +53,19 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let kv = bootstrap_store().ForkForTest();
+        Self::new_with_stats(true)
+    }
+
+    pub(super) fn new_without_stats() -> Self {
+        Self::new_with_stats(false)
+    }
+
+    fn new_with_stats(initialize_stats: bool) -> Self {
+        let kv = if initialize_stats {
+            bootstrap_store().ForkForTest()
+        } else {
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO()
+        };
         let storage = Arc::try_unwrap(
             astersql_store_mockstore_mockstorage::NewMockStorage(kv.clone(), None).unwrap(),
         )
@@ -69,7 +80,21 @@ impl Fixture {
             config,
         ));
         domain.init().unwrap();
-        domain.initialize_stats().unwrap();
+        if initialize_stats {
+            domain.initialize_stats().unwrap();
+        } else {
+            // The focused service regression only exercises durable DDL queue
+            // tables. Avoid installing every bootstrap table in its timed path.
+            let session = ConcreteSession::new(domain.clone());
+            for database in ["mysql", "sys", "test"] {
+                session
+                    .execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))
+                    .unwrap();
+            }
+            session
+                .execute(astersql_meta_metadef::CreateTiDBDDLJobTable)
+                .unwrap();
+        }
         domain.set_global_system_variable("tidb_cdc_write_source", "9");
         let pool = SystemSessionPool::new(domain.clone());
         pool.acquire()
