@@ -1,7 +1,9 @@
 // Copyright 2026 AsterSQL.
 
 use super::{Parser, Rhs, RuleId, yyLexer, yySymType};
+use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
+use std::sync::OnceLock;
 
 mod admin;
 mod ddl;
@@ -56,36 +58,72 @@ impl IndexMut<usize> for Rhs<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Mview,
+    Ddl,
+    Dml,
+    Expression,
+    Query,
+    Security,
+    Admin,
+    Misc,
+}
+
+fn identify_owner(rule_id: RuleId) -> Option<Owner> {
+    if mview::owns(rule_id) {
+        Some(Owner::Mview)
+    } else if ddl::owns(rule_id) {
+        Some(Owner::Ddl)
+    } else if dml::owns(rule_id) {
+        Some(Owner::Dml)
+    } else if expression::owns(rule_id) {
+        Some(Owner::Expression)
+    } else if query::owns(rule_id) {
+        Some(Owner::Query)
+    } else if security::owns(rule_id) {
+        Some(Owner::Security)
+    } else if admin::owns(rule_id) {
+        Some(Owner::Admin)
+    } else if misc::owns(rule_id) {
+        Some(Owner::Misc)
+    } else {
+        None
+    }
+}
+
+fn owner(rule_id: RuleId) -> Option<Owner> {
+    // Generated rules and their ownership are immutable. Resolve the module
+    // once, rather than repeating all preceding modules' string matches for
+    // every reduction (notably every expression in a large VALUES batch).
+    static OWNERS: OnceLock<HashMap<&'static str, Owner>> = OnceLock::new();
+    OWNERS
+        .get_or_init(|| {
+            super::RULE_IDS_BY_REDUCTION
+                .iter()
+                .filter_map(|&rule| identify_owner(rule).map(|owner| (rule.as_str(), owner)))
+                .collect()
+        })
+        .get(rule_id.as_str())
+        .copied()
+}
+
 /// Dispatch a stable generated rule identifier without exposing numeric rules.
 pub(crate) fn apply(rule_id: RuleId, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
-    if mview::owns(rule_id) {
-        mview::apply(rule_id, rhs, context)
-    } else if ddl::owns(rule_id) {
-        ddl::apply(rule_id, rhs, context).expect("owned DDL rule has an action")
-    } else if dml::owns(rule_id) {
-        dml::apply(rule_id, rhs, context).expect("owned DML rule has an action")
-    } else if expression::owns(rule_id) {
-        expression::apply(rule_id, rhs, context).expect("owned expression rule has an action")
-    } else if query::owns(rule_id) {
-        query::apply(rule_id, rhs, context).expect("owned query rule has an action")
-    } else if security::owns(rule_id) {
-        security::apply(rule_id, rhs, context).expect("owned security rule has an action")
-    } else if admin::owns(rule_id) {
-        admin::apply(rule_id, rhs, context).expect("owned admin rule has an action")
-    } else if misc::owns(rule_id) {
-        misc::apply(rule_id, rhs, context).expect("owned misc rule has an action")
-    } else {
-        Ok(false)
+    match owner(rule_id) {
+        Some(Owner::Mview) => mview::apply(rule_id, rhs, context),
+        Some(Owner::Ddl) => ddl::apply(rule_id, rhs, context).expect("owned DDL rule has an action"),
+        Some(Owner::Dml) => dml::apply(rule_id, rhs, context).expect("owned DML rule has an action"),
+        Some(Owner::Expression) => expression::apply(rule_id, rhs, context)
+            .expect("owned expression rule has an action"),
+        Some(Owner::Query) => query::apply(rule_id, rhs, context).expect("owned query rule has an action"),
+        Some(Owner::Security) => security::apply(rule_id, rhs, context).expect("owned security rule has an action"),
+        Some(Owner::Admin) => admin::apply(rule_id, rhs, context).expect("owned admin rule has an action"),
+        Some(Owner::Misc) => misc::apply(rule_id, rhs, context).expect("owned misc rule has an action"),
+        None => Ok(false),
     }
 }
 
 pub(crate) fn has_semantic_action(rule_id: RuleId) -> bool {
-    mview::owns(rule_id)
-        || ddl::owns(rule_id)
-        || dml::owns(rule_id)
-        || expression::owns(rule_id)
-        || query::owns(rule_id)
-        || security::owns(rule_id)
-        || admin::owns(rule_id)
-        || misc::owns(rule_id)
+    owner(rule_id).is_some()
 }

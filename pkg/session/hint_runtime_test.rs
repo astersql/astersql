@@ -37,6 +37,33 @@ fn parse(sql: &str) -> Box<dyn astersql_parser_ast::Node> {
         .expect("one statement")
 }
 
+#[test]
+fn values_insert_and_replace_keep_query_hint_apply_and_restore() {
+    for verb in ["INSERT", "REPLACE"] {
+        let mut variables = astersql_sessionctx_variable::session::SessionVars::default();
+        variables.SetCurrentDB("test");
+        variables
+            .SetSystemVar(vardef::TiDBOptPartialOrderedIndexForTopN, "DISABLE")
+            .unwrap();
+        let sql = format!(
+            "{verb} /*+ SET_VAR(tidb_opt_partial_ordered_index_for_topn=COST) */ INTO t VALUES (1),(2)"
+        );
+        let statement = parse(&sql);
+        let mut bindings = SessionBindingCatalog::New("test");
+        let guard =
+            StartStatementHintsWithBindings(&variables, statement.as_ref(), &sql, &mut bindings);
+        assert!(guard.BindingSQL().is_none());
+        assert!(variables.IsPartialOrderedIndexForTopNEnabled());
+        guard.Finish().unwrap();
+        assert_eq!(
+            variables
+                .GetHintSystemVar(vardef::TiDBOptPartialOrderedIndexForTopN)
+                .unwrap(),
+            "DISABLE"
+        );
+    }
+}
+
 /// 验证会话 Binding 命中时覆盖查询 hint，Finish 后恢复 SET_VAR 与 TiDBFoundInBinding 标记。
 #[test]
 fn real_bindinfo_match_overrides_query_hints_and_restores_statement_state() {

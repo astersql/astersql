@@ -541,9 +541,19 @@ pub fn StartStatementHintsWithBindings<'a>(
         .unwrap_or(session_enable_fuzzy_binding);
     bindings.set_enable_fuzzy_binding(enable_fuzzy_binding);
     bindings.set_enable_binding_usage(astersql_sessionctx_vardef::EnableBindingUsage.Load());
-    let binding_statement = BindingStatementFromAST(sql, statement);
-    let (binding, matched, _scope) =
-        astersql_bindinfo::MatchSQLBinding(bindings, &binding_statement);
+    // The binding matcher excludes INSERT/REPLACE VALUES. Use the AST already
+    // parsed by the statement lifecycle instead of reparsing every VALUES row
+    // to collect binding tables and rediscover the same exclusion.
+    let values_insert = statement
+        .as_any()
+        .downcast_ref::<ast::InsertStmt>()
+        .is_some_and(|insert| insert.Select.is_none());
+    let (binding, matched, _scope) = if values_insert {
+        (None, false, String::new())
+    } else {
+        let binding_statement = BindingStatementFromAST(sql, statement);
+        astersql_bindinfo::MatchSQLBinding(bindings, &binding_statement)
+    };
     let mut binding_parse_warnings = Vec::new();
     // 匹配成功则解析绑定 SQL 中的 Hint 集合；解析失败记入警告并视为无绑定。
     let binding_sql = binding

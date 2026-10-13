@@ -847,8 +847,14 @@ fn test_join_regression_runs_go_contract() {
 /// The usable key prefix must determine probe scan rows, including Fix44855 OFF.
 #[test]
 fn test_index_join_inner_row_count_uses_usable_join_keys() {
-    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    // This planner regression needs real ANALYZE and SQL execution, but none
+    // of the unrelated statistics-worker bootstrap tables.
+    let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
     let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec(
+        "CREATE TABLE IF NOT EXISTS mysql.analyze_options (table_id BIGINT(64) NOT NULL, sample_num BIGINT(64) NOT NULL DEFAULT 0, sample_rate DOUBLE NOT NULL DEFAULT -1, buckets BIGINT(64) NOT NULL DEFAULT 0, topn BIGINT(64) NOT NULL DEFAULT -1, column_choice enum('DEFAULT','ALL','PREDICATE','LIST') NOT NULL DEFAULT 'DEFAULT', column_ids TEXT(19372), PRIMARY KEY (table_id) CLUSTERED)",
+        Vec::new(),
+    );
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table t1 (k1 int not null, k2 int not null)",

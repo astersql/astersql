@@ -53,6 +53,37 @@ fn concrete_session() -> ConcreteSession {
     ConcreteSession::new(Arc::clone(domain.domain()))
 }
 
+#[test]
+fn clustered_insert_preserves_primary_and_secondary_unique_conflicts() {
+    let session = concrete_session();
+    session.execute("create table task19_pk (a int, b int, v int, primary key(a,b) clustered, unique key uq(v))").unwrap();
+    session
+        .execute("insert into task19_pk values (1,1,11),(1,2,12)")
+        .unwrap();
+    for sql in [
+        "insert into task19_pk values (1,2,13)",
+        "insert into task19_pk values (2,1,21),(2,1,22)",
+        "insert into task19_pk values (3,1,31),(3,2,31)",
+        "update task19_pk set b=1 where b=2",
+    ] {
+        let error = match session.execute(sql) {
+            Ok(_) => panic!("{sql}: expected duplicate error"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("Duplicate entry"),
+            "{sql}: {error}"
+        );
+    }
+    let mut rows = session
+        .execute("select a,b,v from task19_pk order by a,b")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["1", "1", "11"]);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["1", "2", "12"]);
+    assert!(rows.Next().unwrap().is_none());
+}
+
 fn canonical_mlog_session() -> ConcreteSession {
     let bootstrap = concrete_session();
     crate::runtime::BootstrapCanonicalDomain(Arc::clone(bootstrap.domain())).unwrap()

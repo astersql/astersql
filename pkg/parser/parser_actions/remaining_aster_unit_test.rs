@@ -20,6 +20,13 @@ fn all_action_rules_have_one_owner() {
         .iter()
         .zip(GENERATED_MAIN_ACTION_REQUIRED)
     {
+        assert_eq!(
+            super::owner(rule_id),
+            super::identify_owner(rule_id),
+            "cached semantic owner differs for {}",
+            rule_id.as_str()
+        );
+        assert_eq!(super::has_semantic_action(rule_id), required);
         let security_owned = security::owns(rule_id);
         let admin_owned = admin::owns(rule_id);
         let misc_owned = misc::owns(rule_id);

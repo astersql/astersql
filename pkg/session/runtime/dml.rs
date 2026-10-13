@@ -1497,11 +1497,16 @@ impl ConcreteSession {
         flags: astersql_types::Flags,
         exclude_key: Option<&[u8]>,
     ) -> SessionResult<Option<(Vec<u8>, String)>> {
-        for index in table
-            .Indices
-            .iter()
-            .filter(|index| index.Unique && index.State == astersql_meta_model::StatePublic)
-        {
+        // Clustered primary keys are the physical row keys. INSERT already
+        // checks those keys directly, including rows written earlier in the
+        // same statement. Rechecking scans the growing batch quadratically.
+        for index in table.Indices.iter().filter(|index| {
+            index.Unique
+                && index.State == astersql_meta_model::StatePublic
+                && (exclude_key.is_some()
+                    || !index.Primary
+                    || !(table.PKIsHandle || table.IsCommonHandle))
+        }) {
             if !index.ConditionExprString.is_empty() {
                 let condition = crate::dml_runtime::ParseGeneratedExpr(&index.ConditionExprString)?;
                 if !row_matches_simple_where(incoming_row, &condition) {
