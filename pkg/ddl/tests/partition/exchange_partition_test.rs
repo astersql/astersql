@@ -17,14 +17,16 @@
 // 覆盖多列 RANGE COLUMNS 的 NULL、整数极值、边界字符串、五个分区往返交换，
 // 以及每个非目标分区行均被 WITH VALIDATION 拒绝的错误路径。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateAnalyzeStatsStore;
+use astersql_session::runtime::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
+use astersql_testkit::{DbValue, TestKit};
 
 #[test]
 fn test_exchange_range_columns_partition() {
-    let store = CreateAnalyzeStatsStore();
+    let _ddl_dispatch_guard = reduce_ddl_dispatch_loop_waiting_interval_for_test();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec("set @@tidb_enable_exchange_partition=1", Vec::new());
@@ -38,7 +40,6 @@ fn test_exchange_range_columns_partition() {
          PARTITION p4 VALUES LESS THAN (MAXVALUE, MAXVALUE))",
         Vec::new(),
     );
-
     let age_values = [
         None,
         Some(i32::MIN),
@@ -54,9 +55,15 @@ fn test_exchange_range_columns_partition() {
     let name_values = [None, Some(""), Some("l"), Some("m"), Some("n")];
     let mut id = 0;
     let mut values = Vec::new();
+    let mut fixture_rows = Vec::new();
     for age in age_values {
         for name in name_values {
             id += 1;
+            fixture_rows.push(vec![
+                DbValue::I64(id.into()),
+                age.map_or(DbValue::Null, |age| DbValue::I64(age.into())),
+                name.map_or(DbValue::Null, |name| DbValue::String(name.to_owned())),
+            ]);
             let age = age.map_or_else(|| "NULL".to_owned(), |age| age.to_string());
             let name = name.map_or_else(
                 || "NULL".to_owned(),
@@ -69,23 +76,34 @@ fn test_exchange_range_columns_partition() {
         &format!("INSERT INTO t1 VALUES {}", values.join(",")),
         Vec::new(),
     );
-
     let partition_names = ["p0", "p1", "p2", "p3", "p4"];
     let mut initial_results = HashMap::new();
+    let mut initial_ids = HashMap::new();
     for partition in partition_names {
         let mut result = tk.MustQuery(
             &format!("SELECT * FROM t1 PARTITION({partition})"),
             Vec::new(),
         );
         result.Sort();
-        initial_results.insert(partition, result.Rows());
+        let rows = result.Rows();
+        initial_ids.insert(
+            partition,
+            rows.iter()
+                .map(|row| row[0].parse::<i32>().expect("integer row id"))
+                .collect::<HashSet<_>>(),
+        );
+        initial_results.insert(partition, rows);
     }
 
     tk.MustExec(
         "CREATE TABLE t2 (id INT NOT NULL, age INT, name VARCHAR(50))",
         Vec::new(),
     );
-    for (index, partition) in partition_names.iter().enumerate() {
+    let session = tk.Session();
+    let (insert_fixture_stmt, _) = session
+        .PrepareStmt("INSERT INTO t2 VALUES (?, ?, ?)")
+        .expect("prepare rejection fixture insert");
+    for partition in &partition_names {
         tk.MustExec(
             &format!("ALTER TABLE t1 EXCHANGE PARTITION {partition} WITH TABLE t2"),
             Vec::new(),
@@ -111,35 +129,28 @@ fn test_exchange_range_columns_partition() {
         restored.Sort();
         restored.Check(initial_results[partition].clone());
 
-        let other_partitions = partition_names
-            .iter()
-            .enumerate()
-            .filter_map(|(other_index, name)| (other_index != index).then_some(*name))
-            .collect::<Vec<_>>()
-            .join(",");
         for row_id in 1..=id {
-            let row = tk.MustQuery(
-                &format!("SELECT * FROM t1 PARTITION({partition}) WHERE id = {row_id}"),
-                Vec::new(),
-            );
-            if !row.Rows().is_empty() {
+            if initial_ids[partition].contains(&row_id) {
                 continue;
             }
-            tk.MustExec(
-                &format!(
-                    "INSERT INTO t2 SELECT * FROM t1 PARTITION({other_partitions}) WHERE id = {row_id}"
-                ),
-                Vec::new(),
-            );
+            session
+                .ExecutePreparedStmt(insert_fixture_stmt, &fixture_rows[(row_id - 1) as usize])
+                .expect("insert rejection fixture row");
             tk.MustContainErrMsg(
                 &format!(
                     "ALTER TABLE t1 EXCHANGE PARTITION {partition} WITH TABLE t2 /* j = {row_id} */"
                 ),
                 "[ddl:1737]Found a row that does not match the partition",
             );
-            tk.MustExec("TRUNCATE TABLE t2", Vec::new());
+            // The exchange table contains one rejected fixture row. Clearing that row with DML
+            // preserves the next case's empty-table precondition without paying for an unrelated
+            // table-ID replacement on every validation case.
+            tk.MustExec("DELETE FROM t2", Vec::new());
         }
     }
+    session
+        .DropPreparedStmt(insert_fixture_stmt)
+        .expect("drop rejection fixture insert");
 
     tk.MustExec("DROP TABLE t2", Vec::new());
     tk.MustExec("DROP TABLE t1", Vec::new());
