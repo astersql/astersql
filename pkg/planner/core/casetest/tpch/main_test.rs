@@ -38,7 +38,7 @@ pub(crate) fn load_tpch_suite() -> TestData {
 
 /// 创建与 Go TestKit 相同的 mock store/domain 会话。
 pub(crate) fn new_testkit() -> (std::sync::Arc<Domain>, TestKit) {
-    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
     (domain, TestKit::new(store))
 }
 

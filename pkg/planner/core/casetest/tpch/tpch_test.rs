@@ -325,13 +325,7 @@ fn stable_cost_trace_shape(row: &str) -> String {
     )
 }
 
-fn check_cost(tk: &TestKit, sql: &str) {
-    let cost_trace = tk
-        .MustQuery(&format!("explain format='cost_trace' {sql}"), Vec::new())
-        .Rows();
-    let verbose = tk
-        .MustQuery(&format!("explain format='verbose' {sql}"), Vec::new())
-        .Rows();
+fn check_cost_rows(cost_trace: Vec<Vec<String>>, verbose: Vec<Vec<String>>, sql: &str) {
     assert_eq!(cost_trace.len(), verbose.len(), "cost row count: {sql}");
     for (index, (cost_row, verbose_row)) in cost_trace.iter().zip(&verbose).enumerate() {
         assert!(
@@ -351,91 +345,144 @@ fn check_cost(tk: &TestKit, sql: &str) {
     }
 }
 
+fn configure_planner_session(spec: CaseSpec, cascades: bool, tk: &mut TestKit) {
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set @@session.tidb_enable_cascades_planner = {}",
+            u8::from(cascades)
+        ),
+        Vec::new(),
+    );
+    if spec.selectivity {
+        tk.MustExec(
+            "set @@tidb_default_string_match_selectivity = 0.8",
+            Vec::new(),
+        );
+    }
+    if spec.broadcast_thresholds {
+        tk.MustExec(
+            "set @@session.tidb_broadcast_join_threshold_size = 0",
+            Vec::new(),
+        );
+        tk.MustExec(
+            "set @@session.tidb_broadcast_join_threshold_count = 0",
+            Vec::new(),
+        );
+    }
+    if spec.non_eval_scalar_subquery {
+        tk.MustExec(
+            "set @@tidb_opt_enable_non_eval_scalar_subquery=true",
+            Vec::new(),
+        );
+    }
+    if spec.read_committed {
+        tk.MustExec("set tx_isolation='READ-COMMITTED'", Vec::new());
+        tk.MustExec("begin", Vec::new());
+        tk.MustExec(
+            "set @@session.tidb_isolation_read_engines='tidb,tiflash'",
+            Vec::new(),
+        );
+    }
+}
+
+fn assert_golden_result(spec: CaseSpec, cascades: bool, actual: Vec<String>, case: &TpchCase) {
+    if actual == case.result {
+        return;
+    }
+    let mismatch = actual
+        .iter()
+        .zip(&case.result)
+        .position(|(actual, expected)| actual != expected)
+        .unwrap_or(actual.len().min(case.result.len()));
+    panic!(
+        "{} cascades={cascades}: first mismatch at row {mismatch}\nactual={:?}\nexpected={:?}",
+        spec.name,
+        actual.get(mismatch),
+        case.result.get(mismatch),
+    );
+}
+
+fn run_planner_cases(
+    spec: CaseSpec,
+    cascades: bool,
+    mut tk: TestKit,
+    planner_cases: Vec<TpchCase>,
+) {
+    configure_planner_session(spec, cascades, &mut tk);
+
+    for case in planner_cases {
+        let sql = format!("{}{}", spec.query_prefix.unwrap_or_default(), case.sql);
+        if spec.check_cost {
+            let mut cost_tk = TestKit::new(tk.Store());
+            let mut verbose_tk = TestKit::new(tk.Store());
+            configure_planner_session(spec, cascades, &mut cost_tk);
+            configure_planner_session(spec, cascades, &mut verbose_tk);
+            let (actual, cost_trace, verbose) = std::thread::scope(|scope| {
+                let actual = scope.spawn(|| rendered_rows(&tk, &sql));
+                let cost_trace = scope.spawn(|| {
+                    cost_tk
+                        .MustQuery(
+                            &format!("explain format='cost_trace' {}", case.sql),
+                            Vec::new(),
+                        )
+                        .Rows()
+                });
+                let verbose = scope.spawn(|| {
+                    verbose_tk
+                        .MustQuery(
+                            &format!("explain format='verbose' {}", case.sql),
+                            Vec::new(),
+                        )
+                        .Rows()
+                });
+                (
+                    actual.join().unwrap(),
+                    cost_trace.join().unwrap(),
+                    verbose.join().unwrap(),
+                )
+            });
+            assert_golden_result(spec, cascades, actual, &case);
+            check_cost_rows(cost_trace, verbose, &case.sql);
+        } else {
+            assert_golden_result(spec, cascades, rendered_rows(&tk, &sql), &case);
+        }
+        if spec.q3_for_update {
+            let for_update = format!("{} for update", case.sql);
+            assert_eq!(
+                rendered_rows(&tk, &for_update),
+                case.for_update,
+                "{} cascades={cascades}: {for_update}",
+                spec.name
+            );
+            tk.MustExec("set tidb_enforce_mpp=1", Vec::new());
+            assert_eq!(
+                rendered_rows(&tk, &for_update),
+                case.for_update_and_enforce,
+                "{} cascades={cascades} enforce_mpp: {for_update}",
+                spec.name
+            );
+            tk.MustExec("set tidb_enforce_mpp=0", Vec::new());
+        }
+    }
+    if spec.read_committed {
+        tk.MustExec("commit", Vec::new());
+    }
+}
+
 fn run_go_case(name: &'static str) {
     let spec = case_spec(name);
     let suite = super::main_test::load_tpch_suite();
-    for cascades in [false, true] {
-        let (domain, mut tk) = setup_tpch_schema(spec.tables);
-        tk.MustExec(
-            &format!(
-                "set @@session.tidb_enable_cascades_planner = {}",
-                u8::from(cascades)
-            ),
-            Vec::new(),
-        );
-        if spec.selectivity {
-            tk.MustExec(
-                "set @@tidb_default_string_match_selectivity = 0.8",
-                Vec::new(),
-            );
-        }
-        if spec.broadcast_thresholds {
-            tk.MustExec(
-                "set @@session.tidb_broadcast_join_threshold_size = 0",
-                Vec::new(),
-            );
-            tk.MustExec(
-                "set @@session.tidb_broadcast_join_threshold_count = 0",
-                Vec::new(),
-            );
-        }
-        if spec.non_eval_scalar_subquery {
-            tk.MustExec(
-                "set @@tidb_opt_enable_non_eval_scalar_subquery=true",
-                Vec::new(),
-            );
-        }
-        load_stats(domain.as_ref(), spec.stats);
-        if spec.read_committed {
-            tk.MustExec("set tx_isolation='READ-COMMITTED'", Vec::new());
-            tk.MustExec("begin", Vec::new());
-            tk.MustExec(
-                "set @@session.tidb_isolation_read_engines='tidb,tiflash'",
-                Vec::new(),
-            );
-        }
+    let (domain, tk) = setup_tpch_schema(spec.tables);
+    load_stats(domain.as_ref(), spec.stats);
 
-        for case in cases(&suite, spec.name, cascades) {
-            let sql = format!("{}{}", spec.query_prefix.unwrap_or_default(), case.sql);
-            let actual = rendered_rows(&tk, &sql);
-            if actual != case.result {
-                let mismatch = actual
-                    .iter()
-                    .zip(&case.result)
-                    .position(|(actual, expected)| actual != expected)
-                    .unwrap_or(actual.len().min(case.result.len()));
-                panic!(
-                    "{} cascades={cascades}: first mismatch at row {mismatch}\nactual={:?}\nexpected={:?}",
-                    spec.name,
-                    actual.get(mismatch),
-                    case.result.get(mismatch),
-                );
-            }
-            if spec.q3_for_update {
-                let for_update = format!("{} for update", case.sql);
-                assert_eq!(
-                    rendered_rows(&tk, &for_update),
-                    case.for_update,
-                    "{} cascades={cascades}: {for_update}",
-                    spec.name
-                );
-                tk.MustExec("set tidb_enforce_mpp=1", Vec::new());
-                assert_eq!(
-                    rendered_rows(&tk, &for_update),
-                    case.for_update_and_enforce,
-                    "{} cascades={cascades} enforce_mpp: {for_update}",
-                    spec.name
-                );
-                tk.MustExec("set tidb_enforce_mpp=0", Vec::new());
-            }
-            if spec.check_cost {
-                check_cost(&tk, &case.sql);
-            }
-        }
-        if spec.read_committed {
-            tk.MustExec("commit", Vec::new());
-        }
-    }
+    let standard_cases = cases(&suite, spec.name, false);
+    let cascades_cases = cases(&suite, spec.name, true);
+    let cascades_tk = TestKit::new(tk.Store());
+    std::thread::scope(|scope| {
+        scope.spawn(|| run_planner_cases(spec, false, tk, standard_cases));
+        scope.spawn(|| run_planner_cases(spec, true, cascades_tk, cascades_cases));
+    });
 }
 
 fn run_benchmark(
