@@ -432,6 +432,16 @@ impl OwnerManager {
             if cancel.is_cancelled() {
                 break;
             }
+            if !session_lost.is_cancelled() {
+                let mut client = self.inner.client.clone();
+                match client.lease_time_to_live(lease_id, None).await {
+                    Ok(response) if response.ttl() <= 0 => session_lost.cancel(),
+                    Err(error) => {
+                        tracing::warn!(?error, lease_id, "failed to verify owner session lease")
+                    }
+                    Ok(_) => {}
+                }
+            }
             if session_lost.is_cancelled() && self.start_session(ttl).await.is_err() {
                 break;
             }
