@@ -193,6 +193,22 @@ pub struct HookWorker {
     pub counters: Arc<WorkerCounters>,
 }
 
+#[cfg(test)]
+pub(crate) fn newTestHookWorkerChannel(
+    capacity: usize,
+) -> (HookWorker, Receiver<TriggerEventRequest>) {
+    let (sender, receiver) = crossbeam_channel::bounded(capacity);
+    (
+        HookWorker {
+            ch: sender,
+            ctx: Context::background(),
+            join: Arc::new(Mutex::new(None)),
+            counters: Arc::new(WorkerCounters::default()),
+        },
+        receiver,
+    )
+}
+
 /// Go 风格别名。
 pub type hookWorker = HookWorker;
 

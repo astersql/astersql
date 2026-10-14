@@ -29,6 +29,8 @@ use crate::cache::{
     NowFn, RuntimeProcStatus, TimersCache, newTimersCache, procIdle, procTriggering,
     procWaitTriggerClose, systemNow,
 };
+#[cfg(test)]
+use crate::worker::newTestHookWorkerChannel;
 use crate::worker::{
     HookFactoryFn, HookWorker, TriggerEventRequest, newHookWorker, workerRespChanCap,
 };
@@ -188,6 +190,21 @@ struct RunState {
 }
 
 impl TimerGroupRuntime {
+    #[cfg(test)]
+    pub(crate) fn installTestWorker(
+        &self,
+        hookClass: &str,
+        capacity: usize,
+    ) -> Receiver<TriggerEventRequest> {
+        let (worker, receiver) = newTestHookWorkerChannel(capacity);
+        self.inner
+            .workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(hookClass.to_string(), worker);
+        receiver
+    }
+
     #[cfg(test)]
     pub(crate) fn setRetryLoopWait(&mut self, wait: Duration) {
         Arc::get_mut(&mut self.inner)
@@ -765,6 +782,18 @@ impl TimerGroupRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .item(timerID)
             .map(|item| item.procStatus)
+    }
+
+    #[cfg(test)]
+    /// 测试辅助：读取定时器当前关联的触发事件 ID。
+    pub fn cacheTriggerEventID(&self, timerID: &str) -> String {
+        self.inner
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .item(timerID)
+            .map(|item| item.triggerEventID.clone())
+            .unwrap_or_default()
     }
 
     /// 测试辅助：读取下次尝试触发时间。

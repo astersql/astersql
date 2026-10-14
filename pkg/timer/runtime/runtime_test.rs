@@ -140,15 +140,10 @@ fn test_try_trigger_timer() {
     let _serial = serial_guard();
     let now = Utc::now().fixed_offset();
     let store = NewMemoryTimerStore();
-    let hook = TestHook::new();
-    hook.set_pre_block(Duration::from_secs(2));
-    hook.set_pre_panic();
-    let factory = install_hook(hook.clone());
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store.clone())
-        .RegisterHookFactory("hook1".to_string(), factory)
-        .Build();
+    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store.clone()).Build();
     runtime.setNowFunc(Arc::new(move || now));
     runtime.initCtx();
+    let worker_requests = runtime.installTestWorker("hook1", 3);
 
     let t1 = new_test_timer("t1", "1m", sub(now, Duration::from_secs(3600)));
     runtime.cacheUpdate(t1.clone());
@@ -174,13 +169,6 @@ fn test_try_trigger_timer() {
     runtime.cacheUpdate(t9.clone());
     runtime.cacheSetProcStatus(&t9.ID, procWaitTriggerClose, "event9");
 
-    for index in 0..130 {
-        runtime.cacheUpdate(new_test_timer(
-            &format!("fill-{index:03}"),
-            "1m",
-            sub(now, Duration::from_secs(330)),
-        ));
-    }
     let t6 = new_test_timer("t6", "6m", sub(now, Duration::from_secs(600)));
     let t7 = new_test_timer("t7", "6m", sub(now, Duration::from_secs(600)));
     runtime.cacheUpdate(t6.clone());
@@ -200,17 +188,36 @@ fn test_try_trigger_timer() {
     assert_eq!(runtime.cacheNextTryTime(&t6.ID), Some(retry_at));
     assert_eq!(runtime.cacheNextTryTime(&t7.ID), Some(retry_at));
 
-    thread::sleep(Duration::from_millis(2200));
+    let consume_and_verify = |timer: Option<&TimerRecord>| match worker_requests.try_recv() {
+        Ok(request) => {
+            let timer = timer.expect("worker request should not be emitted");
+            assert_eq!(&request.timer, timer);
+            assert!(Arc::ptr_eq(
+                &request.store.TimerStoreCore,
+                &store.TimerStoreCore
+            ));
+            assert_eq!(request.eventID, runtime.cacheTriggerEventID(&timer.ID));
+        }
+        Err(crossbeam_channel::TryRecvError::Empty) => {
+            assert!(timer.is_none(), "expected a worker request");
+        }
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            panic!("test worker request channel disconnected")
+        }
+    };
+    consume_and_verify(Some(&t2));
+    consume_and_verify(Some(&t1));
+    consume_and_verify(Some(&t5));
+    consume_and_verify(None);
+
     runtime.Stop();
     store.Close();
 
     let store = NewMemoryTimerStore();
-    let manual_hook = TestHook::new();
-    let manual_runtime = NewTimerRuntimeBuilder("g1-manual".to_string(), store.clone())
-        .RegisterHookFactory("hook1".to_string(), install_hook(manual_hook))
-        .Build();
+    let manual_runtime = NewTimerRuntimeBuilder("g1-manual".to_string(), store.clone()).Build();
     manual_runtime.setNowFunc(Arc::new(move || now));
     manual_runtime.initCtx();
+    let manual_requests = manual_runtime.installTestWorker("hook1", 3);
     t3.Version += 1;
     t3.ManualRequest = ManualRequest {
         ManualRequestID: "req1".to_string(),
@@ -222,6 +229,10 @@ fn test_try_trigger_timer() {
     manual_runtime.cacheUpdate(t3.clone());
     manual_runtime.tryTriggerTimerEvents();
     assert_eq!(manual_runtime.cacheProcStatus(&t3.ID), Some(procIdle));
+    assert!(matches!(
+        manual_requests.try_recv(),
+        Err(crossbeam_channel::TryRecvError::Empty)
+    ));
     t3.Version += 1;
     t3.Enable = false;
     t3.ManualRequest = ManualRequest {
@@ -233,11 +244,20 @@ fn test_try_trigger_timer() {
     manual_runtime.cacheUpdate(t3.clone());
     manual_runtime.tryTriggerTimerEvents();
     assert_eq!(manual_runtime.cacheProcStatus(&t3.ID), Some(procIdle));
+    assert!(matches!(
+        manual_requests.try_recv(),
+        Err(crossbeam_channel::TryRecvError::Empty)
+    ));
     t3.Version += 1;
     t3.Enable = true;
     manual_runtime.cacheUpdate(t3.clone());
     manual_runtime.tryTriggerTimerEvents();
     assert_eq!(manual_runtime.cacheProcStatus(&t3.ID), Some(procTriggering));
+    let request = manual_requests
+        .try_recv()
+        .expect("manual timer should emit a worker request");
+    assert_eq!(request.timer, t3);
+    assert_eq!(request.eventID, manual_runtime.cacheTriggerEventID(&t3.ID));
     manual_runtime.Stop();
     store.Close();
 }
