@@ -385,8 +385,64 @@ fn simple_typed_predicate_column(predicate: &ast::ExprNode) -> Option<&str> {
                 _ => None,
             }
         }
+        ast::ExprKind::InList {
+            Expr,
+            List,
+            Not: false,
+            ..
+        } if !List.is_empty()
+            && List.iter().all(|item| {
+                matches!(
+                    item.Kind,
+                    ast::ExprKind::ParamMarker { .. } | ast::ExprKind::Value(_)
+                )
+            }) =>
+        {
+            match &Expr.Kind {
+                ast::ExprKind::Column(column) => Some(column.Name.L.as_str()),
+                _ => None,
+            }
+        }
         _ => None,
     }
+}
+
+fn prepared_argument_datum(argument: &str) -> SessionResult<Option<astersql_types::datum::Datum>> {
+    let argument = argument.trim();
+    if argument.eq_ignore_ascii_case("null") {
+        return Ok(Some(astersql_types::datum::Datum::default()));
+    }
+    if let Some(quoted) = argument
+        .strip_prefix('\'')
+        .and_then(|argument| argument.strip_suffix('\''))
+    {
+        let mut value = String::with_capacity(quoted.len());
+        let mut characters = quoted.chars().peekable();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => value.push(characters.next().unwrap_or('\\')),
+                '\'' if characters.peek() == Some(&'\'') => {
+                    characters.next();
+                    value.push('\'');
+                }
+                '\'' => return Ok(None),
+                _ => value.push(character),
+            }
+        }
+        return Ok(Some(astersql_types::datum::NewStringDatum(value)));
+    }
+    if let Ok(value) = argument.parse::<i64>() {
+        return Ok(Some(astersql_types::datum::NewIntDatum(value)));
+    }
+    if let Ok(value) = argument.parse::<u64>() {
+        return Ok(Some(astersql_types::datum::NewUintDatum(value)));
+    }
+    if argument.parse::<rust_decimal::Decimal>().is_ok() {
+        return Ok(Some(astersql_types::datum::NewStringDatum(
+            argument.to_owned(),
+        )));
+    }
+    Ok(None)
 }
 
 impl ConcreteSession {
@@ -401,13 +457,15 @@ impl ConcreteSession {
         };
         self.mdl_stats_table(database, table_name)
             .is_some_and(|(_, table)| {
-                table
+                let column_exists = table
                     .Columns
                     .iter()
-                    .any(|column| column.Name.L.eq_ignore_ascii_case(column_name))
-                    && (table
-                        .GetPkColInfo()
-                        .is_some_and(|primary| primary.Name.L.eq_ignore_ascii_case(column_name))
+                    .any(|column| column.Name.L.eq_ignore_ascii_case(column_name));
+                column_exists
+                    && (matches!(predicate.Kind, ast::ExprKind::InList { Not: false, .. })
+                        || table.GetPkColInfo().is_some_and(|primary| {
+                            primary.Name.L.eq_ignore_ascii_case(column_name)
+                        })
                         || table.Indices.iter().any(|index| {
                             !index.Invisible
                                 && !index.MVIndex
@@ -3333,6 +3391,7 @@ impl ConcreteSession {
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));
         }
+        let parsed = statements.into_iter().next().map(std::rc::Rc::from);
         let name = statement.Name.to_lowercase();
         let already_present = self.state.borrow().prepared_by_name.contains_key(&name);
         if !already_present {
@@ -3347,6 +3406,7 @@ impl ConcreteSession {
             name,
             NamedPreparedStatement {
                 sql,
+                parsed,
                 database,
                 planned: false,
                 planned_catalog_version: None,
@@ -3366,6 +3426,7 @@ impl ConcreteSession {
         &self,
         name: &str,
         template: &str,
+        select: &ast::SelectStmt,
         arguments: &[String],
         catalog_version: u64,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
@@ -3378,13 +3439,6 @@ impl ConcreteSession {
             return Ok(None);
         }
         drop(state);
-        let statements = parse(template)?;
-        let Some(select) = statements
-            .first()
-            .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
-        else {
-            return Ok(None);
-        };
         let Some(from) = select.From.as_ref() else {
             return Ok(None);
         };
@@ -3407,7 +3461,7 @@ impl ConcreteSession {
         {
             return Ok(None);
         }
-        if statements.len() != 1 || !Self::simple_typed_select_shape(select) {
+        if !Self::simple_typed_select_shape(select) {
             return Ok(None);
         }
         if select.Where.as_ref().is_some_and(|predicate| {
@@ -3415,17 +3469,71 @@ impl ConcreteSession {
         }) {
             return Ok(None);
         }
-        let Some(parameters) = arguments
-            .iter()
-            .map(|argument| {
-                argument
-                    .parse::<i64>()
-                    .ok()
-                    .map(astersql_types::datum::NewIntDatum)
-            })
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(None);
+        let in_column = select.Where.as_ref().and_then(|predicate| {
+            let ast::ExprKind::InList {
+                List, Not: false, ..
+            } = &predicate.Kind
+            else {
+                return None;
+            };
+            (List.len() == arguments.len()).then(|| simple_typed_predicate_column(predicate))?
+        });
+        let parameters = if let Some(column_name) = in_column {
+            let Some(field_type) = self
+                .mdl_stats_table(&database, &source.Source.Name.L)
+                .and_then(|(_, table)| {
+                    table
+                        .Columns
+                        .iter()
+                        .find(|column| column.Name.L.eq_ignore_ascii_case(column_name))
+                        .map(|column| column.FieldType.clone())
+                })
+            else {
+                return Ok(None);
+            };
+            let mut parameters = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                let Some(datum) = prepared_argument_datum(argument)? else {
+                    return Ok(None);
+                };
+                let type_context = self.session_vars.StmtCtx.TypeCtx().WithFlags(
+                    self.session_vars
+                        .StmtCtx
+                        .TypeFlags()
+                        .WithTruncateAsWarning(true),
+                );
+                let converted = match datum.ConvertTo(type_context.clone(), &field_type) {
+                    Ok(converted) => converted,
+                    Err(error) => {
+                        type_context
+                            .HandleTruncate((), astersql_types::datum::context_error(&error))
+                            .map_err(|error| {
+                                session_error("convert prepared IN parameter", error.error)
+                            })?;
+                        astersql_types::datum::NewIntDatum(0)
+                            .ConvertTo(type_context, &field_type)
+                            .map_err(|error| {
+                                session_error("convert prepared IN parameter fallback", error)
+                            })?
+                    }
+                };
+                parameters.push(converted);
+            }
+            parameters
+        } else {
+            let Some(parameters) = arguments
+                .iter()
+                .map(|argument| {
+                    argument
+                        .parse::<i64>()
+                        .ok()
+                        .map(astersql_types::datum::NewIntDatum)
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(None);
+            };
+            parameters
         };
         self.ensure_implicit_transaction()?;
         self.validate_table_read_ts_after_last_commit()?;
@@ -3559,7 +3667,7 @@ impl ConcreteSession {
                 !state.transaction_write_keys.is_empty(),
             )
         };
-        let (sql, database, planned, last_parameter_shape, plan_cache) = {
+        let (sql, parsed, database, planned, last_parameter_shape, plan_cache) = {
             let state = self.state.borrow();
             let prepared = state.prepared_by_name.get(&name).ok_or_else(|| {
                 SessionError::new(format!(
@@ -3577,6 +3685,7 @@ impl ConcreteSession {
             });
             (
                 prepared.sql.clone(),
+                prepared.parsed.clone(),
                 prepared.database.clone(),
                 planned,
                 prepared.last_parameter_shape,
@@ -3627,8 +3736,11 @@ impl ConcreteSession {
         }
         super::planning::validate_prepared_limit_arguments(&sql, &arguments)?;
         let parameter_template = sql.clone();
+        let parsed =
+            parsed.ok_or_else(|| SessionError::new("prepared statement AST is missing"))?;
+        let prepared_select = parsed.as_any().downcast_ref::<ast::SelectStmt>();
         let partial_index_cacheable =
-            super::planning::named_prepared_partial_index_cacheable(self, &parameter_template)?;
+            super::planning::named_prepared_partial_index_cacheable(self, prepared_select)?;
         let sql = bind_parameter_markers(&sql, &arguments)?;
         let parameter_shape = parameter_shape_class(&parameter_template, &arguments);
         let negative_equality_parameter = super::planning::negative_unsigned_equality_parameter(
@@ -3654,13 +3766,12 @@ impl ConcreteSession {
         let parameter_shape_changed = parameter_shape.is_some()
             && last_parameter_shape.is_some()
             && parameter_shape != last_parameter_shape;
-        let statements = parse(&sql)?;
         // A binding can add IGNORE_PLAN_CACHE even when the prepared SQL itself
         // has no hint. Match the executed statement before deciding cache reuse.
         self.sync_global_bindings();
-        let binding_ignores_plan_cache = statements.first().is_some_and(|statement| {
+        let binding_ignores_plan_cache = {
             let binding_statement =
-                crate::hint_runtime::BindingStatementFromAST(&sql, statement.as_ref());
+                crate::hint_runtime::BindingStatementFromAST(&parameter_template, parsed.as_ref());
             let (binding, _, _) = astersql_bindinfo::MatchSQLBinding(
                 &mut *self.bindings.borrow_mut(),
                 &binding_statement,
@@ -3671,33 +3782,31 @@ impl ConcreteSession {
                     .to_ascii_lowercase()
                     .contains("ignore_plan_cache")
             })
-        });
+        };
         let skip_reason = if binding_ignores_plan_cache {
             Some("ignore_plan_cache hint used in SQL binding".to_owned())
         } else {
             skip_reason
         };
-        let partitioned_table = statements.iter().any(|candidate| {
-            candidate
-                .as_any()
-                .downcast_ref::<ast::SelectStmt>()
-                .and_then(|select| select.From.as_ref())
-                .and_then(|from| from.TableRefs.Left.as_deref())
-                .and_then(|result_set| match result_set {
-                    ast::ResultSetNode::TableSource(source) => Some(source),
-                    _ => None,
-                })
-                .and_then(|source| {
-                    let schema = if source.Source.Schema.L.is_empty() {
-                        database.as_str()
-                    } else {
-                        source.Source.Schema.L.as_str()
-                    };
-                    self.mdl_stats_table(schema, &source.Source.Name.L)
-                        .map(|(_, table)| table.GetPartitionInfo().is_some())
-                })
-                .unwrap_or(false)
-        });
+        let partitioned_table = parsed
+            .as_any()
+            .downcast_ref::<ast::SelectStmt>()
+            .and_then(|select| select.From.as_ref())
+            .and_then(|from| from.TableRefs.Left.as_deref())
+            .and_then(|result_set| match result_set {
+                ast::ResultSetNode::TableSource(source) => Some(source),
+                _ => None,
+            })
+            .and_then(|source| {
+                let schema = if source.Source.Schema.L.is_empty() {
+                    database.as_str()
+                } else {
+                    source.Source.Schema.L.as_str()
+                };
+                self.mdl_stats_table(schema, &source.Source.Name.L)
+                    .map(|(_, table)| table.GetPartitionInfo().is_some())
+            })
+            .unwrap_or(false);
         let (static_partition_prune, fix_33031_enabled) = {
             let state = self.state.borrow();
             (
@@ -3744,12 +3853,19 @@ impl ConcreteSession {
             state.skip_predicate_collection = from_plan_cache;
             state.prepared_database_override = Some(database);
         }
-        let typed_execution = self.execute_simple_prepared_select_through_adapter(
-            &name,
-            &parameter_template,
-            &arguments,
-            current_catalog_version,
-        );
+        let typed_execution =
+            parsed
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .map_or(Ok(None), |select| {
+                    self.execute_simple_prepared_select_through_adapter(
+                        &name,
+                        &parameter_template,
+                        select,
+                        &arguments,
+                        current_catalog_version,
+                    )
+                });
         let mut record_set = None;
         let mut execution = Ok(());
         match typed_execution {
@@ -3757,9 +3873,10 @@ impl ConcreteSession {
             Err(error) => execution = Err(error),
         }
         if record_set.is_some() {
-            self.record_statement_metric(statements[0].as_ref());
+            self.record_statement_metric(parsed.as_ref());
         }
         if execution.is_ok() && record_set.is_none() {
+            let statements = parse(&sql)?;
             for prepared_statement in &statements {
                 match self.execute_statement(prepared_statement.as_ref(), Some(&sql)) {
                     Ok(result) => {

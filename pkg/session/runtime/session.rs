@@ -18,6 +18,7 @@
 use super::transaction::RuntimeSavepoint;
 use super::*;
 use std::cell::Cell;
+use std::rc::Rc;
 
 /// ConcreteSession 可变状态：事务、预编译、变量与 DML 报告等。
 
@@ -379,10 +380,11 @@ pub(super) struct SessionState {
 
 /// A text-protocol prepared statement. `planned` records whether a previous
 /// EXECUTE already produced a plan that the plan cache can reuse.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 /// 具名预编译语句：SQL 文本与参数个数。
 pub(super) struct NamedPreparedStatement {
     pub(super) sql: String,
+    pub(super) parsed: Option<Rc<dyn ast::Node>>,
     pub(super) database: String,
     pub(super) planned: bool,
     /// Catalog version of the plan recorded by the last successful EXECUTE.

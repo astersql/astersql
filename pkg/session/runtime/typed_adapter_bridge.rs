@@ -292,6 +292,43 @@ fn encode_index_ranges(
         .collect()
 }
 
+fn encode_common_handle_ranges(
+    scan: &PhysicalIndexScan,
+    table_id: i64,
+) -> Result<Vec<KeyRange>, BuildError> {
+    let ranges = scan
+        .RebuildRangesForPlanCache()
+        .map_err(|error| BuildError::new(error.to_string()))?;
+    ranges
+        .iter()
+        .map(|range| {
+            let low = astersql_util_codec::EncodeKey(
+                astersql_tablecodec::time::UTC,
+                Vec::new(),
+                range.LowVal.clone(),
+            )
+            .and_then(astersql_kv::NewCommonHandle)
+            .map_err(|error| BuildError::new(error.to_string()))?;
+            let mut start = astersql_tablecodec::EncodeRowKeyWithHandle(table_id, Box::new(low));
+            if range.LowExclude {
+                start = start.PrefixNext();
+            }
+            let high = astersql_util_codec::EncodeKey(
+                astersql_tablecodec::time::UTC,
+                Vec::new(),
+                range.HighVal.clone(),
+            )
+            .and_then(astersql_kv::NewCommonHandle)
+            .map_err(|error| BuildError::new(error.to_string()))?;
+            let mut end = astersql_tablecodec::EncodeRowKeyWithHandle(table_id, Box::new(high));
+            if !range.HighExclude {
+                end = end.PrefixNext();
+            }
+            Ok(KeyRange { start, end })
+        })
+        .collect()
+}
+
 fn encode_table_record_ranges(
     scan: &PhysicalTableScan,
     table_id: i64,
@@ -687,7 +724,12 @@ impl SessionBoundAdapterOwner {
                 .ok_or_else(|| {
                     BuildError::new("prepared index lookup requires one PhysicalIndexScan")
                 })?;
-            encode_index_ranges(index_scan, table_id)?
+            if table.IsCommonHandle && index_scan.Index.as_ref().is_some_and(|index| index.Primary)
+            {
+                encode_common_handle_ranges(index_scan, table_id)?
+            } else {
+                encode_index_ranges(index_scan, table_id)?
+            }
         } else if let Some(reader) = find_index_reader(planned.Plan.as_ref()) {
             let index_scan = reader
                 .IndexPlan
@@ -705,7 +747,12 @@ impl SessionBoundAdapterOwner {
             } else {
                 table.ID
             };
-            encode_index_ranges(index_scan, table_id)?
+            if table.IsCommonHandle && index_scan.Index.as_ref().is_some_and(|index| index.Primary)
+            {
+                encode_common_handle_ranges(index_scan, table_id)?
+            } else {
+                encode_index_ranges(index_scan, table_id)?
+            }
         } else {
             if scans.is_empty() {
                 return Err(BuildError::new(

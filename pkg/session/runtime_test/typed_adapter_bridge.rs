@@ -63,6 +63,115 @@ fn sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_explain() {
     assert!(first[1].contains('.'), "real optimizer estimate: {first:?}");
 }
 
+#[test]
+fn typed_prepared_in_coerces_parameters_like_go() {
+    fn drain_rows(record_set: &mut crate::runtime::ConcreteRecordSet) -> Vec<Vec<String>> {
+        let mut rows = Vec::new();
+        while let Some(row) = record_set.next_row().expect("read typed IN result") {
+            rows.push(row);
+        }
+        rows
+    }
+
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().expect("canonical session");
+    session.execute("use test").expect("select test database");
+
+    for (suffix, column_type, values, first, second) in [
+        ("int", "int", "(1), (2), (3)", "1", "2"),
+        (
+            "varchar",
+            "varchar(20)",
+            "('1'), ('2'), ('3')",
+            "'1'",
+            "'2'",
+        ),
+        ("real", "real", "(1.1), (2.2), (3.3)", "'1.1'", "'2.2'"),
+        (
+            "decimal",
+            "decimal(10, 2)",
+            "(1.10), (2.20), (3.30)",
+            "'1.10'",
+            "'2.20'",
+        ),
+    ] {
+        for (access, key) in [("heap", ""), ("index", ", key(a)")] {
+            let table = format!("typed_in_{suffix}_{access}");
+            session
+                .execute(&format!("create table {table} (a {column_type}{key})"))
+                .expect("create typed IN table");
+            session
+                .execute(&format!("insert into {table} values {values}"))
+                .expect("seed typed IN table");
+            session
+                .execute(&format!(
+                    "prepare typed_in_stmt from 'select a from {table} where a in (?, ?)'"
+                ))
+                .expect("prepare typed IN query");
+            session
+                .execute(&format!("set @typed_first={first}, @typed_second={second}"))
+                .expect("bind initial typed IN parameters");
+            let mut first_execution = session
+                .execute("execute typed_in_stmt using @typed_first, @typed_second")
+                .expect("execute typed IN query");
+            assert!(
+                session.PreparedNameHasTypedPlanForTest("typed_in_stmt"),
+                "{column_type} {access} IN query must use the typed prepared path"
+            );
+            let mut rows = drain_rows(&mut first_execution[0]);
+            rows.sort();
+            assert_eq!(rows.len(), 2, "{column_type} {access} first execution");
+
+            session
+                .execute(&format!("set @typed_first={second}, @typed_second={first}"))
+                .expect("rebind typed IN parameters");
+            let mut cached = session
+                .execute("execute typed_in_stmt using @typed_first, @typed_second")
+                .expect("execute rebound typed IN query");
+            assert_eq!(drain_rows(&mut cached[0]).len(), 2);
+            assert!(
+                session.LastPlanFromCache(),
+                "rebound execution must hit cache"
+            );
+
+            session
+                .execute("set @typed_second=null")
+                .expect("rebind typed IN parameter with NULL");
+            let mut rebound = session
+                .execute("execute typed_in_stmt using @typed_first, @typed_second")
+                .expect("execute NULL typed IN query");
+            assert_eq!(
+                drain_rows(&mut rebound[0]).len(),
+                1,
+                "{column_type} {access} NULL must not match"
+            );
+
+            session
+                .execute("set @typed_first='not-convertible', @typed_second=null")
+                .expect("bind unconvertible typed IN parameter");
+            let mut invalid = session
+                .execute("execute typed_in_stmt using @typed_first, @typed_second")
+                .expect("Go-compatible conversion keeps execution successful");
+            assert!(
+                drain_rows(&mut invalid[0]).is_empty(),
+                "{column_type} {access} unconvertible value must not match seeded rows"
+            );
+
+            session
+                .execute(&format!("alter table {table} add column b int"))
+                .expect("invalidate typed plan by changing schema generation");
+            session
+                .execute(&format!("set @typed_first={first}, @typed_second={second}"))
+                .expect("restore typed IN parameters");
+            let mut rebuilt = session
+                .execute("execute typed_in_stmt using @typed_first, @typed_second")
+                .expect("execute typed IN query after schema invalidation");
+            assert_eq!(drain_rows(&mut rebuilt[0]).len(), 2);
+            assert!(!session.LastPlanFromCache());
+            assert!(session.PreparedNameHasTypedPlanForTest("typed_in_stmt"));
+        }
+    }
+}
+
 impl astersql_domain::InfoSchemaLoader for PreparedBridgeSchemaLoader {
     fn load_info_schema(
         &self,

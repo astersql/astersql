@@ -2,7 +2,16 @@
 
 批次：【批次 1】 无
 
-状态：未开始
+状态：已完成，待回归
+
+待回归记录（2026-10-14）：
+
+- 功能与交付检查已完成：新增 session 回归精确 1/1 通过，四个 Go 对齐端到端用例精确 4/4 通过，`cargo fmt --all` 与 `make lint` 均退出 0。
+- TDD 红灯为 `int heap IN query must use typed prepared path`；修复后 typed path、参数重绑、plan-cache hit、schema generation 失效、NULL 与不可转换值均由独立回归覆盖。
+- 为保留 10 worker × 100 组 `PREPARE/SET/EXECUTE` 的规模，同时处理剖析发现的重复解析边界，`PREPARE` 现在持久化已验证 AST；typed `EXECUTE` 复用该 AST，只有回退通用路径才重新解析绑定 SQL。没有缩减测试规模或绕过真实 session/planner/executor。
+- 性能锁下五轮均为功能通过，但样本为 `0.612039, 0.623958, 0.618164, 0.622457, 0.590856` 秒，超过 `0.499` 秒门槛；报告位于 `target/rust-performance/prepared-in-decimal-after.tsv`。
+- 计时期间宿主机 `load averages` 为 `16.06 15.17 16.69`，仓库外虚拟机进程约占 `634.6% CPU`，RustCodeGraph 进程另占约 `100.0% + 46.5% CPU`。这些进程不属于本任务且未被终止，因此按计划的“无关本次修改的原因导致无法运行验证”条款保留本文件，待空闲、独占性能环境复跑五轮门槛。
+- 实际 Cargo 槽位为 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；性能锁已释放，Cargo 槽位在提交完成后释放并保留缓存。
 
 目的：使 prepared `IN (?, ?)` 在 INT、VARCHAR、REAL、DECIMAL 列上通过通用 typed 路径保持 Go 结果，并消除 decimal 慢测瓶颈。
 

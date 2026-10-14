@@ -1470,13 +1470,9 @@ pub(super) fn parameter_shape_class(sql: &str, arguments: &[String]) -> Option<b
 
 pub(super) fn named_prepared_partial_index_cacheable(
     session: &ConcreteSession,
-    sql: &str,
+    select: Option<&ast::SelectStmt>,
 ) -> SessionResult<bool> {
-    let statements = parse(sql)?;
-    let Some(select) = statements
-        .first()
-        .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
-    else {
+    let Some(select) = select else {
         return Ok(true);
     };
     let Some(where_expression) = select.Where.as_ref() else {

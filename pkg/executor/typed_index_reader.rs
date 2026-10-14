@@ -22,6 +22,7 @@ pub struct TypedIndexReader {
     table_id: i64,
     index_column_ids: Vec<i64>,
     output_columns: Vec<ColumnInfo>,
+    common_handle_primary: bool,
     schema: Vec<SchemaColumn>,
     descending: bool,
     ranges: Vec<KeyRange>,
@@ -41,6 +42,30 @@ impl TypedIndexReader {
         table_id: i64,
         index_column_ids: Vec<i64>,
         output_columns: Vec<ColumnInfo>,
+        descending: bool,
+        mut ranges: Vec<KeyRange>,
+        initial_capacity: usize,
+        maximum_chunk_size: usize,
+    ) -> Self {
+        Self::new_with_common_handle_primary(
+            retriever,
+            table_id,
+            index_column_ids,
+            output_columns,
+            false,
+            descending,
+            ranges,
+            initial_capacity,
+            maximum_chunk_size,
+        )
+    }
+
+    pub fn new_with_common_handle_primary(
+        retriever: Arc<dyn kv::Retriever + Send + Sync>,
+        table_id: i64,
+        index_column_ids: Vec<i64>,
+        output_columns: Vec<ColumnInfo>,
+        common_handle_primary: bool,
         descending: bool,
         mut ranges: Vec<KeyRange>,
         initial_capacity: usize,
@@ -71,6 +96,7 @@ impl TypedIndexReader {
             table_id,
             index_column_ids,
             output_columns,
+            common_handle_primary,
             schema,
             descending,
             ranges,
@@ -91,6 +117,41 @@ impl TypedIndexReader {
         value: Vec<u8>,
         output: &mut chunk::Chunk,
     ) -> AdapterResult<Key> {
+        if self.common_handle_primary {
+            let (table_id, _) =
+                astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(key.0.clone()))?;
+            if table_id != self.table_id {
+                return Err(errors::New(format!(
+                    "common-handle row belongs to table {table_id}, expected {}",
+                    self.table_id
+                )));
+            }
+            let (encoded, _) = astersql_tablecodec::CutCommonHandle(
+                astersql_tablecodec::kv::Key(key.0.clone()),
+                self.index_column_ids.len(),
+            )?;
+            let column_types = self
+                .output_columns
+                .iter()
+                .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                .collect::<HashMap<_, _>>();
+            let mut datums = astersql_tablecodec::DecodeRowToDatumMap(
+                Some(value),
+                column_types,
+                Some(astersql_tablecodec::time::UTC),
+            )?;
+            for (id, bytes) in self.index_column_ids.iter().copied().zip(encoded) {
+                let (_, datum) = astersql_util_codec::DecodeOne(&bytes)?;
+                datums.insert(id, datum);
+            }
+            for (offset, column) in self.output_columns.iter().enumerate() {
+                output.AppendDatum(offset, &datums.remove(&column.ID).unwrap_or_default());
+            }
+            if self.output_columns.is_empty() {
+                output.SetNumVirtualRows(output.NumRows() + 1);
+            }
+            return Ok(key.0);
+        }
         let (encoded, _) = astersql_tablecodec::CutIndexKey(
             astersql_tablecodec::kv::Key(key.0.clone()),
             self.index_column_ids.clone(),
@@ -279,6 +340,7 @@ impl ExecExecutor for TypedIndexReader {
             table_id: self.table_id,
             index_column_ids: self.index_column_ids.clone(),
             output_columns: self.output_columns.clone(),
+            common_handle_primary: self.common_handle_primary,
             schema: self.schema.clone(),
             descending: self.descending,
             ranges: self.ranges.clone(),

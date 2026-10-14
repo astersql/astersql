@@ -534,16 +534,20 @@ fn build_typed_physical_plan(
                 )));
             }
         }
-        let mut executor: ExecutorBox = Box::new(crate::typed_index_reader::TypedIndexReader::new(
-            binding.retriever.clone(),
-            table_id,
-            index_column_ids,
-            output_columns,
-            scan.Desc,
-            binding.ranges.clone(),
-            initial_capacity,
-            maximum_chunk_size,
-        ));
+        let common_handle_primary = table.IsCommonHandle && index.Primary;
+        let mut executor: ExecutorBox = Box::new(
+            crate::typed_index_reader::TypedIndexReader::new_with_common_handle_primary(
+                binding.retriever.clone(),
+                table_id,
+                index_column_ids,
+                output_columns,
+                common_handle_primary,
+                scan.Desc,
+                binding.ranges.clone(),
+                initial_capacity,
+                maximum_chunk_size,
+            ),
+        );
         if !scan.FilterCondition.is_empty() {
             executor = Box::new(crate::typed_selection::TypedSelection::new(
                 executor,
