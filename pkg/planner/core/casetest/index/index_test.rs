@@ -875,7 +875,7 @@ fn run_partial_index_with_plan_cache_round(cascades: bool) {
 
 #[test]
 fn test_partial_index_with_index_prune() {
-    run_under_cascades(|_, tk| {
+    run_under_cascades_in_parallel(|_, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec("set tidb_enable_collect_execution_info=0", Vec::new());
         tk.MustExec("create table t(a int, b int, index idx1(a) where a is not null, index idx2(b) where b > 10)", Vec::new());
