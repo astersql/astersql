@@ -44,10 +44,20 @@ fn plan_cache_partition_hash_is_stable_and_state_sensitive() {
 fn prepared_cte_remains_inline_after_unrelated_ddl() {
     use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
 
+    let (store, _domain) = CreateMockStoreAndDomain();
     for plan_cache_enabled in [false, true] {
-        let (store, _domain) = CreateMockStoreAndDomain();
+        // The domain/store is immutable test infrastructure here. Fresh sessions and
+        // mode-specific table names keep the two plan-cache cases isolated without
+        // paying for a second domain bootstrap.
+        let mode = if plan_cache_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let source_table = format!("source_{mode}");
+        let unrelated_table = format!("unrelated_{mode}");
         let mut tk = NewTestKit(store.clone());
-        let mut ddl = NewTestKit(store);
+        let mut ddl = NewTestKit(store.clone());
         tk.MustExec("use test", Vec::new());
         ddl.MustExec("use test", Vec::new());
         tk.MustExec(
@@ -58,22 +68,30 @@ fn prepared_cte_remains_inline_after_unrelated_ddl() {
             Vec::new(),
         );
         tk.MustExec("set tidb_opt_force_inline_cte = off", Vec::new());
-        tk.MustExec("create table source (a int)", Vec::new());
-        tk.MustExec("insert into source values (1)", Vec::new());
+        tk.MustExec(&format!("create table {source_table} (a int)"), Vec::new());
         tk.MustExec(
-            "prepare cte_stmt from 'with cte as (select * from source) select * from cte where a = ?'",
+            &format!("insert into {source_table} values (1)"),
+            Vec::new(),
+        );
+        tk.MustExec(
+            &format!(
+                "prepare cte_stmt from 'with cte as (select * from {source_table}) select * from cte where a = ?'"
+            ),
             Vec::new(),
         );
         tk.MustExec("set @p = 1", Vec::new());
         tk.MustQuery("execute cte_stmt using @p", Vec::new())
             .Check(Rows(&["1"]));
 
-        ddl.MustExec("create table unrelated (a int)", Vec::new());
+        ddl.MustExec(
+            &format!("create table {unrelated_table} (a int)"),
+            Vec::new(),
+        );
 
         tk.MustQuery("execute cte_stmt using @p", Vec::new())
             .Check(Rows(&["1"]));
         tk.MustQuery(
-            "with cte as (select * from source) select * from cte where a = 1",
+            &format!("with cte as (select * from {source_table}) select * from cte where a = 1"),
             Vec::new(),
         )
         .Check(Rows(&["1"]));
