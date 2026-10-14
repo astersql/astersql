@@ -610,41 +610,80 @@ pub fn TestInstancePlanCacheConcurrencyPartitioning() {
     insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
+        let session = tk.Session();
+        let (point_id, _) = session
+            .PrepareStmt("select * from t where a=?")
+            .expect("prepare partition point query");
+        let (in_id, _) = session
+            .PrepareStmt("select * from t where a in (?,?)")
+            .expect("prepare partition in query");
+        let (between_id, _) = session
+            .PrepareStmt("select * from t where a between ? and ?")
+            .expect("prepare partition range query");
+        let mut point_arguments = Vec::new();
+        let mut point_expected = Vec::new();
+        let mut in_arguments = Vec::new();
+        let mut in_expected = Vec::new();
+        let mut between_arguments = Vec::new();
+        let mut between_expected = Vec::new();
         for _ in 0..100 {
             match rand::intn(3) {
                 0 => {
                     let v = rand::intn(100);
-                    exec(&mut tk, "prepare st from 'select * from t where a=?'");
-                    exec(&mut tk, &format!("set @v = {v}"));
-                    query(&tk, "execute st using @v").Check(rows(&[v.to_string()]));
+                    point_arguments.push(vec![DbValue::I64(v.into())]);
+                    point_expected.push(vec![vec![v.to_string()]]);
                 }
                 1 => {
                     let (v1, v2) = (rand::intn(50), 50 + rand::intn(50));
-                    exec(
-                        &mut tk,
-                        "prepare st from 'select * from t where a in (?,?)'",
-                    );
-                    exec(&mut tk, &format!("set @v1={v1},@v2={v2}"));
-                    let mut expected = vec![v1.to_string(), v2.to_string()];
+                    in_arguments.push(vec![DbValue::I64(v1.into()), DbValue::I64(v2.into())]);
+                    let mut expected = vec![vec![v1.to_string()], vec![v2.to_string()]];
                     expected.sort();
-                    query(&tk, "execute st using @v1,@v2")
-                        .Sort()
-                        .Check(rows(&expected));
+                    in_expected.push(expected);
                 }
                 _ => {
                     let (v1, v2) = (rand::intn(50), 50 + rand::intn(50));
-                    exec(
-                        &mut tk,
-                        "prepare st from 'select * from t where a between ? and ?'",
-                    );
-                    exec(&mut tk, &format!("set @v1={v1},@v2={v2}"));
-                    let mut expected: Vec<_> = (v1..=v2).map(|v| v.to_string()).collect();
+                    between_arguments.push(vec![DbValue::I64(v1.into()), DbValue::I64(v2.into())]);
+                    let mut expected = (v1..=v2)
+                        .map(|value| vec![value.to_string()])
+                        .collect::<Vec<_>>();
                     expected.sort();
-                    query(&tk, "execute st using @v1,@v2")
-                        .Sort()
-                        .Check(rows(&expected));
+                    between_expected.push(expected);
                 }
             }
+        }
+
+        let point_results = session
+            .QueryPreparedStmtBatch(point_id, &point_arguments)
+            .expect("execute partition point queries");
+        assert_eq!(point_results.len(), point_arguments.len());
+        for (result, expected) in point_results.iter().zip(point_expected) {
+            assert_eq!(result.string_rows(), expected);
+        }
+
+        let in_results = session
+            .QueryPreparedStmtBatch(in_id, &in_arguments)
+            .expect("execute partition in queries");
+        assert_eq!(in_results.len(), in_arguments.len());
+        for (result, expected) in in_results.iter().zip(in_expected) {
+            let mut actual = result.string_rows();
+            actual.sort();
+            assert_eq!(actual, expected);
+        }
+
+        let between_results = session
+            .QueryPreparedStmtBatch(between_id, &between_arguments)
+            .expect("execute partition range queries");
+        assert_eq!(between_results.len(), between_arguments.len());
+        for (result, expected) in between_results.iter().zip(between_expected) {
+            let mut actual = result.string_rows();
+            actual.sort();
+            assert_eq!(actual, expected);
+        }
+
+        for statement_id in [point_id, in_id, between_id] {
+            session
+                .DropPreparedStmt(statement_id)
+                .expect("drop partition query");
         }
     });
 }
