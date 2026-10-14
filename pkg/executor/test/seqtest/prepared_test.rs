@@ -404,8 +404,9 @@ fn test_prepared_insert() {
 #[test]
 fn test_prepared_update() {
     let _serial = serial_sql_test();
+    let (store, _domain) = CreateMockStoreAndDomain();
     for enabled in [false, true] {
-        let mut tk = new_testkit();
+        let mut tk = NewTestKit(store.clone());
         set_plan_cache(&mut tk, enabled);
         tk.MustExec("use test", Vec::new());
         tk.MustExec("drop table if exists prepare_test", Vec::new());
