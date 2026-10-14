@@ -225,7 +225,7 @@ fn test_builtin_in_time_sig() {
 
 /// 验证数值表达式的 `IS TRUE`/`IS FALSE` 计划不会在跨会话缓存后混淆参数语义。
 fn run_is_true_false(column_type: &str, values: [&str; 2]) {
-    let mut harness = Harness::new();
+    let mut harness = Harness::new_for_test_database();
     exec(&mut harness.tk, "use test");
     exec(
         &mut harness.tk,
@@ -240,6 +240,8 @@ fn run_is_true_false(column_type: &str, values: [&str; 2]) {
     }
     run_concurrently(&harness.store, move |mut tk| {
         exec(&mut tk, "use test");
+        let mut statements = String::new();
+        let mut expected_rows = Vec::with_capacity(100);
         for _ in 0..100 {
             let index = rand::intn(2) as usize;
             let predicate = if rand::intn(2) == 0 {
@@ -247,18 +249,27 @@ fn run_is_true_false(column_type: &str, values: [&str; 2]) {
             } else {
                 "is false"
             };
-            exec(
-                &mut tk,
-                &format!("prepare st from 'select a from t where (a-?) {predicate}'"),
-            );
-            exec(&mut tk, &format!("set @p1={}", values[index]));
+            statements.push_str(&format!(
+                "prepare st from 'select a from t where (a-?) {predicate}'; set @p1={}; execute st using @p1;",
+                values[index],
+            ));
             // `a - ?` 对被绑定的值为零、对另一个值为非零，所以真假分支的期望行相反。
             let expected = if predicate == "is true" {
                 values[1 - index]
             } else {
                 values[index]
             };
-            query(&tk, "execute st using @p1").Check(rows(&[expected.to_owned()]));
+            expected_rows.push(rows(&[expected.to_owned()]));
+        }
+        // Preserve all 100 PREPARE/SET/EXECUTE cycles and their individual results while
+        // amortizing parser and session-owner channel overhead in one bounded batch.
+        let session = tk.Session();
+        let results = session
+            .QueryStatementBatch(&statements)
+            .expect("execute IS TRUE/FALSE statement batch");
+        assert_eq!(results.len(), expected_rows.len());
+        for (result, expected) in results.iter().zip(expected_rows) {
+            assert_eq!(result.string_rows(), expected);
         }
     });
 }
