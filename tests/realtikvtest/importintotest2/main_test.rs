@@ -47,6 +47,9 @@ fn test_main_updates_config_and_wraps_execution() {
     UpdateTiDBConfig();
     assert_eq!(config::GetGlobalConfig().Path, "127.0.0.1:2379");
 
+    // The Rust harness has no MVCCLevelDB process to close, so preserve the
+    // TestMain lifecycle without paying its production-only one-second wait.
+    set_mvcc_wait(Duration::ZERO);
     let mut main = TestMain::new(0);
     assert_eq!(RunTestMain(&mut main), 0);
     assert!(main.wrapped);
