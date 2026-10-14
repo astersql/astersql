@@ -198,18 +198,19 @@ use std::sync::Arc;
 use astersql_domain::Domain;
 use astersql_testkit::TestKit;
 
-/// 创建 CH suite 所需的 tpcc schema，并把每张表标记为可读 TiFlash 副本。
+/// 创建指定 CH case 所需的 tpcc schema，并把每张表标记为可读 TiFlash 副本。
 ///
 /// 这条接线对应 Go TestMain 的建表 helper：Q2/Q5 不能只在内存里拼 JoinPlan，
 /// 必须让真实 TestKit/Domain 看见同一组表元数据，才能执行 explain。
-pub(crate) fn setup_ch_schema() -> (Arc<Domain>, TestKit) {
+pub(crate) fn setup_ch_schema(case_name: &str) -> (Arc<Domain>, TestKit) {
     let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("create database if not exists tpcc", Vec::new());
     tk.MustExec("use tpcc", Vec::new());
 
-    tk.MustExec(
-        r#"CREATE TABLE customer (
+    if case_name == "TestQ5" {
+        tk.MustExec(
+            r#"CREATE TABLE customer (
           c_id int NOT NULL,
           c_d_id int NOT NULL,
           c_w_id int NOT NULL,
@@ -234,16 +235,19 @@ pub(crate) fn setup_ch_schema() -> (Arc<Domain>, TestKit) {
           PRIMARY KEY (c_w_id,c_d_id,c_id) /*T![clustered_index] NONCLUSTERED */,
           KEY idx_customer (c_w_id,c_d_id,c_last,c_first)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"#,
-        Vec::new(),
-    );
-    tk.MustExec(
-        r#"CREATE TABLE item (
+            Vec::new(),
+        );
+    }
+    if case_name == "TestQ2" {
+        tk.MustExec(
+            r#"CREATE TABLE item (
           i_id int NOT NULL, i_im_id int DEFAULT NULL, i_name varchar(24) DEFAULT NULL,
           i_price decimal(5,2) DEFAULT NULL, i_data varchar(50) DEFAULT NULL,
           PRIMARY KEY (i_id) /*T![clustered_index] CLUSTERED */
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"#,
-        Vec::new(),
-    );
+            Vec::new(),
+        );
+    }
     tk.MustExec(
         r#"CREATE TABLE nation (
           n_nationkey bigint NOT NULL, n_name char(25) NOT NULL, n_regionkey bigint NOT NULL,
@@ -252,26 +256,28 @@ pub(crate) fn setup_ch_schema() -> (Arc<Domain>, TestKit) {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"#,
         Vec::new(),
     );
-    tk.MustExec(
-        r#"CREATE TABLE orders (
+    if case_name == "TestQ5" {
+        tk.MustExec(
+            r#"CREATE TABLE orders (
           o_id int NOT NULL, o_d_id int NOT NULL, o_w_id int NOT NULL, o_c_id int DEFAULT NULL,
           o_entry_d datetime DEFAULT NULL, o_carrier_id int DEFAULT NULL,
           o_ol_cnt int DEFAULT NULL, o_all_local int DEFAULT NULL,
           PRIMARY KEY (o_w_id,o_d_id,o_id) /*T![clustered_index] NONCLUSTERED */,
           KEY idx_order (o_w_id,o_d_id,o_c_id,o_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"#,
-        Vec::new(),
-    );
-    tk.MustExec(
-        r#"CREATE TABLE order_line (
+            Vec::new(),
+        );
+        tk.MustExec(
+            r#"CREATE TABLE order_line (
           ol_o_id int NOT NULL, ol_d_id int NOT NULL, ol_w_id int NOT NULL,
           ol_number int NOT NULL, ol_i_id int NOT NULL, ol_supply_w_id int DEFAULT NULL,
           ol_delivery_d datetime DEFAULT NULL, ol_quantity int DEFAULT NULL,
           ol_amount decimal(6,2) DEFAULT NULL, ol_dist_info char(24) DEFAULT NULL,
           PRIMARY KEY (ol_w_id,ol_d_id,ol_o_id,ol_number) /*T![clustered_index] NONCLUSTERED */
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"#,
-        Vec::new(),
-    );
+            Vec::new(),
+        );
+    }
     tk.MustExec(
         r#"CREATE TABLE supplier (
           s_suppkey bigint NOT NULL, s_name char(25) NOT NULL, s_address varchar(40) NOT NULL,
@@ -304,16 +310,20 @@ pub(crate) fn setup_ch_schema() -> (Arc<Domain>, TestKit) {
         Vec::new(),
     );
 
-    for table in [
-        "customer",
-        "item",
-        "nation",
-        "orders",
-        "order_line",
-        "supplier",
-        "region",
-        "stock",
-    ] {
+    let tables: &[&str] = match case_name {
+        "TestQ2" => &["item", "nation", "region", "stock", "supplier"],
+        "TestQ5" => &[
+            "customer",
+            "nation",
+            "orders",
+            "order_line",
+            "supplier",
+            "region",
+            "stock",
+        ],
+        _ => panic!("unknown CH case {case_name}"),
+    };
+    for table in tables {
         domain
             .set_tiflash_replica_for_test("tpcc", table, 1, true)
             .unwrap_or_else(|error| panic!("set tpcc.{table} TiFlash replica: {error}"));

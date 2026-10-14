@@ -302,7 +302,7 @@ fn run_ch_explain_case(
     set_q2_selectivity: bool,
     cascades: bool,
 ) {
-    let (domain, mut tk) = super::main_test::setup_ch_schema();
+    let (domain, mut tk) = super::main_test::setup_ch_schema(case_name);
     if set_q2_selectivity {
         tk.MustExec(
             "set @@tidb_default_string_match_selectivity = 0.8",
