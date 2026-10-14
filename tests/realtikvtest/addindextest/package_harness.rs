@@ -38,6 +38,9 @@ pub fn run(cases: &[(&'static str, fn())]) -> std::process::ExitCode {
             })
         })
         .collect();
+    // Rust RealTiKV tests do not create Go's MVCCLevelDB, so its fixed
+    // one-second shutdown grace period has no resource to wait for here.
+    astersql_tests_realtikvtest::stubs::set_mvcc_wait(std::time::Duration::ZERO);
     let code = RunTestMainWith(|| {
         if libtest_mimic::run(&args, tests).has_failed() {
             1
