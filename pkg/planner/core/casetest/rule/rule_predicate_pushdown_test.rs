@@ -21,12 +21,12 @@
 
 use std::path::Path;
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::TestData;
 use astersql_testkit::{Rows, TestKit};
 
 fn new_testkit(cascades: bool) -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
