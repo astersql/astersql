@@ -10623,6 +10623,7 @@ dependencies = [
  "astersql-infoschema-issyncer-mdldef",
  "astersql-keyspace",
  "astersql-kv",
+ "astersql-meta-metadef",
  "astersql-meta-model",
  "astersql-parser-ast",
  "astersql-parser-auth",

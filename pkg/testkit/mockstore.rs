@@ -34,6 +34,7 @@ use astersql_domain::domain::CrossKeyspaceCoordinator;
 use astersql_domain::{
     AutoAnalyzeExecutor, Domain, DomainConfig, InfoSchemaLoader, KvInfoSchemaLoader, SQLKiller,
 };
+use astersql_meta_metadef::CreateUserTable;
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
     CreateUnbootstrappedAnalyzeSessionForTest, RegisterRuntimeTopology, RuntimeReplicaReadRequest,
@@ -2170,6 +2171,15 @@ pub fn CreateCrossKeyspaceTestCluster(keyspaces: &[(&str, bool)]) -> CrossKeyspa
         .into_iter()
         .map(|(keyspace, new_collation)| {
             let (store, domain) = CreatePlannerTestStoreAndDomain();
+            let bootstrap = store
+                .open_session()
+                .expect("create cross-keyspace bootstrap session");
+            bootstrap
+                .execute("CREATE DATABASE IF NOT EXISTS mysql", &[])
+                .expect("bootstrap cross-keyspace mysql database");
+            bootstrap
+                .execute(CreateUserTable, &[])
+                .expect("bootstrap cross-keyspace mysql.user table");
             domain.bind_cross_keyspace(Arc::clone(&coordinator), keyspace.clone(), new_collation);
             (keyspace, store)
         })

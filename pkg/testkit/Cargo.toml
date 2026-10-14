@@ -22,6 +22,7 @@ legacy-tasks = ["task-1290", "task-1291", "task-1294", "task-1497"]
 "astersql-keyspace" = { package = "astersql-keyspace", path = "../keyspace" }
 "astersql-kv" = { package = "astersql-kv", path = "../kv" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../meta/metadef" }
 "astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
 "astersql-parser-auth" = { package = "astersql-parser-auth", path = "../parser/auth" }
 "astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
