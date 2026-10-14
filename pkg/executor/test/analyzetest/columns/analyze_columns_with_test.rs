@@ -225,8 +225,10 @@ fn assert_no_analyze_leaks(testkit: &TestKit, store: &AnalyzeStatsStore) {
 #[test]
 /// 主键列即使未显式选择，也必须为主键统计自动补齐。
 fn TestAnalyzeColumnsWithPrimaryKey() {
+    let (store, _) = CreateMockStoreAndDomain();
     for choice in [ColumnChoice::List, ColumnChoice::Predicate] {
-        let (mut testkit, store) = setup(
+        let mut testkit = setup_with_store(
+            Arc::clone(&store),
             "create table t (a int, b int, c int primary key)",
             "insert into t values (1,1,1), (1,1,2), (2,2,3), (2,2,4), (3,3,5), \
              (4,3,6), (5,4,7), (6,4,8), (null,null,9)",

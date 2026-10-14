@@ -264,7 +264,22 @@ fn runtime_metadata_timestamps_follow_ddl_and_session_timezone() {
         .Rows()[0][0]
         .clone();
 
-    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    // Metadata timestamps are rendered with one-second precision. Wait only for
+    // the first representable instant after CREATE instead of an unconditional
+    // 1.1 seconds, while keeping the real DDL clock and publication path.
+    let create_millis = domain
+        .table_by_name("test", "timestamp_probe")
+        .expect("timestamp_probe metadata")
+        .UpdateTS
+        >> 18;
+    let next_display_second = (create_millis / 1_000 + 1) * 1_000;
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    std::thread::sleep(std::time::Duration::from_millis(
+        next_display_second.saturating_sub(now_millis) + 5,
+    ));
     testkit.MustExec(
         "alter table timestamp_probe modify c int default 11",
         Vec::new(),
