@@ -783,35 +783,50 @@ fn test_ordered_index_with_is_null() {
 
 #[test]
 fn test_partial_index_with_plan_cache() {
-    run_under_cascades(|_, tk| {
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec("set tidb_enable_prepared_plan_cache=1", Vec::new());
-        tk.MustExec("set tidb_enable_collect_execution_info=0", Vec::new());
-        tk.MustExec("create table t(a int, b int, index idx1(a) where a is not null, index idx2(b) where b > 10)", Vec::new());
-        tk.MustExec("insert into t values (1, 20), (2, 5)", Vec::new());
-
-        tk.MustExec(
-            "prepare stmt from 'select * from t where a = ?'",
-            Vec::new(),
-        );
-        tk.MustExec("set @a = 123", Vec::new());
-        tk.MustExec("execute stmt using @a", Vec::new());
-        tk.MustExec("execute stmt using @a", Vec::new());
-        assert_explain_uses_index(tk, "select * from t where a = 123", "idx1");
-        tk.MustExec("execute stmt using @a", Vec::new());
-        assert_query_rows(tk, "select @@last_plan_from_cache", &[&["1"]]);
-
-        tk.MustExec(
-            "prepare stmt from 'select * from t where b = ?'",
-            Vec::new(),
-        );
-        tk.MustExec("set @a = 20", Vec::new());
-        assert_query_rows(tk, "execute stmt using @a", &[&["1", "20"]]);
-        assert_query_rows(tk, "execute stmt using @a", &[&["1", "20"]]);
-        assert_explain_uses_index(tk, "select * from t where b = 20", "idx2");
-        tk.MustExec("execute stmt using @a", Vec::new());
-        assert_query_rows(tk, "select @@last_plan_from_cache", &[&["0"]]);
+    // Each planner mode owns an isolated store and domain, so their expensive setup can overlap.
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            scope.spawn(move || run_partial_index_with_plan_cache_round(cascades));
+        }
     });
+}
+
+fn run_partial_index_with_plan_cache_round(cascades: bool) {
+    let (_domain, mut tk) = new_testkit_with_domain();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        &format!(
+            "set @@tidb_enable_cascades_planner = {}",
+            if cascades { 1 } else { 0 }
+        ),
+        Vec::new(),
+    );
+    tk.MustExec("set tidb_enable_prepared_plan_cache=1", Vec::new());
+    tk.MustExec("set tidb_enable_collect_execution_info=0", Vec::new());
+    tk.MustExec("create table t(a int, b int, index idx1(a) where a is not null, index idx2(b) where b > 10)", Vec::new());
+    tk.MustExec("insert into t values (1, 20), (2, 5)", Vec::new());
+
+    tk.MustExec(
+        "prepare stmt from 'select * from t where a = ?'",
+        Vec::new(),
+    );
+    tk.MustExec("set @a = 123", Vec::new());
+    tk.MustExec("execute stmt using @a", Vec::new());
+    tk.MustExec("execute stmt using @a", Vec::new());
+    assert_explain_uses_index(&tk, "select * from t where a = 123", "idx1");
+    tk.MustExec("execute stmt using @a", Vec::new());
+    assert_query_rows(&tk, "select @@last_plan_from_cache", &[&["1"]]);
+
+    tk.MustExec(
+        "prepare stmt from 'select * from t where b = ?'",
+        Vec::new(),
+    );
+    tk.MustExec("set @a = 20", Vec::new());
+    assert_query_rows(&tk, "execute stmt using @a", &[&["1", "20"]]);
+    assert_query_rows(&tk, "execute stmt using @a", &[&["1", "20"]]);
+    assert_explain_uses_index(&tk, "select * from t where b = 20", "idx2");
+    tk.MustExec("execute stmt using @a", Vec::new());
+    assert_query_rows(&tk, "select @@last_plan_from_cache", &[&["0"]]);
 }
 
 #[test]
