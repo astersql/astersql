@@ -433,6 +433,7 @@ fn global_variable_init_domain_skips_claim_and_serving_domain_warns_once() {
     }
     struct Factory {
         client: Arc<MemoryEtcdClient>,
+        storage: Arc<astersql_domain::canonical_domain::StorageHandle>,
         next: std::sync::atomic::AtomicUsize,
     }
     impl DomainFactory for Factory {
@@ -452,7 +453,16 @@ fn global_variable_init_domain_skips_claim_and_serving_domain_warns_once() {
                     None
                 }
             );
-            let (domain, session) = super::runtime::CreateAnalyzeSession().unwrap();
+            let mut config = astersql_domain::DomainConfig::default();
+            config.schema_lease = std::time::Duration::ZERO;
+            config.stats_lease = std::time::Duration::ZERO;
+            let domain = Arc::new(astersql_domain::Domain::new_with_storage_handle(
+                self.storage.clone(),
+                Arc::new(astersql_domain::canonical_domain::KvInfoSchemaLoader::new()),
+                config,
+            ));
+            domain.init().unwrap();
+            let session = super::runtime::ConcreteSession::new(domain.clone());
             // Keep real, populated mysql metadata and SQL reads at this boundary.
             let mut result = session
                 .execute("SELECT VARIABLE_VALUE FROM mysql.tidb WHERE VARIABLE_NAME = 'system_tz'")
@@ -492,9 +502,16 @@ fn global_variable_init_domain_skips_claim_and_serving_domain_warns_once() {
             Some(0x123),
         )
         .unwrap();
+    // Bootstrap the shared store once, matching Go's repeated Domain startups on
+    // the same store instead of rebuilding mysql/sys metadata for every Domain.
+    let (bootstrapped, session) = super::runtime::CreateAnalyzeSession().unwrap();
+    let storage = bootstrapped.storage_handle();
+    drop(session);
+    bootstrapped.close();
     let map = domainMap::new(
         Arc::new(Factory {
             client: client.clone(),
+            storage,
             next: Default::default(),
         }),
         1,
