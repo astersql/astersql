@@ -478,7 +478,7 @@ fn test_stmt_summary_flush() {
         for digest in ["digest1", "digest2", "digest3"] {
             summary.Add(&GenerateStmtExecInfo4Test(digest));
         }
-        wait_until(Duration::from_secs(4), || summary.Len() == 0);
+        summary.rotateForTest();
     }
     for digest in ["digest1", "digest2", "digest3"] {
         summary.Add(&GenerateStmtExecInfo4Test(digest));
