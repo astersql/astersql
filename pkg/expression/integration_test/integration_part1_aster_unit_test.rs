@@ -61,30 +61,46 @@ fn new_vector_search_testkit(database: &str) -> TestKit {
 #[test]
 /// 16383 维 VECTOR 在无索引、建表索引、ALTER 索引三条路径完成 DML/搜索。
 fn TestVectorLong() {
+    use std::fmt::Write;
+
     fn gen_vec(dimensions: usize, start: i32) -> String {
-        let values = (0..dimensions)
-            .map(|offset| (start + offset as i32 * 100).to_string())
-            .collect::<Vec<_>>();
-        format!("[{}]", values.join(","))
+        let mut vector = String::with_capacity(dimensions * 8);
+        vector.push('[');
+        for offset in 0..dimensions {
+            if offset > 0 {
+                vector.push(',');
+            }
+            write!(vector, "{}", start + offset as i32 * 100).unwrap();
+        }
+        vector.push(']');
+        vector
     }
-    fn run_workload(tk: &mut TestKit) {
-        let vec100 = gen_vec(16_383, 100);
-        let vec200 = gen_vec(16_383, 200);
-        let vec300 = gen_vec(16_383, 300);
-        let vec500 = gen_vec(16_383, 500);
+
+    struct LongVectors {
+        vec50: String,
+        vec100: String,
+        vec180: String,
+        vec200: String,
+        vec300: String,
+        vec500: String,
+    }
+
+    fn run_workload(tk: &mut TestKit, vectors: &LongVectors) {
+        let LongVectors {
+            vec50,
+            vec100,
+            vec180,
+            vec200,
+            vec300,
+            vec500,
+        } = vectors;
         tk.MustExec(&format!("INSERT INTO t1 VALUES (1,'{vec100}')"), Vec::new());
         tk.MustQuery("SELECT * FROM t1 ORDER BY id", Vec::new())
             .Check(Rows(&[&format!("1 {vec100}")]));
-        tk.MustExec(
-            &format!("DELETE FROM t1 WHERE vec>'{}'", gen_vec(16_383, 200)),
-            Vec::new(),
-        );
+        tk.MustExec(&format!("DELETE FROM t1 WHERE vec>'{vec200}'"), Vec::new());
         tk.MustQuery("SELECT * FROM t1 ORDER BY id", Vec::new())
             .Check(Rows(&[&format!("1 {vec100}")]));
-        tk.MustExec(
-            &format!("DELETE FROM t1 WHERE vec>'{}'", gen_vec(16_383, 50)),
-            Vec::new(),
-        );
+        tk.MustExec(&format!("DELETE FROM t1 WHERE vec>'{vec50}'"), Vec::new());
         tk.MustQuery("SELECT * FROM t1 ORDER BY id", Vec::new())
             .Check(Vec::<Vec<&str>>::new());
         for (id, value) in [(1, &vec100), (2, &vec200), (3, &vec300)] {
@@ -94,10 +110,7 @@ fn TestVectorLong() {
             );
         }
         tk.MustQuery(
-            &format!(
-                "SELECT id FROM t1 ORDER BY VEC_L2_DISTANCE(vec,'{}') LIMIT 2",
-                gen_vec(16_383, 180)
-            ),
+            &format!("SELECT id FROM t1 ORDER BY VEC_L2_DISTANCE(vec,'{vec180}') LIMIT 2"),
             Vec::new(),
         )
         .Check(Rows(&["2", "1"]));
@@ -112,10 +125,7 @@ fn TestVectorLong() {
                 &format!("3 {vec300}"),
             ]));
         tk.MustQuery(
-            &format!(
-                "SELECT id FROM t1 ORDER BY VEC_L2_DISTANCE(vec,'{}') LIMIT 2",
-                gen_vec(16_383, 180)
-            ),
+            &format!("SELECT id FROM t1 ORDER BY VEC_L2_DISTANCE(vec,'{vec180}') LIMIT 2"),
             Vec::new(),
         )
         .Check(Rows(&["2", "3"]));
@@ -123,12 +133,20 @@ fn TestVectorLong() {
 
     assert!(CheckVectorDimValid(16_383).is_ok());
     assert!(CheckVectorDimValid(16_384).is_err());
+    let vectors = LongVectors {
+        vec50: gen_vec(16_383, 50),
+        vec100: gen_vec(16_383, 100),
+        vec180: gen_vec(16_383, 180),
+        vec200: gen_vec(16_383, 200),
+        vec300: gen_vec(16_383, 300),
+        vec500: gen_vec(16_383, 500),
+    };
     let mut tk = new_testkit();
     tk.MustExec(
         "CREATE TABLE t1(id INT PRIMARY KEY,vec VECTOR(16383))",
         Vec::new(),
     );
-    run_workload(&mut tk);
+    run_workload(&mut tk, &vectors);
     tk.MustExec("DROP TABLE t1", Vec::new());
 
     tk.MustExec(
@@ -136,7 +154,7 @@ fn TestVectorLong() {
          VECTOR INDEX((VEC_COSINE_DISTANCE(vec))))",
         Vec::new(),
     );
-    run_workload(&mut tk);
+    run_workload(&mut tk, &vectors);
     tk.MustExec("DROP TABLE t1", Vec::new());
 
     tk.MustExec(
@@ -148,7 +166,7 @@ fn TestVectorLong() {
         "ALTER TABLE t1 ADD VECTOR INDEX((VEC_COSINE_DISTANCE(vec)))",
         Vec::new(),
     );
-    run_workload(&mut tk);
+    run_workload(&mut tk, &vectors);
     tk.MustExec("DROP TABLE t1", Vec::new());
 }
 
