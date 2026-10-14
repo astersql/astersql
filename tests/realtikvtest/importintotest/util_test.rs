@@ -36,7 +36,7 @@
 
 use astersql_tests_realtikvtest_importintotest::harness::{
     MockGCSSuite, RunTestMain, TestMain, gcs_endpoint, max_wait_time, prepare_and_use_db,
-    reset_engine, serial_guard, vardef,
+    reset_engine, serial_guard, set_mvcc_wait, vardef,
 };
 use std::time::Duration;
 
@@ -45,6 +45,9 @@ use std::time::Duration;
 fn test_import_into_suite_fixtures() {
     let _serial = serial_guard();
     reset_engine();
+    // This in-process Rust harness has no MVCCLevelDB to close. Keep the
+    // TestMain lifecycle while skipping its production-only one-second wait.
+    set_mvcc_wait(Duration::ZERO);
     let _ = RunTestMain(&mut TestMain::new(0));
     let s = MockGCSSuite::setup();
     assert!(gcs_endpoint().starts_with("http://127.0.0.1:4443"));
