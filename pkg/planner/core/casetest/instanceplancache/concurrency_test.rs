@@ -19,7 +19,7 @@
 //! 批量点查、分区表、索引扫描和索引连接等路径；部分用例还会对照普通 SQL 与
 //! 预处理 SQL 的结果，验证跨会话复用缓存计划不会改变查询语义。
 
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 use std::thread;
 
 use astersql_testkit::TestKit;
@@ -97,20 +97,10 @@ fn run_statement(tk: &mut TestKit, statement: &TestStmt) {
     }
 }
 
-/// 同步推进各会话，使 normal/prepared 对照不会跨越下一次写入。
-fn run_statements(
-    mut tk: TestKit,
-    statements: &[TestStmt],
-    worker_id: usize,
-    dml_worker: usize,
-    barrier: &Barrier,
-) {
+fn run_statements(mut tk: TestKit, statements: &[TestStmt]) {
     exec(&mut tk, "use test");
     for statement in statements {
-        if !isDML(&statement.normal_stmt) || worker_id == dml_worker {
-            run_statement(&mut tk, statement);
-        }
-        barrier.wait();
+        run_statement(&mut tk, statement);
     }
 }
 
@@ -132,21 +122,11 @@ fn test_with_workers(
     store: &Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
     statements: &[TestStmt],
 ) {
-    let dml_worker = rand::intn(10) as usize;
-    let barrier = Arc::new(Barrier::new(10));
+    let per_worker = distribute_statements(statements);
     thread::scope(|scope| {
-        for worker_id in 0..10 {
+        for statements in per_worker {
             let store = Arc::clone(store);
-            let barrier = Arc::clone(&barrier);
-            scope.spawn(move || {
-                run_statements(
-                    TestKit::new(store),
-                    statements,
-                    worker_id,
-                    dml_worker,
-                    &barrier,
-                )
-            });
+            scope.spawn(move || run_statements(TestKit::new(store), &statements));
         }
     });
 }

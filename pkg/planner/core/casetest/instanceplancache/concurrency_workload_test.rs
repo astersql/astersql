@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{TestStmt, dql_execution_sql};
+use astersql_testkit::TestKit;
+
+use super::{Harness, TestStmt, dql_execution_sql, exec, query};
 
 #[test]
 fn dql_execution_matches_go_worker_sequence() {
@@ -32,4 +34,41 @@ fn dql_execution_matches_go_worker_sequence() {
             statement.exec_stmt.as_str(),
         ]
     );
+}
+
+#[test]
+fn prepared_aggregate_keeps_the_explicit_transaction_snapshot() {
+    let mut harness = Harness::new();
+    exec(&mut harness.tk, "create database normal");
+    exec(&mut harness.tk, "create database prepared");
+    for database in ["normal", "prepared"] {
+        exec(
+            &mut harness.tk,
+            &format!("create table {database}.t (a int, b int, key(a, b))"),
+        );
+    }
+
+    let mut reader = TestKit::new(harness.store.clone());
+    let mut writer = TestKit::new(harness.store.clone());
+    exec(&mut reader, "begin");
+    query(
+        &reader,
+        "select sum(a),b from normal.t where a>0 group by b",
+    )
+    .Check(Vec::<Vec<String>>::new());
+    exec(&mut writer, "begin");
+    exec(&mut writer, "insert into normal.t values (1,2)");
+    exec(
+        &mut writer,
+        "prepare st from 'insert into prepared.t values (?,?)'",
+    );
+    exec(&mut writer, "set @a=1,@b=2");
+    exec(&mut writer, "execute st using @a,@b");
+    exec(&mut writer, "commit");
+    exec(
+        &mut reader,
+        "prepare st from 'select sum(a),b from prepared.t where a>? group by b'",
+    );
+    exec(&mut reader, "set @a=0");
+    query(&reader, "execute st using @a").Check(Vec::<Vec<String>>::new());
 }

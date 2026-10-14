@@ -467,14 +467,14 @@ impl ConcreteSession {
             .filter(|column| !column.Hidden)
             .map(|column| column.Name.L.clone())
             .collect::<Vec<_>>();
-        let rows = (if self.state.borrow().transaction.is_some() {
-            self.scan_latest_with_transaction_overlay(&table)
-        } else {
-            self.scan_registered_table(&table)
-        })?
-        .into_iter()
-        .map(|(_, row)| row)
-        .collect::<Vec<_>>();
+        // Use the common scan entry so repeatable-read transactions stay on
+        // their start snapshot. It selects the latest+overlay path itself only
+        // for READ COMMITTED, matching the ordinary relational SELECT path.
+        let rows = self
+            .scan_registered_table(&table)?
+            .into_iter()
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>();
         let qualifier = if source.AsName.L.is_empty() {
             source.Source.Name.L.as_str()
         } else {
