@@ -19,7 +19,7 @@
 //! 批量点查、分区表、索引扫描和索引连接等路径；部分用例还会对照普通 SQL 与
 //! 预处理 SQL 的结果，验证跨会话复用缓存计划不会改变查询语义。
 
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use astersql_testkit::TestKit;
@@ -73,55 +73,80 @@ where
     });
 }
 
-/// 顺序执行一组对照语句，并核验普通 SQL 与预处理 SQL 的结果一致。
-fn run_statements(mut tk: TestKit, statements: &[TestStmt]) {
-    exec(&mut tk, "use test");
-    for statement in statements {
-        if isTxn(&statement.normal_stmt) {
-            exec(&mut tk, &statement.normal_stmt);
-        } else if isDQL(&statement.normal_stmt) {
-            let mut stable_result = None;
-            for _ in 0..32 {
-                let mut expected = query(&tk, &statement.normal_stmt);
-                exec(&mut tk, &statement.prep_stmt);
-                exec(&mut tk, &statement.set_stmt);
-                let mut actual = query(&tk, &statement.exec_stmt);
-                let mut confirmed = query(&tk, &statement.normal_stmt);
-                expected.Sort();
-                actual.Sort();
-                confirmed.Sort();
-                if expected.Equal(confirmed.Rows()) {
-                    stable_result = Some((expected, actual));
-                    break;
-                }
-                thread::yield_now();
-            }
-            let (mut expected, actual) = stable_result
-                .unwrap_or_else(|| panic!("normal query did not reach a stable visibility window"));
-            expected.AddComment(&format!(
-                "normal SQL: {}; prepared SQL: {}; bindings: {}",
-                statement.normal_stmt, statement.prep_stmt, statement.set_stmt
-            ));
-            expected.Check(actual.Rows());
-        } else if isDML(&statement.normal_stmt) {
-            exec(&mut tk, &statement.normal_stmt);
-            exec(&mut tk, &statement.prep_stmt);
-            exec(&mut tk, &statement.set_stmt);
-            exec(&mut tk, &statement.exec_stmt);
-        }
+fn run_statement(tk: &mut TestKit, statement: &TestStmt) {
+    if isTxn(&statement.normal_stmt) {
+        exec(tk, &statement.normal_stmt);
+    } else if isDQL(&statement.normal_stmt) {
+        let [normal, prepare, set, execute] = dql_execution_sql(statement);
+        let mut expected = query(tk, normal);
+        exec(tk, prepare);
+        exec(tk, set);
+        let mut actual = query(tk, execute);
+        expected.Sort();
+        actual.Sort();
+        expected.AddComment(&format!(
+            "normal SQL: {}; prepared SQL: {}; bindings: {}",
+            statement.normal_stmt, statement.prep_stmt, statement.set_stmt
+        ));
+        expected.Check(actual.Rows());
+    } else if isDML(&statement.normal_stmt) {
+        exec(tk, &statement.normal_stmt);
+        exec(tk, &statement.prep_stmt);
+        exec(tk, &statement.set_stmt);
+        exec(tk, &statement.exec_stmt);
     }
 }
+
+/// 同步推进各会话，使 normal/prepared 对照不会跨越下一次写入。
+fn run_statements(
+    mut tk: TestKit,
+    statements: &[TestStmt],
+    worker_id: usize,
+    dml_worker: usize,
+    barrier: &Barrier,
+) {
+    exec(&mut tk, "use test");
+    for statement in statements {
+        if !isDML(&statement.normal_stmt) || worker_id == dml_worker {
+            run_statement(&mut tk, statement);
+        }
+        barrier.wait();
+    }
+}
+
+fn dql_execution_sql(statement: &TestStmt) -> [&str; 4] {
+    [
+        &statement.normal_stmt,
+        &statement.prep_stmt,
+        &statement.set_stmt,
+        &statement.exec_stmt,
+    ]
+}
+
+#[cfg(test)]
+#[path = "concurrency_workload_test.rs"]
+mod workload_tests;
 
 /// 与 Go `testWithWorkers` 一致：DML 只交给一个随机会话，查询和事务边界广播给全部会话。
 fn test_with_workers(
     store: &Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
     statements: &[TestStmt],
 ) {
-    let per_worker = distribute_statements(statements);
+    let dml_worker = rand::intn(10) as usize;
+    let barrier = Arc::new(Barrier::new(10));
     thread::scope(|scope| {
-        for statements in per_worker {
+        for worker_id in 0..10 {
             let store = Arc::clone(store);
-            scope.spawn(move || run_statements(TestKit::new(store), &statements));
+            let barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                run_statements(
+                    TestKit::new(store),
+                    statements,
+                    worker_id,
+                    dml_worker,
+                    &barrier,
+                )
+            });
         }
     });
 }
