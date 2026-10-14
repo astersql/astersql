@@ -129,6 +129,30 @@ fn run_suite_cases(
     }
 }
 
+fn run_suite_cases_in_parallel_modes(
+    suite: &astersql_testkit::testdata::TestData,
+    name: &str,
+    integration: bool,
+    setup: fn(&mut TestKit),
+) {
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            scope.spawn(move || {
+                let mut tk = new_testkit();
+                tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner = {}",
+                        if cascades { 1 } else { 0 }
+                    ),
+                    Vec::new(),
+                );
+                setup(&mut tk);
+                run_suite_cases_for_mode(suite, name, integration, cascades, &tk);
+            });
+        }
+    });
+}
+
 macro_rules! assert_suite_case {
     ($tk:expr, $name:expr, $integration:expr, $sql:expr, $expected:expr) => {{
         let sql = $sql.as_str().expect("suite SQL must be text");
@@ -729,7 +753,7 @@ fn test_range_intersection() {
 #[test]
 fn test_row_function_match_the_index_range_scan() {
     let suite = load_suite("integration_suite");
-    run_suite_cases(
+    run_suite_cases_in_parallel_modes(
         &suite,
         "TestRowFunctionMatchTheIndexRangeScan",
         true,
