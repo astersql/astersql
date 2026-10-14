@@ -19,13 +19,6 @@ use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::testdata::{ConvertRowsToStrings, TestData};
 use astersql_testkit::{Rows, TestKit};
 
-fn new_test_kit(cascades: bool) -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
-    let mut test_kit = TestKit::new(store);
-    configure_test_kit(&mut test_kit, cascades);
-    test_kit
-}
-
 fn configure_test_kit(test_kit: &mut TestKit, cascades: bool) {
     test_kit.MustExec("use test", Vec::new());
     test_kit.MustExec(
@@ -146,8 +139,15 @@ fn outer_to_semi_go_golden_cases_execute_in_both_planners() {
 /// Go issue #58829: both hint paths must permit IndexHashJoin.
 #[test]
 fn semi_join_rewrite_hint_matches_go() {
+    let (store, _domain) = CreateMockStoreAndDomain();
+
     for cascades in [false, true] {
-        let mut test_kit = new_test_kit(cascades);
+        // Match the Go cascades subtests with independent sessions while avoiding a
+        // second immutable mock store/Domain bootstrap. Recreate the tables so each
+        // planner mode still begins from the same schema and data state.
+        let mut test_kit = TestKit::new(store.clone());
+        configure_test_kit(&mut test_kit, cascades);
+        test_kit.MustExec("drop table if exists t1, t2", Vec::new());
         test_kit.MustExec(
             "create table t1 (id varchar(64) not null, key(id))",
             Vec::new(),
