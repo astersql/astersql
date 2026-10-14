@@ -620,25 +620,46 @@ fn run_range_intersection_cases(
         ),
         Vec::new(),
     );
-    let mut statements = String::new();
+    let mut statements = Vec::new();
     for (sql, expected) in input.iter().zip(output) {
         let sql = sql.as_str().expect("suite SQL must be text");
-        statements.push_str(&format!("explain format = 'plan_tree' {sql};"));
+        statements.push((
+            "set @astersql_range_intersection_batch = 1".to_owned(),
+            format!("explain format = 'plan_tree' {sql}"),
+        ));
         if expected
             .get("Result")
             .and_then(|value| value.as_array())
             .is_some()
         {
-            statements.push_str(sql);
-            statements.push(';');
+            statements.push((
+                "set @astersql_range_intersection_batch = 1".to_owned(),
+                sql.to_owned(),
+            ));
         }
     }
     let results = tk
         .Session()
-        .QueryStatementBatch(&statements)
+        .QueryStatementPairs(&statements)
         .unwrap_or_else(|error| {
-            panic!("run TestRangeIntersection ({cascades}) statement batch: {error}")
+            panic!("run TestRangeIntersection ({cascades}) statement pairs: {error}")
         });
+    let expected_result_sets = output
+        .iter()
+        .map(|expected| {
+            1 + usize::from(
+                expected
+                    .get("Result")
+                    .and_then(|value| value.as_array())
+                    .is_some(),
+            )
+        })
+        .sum::<usize>();
+    assert_eq!(
+        results.len(),
+        expected_result_sets,
+        "TestRangeIntersection ({cascades}) result sets"
+    );
 
     let mut result_index = 0;
     for (sql, expected) in input.iter().zip(output) {
