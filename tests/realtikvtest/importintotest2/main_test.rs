@@ -32,9 +32,11 @@
 
 //! Go-equivalent suite lifecycle for `main_test.go`.
 
+use std::time::Duration;
+
 use astersql_tests_realtikvtest_importintotest::harness::{
     MockGCSSuite, RunTestMain, TestMain, UpdateTiDBConfig, config, gcs_endpoint, reset_engine,
-    serial_guard,
+    serial_guard, set_mvcc_wait,
 };
 
 #[test]
@@ -54,6 +56,9 @@ fn test_main_updates_config_and_wraps_execution() {
 fn test_import_into_suite_setup_teardown_and_helpers() {
     let _serial = serial_guard();
     reset_engine();
+    // The Rust harness has no MVCCLevelDB process to close, so preserve the
+    // TestMain lifecycle without paying its production-only one-second wait.
+    set_mvcc_wait(Duration::ZERO);
     let _ = RunTestMain(&mut TestMain::new(0));
     let s = MockGCSSuite::setup();
     assert_eq!(gcs_endpoint(), "http://127.0.0.1:4443/storage/v1/");

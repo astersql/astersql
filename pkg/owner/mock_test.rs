@@ -26,4 +26,21 @@ async fn mock_owner_op_value_is_process_global_like_go() {
 
     first.Close().await;
     second.Close().await;
+
+    let first = NewMockManager(ctx.child_token(), "first", None, "/owner/handoff");
+    let second = NewMockManager(ctx.child_token(), "second", None, "/owner/handoff");
+    first.CampaignOwner(&[]).await.unwrap();
+    second.CampaignOwner(&[]).await.unwrap();
+    assert!(first.IsOwner());
+    assert!(!second.IsOwner());
+
+    first.Close().await;
+    tokio::time::timeout(std::time::Duration::from_millis(200), async {
+        while !second.IsOwner() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("closing the owner should wake a waiting mock election");
+    second.Close().await;
 }

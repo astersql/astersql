@@ -1139,7 +1139,9 @@ use std::time::{Duration, Instant};
 #[path = "job_runtime.rs"]
 mod job_runtime;
 
-pub use astersql_tests_realtikvtest::stubs::{Domain, Storage, TestCtx, TestMain, config};
+pub use astersql_tests_realtikvtest::stubs::{
+    Domain, Storage, TestCtx, TestMain, config, set_mvcc_wait,
+};
 pub use astersql_tests_realtikvtest::{
     CreateMockStoreAndSetup, KSRuntime, PrepareForCrossKSTest,
     PrepareForCrossKSTestWithNewCollation, RunTestMain, SetupTestMain, UpdateTiDBConfig,
