@@ -23,7 +23,7 @@ use astersql_planner_core::rule_join_reorder::{JoinNode, JoinPlan};
 use astersql_planner_core::task::{Expression, JoinType};
 use astersql_testkit::Rows;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 
 fn outer_leaf(id: usize, schema: Vec<usize>) -> JoinPlan {
     JoinPlan {
@@ -109,7 +109,7 @@ fn window_subquery_suite_inventory_matches_go() {
 
 fn testkit() -> TestKit {
     astersql_testkit_testsetup::SetupForCommonTest();
-    let (store, _) = CreateMockStoreAndDomain();
+    let (store, _) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk
