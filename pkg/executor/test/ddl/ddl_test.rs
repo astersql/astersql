@@ -715,9 +715,11 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint primary key clustered auto_random(15), b int)",
         Vec::new(),
     );
-    for i in 0..100 {
-        tk.MustExec(&format!("insert into t(b) values ({i})"), Vec::new());
-    }
+    let values = (0..100)
+        .map(|i| format!("({i})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(&format!("insert into t(b) values {values}"), Vec::new());
     let handles = tk
         .MustQuery("select a from t order by a", Vec::new())
         .Rows()
@@ -739,12 +741,11 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint primary key clustered auto_random(15), b int)",
         Vec::new(),
     );
-    for i in -10..10 {
-        tk.MustExec(
-            &format!("insert into t values ({}, {i})", upper + i),
-            Vec::new(),
-        );
-    }
+    let values = (-10..10)
+        .map(|i| format!("({}, {i})", upper + i))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(&format!("insert into t values {values}"), Vec::new());
     tk.MustContainErrMsg(
         "insert into t (b) values (0)",
         "Failed to read auto-random value",
@@ -788,13 +789,22 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint primary key auto_random(15), b int)",
         Vec::new(),
     );
-    for i in 1..=100 {
-        tk.MustExec(&format!("insert into t(b) values ({i})"), Vec::new());
-        tk.MustExec(
-            &format!("insert into t(a,b) values ({}, {i})", -i),
-            Vec::new(),
-        );
-    }
+    let generated_values = (1..=100)
+        .map(|i| format!("({i})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(
+        &format!("insert into t(b) values {generated_values}"),
+        Vec::new(),
+    );
+    let negative_values = (1..=100)
+        .map(|i| format!("({}, {i})", -i))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(
+        &format!("insert into t(a,b) values {negative_values}"),
+        Vec::new(),
+    );
     let mut signed_handles = tk
         .MustQuery("select a from t", Vec::new())
         .Rows()
@@ -819,9 +829,11 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint primary key auto_random(10), b int)",
         Vec::new(),
     );
-    for i in 0..100 {
-        tk.MustExec(&format!("insert into t(b) values ({i})"), Vec::new());
-    }
+    let values = (0..100)
+        .map(|i| format!("({i})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(&format!("insert into t(b) values {values}"), Vec::new());
     assert!(
         tk.MustQuery("select a from t", Vec::new())
             .Rows()
@@ -834,9 +846,11 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint unsigned primary key auto_random(10), b int)",
         Vec::new(),
     );
-    for i in 0..100 {
-        tk.MustExec(&format!("insert into t(b) values ({i})"), Vec::new());
-    }
+    let values = (0..100)
+        .map(|i| format!("({i})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(&format!("insert into t(b) values {values}"), Vec::new());
     assert!(
         tk.MustQuery("select a from t", Vec::new())
             .Rows()
@@ -849,27 +863,28 @@ fn test_auto_random_bits_data() {
         "create table t (a bigint auto_random primary key)",
         Vec::new(),
     );
-    for _ in 0..10 {
-        tk.MustExec("insert into t values ()", Vec::new());
-    }
+    let ten_empty_rows = std::iter::repeat_n("()", 10).collect::<Vec<_>>().join(",");
+    tk.MustExec(
+        &format!("insert into t values {ten_empty_rows}"),
+        Vec::new(),
+    );
     tk.MustExec("create database test_auto_random_bits_rename", Vec::new());
     tk.MustExec(
         "alter table t rename to test_auto_random_bits_rename.t1",
         Vec::new(),
     );
-    for _ in 0..10 {
-        tk.MustExec(
-            "insert into test_auto_random_bits_rename.t1 values ()",
-            Vec::new(),
-        );
-    }
+    tk.MustExec(
+        &format!("insert into test_auto_random_bits_rename.t1 values {ten_empty_rows}"),
+        Vec::new(),
+    );
     tk.MustExec(
         "alter table test_auto_random_bits_rename.t1 rename to t",
         Vec::new(),
     );
-    for _ in 0..10 {
-        tk.MustExec("insert into t values ()", Vec::new());
-    }
+    tk.MustExec(
+        &format!("insert into t values {ten_empty_rows}"),
+        Vec::new(),
+    );
     let unique_incremental = tk
         .MustQuery("select a from t", Vec::new())
         .Rows()
