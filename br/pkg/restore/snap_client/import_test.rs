@@ -863,6 +863,26 @@ impl ImporterClient for RetryDownloadClient {
     }
 }
 
+fn set_zero_delay_download_backoff(importer: &mut crate::import::SnapFileImporter) {
+    importer.SetDownloadBackoffFactory(Arc::new(|peer_retry| {
+        use astersql_br_pkg_utils::backoff::{
+            NewDownloadSSTBackoffStrategyWithOptions, NewPeerDownloadSSTBackoffStrategyWithOptions,
+            WithDelayTime, WithMaxDelayTime,
+        };
+        let options = || {
+            vec![
+                WithDelayTime(Duration::ZERO),
+                WithMaxDelayTime(Duration::ZERO),
+            ]
+        };
+        if peer_retry {
+            NewPeerDownloadSSTBackoffStrategyWithOptions(options())
+        } else {
+            NewDownloadSSTBackoffStrategyWithOptions(options())
+        }
+    }));
+}
+
 fn retry_importer(
     supported: bool,
     probe_error: bool,
@@ -917,23 +937,7 @@ fn retry_importer(
     );
     let mut importer =
         NewSnapFileImporter(&Context::Background(), 1, KvMode::TiDBCompacted, opt).unwrap();
-    importer.SetDownloadBackoffFactory(Arc::new(|peer_retry| {
-        use astersql_br_pkg_utils::backoff::{
-            NewDownloadSSTBackoffStrategyWithOptions, NewPeerDownloadSSTBackoffStrategyWithOptions,
-            WithDelayTime, WithMaxDelayTime,
-        };
-        let options = || {
-            vec![
-                WithDelayTime(Duration::ZERO),
-                WithMaxDelayTime(Duration::ZERO),
-            ]
-        };
-        if peer_retry {
-            NewPeerDownloadSSTBackoffStrategyWithOptions(options())
-        } else {
-            NewDownloadSSTBackoffStrategyWithOptions(options())
-        }
-    }));
+    set_zero_delay_download_backoff(&mut importer);
     (importer, rpc)
 }
 
@@ -1051,6 +1055,7 @@ fn test_snapshot_client_factory_probes_peer_retry_and_falls_back_on_probe_error(
                 vec![],
             )
             .unwrap();
+        set_zero_delay_download_backoff(client.importer.as_mut().unwrap());
         assert_eq!(*rpc.probed.lock().unwrap(), vec![1]);
         let result = client
             .importer
