@@ -261,12 +261,12 @@ fn cancel_packet(addr: std::net::SocketAddr, key: &[u8]) {
 }
 #[test]
 fn startup_cancel_is_scoped_and_consumed() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     for version in [196608, 196610] {
-        cancel_is_scoped_and_consumed(version);
+        cancel_is_scoped_and_consumed(version, domain.clone());
     }
 }
-fn cancel_is_scoped_and_consumed(version: u32) {
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+fn cancel_is_scoped_and_consumed(version: u32, domain: Arc<astersql_domain::Domain>) {
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,
