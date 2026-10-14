@@ -2656,6 +2656,8 @@ fn masking_policy_serving_factory_backfills_named_keyspace() {
 }
 
 fn serving_factory_modify(named: bool) {
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
     let _dist = DistTaskConfiguration(astersql_sessionctx_vardef::EnableDistTask.Load());
     if named {
         astersql_sessionctx_vardef::EnableDistTask.Store(true);
