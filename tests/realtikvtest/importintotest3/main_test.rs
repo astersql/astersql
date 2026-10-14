@@ -66,7 +66,6 @@ fn test_main() {
 fn test_import_into_suite_fixtures() {
     let _serial = serial_guard();
     reset_engine();
-    let _ = RunTestMain(&mut TestMain::new(0));
     let s = MockGCSSuite::setup();
     assert_eq!(s.server.uri_endpoint, gcs_endpoint());
     s.prepare_and_use_db("fixture_db");
