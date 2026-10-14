@@ -843,6 +843,8 @@ fn masking_policy_sql_change_column_uses_persistent_worker() {
 #[test]
 fn masking_policy_sql_table_actions_use_persistent_worker() {
     let _resources = LabelResources::new();
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
     let f = Fixture::new();
     seed_policy(&f, 9606);
     let _service = install_service(&f);
