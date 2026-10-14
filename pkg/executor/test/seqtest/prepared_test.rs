@@ -295,8 +295,9 @@ fn test_prepared() {
 #[test]
 fn test_prepared_limit_offset() {
     let _serial = serial_sql_test();
+    let (store, _domain) = CreateMockStoreAndDomain();
     for enabled in [false, true] {
-        let mut tk = new_testkit();
+        let mut tk = NewTestKit(store.clone());
         set_plan_cache(&mut tk, enabled);
         create_prepared_fixture(&mut tk);
         tk.MustExec(
