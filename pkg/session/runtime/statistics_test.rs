@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::runtime::CreateAnalyzeSession;
+use crate::runtime::{CreateAnalyzeSession, CreateUnbootstrappedAnalyzeSessionForTest};
 use crate::testutil::TestRecordSet;
 
 #[test]
@@ -379,8 +379,11 @@ fn combined_merge_sql_100010_rows_seven_partitions() {
 
 #[test]
 fn combined_merge_sql_53_partitions_diverse_distributions_repeatable() {
-    let (_domain, session) = CreateAnalyzeSession().unwrap();
+    let (_domain, session) = CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
     for sql in [
+        "create database mysql",
+        astersql_meta_metadef::CreateAnalyzeOptionsTable,
+        "create database test",
         "use test",
         "set tidb_partition_prune_mode='dynamic'",
         "set tidb_analyze_version=2",
