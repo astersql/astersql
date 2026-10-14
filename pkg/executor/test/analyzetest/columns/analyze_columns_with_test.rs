@@ -37,8 +37,20 @@ fn setup(
     partition_mode: Option<&str>,
 ) -> (TestKit, Arc<AnalyzeStatsStore>) {
     let (store, _) = CreateMockStoreAndDomain();
+    let testkit = setup_with_store(Arc::clone(&store), create, insert, partition_mode);
+    (testkit, store)
+}
+
+/// 在已有真实 Domain 上创建独立会话，并重建用例的全部表状态。
+fn setup_with_store(
+    store: Arc<AnalyzeStatsStore>,
+    create: &str,
+    insert: &str,
+    partition_mode: Option<&str>,
+) -> TestKit {
     let mut testkit = TestKit::new(store.clone());
     testkit.MustExec("use test", Vec::new());
+    testkit.MustExec("drop table if exists t", Vec::new());
     testkit.MustExec("set @@tidb_analyze_version = 2", Vec::new());
     if let Some(mode) = partition_mode {
         testkit.MustExec(
@@ -49,7 +61,7 @@ fn setup(
     testkit.MustExec(create, Vec::new());
     testkit.MustExec(insert, Vec::new());
     testkit.MustExec("flush stats_delta *.*", Vec::new());
-    (testkit, store)
+    testkit
 }
 
 /// 从指定的列选择方式触发分析，并验证分析前的提示或谓词列使用记录。
@@ -697,8 +709,10 @@ fn TestAnalyzeColumnsWithStaticPartitionTable() {
 #[test]
 /// 虚拟列索引可由基列值构造索引统计，但虚拟列本身不计入已分析列记录。
 fn TestAnalyzeColumnsWithVirtualColumnIndex() {
+    let (store, _) = CreateMockStoreAndDomain();
     for choice in [ColumnChoice::List, ColumnChoice::Predicate] {
-        let (mut testkit, store) = setup(
+        let mut testkit = setup_with_store(
+            Arc::clone(&store),
             "create table t (a int, b int, c int as (b+1), index idx(c))",
             "insert into t (a,b) values (1,1), (2,2), (3,3), (4,4), (5,4), \
              (6,5), (7,5), (8,5), (null,null)",
