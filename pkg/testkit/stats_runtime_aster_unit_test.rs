@@ -19,7 +19,10 @@
 // 类型化桶、SHOW 过滤、分区动态/静态裁剪、历史 dump/GC、
 // 批保存失败原子性与并发度设置等。
 
-use crate::mockstore::{CreateAnalyzeStatsStore, CreateMockStoreAndDomain};
+use crate::mockstore::{
+    CreateAnalyzeStatsStore, CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest,
+    CreateMockStoreAndDomain,
+};
 use crate::{DbValue, TestKit};
 use astersql_session::testutil::TestSession;
 
@@ -831,7 +834,7 @@ fn publish_rejects_unknown_profile_without_partial_cache_history_or_jobs() {
 /// 动态分区 ANALYZE 使用请求的生产 worker 并发度。
 #[test]
 fn dynamic_partition_analyze_uses_requested_production_worker_concurrency() {
-    let store = CreateAnalyzeStatsStore();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = TestKit::new(store);
     testkit.MustExec(
         "create table parallel_t(a int) partition by hash(a) partitions 4",
