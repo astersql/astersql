@@ -454,7 +454,7 @@ fn test_issue21884() {
     let first = tk
         .MustQuery("select last_update_time from prepare_test", Vec::new())
         .Rows();
-    thread::sleep(Duration::from_millis(1_100));
+    thread::sleep(Duration::from_secs(1));
     tk.MustExec("execute update_time_stmt using @status", Vec::new());
     let second = tk
         .MustQuery("select last_update_time from prepare_test", Vec::new())
