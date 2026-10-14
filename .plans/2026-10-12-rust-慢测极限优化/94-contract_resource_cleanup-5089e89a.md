@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 94 的测试从 3.645 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -86,23 +86,38 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和调用链热点分解。
+- [ ] 完成保持语义的最小优化：被不可删减的 3 张表×64 行逐条 SQL 夹具与三路 DDL/清理行为下界阻塞。
+- [ ] 保存 after：未修改代码，after/fmt/lint 不适用；已保存 5 次失败门槛数据。
+- [x] 自审并更新为已阻塞；保留本任务文件供后续决策。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.645s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 隔离基线精确选中 1 个测试，5 次功能全部通过，耗时为 `3.970813s`/`3.668533s`/`3.732565s`/`3.959973s`/`4.199269s`，最大值 `4.199269s`，严格门槛退出码 1，证明不是全 workspace 并发噪声。
+- RustCodeGraph 与源码定位的调用链为 `run_contract` -> `CreateMockStoreAndSetup` -> `InitTestWithStore` -> 3 张表×64 行逐条 SQL -> workload 取消/join -> 三路 add-index/check/drop -> TestKit 回池 -> GCS 对象清理与状态重置；数据规模、worker 数和清理断言均属任务要求保留的行为。
+- 相同夹具/DDL 路径的任务 83 已记录 5 次 `3.952495s`–`9.860745s` 的下界，并验证并行/批量夹具尝试仍为 `3.089897s`–`3.864814s`；这与本任务的数据一致。
+- 主机 `127.0.0.1:2379` 被无关 Docker 进程长期占用，无法按任务文本在默认端口启动独立 playground；按 `docs/agents/testing-flow.md` 允许的备选端口在 `12379` 启动 `rust-perf-0094` 取得上述诊断数据，停服并 `tiup clean rust-perf-0094 --all` 后已确认 `12379` 不可达；该数据不冒充任务要求的 2379 端口交付证据。
+- 2026-10-13 本地 Mac 解锁后恢复执行，重新预编译退出 0，再次严格选中 `1×5` 且功能全部通过；耗时为 `3.445648s`/`4.854956s`/`5.354906s`/`5.033766s`/`1.858119s`，最大值 `5.354906s`，报告为 `target/rust-performance/task-0094-resume-before.tsv`。运行期间共享源码变化触发了重编译，但 TSV 只记录测试执行时间；最快的最后一次已包含相邻任务 93 删除 placeholder TestKit 的优化，仍为门槛的约 3.7 倍。
+- 恢复后复核任务 166 的分段数据：同一标准夹具的 `NewTestKit` 约 `771ms`，3 张表×64 行 fixture 约 `714ms`，任一必须保留的独立阶段已超过整项 `0.499s` 预算。任务 93 删除 3 个随后立即覆盖的 placeholder TestKit 是已找到的唯一安全局部优化，但相邻路径 after 仍为 `1.327938s`–`1.747303s`。
+- 锁屏不再是当前阻塞。恢复后的阻塞是可重复的物理下界：继续突破需要跨测试进程复用已初始化 session/schema/data、将 192 次独立 SQL/事务边界批量化，或减少真实 DDL/清理行为；都会改变本任务要求保留的隔离或 Go 对齐语义。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不实施批量化 192 条 insert、不减少 3 张表×64 行、不跳过三路 DDL/清理、不替换真实夹具边界。理由：这些是唯一可能显著突破当前下界的方式，但违反 Go 对齐规模和用户明确禁止的弱化策略。日期/作者：2026-10-13 / Codex。
+- 决策：标记 `已阻塞` 并保留任务文件，不制造不等价源码 diff，不执行 `$git-commit`。解锁需要上层调整 `0.499s` 目标或明确授权重构逐条 SQL 夹具语义；当前指令不允许两者。日期/作者：2026-10-13 / Codex。
+- 决策：解锁后重新打开原阻塞结论，重读最新共享实现并实测相邻 placeholder 优化的影响；因最快仍为 `1.858119s` 且两个必须保留阶段各自已超整个预算，维持 `已阻塞`。这一结论不依赖锁屏或本机权限，而是门槛与不可弱化语义冲突。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已阻塞。功能正确性 5 次均通过，精确测试数为 `1×5`，失败/超时数为 0；严格性能门槛 5 次均失败，最大耗时 `4.199269s`。
+- 验证资源：实际 Cargo 槽位 `10`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`；预编译退出码 0；五次诊断报告为 `target/rust-performance/task-0094-before-alt-port.tsv`，性能脚本因超限退出 1；自有 playground 在 12379 启动、停止、清理后端点不可达。
+- 实际命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-realtikvtest-testutils --lib -E 'binary_id(=astersql-tests-realtikvtest-testutils) & test(=parity_test::contract_resource_cleanup)'`；`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0094-before-alt-port.tsv -- --locked --package astersql-tests-realtikvtest-testutils --lib -E 'binary_id(=astersql-tests-realtikvtest-testutils) & test(=parity_test::contract_resource_cleanup)'`。
+- 改动范围：未修改 Rust 源码或测试；因此 `cargo fmt --all`、after 和 `make lint` 不适用。自审确认未删减 Go 对齐逻辑、未更改依赖、未覆盖共享工作区的其他任务改动。
+- 剩余风险：目标测试仍远超慢测目标；默认 2379 端口生命周期未能在本地复现。在不改变夹具语义的前提下未找到可达到 `<=0.499s` 的实现路径。
+- 恢复验证资源：Cargo 槽位 `5`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`；预编译退出 0；严格性能命令退出 1，`1×5` 功能全部通过，最大 `5.354906s`；`rust-perf-0094` 在 12379 正常启停并定向清理，清理后端点不可达。
 
 ## RealTiKV 生命周期
 

@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 184 的测试从 2.692 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,8 +88,8 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文、DDL/RealTiKV 规则并动态取得 Cargo 槽位；因共享源码的无关并行修改无法编译，未进入性能锁计时。
+- [ ] 保存 before 的预期失败证据和阶段耗时分解；阻塞于 before 脚本之前的预热编译。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
 - [ ] 自审、更新状态、提交并删除任务文件。
@@ -97,14 +97,19 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.692s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 阻塞事实：并行任务 166 正在修改同一个 `add_index_test.rs` 及其 `pkg/testkit` 调用链。第一次预热遇到未定义的 `astersql_tests_realtikvtest::ReduceDDLDispatchLoopWaitingIntervalForTest`；其后该任务改为 `astersql_testkit::ReduceDDLDispatchLoopWaitingIntervalForTest`，第二次预热又遇到其下游未定义的 `astersql_session::runtime::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test`。多轮等待后该共享树仍不可编译，本任务不能安全覆盖他人的未完成修改。
+- 五次数据：未产生 sample 1–5；精确性能脚本会调用 Cargo，在上述编译错误消除前无法合法进入预热和计时。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不撤销、暂存或修补任务 166 对共享源文件的未完成修改；在确认两次预热都由该无关改动导致失败后标记阻塞。理由：工作区属于并行任务，覆盖其他任务会丢失用户工作，且本任务尚无 profiling 证据支持扩大范围。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态为已阻塞，未修改任务 184 的 Rust 代码。第一阶段领取槽位 7，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`；第二阶段领取槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。两阶段均在失败后删除本会话 owner 记录并 `rmdir` 释放锁，保留编译缓存。
+- 已运行两次同一预热命令：`cargo test --locked --package astersql-tests-realtikvtest-addindextest --test add_index_test --no-run`，退出码均为 101。第一次错误是 `ReduceDDLDispatchLoopWaitingIntervalForTest` 不存在于 `astersql_tests_realtikvtest`；第二次错误是 `reduce_ddl_dispatch_loop_waiting_interval_for_test` 不存在于 `normal_ddl_service`。
+- 未运行 `before`/`after`、`cargo fmt --all` 或 `make lint`；原因是精确测试在 Cargo 预热阶段已被无关的共享树编译失败阻断。待任务 166 完成或撤销其中间态后，应重新从动态领取 Cargo 槽位和运行 five-sample `before` 开始。
 
 ## RealTiKV 生命周期
 

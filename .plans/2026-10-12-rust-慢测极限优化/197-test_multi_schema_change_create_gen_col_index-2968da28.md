@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 197 的测试从 2.579 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,23 +88,34 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并按协议取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的五次预期失败证据并完成调用链分析。
+- [x] 试验保持持久化 DDL 语义的最小调度周期优化，证明无法突破主要下界后已撤回目标测试接线。
+- [x] 保存试验 after 的 1×5 测试数量与耗时证据；`cargo fmt --all` 退出码 0。
+- [x] 自审未保留本任务 Rust/Go 源码改动，按真实物理下界标记已阻塞并保留本文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.579s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 精确执行 1 项，五次均功能通过、零失败、零超时：`2.700693`、`2.571959`、`2.524412`、`2.517923`、`2.597981` 秒，最大 `2.700693s`。
+- RustCodeGraph 和 Go/Rust 对照确认路径保留 3 张表、生成列索引 29、multi-schema 附加列、每表 admin check 和 drop index；不存在可删减 case、断言或数据规模。
+- 调用链试验将依赖构建中默认 1 秒的 durable DDL dispatch 空闲轮询用作域 guard 降至 1ms，不绕过 job 持久化、owner/worker、schema state、reorg 或 schema sync。试验 after 五次仍为 `2.499122`、`2.481825`、`2.524984`、`2.493041`、`2.517688` 秒，最大 `2.524984s`，证明该轮询不是本用例的主要下界。
+- 共享工作区中 `pkg/session/runtime/normal_ddl_service.rs` 和 `pkg/testkit/lib.rs` 是其他任务的未提交修改；本任务仅作为现成调用链实验使用，不吸收、回滚或提交它们。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：撤回目标测试中无效的 DDL dispatch guard 接线，不提交其他任务的共享实现。理由：完整 1×5 after 最大值仍为 `2.524984s`，未接近硬门槛；保留无效复杂度不符合最小修改原则。日期/作者：2026-10-13 / Codex。
+- 决策：标记已阻塞并保留任务文件。理由：在保留真实 Domain/session、3 张表完整 fixture、3 次 multi-schema add-index、admin check/drop 和真实 TiKV/PD/etcd 边界时，隔离稳定下界约 2.48s；继续压缩到 `<=0.499s` 只能删减行为或跨测试复用可变 Domain/session 状态，违反 Go 对齐和隔离要求。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 正确性：before 和试验 after 都精确执行 1 项×5，10 个样本全部通过，零失败、零超时；生成列索、multi-schema SQL 计数和结果校验未删减。
+- 性能：before 最大 `2.700693s`；试验 after 最大 `2.524984s`，未达 `<=0.499s` 硬门槛。TSV 为 `target/rust-performance/task-0197-before.tsv` 和 `target/rust-performance/task-0197-after.tsv`。
+- 资源：before 使用槽位 4，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`；after/fmt 使用槽位 7，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`。两阶段均使用 `rust-perf-0197`，正常结束后已停止自有 playground、执行 `tiup clean rust-perf-0197` 并释放自有槽位/性能锁；缓存保留。释放后的独立端点检查又看到 v8.5.1，当时性能锁已被后续任务领取并启动默认 PD，因此无法用共享端口事后证明短暂不可达；明确 tag 的 clean 已完成。
+- 改动范围：目标 Rust 文件的试验接线已撤回，没有可交付代码差异；仅本任务文件记录阻塞证据。
+- 验证命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0197-before.tsv -- --locked --package astersql-tests-realtikvtest-addindextest --test multi_schema_change_test -E 'binary_id(=astersql-tests-realtikvtest-addindextest::multi_schema_change_test) & test(=test_multi_schema_change_create_gen_col_index)'` 退出码 1（仅因耗时越线）；`cargo fmt --all` 退出码 0；同参数 `after.tsv` 命令退出码 1（仅因耗时越线）。
+- 未验证：未运行 `make lint`，因为没有可交付代码方案；未删除任务文件、未创建提交，因为任务未达完成门槛。
 
 ## RealTiKV 生命周期
 

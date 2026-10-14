@@ -2053,6 +2053,8 @@ fn modify_dist_reorg(
     tune: bool,
     cloud: bool,
 ) {
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
     let _cloud = CloudSortConfiguration::new(cloud);
     let _dist = DistTaskConfiguration(astersql_sessionctx_vardef::EnableDistTask.Load());
     let _ingest = IngestEnvironment::new();
@@ -2060,7 +2062,11 @@ fn modify_dist_reorg(
         (*astersql_config::get_global_config()).clone(),
         astersql_sessionctx_vardef::ServiceScope.Load(),
     );
-    let f = Fixture::new();
+    let f = if pause && !partitioned {
+        Fixture::new_without_stats()
+    } else {
+        Fixture::new()
+    };
     if named_scope {
         f.pool
             .acquire()

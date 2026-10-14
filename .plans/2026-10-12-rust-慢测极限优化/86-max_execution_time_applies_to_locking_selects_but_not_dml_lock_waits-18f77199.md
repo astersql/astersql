@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 86 的测试从 3.786 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,23 +87,33 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确测试的 callees/callers/impact，并对照 Go 原测试。
+- [x] 动态取得 Cargo 槽位 6，设置绝对路径 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`，并取得性能锁。
+- [x] 保存 before 的五次失败证据；五次均精确选中 1 个测试且功能通过，但均超过性能门槛。
+- [x] 完成静态瓶颈分解：测试串行执行两个 `>=900ms` locking SELECT 和一个 `>=900ms` DML lock wait。
+- [ ] 实施优化：在不改短 timeout、不删 case/断言且不替换真实锁等待的限制下，`<0.500s` 与测试语义矛盾。
+- [x] after/fmt/lint/提交：无合法优化可实施且无代码修改，因此 fmt/lint/after 不适用；任务文件按真实阻塞协议保留，不创建提交。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.786s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- Rust 与 Go 对齐测试都要求两个 locking SELECT 使用约 1 秒 `max_execution_time`，DML 使用约 1 秒 `innodb_lock_wait_timeout`。Rust 还对每段明确断言 `elapsed >= 900ms`，串行下仅这三段就有 `>=2.7s` 的物理下界。
+- 已有 `perf-audit` 单线程审计产物 `target/rust-performance/audit-2284-actual/batch-01.tsv` 记录该精确测试 `3.871712s` / `ok` / 有效测试数 1；该产物只有一次样本，不作为五次完成证据。
+- 2026-10-13 恢复后动态领取槽位 6，预编译退出码 0；持有性能锁时用 `/Users/xiangmin/.tiup/bin/tiup playground --mode tikv-slim --tag rust-perf-0086` 启动真实服务，PD 就绪后执行精确性能脚本。
+- before 五次均通过行为断言且每次有效测试数为 1，耗时为 `3.872564s`、`3.834346s`、`3.908897s`、`4.370831s`、`4.020042s`；最大值 `4.370831s`，脚本因超过 `0.499s` 退出 1。
+- TSV：`target/rust-performance/task-0086-before.tsv`。清理后 `http://127.0.0.1:2379/pd/api/v1/version` 不可达；本任务的槽位 owner 和性能锁 owner 已释放，保留 Cargo 缓存。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过把 1000ms/1s 改短、删除三个真实锁等待 case、并行化共享 waiter，或放宽/删除 `>=900ms` 断言来达标。这些都会违反 Go 对齐规模和本任务的禁止项。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：已阻塞。精确测试的三段真实等待断言给出 `>=2.7s` 语义下界，既有隔离样本为 `3.871712s`，与 `<=0.499s` 验收目标不可同时满足。
+- 五次数据：`3.872564s / 3.834346s / 3.908897s / 4.370831s / 4.020042s`；全部状态 `ok`，全部有效测试数 1，零功能失败、零超时，但五次均超过 0.499 秒性能门槛。
+- 精确命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0086-before.tsv -- --locked --package astersql-tests-realtikvtest-pessimistictest --test pessimistic_parity_test -E 'binary_id(=astersql-tests-realtikvtest-pessimistictest::pessimistic_parity_test) & test(=max_execution_time_applies_to_locking_selects_but_not_dml_lock_waits)'`，退出码 1（仅因性能越线）。
+- 改动范围：仅本任务活文档；无 Rust/Go 源码改动，无 timeout/case/断言/真实依赖弱化，不删除本文件，不创建提交。
 
 ## RealTiKV 生命周期
 

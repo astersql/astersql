@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 45 的测试从 5.463 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
 - [ ] 自审、更新状态、提交并删除任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.463s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 隔离 before 精确命中 1 项，5 次功能均通过，耗时为 `6.356571 / 6.171388 / 6.126710 / 5.938702 / 4.661619s`，最大 `6.356571s`，严格性能门槛失败。证据：`target/rust-performance/task-0045-before.tsv`。
+- 临时阶段计时（已删除插桩）显示两组完整配置分别约 `3.739s` 与 `2.376s`；单次真实 Domain bootstrap 分别为 `0.862s` 与 `0.737s`，仅 bootstrap 已超过 `0.499s`；2,000 行 fixture 分别为 `2.375s` 与 `1.435s`，ANALYZE 为 `0.041s` 与 `0.035s`。
+- Go `TestIndexJoinInnerRowCountUsesUsableJoinKeys` 仅创建一次 store/TestKit、装载一次 2,000 行 fixture，然后在同一 session 切换 `44855:OFF`；Rust 目标测试原先为两种配置重复了完整 bootstrap/fixture/ANALYZE。
+- after 首次预热因删除临时插桩时误匹配了另一测试的局部 `Instant` import 而编译失败；已精确恢复并重新 `cargo fmt --all` 通过，该尝试未产生行为样本。
+- after 重试被仓库共享资源死锁阻塞：任务 152（PID 14399）先持有 `perf-audit.lock` 再等待槽位 6，任务 158（PID 14002）已持有槽位 6 并等待性能锁。两者均存活，本任务无权终止或删锁；为避免扩大占用，已中断自身等待并释放槽位 3。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：按 Go 生命周期将两种 fix-control 配置改为复用同一真实 session 和同一完整 2,000 行 fixture；保留两种配置、全部数据、ANALYZE、直接优化器路径和索引断言，并在收尾恢复 fix-control。理由：这是 Go 已有语义，可消除 Rust 的重复初始化而不降低覆盖。日期/作者：2026-10-12 / Codex。
+- 决策：不通过删减 2,000 行、替换虚假统计、绕过真实 Domain 或放宽门槛取得表面达标。理由：单次真实 bootstrap 已有 `0.737s` 的观测下界，需先解决共享性能锁死锁，才能为等价优化保存 after 五次证据。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已完成调研、before 五次、阶段剖析和 Go 对齐的最小重复初始化消除，但未获得 after 五次，状态为 `已阻塞`。
+- 实际 Cargo 槽位/目录：before 槽位 10，`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`；剖析槽位 3，`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`；after 首次尝试槽位 6，`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；after 重试槽位 3，`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`。所有本任务锁均已释放，编译缓存保留。
+- 验证：`cargo fmt --all` 最终退出码 0；before 脚本退出码 1（仅因 5 次均超过 0.499s，1×5 测试均通过）；after 首次预热退出码 1（已修复的 import 编译错误）；after 重试在未获性能锁前以 130 中断。`make lint` 未运行，因 after 硬门槛证据未获得，未进入 Ready 交付。
+- 剩余风险：等价修改仍需在共享锁死锁解除后重跑 after 五次；根据已有剖析，即使消除第二次重复初始化，保留真实 Domain 与 2,000 行 fixture 时仍很可能高于 `0.499s`，需针对真实 bootstrap/批量 INSERT 热路径做范围扩展优化。

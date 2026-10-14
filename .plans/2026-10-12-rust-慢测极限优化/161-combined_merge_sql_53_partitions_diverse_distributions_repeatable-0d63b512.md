@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 161 的测试从 2.984 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,20 +88,26 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [ ] 保存 after、测试数量与耗时证据；当前因跨子系统物理下界阻塞，未产生 after。
+- [x] 自审、更新阻塞状态；按阻塞协议保留任务文件且不提交代码。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.984s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 精确选择 1 项，五次均功能通过，但耗时分别为 `2.882739s`、`2.993461s`、`2.671859s`、`2.550908s`、`2.578354s`，最大 `2.993461s`；脚本退出码 `1` 仅因超过 `0.499s` 门槛，报告为 `target/rust-performance/task-0161-before.tsv`。
+- 临时诊断插桩在同一 `perf-audit` profile 下将单次 `2.377s` 分解为：`CreateAnalyzeSession` `0.623s`；DDL 累计到 `0.631s`；100 行种子插入累计到 `0.667s`；7 次 INSERT SELECT 完成后累计 `1.092s`；两次 ANALYZE 分别完成于 `1.677s` 和 `2.243s`；两次 SHOW 收集分别完成于 `1.708s` 和 `2.272s`。诊断插桩已删除，测试源码恢复原状。
+- 仅 session/bootstrap 已超过 `0.499s`；完整真实行为还要求 53 分区、12,800 行持久化、两次真实 ANALYZE 及全局 TopN/直方图结果对比，不存在单一局部热点可在不弱化语义的前提下消除。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：将任务标记为 `已阻塞`，不针对该 SQL 文本跳过 bootstrap/DML/ANALYZE，不复用旧统计，也不缩减 53 分区、12,800 行、异步开关两路径或断言。理由：达标至少需同时重构 session bootstrap、INSERT SELECT/KV 批处理与分区统计构建/合并，超出本任务的最小局部接线，并会引入广泛正确性风险。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：`已阻塞`。before 的 `5×1` 有效测试全部行为通过、零失败、零超时，但五次全部超过门槛；实际 Cargo 基线槽位为 8，绝对 `CARGO_TARGET_DIR` 为 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`。诊断预编译使用槽位 8，诊断运行使用槽位 6，对应绝对目录为 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8` 和 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`。
+- 已运行检查：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0161-before.tsv -- --locked --package astersql-session --lib -E 'binary_id(=astersql-session) & test(=runtime_statistics_test::combined_merge_sql_53_partitions_diverse_distributions_repeatable)'`，退出码 `1`，有效测试 `1×5`；诊断预编译 `cargo nextest run --locked --package astersql-session --lib --profile perf-audit --no-run -E 'binary_id(=astersql-session) & test(=runtime_statistics_test::combined_merge_sql_53_partitions_diverse_distributions_repeatable)'`，退出码 `0`；诊断运行 `cargo nextest run --locked --package astersql-session --lib --profile perf-audit --no-capture -E 'binary_id(=astersql-session) & test(=runtime_statistics_test::combined_merge_sql_53_partitions_diverse_distributions_repeatable)'`，退出码 `0`，有效测试 `1×1`。严格计时均持有仓库性能锁，结束后已释放性能锁和各自 Cargo 槽位锁，保留编译缓存。
+- 未运行 `after`、`cargo fmt --all` 和 `make lint`：没有可交付代码修改，诊断插桩已完全删除。后续建议先分别建立并验证 bootstrap、DML/KV 批处理和统计构建/合并的基础设施级优化任务，再回到本任务执行相同五次门槛验证。

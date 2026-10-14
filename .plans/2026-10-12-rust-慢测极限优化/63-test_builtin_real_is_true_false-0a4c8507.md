@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 63 的测试从 4.476 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 试验保持 10 会话×100 轮和全部 SQL/断言的会话内批处理与 schema 局部重建，未达标后已全部回退。
+- [x] 保存两组五次数据、测试数量与阶段耗时证据。
+- [x] 自审确认未留下试验性生产/测试代码；按协议保留本文件并标记阻塞。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.476s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 五次均正确通过且精确选中 1 项，但为 `0.647911 / 0.691139 / 0.693611 / 0.700289 / 1.148122s`，最大值超过 `0.499s`。
+- 临时阶段计时显示 setup 约 `145.572ms`，10 个 worker 的 100 轮 `PREPARE + SET + EXECUTE + Check` 各自约 `886.105–937.088ms`，主体真实 SQL 路径是下界。
+- 在不减少 10 会话×100 轮、不删 SQL 或断言的条件下，试验将每会话的三语句序列放到 session owner 线程内批量执行，并只重建本用例表而不重建整个 schema；after 仍为 `0.737727 / 0.752294 / 0.736163 / 0.746470 / 0.755792s`。
+- 严格计时期间其他会话仍有 Cargo 预编译，脚本曾显示 package/build directory lock 等待；但稳定 after 五次的最小值仍高于门槛 `0.237s`，不能只归因于单次抖动。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不保留试验性批处理/schema 优化。理由：等价路径仍无法达标，继续降低到 `<0.500s` 只能重用 `PREPARE`、减少 SQL/循环/会话或换用非等价协议路径，都会削弱 Go 回归意图。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：`2026-10-13 已阻塞`。正确性始终通过，两组均为 5 samples、1 test/sample、0 失败、0 超时；但 before 最大 `1.148122s`，等价实验 after 最大 `0.755792s`，均未达 `<=0.499s`。
+- Cargo 共享槽位：`8`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`。before/after 报告：`target/rust-performance/task-0063-before.tsv` 与 `target/rust-performance/task-0063-after.tsv`。
+- 执行命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest-instanceplancache --lib -E 'binary_id(=astersql-planner-core-casetest-instanceplancache) & test(=builtin_func_test::test_builtin_real_is_true_false)'` 退出 0；`cargo fmt --all` 退出 0；任务指定的 before 性能脚本退出 1；同命令输出 after 报告的两次试验均退出 1。
+- 验证限制：未运行 `make lint`，因为最终未保留本任务的 Rust 代码改动，且性能硬门槛已失败；未删除本任务文件，供后续在不削弱语义的生产热路优化后回归。
+- 自审：本任务的临时计时、TestKit API、schema 复用和测试重写均已回退；工作区其他已有改动属于并行任务，未回滚、未暂存、未提交。

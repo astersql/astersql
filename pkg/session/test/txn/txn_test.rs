@@ -18,7 +18,8 @@ use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::{DbValue, TestKit};
 use std::sync::{Arc, Barrier, Mutex, MutexGuard, mpsc};
 use std::thread;
-use std::time::Duration;
+
+const BEFORE_PREWRITE: &str = "tikvclient/beforePrewrite";
 
 /// TiDB restricted-read-only is process-global.  Keep these shared-runtime
 /// transaction tests mutually exclusive so a temporary toggle cannot race an
@@ -379,20 +380,17 @@ fn autocommit_respects_restricted_read_only_at_commit_boundary() {
         .Session()
         .AuthenticateUserForTest(&identity)
         .expect("authenticate read-only writer");
-    let (started, ready) = mpsc::channel();
+    let commit_pause = astersql_testkit_testfailpoint::enable_pause(BEFORE_PREWRITE);
     let rejected = thread::spawn(move || {
-        started.send(()).expect("signal long write start");
-        writer.Exec(
-            "insert into auto_commit_read_only values (sleep(1))",
-            Vec::new(),
-        )
+        writer.Exec("insert into auto_commit_read_only values (1)", Vec::new())
     });
-    ready.recv().expect("wait for long write start");
-    thread::sleep(Duration::from_millis(100));
+    commit_pause.wait_until_reached();
     admin.MustExec("set global tidb_restricted_read_only = 1", Vec::new());
+    commit_pause.resume();
     let rejected_write = rejected
         .join()
         .expect("long read-only writer must not panic");
+    drop(commit_pause);
     admin.MustExec("set global tidb_restricted_read_only = 0", Vec::new());
     admin.MustExec("set global tidb_super_read_only = 0", Vec::new());
     let error = rejected_write.expect_err("read-only autocommit write must fail");
@@ -410,24 +408,19 @@ fn autocommit_respects_restricted_read_only_at_commit_boundary() {
         .Session()
         .AuthenticateUserForTest(&identity)
         .expect("authenticate privileged writer");
-    let (started, ready) = mpsc::channel();
+    let commit_pause = astersql_testkit_testfailpoint::enable_pause(BEFORE_PREWRITE);
     let allowed = thread::spawn(move || {
-        started
-            .send(())
-            .expect("signal privileged long write start");
-        privileged_writer.Exec(
-            "insert into auto_commit_read_only values (sleep(1))",
-            Vec::new(),
-        )
+        privileged_writer.Exec("insert into auto_commit_read_only values (1)", Vec::new())
     });
-    ready.recv().expect("wait for privileged long write start");
-    thread::sleep(Duration::from_millis(100));
+    commit_pause.wait_until_reached();
     admin.MustExec("set global tidb_restricted_read_only = 1", Vec::new());
+    commit_pause.resume();
     admin.MustExec("insert into auto_commit_read_only values (0)", Vec::new());
     allowed
         .join()
         .expect("privileged writer must not panic")
         .expect("privileged writer bypasses read-only mode");
+    drop(commit_pause);
     admin.MustExec("set global tidb_restricted_read_only = 0", Vec::new());
     admin.MustExec("set global tidb_super_read_only = 0", Vec::new());
     let observer = TestKit::new(store);

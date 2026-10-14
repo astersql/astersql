@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 83 的测试从 3.892 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -86,23 +86,34 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和调用链热点分解。
+- [ ] 完成保持语义的最小优化：被不可删减的完整夹具与 DDL 行为下界阻塞。
+- [ ] 保存 after、测试数量与耗时证据；未修改代码，after/fmt/lint 不适用。
+- [x] 自审并更新为已阻塞；保留本任务文件供后续决策。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.892s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 隔离基线精确选中 1 个测试，5 次功能全部通过，但耗时为 `4.362978s`/`4.332815s`/`4.819663s`/`9.860745s`/`3.952495s`，最大值 `9.860745s`，证明不是全 workspace 并发噪声。
+- RustCodeGraph 定位精确测试与 `CompatibilityContext`，局部源码确认调用链为 `InitTest` -> 3 张表×64 行真实 SQL 夹具 -> `Start` 三路 worker -> add index/admin check/drop index -> `Stop` join；这些都是任务要求保留的 Go 对齐行为。
+- 相同夹具/索引路径的相邻任务 166 隔离数据仍为 `3.008005s`/`3.041258s`/`3.223231s`/`3.001367s`/`3.096379s`，并行/批量夹具尝试后为 `3.089897s`/`3.267357s`/`3.102387s`/`3.360609s`/`3.864814s`，进一步证明保持完整真实行为时无法接近 `0.499s`。
+- 主工作区的 `Cargo.lock` 曾被并行任务短暂修改到与 manifest 不一致，两次 `--locked` 预编译退出 102；改用同一 HEAD 的临时 detached clean worktree 后预编译成功，未改写共享 lockfile。
+- `rust-perf-0083` playground 主进程退出后首次即时端点检查仍可达，命令因此退出 72；cleanup trap 再次清理后端点已确认不可达，且槽位、性能锁和临时 worktree 均已释放。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不实施批量化 192 条 insert、不减少 3 张表×64 行、不跳过三路 add-index/check/drop、不替换为轻量 mock。理由：这些做法才能显著突破当前下界，但都违反本任务的 Go 对齐规模与真实依赖约束。日期/作者：2026-10-13 / Codex。
+- 决策：标记 `已阻塞`并保留任务文件，不制造不等价源码 diff。解锁需要上层调整 `0.499s` 目标或明确授权重构夹具执行边界；当前指令不允许这两者。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已阻塞。功能正确性五次均通过，精确测试数为 `1×5`，失败/超时数为 0；严格性能门槛五次均失败，最大耗时 `9.860745s`。
+- 验证资源：实际 Cargo 槽位 `7`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`；预编译退出码 0；`before` 报告为 `target/rust-performance/task-0083-before.tsv`，性能脚本因超限退出 1（外层生命周期命令因过早 PD 检查最终退出 72，trap 后端点不可达）。
+- 实际命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-realtikvtest-testutils --lib -E 'binary_id(=astersql-tests-realtikvtest-testutils) & test(=parity_test::compatibility_public_start_stop_methods_execute)'`；`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output /Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-performance/task-0083-before.tsv -- --locked --package astersql-tests-realtikvtest-testutils --lib -E 'binary_id(=astersql-tests-realtikvtest-testutils) & test(=parity_test::compatibility_public_start_stop_methods_execute)'`。
+- 改动范围：未修改 Rust 源码或测试；因此 `cargo fmt --all`、after 和 `make lint` 不适用。自审确认未删减 Go 对齐逻辑、未更改依赖、未覆盖共享工作区的其他任务改动。
+- 剩余风险：当前测试依然远超慢测目标；在不改变业务语义的前提下未找到可达到 `<=0.499s` 的实现路径。
 
 ## RealTiKV 生命周期
 

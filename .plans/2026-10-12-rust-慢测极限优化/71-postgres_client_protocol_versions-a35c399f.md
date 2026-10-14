@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 71 的测试从 4.224 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并更新为已阻塞；保留任务文件和 before 证据供后续重新设计。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.224s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 隔离 before 精确选中 1 项，5 次功能均通过，耗时为 `2.614908s` / `2.447289s` / `2.283653s` / `2.651506s` / `2.753281s`，最大值 `2.753281s`，因超过 `0.499s` 门槛正确退出 1。证据：`target/rust-performance/task-0071-before.tsv`。
+- 一次持锁阶段分解显示：`CreateAnalyzeSession()` `0.755782s`，fixture `0.775996s`，server `0.778620s`，MySQL 预备 `0.825669s`，libpq 完成 `1.176600s`，两个真实 JDBC 驱动完成 `2.553344s`，teardown `2.577992s`。仅会话初始化已超过整项 `0.499s` 门槛，且外部 libpq/JDBC 是本测试明确要求的真实边界。
+- 首次 before 尝试在并行任务临时修改 `pkg/planner/core/casetest/hint/Cargo.toml` 但未同步 `Cargo.lock` 时，被 `cargo metadata --all-features --locked` 阻止（退出 1、0 测试）；待该无关改动清理后重试获得了上述有效五次证据。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：标记为 `已阻塞`，不提交源码优化。理由：在保留两个协议版本、两个安装的 JDBC 驱动、真实 libpq/JDBC 边界和全部 introspection/CRUD/事务/cancel 断言时，单是真实会话初始化就有 `0.755782s` 下界。并行化外部客户端也无法消除该下界；将测试缩成只校验 startup 或替换真实驱动会违反本任务的语义与模拟策略。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已阻塞。五次隔离测试功能全部通过、失败 0、超时 0、每次有效测试数 1，但最快 `2.283653s`、最慢 `2.753281s`，无法达到 `<=0.499s`。
+- 实际 Cargo 槽位：before 使用槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；分解执行使用槽位 3，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`。两阶段均在结束后删除自有锁、保留编译缓存。
+- 确切有效验证命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0071-before.tsv -- --locked --package astersql-server --lib -E 'binary_id(=astersql-server) & test(=pg_client_integration_test::postgres_client_protocol_versions)'`，退出码 1 仅因五次均超过耗时门槛。
+- 分解命令：`cargo nextest run --profile perf-audit --locked --package astersql-server --lib -E 'binary_id(=astersql-server) & test(=pg_client_integration_test::postgres_client_protocol_versions)' --nocapture`，退出码 0，有效测试 1。临时计时插桩已删除，源码最终无差异。
+- 未运行 after/fmt/lint：没有可在不弱化原行为前提下突破已证实物理下界的源码修改，因此没有 Rust 交付差异可格式化或 lint。
+- 自审：`pkg/server/pg_client_integration_test.rs`、`pkg/server/Cargo.toml`、`pkg/server/lib.rs`、`pkg/server/main_test.rs` 最终均无本任务差异；未减少 case、断言、驱动版本、协议版本或真实依赖，未修改或删除 PingCAP/AsterSQL 版权注释。

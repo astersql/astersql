@@ -78,6 +78,14 @@ pub use result::{Result, Rows, RowsWithSep};
 pub use stats_fixture::LoadTableStats;
 pub use testkit::{NewTestKit, TestKit, TestMemTracker, TestSession, TestSessionVars};
 
+/// Reduce the durable DDL dispatch wait while preserving the real scheduler,
+/// worker, and schema-state transitions. The returned guard restores the
+/// production interval when the test ends.
+pub fn ReduceDDLDispatchLoopWaitingIntervalForTest() -> impl Drop {
+    astersql_session::runtime::normal_ddl_service::
+        reduce_ddl_dispatch_loop_waiting_interval_for_test()
+}
+
 // 以下为通过 `#[path]` 挂入的集成测试，仅在 test 配置编译。
 #[cfg(test)]
 #[path = "analyze_stats_runtime_aster_unit_test.rs"]

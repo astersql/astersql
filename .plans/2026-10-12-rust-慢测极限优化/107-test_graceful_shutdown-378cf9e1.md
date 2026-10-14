@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 107 的测试从 3.524 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,28 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [ ] 完成保持语义的最小优化：被不可同时满足的 2.9 秒墙钟断言与 0.499 秒性能门槛阻塞。
+- [ ] 保存 after、测试数量与耗时证据：未修改代码，无等价 after 方案。
+- [x] 自审并更新阻塞状态；按协议保留本任务文件，不提交、不删除。
 
 ## 意外发现
 
-- 初始事实：全量并发日志记录 `3.524s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 执行前事实：全量并发日志记录 `3.524s` / `PASS`；该数字只用于入选，本次另行取得了下述隔离基线。
+- 隔离基线稳定复现了墙钟下界：`3.521210s`、`3.513509s`、`3.517945s`、`3.522285s`、`3.526742s`；每次精确选中 1 项，5/5 功能通过，失败数 0，超时数 0，但最大值超过 `0.499s`，因此脚本退出码为 1。
+- 阶段分解可由直接调用链确定，无需留下临时插桩：`start_tidb_without_pd` 固定等待 `500ms`；查询路径 `test_graceful_shutdown -> Tx::query_row_context -> MockTiDB::query_row_sleep_select` 从 SQL 解析 `sleep(3)` 并执行 `thread::sleep(Duration::from_secs(3))`；测试另有 `query_elapsed >= 2900ms` 断言。
+- Go 对齐测试同样保留 SQL `sleep(3)` 与中断在事务查询期间发生的真实时序；把 sleep 换成虚拟时钟、事件桩或删除 Rust 的 2.9 秒断言，都会违反“不减少 case/断言/规模，不改不等价 mock”约束。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不修改测试或夹具，将任务标记为 `已阻塞`。理由：保留现有 `query_elapsed >= 2900ms` 断言时，单测墙钟耗时必然大于 2.9 秒，与最大 `0.499s` 的硬门槛逻辑矛盾；任何达标改动都必须删改断言、缩短 `sleep(3)` 或改用不等价虚拟时钟。日期/作者：2026-10-12 / Codex。
+- 阻塞恢复审查：2026-10-13 重新读取任务、工作区和 RustCodeGraph 当前索引；目标源文件无 diff，调用链仍是 `test_graceful_shutdown -> Tx::query_row_context -> MockTiDB::query_row_sleep_select -> thread::sleep(3s)`，`query_elapsed >= 2900ms` 断言仍在。另一 lib-target 身份任务 109 的独立五次数据为 `3.513915s..3.517118s`，也复现同一下界。安全替代方案审查后，仅能消除启动桩的 `500ms`，仍无法让保留原断言的测试低于 `0.500s`；不修改源码，状态保持 `已阻塞`。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞。实际 Cargo 槽位为 `5`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`。编译预热命令 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-graceshutdown --test graceshutdown_test -E 'binary_id(=astersql-tests-graceshutdown::graceshutdown_test) & test(=test_graceful_shutdown)'` 退出码 0。
+- 失败验证命令按本文“失败验证”原命令执行，报告为 `target/rust-performance/task-0107-before.tsv`，退出码 1；有效测试数为 `1×5`，五次功能均通过，耗时为 `3.521210s / 3.513509s / 3.517945s / 3.522285s / 3.526742s`，最大 `3.526742s`，失败/超时数 `0/0`。
+- 未修改 Rust 或 Go 源码，因此 `cargo fmt --all`、after 和 Ready `make lint` 不适用。自审确认没有删减 Go 对齐逻辑、case、断言、真实等待或依赖边界，也没有 Cargo 本地覆盖。需要上层重新决策性能门槛与时序断言哪一项可放宽后才能继续。
+- 2026-10-13 恢复审查未发现新的实现或外部状态变化，原 `task-0107-before.tsv` 仍完整可读，且目标源码自该证据后未变更；因此未重复占用 Cargo 槽位和性能锁运行必然不达标的同一五次检查。

@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 30 的测试从 6.203 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,41 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 评估保持语义的优化边界；未保留无法把真实协议下界降至门槛内的代码改动。
+- [x] 保存 5 次测试数量与耗时证据；临时插桩前运行 `cargo fmt --all`，插桩已完全撤回，Ready lint 对无代码交付不适用。
+- [x] 自审并更新为已阻塞；按协议保留任务文件，不提交、不删除。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `6.203s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 精确选中 1 项，5 次均功能通过且零超时，耗时为 `1.466218 / 1.418063 / 1.409808 / 1.579509 / 1.967473s`，最大 `1.967473s`，严格门槛失败。
+- 2026-10-13 恢复后的 before 在已解锁主机上精确选中 1 项，5 次均功能通过且零超时，耗时为 `1.004583 / 1.004183 / 0.985863 / 1.185222 / 1.081418s`，最大 `1.185222s`；旧锁屏证据已被本组新数据替代。
+- 持性能锁的阶段分解显示，每个 worker 的 100 次累计耗时范围为：`PREPARE 100–203ms`、`SET 120–229ms`、`EXECUTE + Sort 973–1142ms`、结果 `Check 1.4–2.2ms`；热点是完整 10 worker × 100 次真实 `EXECUTE` 请求，而非 fixture、期望值构造或断言。
+- Rust 与 Go 源码均在每轮重新 `PREPARE`，随后设置两个变量并执行范围查询；保持 Go 对齐意味着不能把 3,000 个 text-protocol 请求合并、把语句移出循环、减少 worker/循环或绕过真实计划缓存执行路径。
+- 临时计时插桩只用于定位并已完全撤回；目标 Rust 测试及生产代码没有留下本任务改动。
+- 穷尽三种保持规模的局部方案：typed-adapter 首次错误实现用时 `0.205s` 但主键范围只返回下界且二级索引无路径，修复完整范围后功能通过但用时 `1.788s`；同一 session-owner 中逐对执行完整 PREPARE/SET/EXECUTE 功能通过但用时 `1.119s`；单个多语句批次保留全部 100 组语句与结果断言，功能通过但用时 `1.005s`。所有实验改动均已撤回。
+- 最新证据表明跨线程通道、逐条 parser 调用和协议帧合并都不是剩余主因；完整执行 10×100 个真实范围查询并物化约五万行的墙钟下界仍约 1 秒。
+- 2026-10-13 再次续跑时，共享 runtime/testkit 已新增等值索引 typed adapter 和 prepared batch 能力，但本测试的参数化范围谓词仍不在新门禁内；严格命令的 5 个测试执行样本为 `1.502757 / 1.484094 / 1.705031 / 1.665193 / 1.894881s`，全部功能通过且每次精确 1 项，仍远超 `0.499s`。共享工作区在第 4、5 次前触发了重编译，因此该组不作为同一源码快照的 after 证据；但 nextest 报告的单测试执行时间每次均为门槛约 3 倍以上，足以排除“新共享改动已自然达标”。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不采用移出循环的 `PREPARE`、合并协议请求、减少范围结果、降低 10×100 并发规模或绕过 TestKit/计划缓存的直接 API。理由：这些方案会改变 Go 原测试明确覆盖的逐轮 PREPARE/SET/EXECUTE 与实例计划缓存并发语义。日期/作者：2026-10-12 / Codex。
+- 决策：在真实 text-protocol 边界的功能正确耗时下界仍为 `1.409808s`、且剖析确认约 1 秒集中于不可删减的 EXECUTE 路径后标记已阻塞。理由：安全的测试侧分配/断言优化不足以跨越至少 0.910808 秒的门槛差距；进一步提速需要扩大为 session/planner typed range 执行能力，超出本 Go commit 增量的最小必要局部接线。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 恢复后允许把范围扩大到 `pkg/session/runtime/dispatch.rs` 的既有 typed-adapter 入口。调用链证据为 `EXECUTE` → `execute_prepared` → `execute_simple_prepared_select_through_adapter`；当前门禁只接受主键等值谓词，而下游 `typed_adapter_bridge::encode_index_ranges` 与 `encode_table_record_ranges` 已支持参数化二级索引和主键范围。仅扩展门禁，保留原 text-protocol PREPARE/SET/EXECUTE、planner 和 KV 执行。日期/作者：2026-10-13 / Codex。
+- 决策：同时修复 `pkg/session/runtime/planning.rs` 对 `USE INDEX(primary)` 的访问路径接线，以及 `pkg/planner/core/expression_rewriter.rs` 在分拆范围条件时按 SQL offset 恢复参数序号。理由：首次 WIP 已在 `0.205s` 内完成但暴露二级索引无路径和两个范围边界都绑定首参；两处均是 typed 范围执行正确性不可缺少的局部调用链修复，不改变测试规模或协议语义。日期/作者：2026-10-13 / Codex。
+- 决策：撤回 typed-adapter、参数序号、访问路径和测试批处理实验，不将它们作为任务 30 交付。理由：正确实现仍为 `1.788s`，两种真实 SQL 批处理仍为 `1.119s` / `1.005s`；没有任何方案同时满足完整 Go 行为和 `<0.500s`。日期/作者：2026-10-13 / Codex。
+- 决策：以已解锁主机的新五次数据重新标记已阻塞。理由：要跨越剩余约 `0.486s` 的最佳正确结果差距，只能减少查询/结果规模、复用查询结果或绕过逐轮真实 KV 范围执行，均直接违反本任务硬约束。日期/作者：2026-10-13 / Codex。
+- 决策：共享 runtime/testkit 变更后只重跑原始精确测试，不改用新增的 `QueryPreparedStmtBatch`。理由：它需要把 Go 每轮的 `PREPARE` 移出 100 次循环，会削弱实例计划缓存的并发重复准备语义；新五次执行时间又已证明原始语义未自然达标。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞。基线使用 Cargo 槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；阶段剖析使用槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`，两个阶段均已释放自己的槽位锁和性能锁并保留缓存。
+- 2026-10-13 恢复基线实际使用槽位 8，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`；WIP 实验动态使用槽位 1、4、5、6、9，所有本任务锁均已释放并保留缓存。
+- before 命令退出 1，报告 `target/rust-performance/task-0030-before.tsv`，5/5 项功能通过、有效测试数量均为 1、零失败、零超时，但最大 `1.967473s > 0.499s`。
+- 剖析命令退出 0，精确运行 1 项并确认 10 个 worker 均完成完整 100 轮；临时插桩前 `cargo fmt --all` 退出 0。因最终无代码改动，未运行 `make lint`，也未生成 after 报告；before 的五次真实失败证据已满足阻塞记录要求。
+- 自审：未删减 case、断言、100 行数据、10 worker、每 worker 100 轮、主键/二级索引随机覆盖或真实依赖；未修改 Cargo 依赖、license、`plan.md` 或任何生产代码。剩余建议是在独立任务中扩展 session/planner typed adapter 对参数化主键与二级索引范围谓词的等价支持，并单独补充行为回归后再复测本任务。
+- 最新恢复验证命令退出 1，报告 `target/rust-performance/task-0030-resume-before.tsv`，5/5 功能通过、有效测试数量均为 1、零失败、零超时，最大 `1.185222s > 0.499s`。WIP 过程中多次执行 `cargo fmt --all` 均退出 0；最终没有保留任务 30 的 Rust 代码，因此 Ready `make lint` 不适用。
+- 2026-10-13 续跑使用槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；精确二进制预热退出 0，五次复测命令退出 1，报告 `target/rust-performance/task-0030-resume-recheck.tsv`，5/5 功能通过、每次精确 1 项、零失败、零超时，最大 `1.894881s > 0.499s`。测量期间共享源码变动导致两次重编译，已明确记为验证限制；本任务没有留下 Rust 代码改动，槽位与性能锁均由同一进程自动释放。

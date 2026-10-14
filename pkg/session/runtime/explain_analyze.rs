@@ -136,7 +136,7 @@ impl ConcreteSession {
             return Ok(None);
         }
         if statement.Where.as_ref().is_some_and(|predicate| {
-            !self.simple_typed_primary_key_predicate(&database, &source.Source.Name.L, predicate)
+            !self.simple_typed_indexed_predicate(&database, &source.Source.Name.L, predicate)
         }) {
             return Ok(None);
         }

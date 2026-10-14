@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 66 的测试从 4.437 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位 7 与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [ ] 完成保持语义的最小优化：现有不可删减的 9000 行真实 SQL fixture 单独已超过门槛。
+- [ ] 保存 after、测试数量与耗时证据：未有等价优化能达标，不生成伪 after 证据。
+- [x] 自审并回退所有诊断插桩和未达标实验；保留任务文件记录阻塞。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.437s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 精确选中 1 项，5 次均功能通过，耗时为 `3.511701s`、`3.243730s`、`3.221119s`、`3.140947s`、`3.686934s`；最大值 `3.686934s` 超过 `0.499s` 门槛。
+- 临时阶段计时（已回退）：原始 AnalyzeStatsStore 路径 setup `0.823s`，完成 9/9000 行 fixture 时累计 `2.362s`，四组查询后总计 `3.302s`；其中 anti join 一组 rows+count 约 `0.591s`。
+- 验证过已有轻量 `CreatePlannerTestStoreAndDomain` 路径（已回退）：setup 降至 `0.087s`，但 9000 行 SQL fixture 仍需约 `1.479s`，四组真实查询约 `0.818s`，总计 `2.384s`。
+- 并行任务曾在 Cargo 清单/`Cargo.lock` 中间态下两次使 `--locked` 元数据检查失败；待其收敛后预编译与 before 均正常执行，本任务未改动其文件。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不提交轻量 planner fixture 实验。理由：它虽去除本测试无关的统计表启动成本，但完整测试仍为 `2.384s`，无法提供达标证据。日期/作者：2026-10-13 / Codex。
+- 决策：标记 `已阻塞` 而不删减 9000 行、改写 fixture SQL、用直接存储写入绕过 SQL，或删除任意查询/断言。调用链证据显示 TestKit 仍经过 `ConcreteSession::Execute`、真实 Domain、事务 KV、DDL 和 optimizer；要达到 `0.499s` 必须跨任务优化通用多行 INSERT/会话执行链，不是本 commit 的最小局部接线。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- Ready 性能失败证据：槽位 `7`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`；预编译退出码 `0`；before 脚本退出码 `1`，5 次均精确执行 1 项、失败 0、超时 0，但最大 `3.686934s` > `0.499s`；报告 `target/rust-performance/task-0066-before.tsv`。
+- 实际命令：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-executor-test-jointest --lib -E 'binary_id(=astersql-executor-test-jointest) & test(=join_test::test_single_task_incremental_index_hash_join)'`；`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0066-before.tsv -- --locked --package astersql-executor-test-jointest --lib -E 'binary_id(=astersql-executor-test-jointest) & test(=join_test::test_single_task_incremental_index_hash_join)'`。
+- 临时 Rust 插桩前后执行 `cargo fmt --all`，退出码 `0`；插桩与未达标 fixture 实验均已回退，`git diff --exit-code -- pkg/executor/test/jointest/join_test.rs` 退出码 `0`。
+- 未运行 after 与 `make lint`：没有能通过门槛的代码修改，根据任务规则保留本文件供后续通用 INSERT/会话热路径优化后回归。

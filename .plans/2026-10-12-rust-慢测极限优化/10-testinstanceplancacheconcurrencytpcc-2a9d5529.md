@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 10 的测试从 10.007 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,33 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 核对 Rust/Go 同名测试及直接调用链，并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的五次预期失败证据；每次精确选中 1 项且均在 60 秒测试上限超时。
+- [x] 尝试将 DML 改为与 Go `testWithWorkers` 一致的单 worker 分发；五次复测仍全部超时，且捕获到广播 `SELECT ... FOR UPDATE` 的真实 `[tikv:1213]Deadlock`。该尝试无法达到门槛，已回退，不留未验证代码改动。
+- [x] 保存 after 五次失败数据、测试数量和死锁证据；`cargo fmt --all` 退出码 0。
+- [x] 自审确认未删减 300 个事务、10 个 worker、SQL、断言或真实锁语义；任务按真实语义下界标记已阻塞。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `10.007s` / `TIMEOUT`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 五次为 `60.164533s`、`60.172956s`、`60.153204s`、`60.172185s`、`60.160333s`，全部状态 `failed`/TIMEOUT，每次精确选中 1 个测试。
+- Rust 当前按 `step_id % 10` 分散 DML，而 Go `testWithWorkers` 将所有 DML 分配给同一随机 worker；这是真实对齐偏差，但单独修正后仍不能解除广播锁定读产生的跨事务死锁。
+- 对齐尝试后 after 五次为 `60.147897s`、`60.144148s`、`60.147373s`、`60.169558s`、`60.164607s`，全部状态 `failed`/TIMEOUT；第一次输出明确记录 `SELECT no_o_id ... FOR UPDATE` 返回 `[tikv:1213]Deadlock found when trying to get lock`。
+- 2026-10-13 基于当前共享工作区重试：原实现在新版脚本的未计时预热阶段仍于 `60.169s` 超时，脚本按设计中止且未生成虚假 sample；使用槽位 4，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`。
+- 2026-10-13 安全替代实验：利用仓库已有 `QueryStatementBatch` 将每个 worker 的完整原始/预处理 SQL 压入 session-owner 单次请求，保留 300 个事务、10 个 worker、全部 SQL 和结果对比，并恢复 Go 的单 DML worker 分发。该版未计时预热仍于 `60.149s` 超时，证明数千次跨线程通道往返不是主阻塞；实验已回退。使用槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`。
+- 重试首次编译被共享工作区 `concurrency_test.rs` 重复导入 `DbValue` 阻断（E0252）；删除重复行后编译通过。该瞬时合并故障不计入性能证据。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过移除 `FOR UPDATE`、串行化 10 个 worker、减少 300 个事务、放宽 0.499 秒门槛或忽略死锁来制造通过结果。理由：这些做法会直接削弱 Go 对齐规模、并发锁语义或正确性断言。日期/作者：2026-10-12 / Codex。
+- 决策：标记 `已阻塞`，不提交未达门槛的 DML 分发尝试。理由：保留规模和真实依赖时，测试在五次 before 和五次 after 均触发 60 秒上限；当前未找到不改变语义且可将运行时间降低两个数量级的局部修复。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 重试后保持 `已阻塞`。理由：当前仓库批处理快路已排除通道往返热点，仍在未计时预热超时；剩余方案只有（1）串行化 worker/移除 `FOR UPDATE`/减少事务，违反任务契约，或（2）重构底层事务调度、死锁恢复与锁管理，超出单测试聚焦提交的必要局部范围。需要用户选择是否改变 Go 对齐契约，或单独授权跨子系统事务重构。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：已阻塞。before 报告为 `target/rust-performance/task-0010-before.tsv`，after 报告为 `target/rust-performance/task-0010-after.tsv`；两组均是 5×1 个有效测试、五次全部超时，最大值分别为 `60.172956s` 和 `60.169558s`。
+- Cargo 证据：首次编译预热使用槽位 9（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`）；before 使用槽位 8（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`）；`cargo fmt --all` 和 after 使用槽位 3（`/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`）。所有自有槽位锁和性能锁已释放，编译缓存保留。
+- 命令：before/after 均使用本文“验证”中的精确 `rust-test-performance.sh` 命令；before 退出非零（五次超时，包装 shell 因 zsh 的只读 `status` 变量二次报错，TSV 完整落盘），after 退出码 1，`cargo fmt --all` 退出码 0。`make lint` 未运行，因为未保留 Rust 代码改动，且任务未达交付门槛。
+- 剩余风险：要解除阻塞，需要在不削减并发和锁定读的前提下，先修复底层事务调度/死锁恢复语义，再对 300 个事务和实例计划缓存执行链做跨子系统性能改造；这已超出本任务的最小局部接线范围。
+- 2026-10-13 重试命令与任务“失败验证”/“通过验证”命令相同，输出分别为 `target/rust-performance/task-0010-retry-before.tsv` 和 `target/rust-performance/task-0010-batch-after.tsv`；两者均在 execution warmup 超时，脚本退出码 1。批处理实验前 `cargo fmt --all` 退出码 0，预编译退出码 0。自有槽位与性能锁已释放，缓存保留。

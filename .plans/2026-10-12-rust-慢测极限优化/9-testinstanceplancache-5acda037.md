@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 9 的测试从 10.012 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -86,20 +86,38 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据并完成调用链分解。
+- [ ] 完成保持语义的最小优化；阻塞于真实 SQL 工作量的物理下界。
+- [ ] 保存 after、测试数量与耗时证据；未有等价实现，因此未伪造 after 或运行无关 fmt/lint。
+- [x] 自审并更新阻塞状态；按协议保留任务文件，不提交伪完成。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `10.012s` / `TIMEOUT`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 五次均超标：`60.184327s` 超时、`60.166826s` 超时、`59.582351s` 通过、`60.159475s` 超时、`54.092069s` 通过；每次均精确选中 1 项，因此排除“仅全量并发噪声”。
+- 调用链证据：`run_case` 在 5 个独立 `TestKit` 会话中对 340 个 pattern 各执行 5 组参数，每组保留 1 次直接查询和 3 次 prepared 查询；现有 TestKit 每条 SQL 都通过同步 channel 往返会话 owner 线程。
+- 物理下界：原始断言规模约为 `340 patterns * 5 parameter sets * 5 workers * (1 direct + 3 prepared) = 34,000` 次真实查询；要在 `0.499s` 内完成，平均每次端到端 parse/plan/execute/drain/assert 不得超过约 `14.7µs`。当前五次实测为 54–60 秒；仅消除 channel 往返不可能安全获得超过 100 倍提速。
+- 临时 `.take(0)` 阶段插桩已在运行 Cargo 前恢复，没有留在源码 diff 中；未删减任何 case、worker、SQL 或断言。
+- 2026-10-13 重试时，共享工作区已有通用 `TestSession::QueryStatementBatch`；曾临时将每个 worker 的原始 SQL 序列合并为一次 session-owner 请求，保留原 SQL 顺序、340 个 pattern、5 组参数、5 个 worker、每组 1 次 direct + 3 次 prepared 查询与所有结果比较。
+- 该批处理方案在槽位 6 编译成功，但严格脚本的未计时预热执行到 `40.371s` 仍未完成，已中断并恢复源码。这证明通道往返不是能够将本用例降至 `0.499s` 的主导开销。
+- 2026-10-13 继续执行时，又复用已提交的 `0ab8d3be11` binary prepared 批处理路径：每个 case 保留 5 次 direct 查询和 15 次真实 prepared 执行，5 个 worker、340 个 pattern 和所有结果断言不变。该版本在槽位 2 格式化、编译成功，但单次在 `10.771s` 收到 SIGINT，仍超过 `0.499s` 约 20 倍，随后恢复源码。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：before 在同一性能锁和 `perf-audit` 条件下稳定耗时 54–60 秒，允许沿 `main_test.rs -> TestKit -> AnalyzeSessionDatabase` 调用链扩大到通用会话批处理接线；不得减少 pattern、参数组、worker、SQL 次数或断言。日期/作者：2026-10-12 / Codex。
+- 决策：不实施“将 SQL 批处理为不返回中间结果”、“共享一次直接查询结果”、缩减 pattern/worker/重复 prepared 执行或 mock planner/executor；这些方案会移除跨会话结果一致性断言或绕过真实边界，与 Go 测试意图不等价。日期/作者：2026-10-12 / Codex。
+- 决策：任务标记 `已阻塞`，不删除任务文件，不使用 `$git-commit` 提交伪完成。解锁条件是任务所有者在“保留 34,000 次真实 SQL 和全部断言”与 `<=0.499s` 之间重新确认可实现的验收边界。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 按重试指令恢复执行，穷尽现有通用多语句批处理路径。由于未计时预热仍超过 40 秒，继续运行五次 after 不能提供达标证据，只会占用约 200–300 秒性能锁；因此及时中断、释放锁并恢复临时实现。日期/作者：2026-10-13 / Codex。
+- 决策：binary protocol 批处理是本仓已验证的最快真实 prepared 边界；它仍至少需要 `10.771s`。再往下只能减少真实 SQL 执行数、共享结果或换成非等价 mock，均与本任务硬约束冲突；不再重复测量明确不达标的五次 after。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已阻塞。实际 Cargo 槽位为 `6`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；运行 before 命令退出非零（三次 nextest 60s 超时，脚本报告超过 0.499s），报告位于 `target/rust-performance/task-0009-before.tsv`。
+- 正确性：第 3、5 次完整通过全部原始断言；第 1、2、4 次由 nextest 60s 时限终止，未观察到断言失败。有效测试数为 `1×5`，样本为 `60.184327, 60.166826, 59.582351, 60.159475, 54.092069` 秒，最大值 `60.184327s`。
+- 改动范围：没有 Rust 源码改动；仅本任务文件记录证据。因此 `cargo fmt --all`、after 和 `make lint` 未运行，Ready 交付未成立。
+- 自审：`plan.md` 未修改；`main_test.rs` 临时插桩已恢复且无 diff；未动 PingCAP/AsterSQL 版权、Cargo manifest、本地依赖覆盖、用例规模、真实依赖或 timeout。
+- 2026-10-13 重试证据：`cargo fmt --all` 在槽位 4 退出 0；精确 `cargo nextest ... --no-run` 在槽位 6 退出 0；批处理版本的 `rust-test-performance.sh` 未计时预热在 `40.371s` 收到 SIGINT，退出 1，`task-0009-after.tsv` 仅有表头，不作为 after 证据。实际编译/试运行槽位为 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`。
+- 2026-10-13 binary prepared 重试证据：槽位 `2`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；`cargo fmt --all` 退出 0，精确 `cargo nextest ... --no-run` 退出 0，单次精确 nextest 在 `10.771s` 收到 SIGINT（退出 100）。本次精确选中 1 项，未发生零测试或断言失败；临时实现已恢复且 `main_test.rs` 无 diff。
+- 最终状态仍为 `已阻塞`：实现、临时命令失败和环境竞争都已重试；剩余阻碍是验收条件本身需要所有者决策（在保留真实 34,000 次 SQL 语义的前提下调整 `0.499s` 目标，或授权改变工作量/模拟边界），不是无关回归失败。

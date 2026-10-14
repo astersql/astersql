@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 109 的测试从 3.512 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,35 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [ ] 完成保持语义的最小优化：被 Go 对齐的 3 秒墙钟睡眠与原断言形成物理下界所阻塞。
+- [x] 保存 5 次测试数量与耗时证据；因无代码修改，fmt、lint 不适用。
+- [x] 自审并更新为已阻塞；保留任务文件供后续决策。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.512s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离五次与原日志几乎一致：`3.514590s`、`3.515703s`、`3.517118s`、`3.516243s`、`3.513915s`，最大值 `3.517118s`；每次精确选中 1 项、全部功能通过、零失败、零超时，但性能门槛全部失败。
+- 调用链和 Go 对照显示，`test_graceful_shutdown` 执行 SQL `sleep(3)`，Rust 的 `query_row_sleep_select` 以 `thread::sleep(Duration::from_secs(3))` 保留该真实墙钟语义，同时原测试断言 `query_elapsed >= 2900ms`。因此 `<=0.499s` 与“保留全部断言、不降低规模、不使用不等价 mock”同时成立时存在数学上不可消除的约 `2.9s` 下界。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不把真实 3 秒睡眠替换为虚拟时间，不删除或放宽 `>=2900ms` 断言，不缩短 SQL `sleep(3)`。理由：这些手段均违反本任务明确的 Go 对齐规模、原断言和真实行为约束。日期/作者：2026-10-12 / Codex。
+- 决策：任务标记为 `已阻塞`，不修改 Rust 源码、不生成 after 伪证据，保留本文件。理由：五次基线已证明稳定物理下界，且无符合约束的优化路径。日期/作者：2026-10-12 / Codex。
+- 阻塞恢复审查：继续保留 `已阻塞`。当前 Rust 目标文件 blob 为 `0c11ab8d6f5405c13ec75016ad47eceb2edd20d2`，工作区无该源文件改动，且自初始移植提交 `fac562eba94644781b9ac3725fb9c303d0885f75` 后没有后续改变。同源 test target 任务 107 独立五次复测为 `3.521210s / 3.513509s / 3.517945s / 3.522285s / 3.526742s`，也证明下界与 binary 形式无关。日期/作者：2026-10-13 / Codex。
+- 替代方案审查：并行启动与查询只能省去启动桩的 `500ms`，无法跨过查询自身的 `>=2.9s`断言；预启动共享服务会泄漏可变表/事务/全局 registry 状态，且仍不消除查询下界；虚拟时钟、事件栅栏、缩短 SQL sleep 或移除墙钟断言都会改变原测试语义或弱化断言。因此没有符合当前约束的安全替代方案。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 验证资源：Cargo 共享槽位 `1`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；计时时独占 `target/rust-performance/perf-audit.lock`。
+- 编译预热命令（退出码 `0`）：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-graceshutdown --lib -E 'binary_id(=astersql-tests-graceshutdown) & test(=graceshutdown_test::test_graceful_shutdown)'`。
+- 严格性能命令（退出码 `1`，唯一原因为 5 个通过样本均超过 `0.499s`）：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0109-before.tsv -- --locked --package astersql-tests-graceshutdown --lib -E 'binary_id(=astersql-tests-graceshutdown) & test(=graceshutdown_test::test_graceful_shutdown)'`。
+- 证据：`target/rust-performance/task-0109-before.tsv`；5 次均精确选中 1 项，耗时依次为 `3.514590s`、`3.515703s`、`3.517118s`、`3.516243s`、`3.513915s`，最大值 `3.517118s`，零失败、零超时。
+- 阶段分解：启动桩固定等待 `500ms`；shutdown 线程在 `1s` 后发信号；主查询固定执行 `sleep(3)` 且断言至少 `2.9s`；另外的初始化、SQL 解析、同步和 teardown 只占约 `15–17ms`。
+- 代码改动：无。因此 `cargo fmt --all`、after 性能报告和 `make lint` 不适用；没有用编译成功或零测试替代行为验收。
+- 自审：未修改 `plan.md`，未修改 Rust/Go 源码，未删减 case、断言、睡眠时长、真实 shutdown 等待语义，未引入本地依赖覆盖。
+- 剩余风险：只有修改项目性能目标或明确授权使用虚拟时间/改写原断言，才能使此用例在 `0.499s` 内完成；二者都是当前任务明确禁止的语义变更。
+- 2026-10-13 恢复审查未运行重复 Cargo 计时：目标源码未变，任务 109 的五次 lib-target 证据与任务 107 的五次 test-target 证据相互验证，重复占用性能锁不会产生新判定信息。
+- 恢复所需的外部决策：必须在“每项测试 `<=0.499s`”和“保留真实 `sleep(3)` 及现有 `>=2.9s` 断言”之间明确放宽至少一项；未获得该决策前不能安全实现或标记完成。

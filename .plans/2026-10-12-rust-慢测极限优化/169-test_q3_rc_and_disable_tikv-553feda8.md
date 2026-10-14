@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 169 的测试从 2.842 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 试验保持 case/断言/规模的最小优化，但五次下界仍未达标；未达标源码已撤销。
+- [x] 保存两组 after 失败数据，每组均为 5×1 个有效测试、零功能失败/超时。
+- [x] 自审并更新为已阻塞；保留本任务文件，不提交未达标实验。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.842s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 严格 before 五次为 `3.721892 / 3.307880 / 2.802007 / 2.291301 / 2.319756s`，每次精确选中 1 个测试且功能通过，最大值 `3.721892s`。
+- 分段剖析：fixture 约 `1.9ms`；standard 模式 schema `756.068ms`、cases `519.354ms`；cascades 模式 schema `744.302ms`、cases `174.334ms`；总计 `2.338267s`。
+- 试验一用 planner 专用真实 MockStore/Domain 取消无关 stats bootstrap，只建一次只读 schema 并复用会话；五次降为 `0.775998 / 0.917414 / 0.796471 / 0.819051 / 0.817894s`，最大 `0.917414s`，仍超线。
+- 试验二在保留每个 planner 模式内单个 READ-COMMITTED 事务和 3 个 case 顺序的前提下，让 standard/cascades 使用共享只读 schema 的独立会话并行；五次为 `0.758960 / 0.980185 / 0.754642 / 0.741419 / 0.734502s`，最大 `0.980185s`，共享 Domain/optimizer 真实工作仍形成 `>0.7s` 下界。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不将 6 个 case 或 18 次查询拆为独立事务/不等价 mock 以制造达标结果。理由：这会改变 Go 对齐的每 planner 模式单个 READ-COMMITTED 事务语义；已穷尽不减 case、不减断言、不改真实依赖的局部接线。2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞。实际 Cargo 槽位为 `9`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`。before/after 命令均使用本文“验证”中的精确过滤器，退出码均为 `1`，原因仅为超过 `0.499s`；每组均精确执行 5×1 项、零功能失败、零超时。TSV：`target/rust-performance/task-0169-before.tsv` 与 `target/rust-performance/task-0169-after.tsv`。
+- 实验期间多次运行 `CARGO_TARGET_DIR="$PWD/target/rust-slot-9" cargo fmt --all`，退出码 `0`；最后一次精确 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest-tpch --lib -E 'binary_id(=astersql-planner-core-casetest-tpch) & test(=tpch_test::test_q3_rc_and_disable_tikv)'` 退出码 `0`。由于最终没有可交付源码改动且任务未达性能门槛，未运行 `make lint`。
+- 未达标的两轮源码实验和所有临时计时插桩均已撤销；自审确认 TPC-H 源码无 diff，未删除 case/断言、未改小数据或 planner 模式、未改 mock/timeout、未修改 `plan.md`。本文件保留供后续在 optimizer/Domain 共享热路具备等价优化后回归。

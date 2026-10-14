@@ -370,29 +370,57 @@ fn binding_sql_parts(sql: &str) -> Option<(String, String)> {
     Some((strip_optimizer_hint_comments(&hinted), hinted))
 }
 
+fn simple_typed_predicate_column(predicate: &ast::ExprNode) -> Option<&str> {
+    match &predicate.Kind {
+        ast::ExprKind::Binary { Op, L, R } if matches!(Op.as_str(), "=" | "==") => {
+            match (&L.Kind, &R.Kind) {
+                (ast::ExprKind::Column(column), ast::ExprKind::ParamMarker { .. })
+                | (ast::ExprKind::Column(column), ast::ExprKind::Value(_)) => {
+                    Some(column.Name.L.as_str())
+                }
+                (ast::ExprKind::ParamMarker { .. }, ast::ExprKind::Column(column))
+                | (ast::ExprKind::Value(_), ast::ExprKind::Column(column)) => {
+                    Some(column.Name.L.as_str())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 impl ConcreteSession {
-    pub(super) fn simple_typed_primary_key_predicate(
+    pub(super) fn simple_typed_indexed_predicate(
         &self,
         database: &str,
         table_name: &str,
         predicate: &ast::ExprNode,
     ) -> bool {
-        let ast::ExprKind::Binary { Op, L, R } = &predicate.Kind else {
+        let Some(column_name) = simple_typed_predicate_column(predicate) else {
             return false;
-        };
-        if !matches!(Op.as_str(), "=" | "==") {
-            return false;
-        }
-        let column_name = match (&L.Kind, &R.Kind) {
-            (ast::ExprKind::Column(column), ast::ExprKind::ParamMarker { .. })
-            | (ast::ExprKind::Column(column), ast::ExprKind::Value(_)) => &column.Name.L,
-            (ast::ExprKind::ParamMarker { .. }, ast::ExprKind::Column(column))
-            | (ast::ExprKind::Value(_), ast::ExprKind::Column(column)) => &column.Name.L,
-            _ => return false,
         };
         self.mdl_stats_table(database, table_name)
-            .and_then(|(_, table)| table.GetPkColInfo().map(|column| column.Name.L.clone()))
-            .is_some_and(|primary| primary == *column_name)
+            .is_some_and(|(_, table)| {
+                table
+                    .Columns
+                    .iter()
+                    .any(|column| column.Name.L.eq_ignore_ascii_case(column_name))
+                    && (table
+                        .GetPkColInfo()
+                        .is_some_and(|primary| primary.Name.L.eq_ignore_ascii_case(column_name))
+                        || table.Indices.iter().any(|index| {
+                            !index.Invisible
+                                && !index.MVIndex
+                                && index.VectorInfo.is_none()
+                                && index.InvertedInfo.is_none()
+                                && index.FullTextInfo.is_none()
+                                && index.ConditionExprString.is_empty()
+                                && index.Columns.first().is_some_and(|column| {
+                                    column.Length < 0
+                                        && column.Name.L.eq_ignore_ascii_case(column_name)
+                                })
+                        }))
+            })
     }
 
     pub(super) fn simple_typed_select_shape(select: &ast::SelectStmt) -> bool {
@@ -412,9 +440,10 @@ impl ConcreteSession {
             && select.WindowSpecs.is_empty()
             && select.GroupBy.is_empty()
             && select.Having.is_none()
-            && select.Where.as_ref().is_none_or(|predicate| {
-                matches!(&predicate.Kind, ast::ExprKind::Binary { Op, .. } if matches!(Op.as_str(), "=" | "=="))
-            })
+            && select
+                .Where
+                .as_ref()
+                .is_none_or(|predicate| simple_typed_predicate_column(predicate).is_some())
             && select.OrderBy.is_empty()
             && (select.Limit.is_some() || select.Where.is_some())
             && !select.Fields.Fields.is_empty()
@@ -3382,7 +3411,7 @@ impl ConcreteSession {
             return Ok(None);
         }
         if select.Where.as_ref().is_some_and(|predicate| {
-            !self.simple_typed_primary_key_predicate(&database, &source.Source.Name.L, predicate)
+            !self.simple_typed_indexed_predicate(&database, &source.Source.Name.L, predicate)
         }) {
             return Ok(None);
         }

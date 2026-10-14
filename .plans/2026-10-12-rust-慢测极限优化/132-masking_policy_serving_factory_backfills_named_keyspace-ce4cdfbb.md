@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 132 的测试从 3.298 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,20 +88,31 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化尝试；未达标方案已完整回退。
+- [x] 保存优化尝试的五次 after 失败证据；因未达标且代码已回退，lint 不适用。
+- [x] 自审并更新为已阻塞；保留任务文件，不提交失败方案。
+- [x] 2026-10-13 恢复审查：基于最新 `HEAD` 隔离复测现成的 1ms DDL dispatch RAII guard；五次仍未达标，候选已回退。
 
 ## 意外发现
 
-- 初始事实：全量并发日志记录 `3.298s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 初始事实：全量并发日志记录 `3.298s` / `PASS`；该数字仅用于入选，不当作稳定性能结论。
+- 隔离 before 精确选中 1 项×5，全部功能通过，耗时为 `3.237133, 3.195978, 3.144723, 3.122382, 3.178928s`，最大 `3.237133s`，性能门槛退出码 1。
+- 阶段插桩（提交前已删除）显示 factory/Domain bootstrap 约 `0.971s`，CREATE TABLE/INDEX/INSERT 累计约 `0.994s`，真实分布式 ALTER/backfill 结束约 `4.016s`，close 结束约 `4.070s`。
+- 把 session DDL、DXF task/subtask 测试轮询间隔临时降到 1ms 后，五次仍为 `2.754682, 2.741060, 2.628086, 3.174026, 2.826929s`，最大 `3.174026s`，退出码 1；说明固定轮询只占约 0.5s，不是可让总耗时降到 0.499s 的主瓶颈。
+- after 持有性能锁期间，其他会话仍修改 session/DXF 依赖源码，导致第 4/5 次前发生重编译；测试自身的 `exec_time` 仍由 nextest 独立记录，但这也证明当前共享工作区无法提供更严格的主机隔离。
+- 2026-10-13 恢复审查时，主工作区被无关的 `dml_runtime_test.rs` 与 `hint_runtime_test.rs` 编译错误阻断；为避免修改他人未提交内容，改在同一 `HEAD` 的 detached 临时 worktree 验证。现成的 `reduce_ddl_dispatch_loop_waiting_interval_for_test()` guard 经 `cargo fmt --all` 和精确预编译后，五次功能均通过，耗时为 `2.793900, 2.861768, 2.813882, 2.853938, 2.765294s`，最大 `2.861768s`，性能门槛退出码 1。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：回退“mock 节点跳过 100ms 调度等待”尝试。理由：耗时未降低，且 5 次中 1 次暴露 history job 尚未 Synced 和 retained dispatch 竞态，违反正确性门槛。日期/作者：2026-10-12 / Codex。
+- 决策：回退“1ms 测试轮询 guard”尝试并标记阻塞。理由：五次最大仍 `3.174026s`，距 `0.499s` 差距过大；继续达标只能绕过完整 Domain bootstrap 或真实 DXF 持久化/backfill，这会违反任务的真实依赖与 Go 对齐要求。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 再次回退只接入最新 DDL dispatch RAII guard 的恢复候选，并维持“已阻塞”而不是“已完成，待回归验证”。理由：隔离环境已取得完整 5×1 行为和性能证据，阻塞不是无关回归环境，而是保留完整 serving factory、持久化 DDL/DXF 和 backfill 语义时实测最大仍为 `2.861768s`；继续需要用户批准改变 `0.499s` 门槛/测试边界，或启动跨子系统性能项目。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：已阻塞。Cargo 槽位为 `5`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`。before 报告 `target/rust-performance/task-0132-before.tsv`，5 个样本全部功能通过但最大 `3.237133s`；优化尝试 after 报告 `target/rust-performance/task-0132-after.tsv`，5 个样本全部功能通过但最大 `3.174026s`。所有临时插桩和未达标代码均已回退，生产/测试源码无本任务残留 diff；未运行 `make lint`，因无可交付代码且性能硬门槛未满足。
+- 阻塞原因：保留全部原始语义时，完整 Canonical Domain/bootstrap 与真实持久化 DXF MODIFY/backfill 链路本身为秒级；可证安全消除的轮询等待不足以达到 `<=0.499s`，而跳过调度又已用真实失败证明会破坏 job/schema sync 语义。
+- 恢复复核：使用槽位 `2`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；隔离候选报告为 `target/rust-performance/task-0132-resume-after.tsv`，5 个样本全部功能通过，最大 `2.861768s`，但性能脚本退出码 1。候选与临时 worktree 均已回退/清理，不保留 Rust 源码变更；`make lint` 不适用，因为没有可交付代码。

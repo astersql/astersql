@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 166 的测试从 2.914 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,23 +88,36 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [ ] 完成保持语义的最小优化：已尝试调度轮询和 harness teardown 热点，但无法达到硬门槛；无收益或未达标改动已撤销。
+- [x] 保存 after、测试数量与耗时证据；after 仍越线，因此不能作为通过证据。
+- [x] 自审并更新为已阻塞；按阻塞协议保留本任务文件且不提交/删除。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.914s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离基线（槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`）精确选中 1 项且五次功能均通过，但耗时为 `3.008005s`、`3.041258s`、`3.223231s`、`3.001367s`、`3.096379s`，最大值 `3.223231s`；性能脚本因超过 `0.499s` 退出 1，报告为 `target/rust-performance/task-0166-before.tsv`。
+- 分阶段临时插桩显示：`CreateMockStoreAndSetup` 约 `7–10µs`，`NewTestKit` 约 `771ms`，schema setup 约 `9.8ms`，建表约 `33.2ms`，插入 Go 对齐的 3×64 行约 `671.7ms`；27 个建索引、检查、删除 case 合计约 `0.7s`。仅 `NewTestKit` 或完整 case 循环任一项即已超过 `0.499s`，不是单个可删除 sleep 造成的越线。
+- package harness 原有固定 1 秒 teardown wait 可在当前 Rust compatibility store 下消除，单次 nextest 因而从约 `3.36s` 降至约 `2.36s`，但测试主体本身仍远超门槛；该局部改动不足以完成任务，已撤销。
+- 尝试把真实 durable DDL 调度轮询以作用域 guard 缩短至 1ms，未绕过 owner/worker/schema-state 流程，但剖析结果没有可测收益；另一并行任务随后采用了该共享辅助设施，所以共享工作区中的相关 diff 不归本任务，且本任务不会提交它。
+- 临时计时日志已从本任务测试和共享 fixture 清除；未删除 case、断言、数据规模、真实 DDL 调度或 Go 对齐路径。
+- 默认 `127.0.0.1:2379` 被既有 Docker 服务占用；依据 RealTiKV playbook 使用独立 tag `rust-perf-0166` 和 PD 端口 `13379`，启动后验证该端点可用，测试后执行 tag 定向清理并验证 `13379` 端点不可达，未清理或借用未知常驻集群。
+- 共享工作区曾因其他并行任务改动 manifest 导致一次 `--locked` 检查报告 lock 不匹配；收到约束后未再运行任何会写 lock 的 metadata，同步仅在 manifest/lock 稳定时使用 `--locked`。该并发问题不是本性能结论的依据。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过删减 27 个列 case、3×64 行 fixture、admin check/drop 断言或替换真实 DDL 调度来追求门槛。理由：这些均属于 Go 原测试的行为与规模；分阶段数据表明必须移除其中至少一个完整语义阶段才能低于 `0.499s`，违反任务硬约束。日期/作者：2026-10-13 / Codex。
+- 决策：将任务标记为 `已阻塞`，保留任务文件且不提交。理由：两轮 1×5 实测都正确通过但性能失败，已验证的局部优化仍至少约 `2.36s`；继续突破需要跨测试进程复用已初始化 session/schema/data，或重构 session bootstrap、批量 insert 与 27 次真实 DDL 生命周期，这超出“最小热路径优化”并会改变隔离/持久化语义。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：阻塞。严格 before 命令退出 1，五次均为 1 个测试、功能状态 `ok`、最大 `3.223231s`。第一次候选优化后的相同严格命令同样退出 1，五次为 `3.089897s`、`3.267357s`、`3.102387s`、`3.360609s`、`3.864814s`，最大 `3.864814s`，报告为 `target/rust-performance/task-0166-after.tsv`；候选无收益，已撤销。
+- 验证命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0166-before.tsv -- --locked --package astersql-tests-realtikvtest-addindextest --test add_index_test -E 'binary_id(=astersql-tests-realtikvtest-addindextest::add_index_test) & test(=test_create_non_unique_index)'`（退出 1，1×5，全部功能通过但性能越线）；候选后以相同参数仅把输出改为 `target/rust-performance/task-0166-after.tsv`（退出 1，1×5，全部功能通过但性能越线）。
+- 格式化：候选 Rust 改动阶段在槽位 8（`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`）运行 `cargo fmt --all`，退出 0。候选最终撤销，因此本任务无待交付 Rust 代码。
+- 未执行 Ready `make lint`：没有达到性能硬门槛，也没有本任务可交付代码；在共享工作区上运行全量 lint 还会混入大量并行任务改动。最终只保留本任务文件中的阻塞证据。
+- 正确性风险：无本任务生产/测试逻辑交付；现有精确测试在两轮共十次运行中均通过。兼容性与性能风险：目标仍未达到；后续若扩大到跨进程 fixture 快照或 session/DDL 生命周期重构，必须单独设计隔离、schema version、job 持久化和清理契约，并重新运行严格五次门槛。
 
 ## RealTiKV 生命周期
 

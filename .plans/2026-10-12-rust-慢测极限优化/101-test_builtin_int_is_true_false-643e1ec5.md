@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 101 的测试从 3.579 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,37 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 尝试并回滚未达标的最小优化，不保留无效生产/测试改动。
+- [x] 保存两组五次严格数据、测试数量和阶段剖析证据。
+- [x] 自审源码 diff 为空，更新为已阻塞并保留任务文件。
+- [x] 恢复审查中尝试 session-owner 批处理替代，并在不达标后完整回滚任务 101 的源码改动。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.579s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 `before` 精确选中 1 项，5 次都正确通过，但耗时为 `0.903258 / 0.865778 / 0.766935 / 0.935872 / 0.863754s`，最大 `0.935872s`，性能脚本退出码 1。
+- 临时分段显示 setup 约 `84ms`、10 个 worker 约 `750ms`；操作级插桩显示 query/execute 为主要热点，prepare 次之，SET 最少。提交前已删除全部插桩。
+- Go 实现的 instance plan cache 命中路径为 lock-free，因此尝试将 Rust 命中从 `Mutex` 调整为 `RwLock` + 原子 LRU 时钟；五次为 `1.010774 / 1.241318 / 1.124894 / 0.981941 / 1.426864s`，未改善，已完整回滚。
+- 尝试仅预构造固定 PREPARE/SET SQL 并直接比较真实查询行，仍保留 10 会话 x 100 轮、每轮 PREPARE/SET/EXECUTE 和断言；五次为 `1.407071 / 1.282907 / 1.343781 / 1.082781 / 1.027731s`，未改善，已完整回滚。
+- 结论：在不删减 10 x 100 并发规模、每轮真实 SQL 边界和逐次断言的前提下，当前本地 runtime 稳定高于 `0.499s`；继续达标需要跨越本 commit 的 session prepared-query 执行链优化，不能通过弱化测试完成。
+- 恢复审查先尝试把每个 worker 的 100 组 PREPARE/SET/EXECUTE 合为十个 multi-statement 请求；使用错误的外层锁且与其他任务重叠时五次为 `1.623753 / 1.512266 / 1.824032 / 1.966526 / 1.721714s`。该组受并行负载污染，只作为否定方案的调试数据，不作为隔离性能证据。
+- 随后改用已有 `QueryStatementPairs`，仍逐项执行全部 100 组 PREPARE+SET/EXECUTE 并逐项断言；在计划规定的 `target/rust-performance/perf-audit.lock` 下五次为 `2.303238 / 2.589815 / 2.062672 / 2.003061 / 1.693767s`，均正确通过但远超门槛。执行期间仍观察到其他 Cargo 进程争用 build directory，说明共享环境没有完全静默；即使取最快值也高于门槛三倍以上，因此该替代也已回滚。
+- 恢复审查结束时，任务 101 的 `run_is_true_false` 与 HEAD 一致；同文件其余 diff 属于并行任务，未修改、未暂存、未回滚。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不保留两个未达标的优化尝试。理由：严格五次数据证明它们未降低下界，保留只会扩大风险和范围。日期/作者：2026-10-12 / Codex。
+- 决策：标记 `已阻塞`，不标记完成、不删除任务文件。理由：正确性全部通过，但两组五次严格证据均超过物理门槛，而计划明确禁止删减工作量或改不等价 mock。日期/作者：2026-10-12 / Codex。
+- 决策：恢复审查仍维持 `已阻塞`。理由：两种保持 10×100、真实 SQL 边界和逐次断言的 session-owner 批处理均显著变慢；使用 binary protocol 只 prepare 一次会删除原 Go 测试每轮 PREPARE 的行为，不能作为合规优化。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞。实际 Cargo 槽位为 `6`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`。
+- `before` 命令为本文“失败验证”命令，退出码 1，报告 `target/rust-performance/task-0101-before.tsv`；5 次各精确选中 1 项，零失败、零超时，最大 `0.935872s`。
+- 最终优化尝试的 `after` 命令为本文“通过验证”命令，退出码 1，报告 `target/rust-performance/task-0101-after.tsv`；5 次各精确选中 1 项，零失败、零超时，最大 `1.407071s`。
+- `cargo fmt --all` 在槽位 6 环境下退出码 0；精确 `cargo nextest ... --no-run` 编译退出码 0。由于最终源码 diff 为空且任务已按性能下界阻塞，`make lint` 未运行。
+- diff 自审：`builtin_func_test.rs` 和 `plan_cache_instance.rs` 均无最终差异；没有删减 case、断言、数据/并发规模、真实依赖或 PingCAP/AsterSQL 版权注释。剩余风险为 session named-prepared query 执行链本身的性能缺口，需单独上游优化后回归本任务。
+- 2026-10-13 恢复验证使用槽位 `2`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；`cargo fmt --all` 与精确 `cargo nextest ... --no-run` 均退出码 0。`QueryStatementPairs` 报告为 `target/rust-performance/task-0101-resume-pairs-after.tsv`，脚本退出码 1，5 次各精确选中 1 项、零失败、零超时，最大 `2.589815s`。由于方案不达标并已回滚，未运行 `make lint`、未提交、未删除任务文件。

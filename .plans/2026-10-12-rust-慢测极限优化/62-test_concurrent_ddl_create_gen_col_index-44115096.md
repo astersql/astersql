@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 62 的测试从 4.527 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,23 +88,31 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读总计划、任务文件、DDL/RealTiKV 规则、Cargo 清单、Rust/Go 对齐测试，并用 RustCodeGraph 核对精确符号、callees 和 impact。
+- [x] 依规则领取槽位 5，设置绝对路径 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`；未能取得性能锁，停止后已释放自有槽位锁并保留缓存。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审未修改 Rust/Go 源码、未改 `plan.md`；因共享性能锁持续被活跃任务占用，保留本任务文件供后续重试，不提交。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.527s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- RustCodeGraph 确认目标路径为 `test_concurrent_ddl_create_gen_col_index -> run_concurrent_case -> InitConcurrentDDLTest/CompatibilityContext::{start_on,stop_on}`；Rust 保留 Go 的 3 个 worker、`TestGenIndex` 分支和生成列索引列号 29，没有发现可在基线前合理删减的规模。
+- 槽位 5 的前一持有进程已终止，核对 PID 后按规则回收遗留锁并成功领取；等待性能锁 780 秒期间，任务 57 的主会话始终存活，且后续把锁记录更新为 `task=57-profile` / `pid=87048`，证明该锁不是可安全删除的遗留锁。
+- 本任务没有启动 `rust-perf-0062` playground，也没有运行 Cargo 命令或性能脚本；中止等待后槽位 5 已释放，随即被任务 64 合法领取。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不删除任务 57 的性能锁，也不绕过仓库级性能锁运行五次计时。理由：持有会话和新的 profile 进程仍活跃，强制回收或并行计时都会违反任务锁规则并污染证据。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 阻塞原因：仓库级 `target/rust-performance/perf-audit.lock` 在 780 秒自动等待期间持续归属任务 57 的活跃会话，本任务无法合法启动 RealTiKV 或执行严格 before 计时。
+- 五次数据：未产生（`task-0062-before.tsv` 不存在）；这是阻塞的直接结果，不用非独占数据或零测试代替。已运行检查仅为 RustCodeGraph `status/explore/callees/impact`、Go/Rust 意图对照、Git diff/status 冲突检查、槽位与性能锁所有者/PID 核对。
+- 未验证：精确测试数量、before/after 五次耗时、RealTiKV 行为、`cargo fmt --all`、`make lint`。由于没有代码修改，fmt/lint 本轮不运行；任务不满足完成门槛，不提交也不删除本文件。
+- 后续：等任务 57 完成 profile 并释放性能锁后，重新领取任意空闲 Cargo 槽位，从 before 命令恢复。
 
 ## RealTiKV 生命周期
 

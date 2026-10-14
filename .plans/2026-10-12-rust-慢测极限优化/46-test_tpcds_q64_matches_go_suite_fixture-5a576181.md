@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 46 的测试从 5.458 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,30 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并撤销临时诊断插桩；因真实 planner 下界未达标，保留任务文件供后续解除阻塞。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.458s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 隔离 before 五次均正确通过且每次精确选中 1 个测试，耗时分别为 `6.661891s`、`6.635903s`、`6.200394s`、`6.089678s`、`6.416931s`，最大值 `6.661891s`，脚本退出码 `1`（只因超过 `0.499s` 门槛）。
+- 临时阶段计时显示 fixture 加载约 `4.5ms`；普通 planner 模式 schema setup 约 `1.118s`、真实 Q64 `EXPLAIN` 约 `3.827s`；cascades 模式 setup 约 `1.023s`、真实 Q64 `EXPLAIN` 约 `1.311s`，总计约 `7.47s`。
+- macOS `sample` 在子进程上的 3 秒采样显示查询阶段热点为 `canonical_find_best_task_router_inner`、MPP/hash join 物理候选的递归、clone 与 attach；setup 阶段包含 13 张表的 `TableInfo` JSON 编解码。这些是被测真实行为，不是可删除的 harness 噪声。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过删除 standard/cascades 任一模式、跳过 13 张表 setup、复用预计算结果、改用非等价 mock 或只比较 fixture 文本来达标。理由：这些方案都会删减计划明确要求的全部 Go 对齐规模、真实 planner 边界或断言。日期/作者：2026-10-12 / Codex。
+- 决策：将本任务标记为 `已阻塞`，不扩展为对 planner 核心全局寻优算法的大规模重构。理由：单是两次真实 Q64 规划已约 `5.14s`，要达到 `0.499s` 需要跨 `pkg/planner/core/operator/physicalop/base_physical_plan.rs` 的数量级优化；采样未找到可在本测试局部安全消除的单一重复热点。这超出单一 Go commit 对齐任务的最小必要局部接线边界，且会影响整个 planner。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：`已阻塞`。正确性五次均通过，但五次最大耗时 `6.661891s` 远高于 `0.499s`。
+- before 证据：`target/rust-performance/task-0046-before.tsv`；采样证据：`target/rust-performance/task-0046-sample.txt`；阶段计时的临时源码插桩已全部撤销，`pkg/planner/core/casetest/tpcds/tpcds_test.rs` 相对 HEAD 无本任务 diff。
+- Cargo 槽位：before 使用槽位 `7`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`；诊断编译/阶段计时还使用槽位 `4`、`1`、`9`，各阶段结束后均已删除本任务的锁并保留缓存。
+- 精确 before 命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0046-before.tsv -- --locked --package astersql-planner-core-casetest-tpcds --lib -E 'binary_id(=astersql-planner-core-casetest-tpcds) & test(=tpcds_test::test_tpcds_q64_matches_go_suite_fixture)'`，退出码 `1`，有效测试数 `1×5`，失败/超时 `0/0`。
+- 未运行 after、`cargo fmt --all` 和 `make lint`：没有可交付的 Rust 代码改动，且 before 已证明性能硬门槛未达到；不用格式化/静态检查代替缺失的性能通过证据。
+- 剩余风险：后续若优化 `canonical_find_best_task_router_inner` 的候选缓存、clone/attach 或 MPP 分区匹配，必须使用其他 planner golden 和精确回归测试证明不会改变候选可行性、列 ID 前沿和计划文本。

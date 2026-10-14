@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 69 的测试从 4.276 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,23 +87,33 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确入口、callees/callers/impact，并取得 Cargo 槽位与性能锁。
+- [x] 在独立 `rust-perf-0069` RealTiKV playground 上取得 before 超时门槛的失败证据。
+- [x] 定位不可在本 commit 范围内删减的下界：每个独立进程都执行 RealTiKV Domain/bootstrap、DDL，并对 10,000 行、4 个 KV group 做真实排序、写入、历史摘要查询、全表读取和 `admin check table`。
+- [ ] 未取得 after；不允许通过改 mock、减行数/分组/断言或放宽门槛越过 0.499s 要求。
+- [x] 自审确认未修改任何 Rust 源码、测试、Cargo manifest 或 `plan.md`；仅更新本任务记录并保留文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.276s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- RealTiKV 隔离预热为 `6.405s`，前三个有效 audit sample 为 `5.023676s`、`4.547541s`、`4.939773s`，全部正确通过但均远超 `0.499s`。连同来源全量样本 `4.276s`，五个观测值为 `4.276, 6.405, 5.023676, 4.547541, 4.939773s`。
+- 首次 before 的第 4、5 轮与后续两次重试被共享工作区中其他任务的 Cargo manifest/`Cargo.lock` 瞬时不一致打断；`--locked` 在运行间拒绝更新锁文件，因此两轮为零测试，不当作有效证据。
+- 按调用链和源码检查，`encoded_input` 在设置 `REAL_TIKV_PD` 时必须打开真实 TiKV store、初始化 Domain，并执行 drop/create database 与 create table；主体还保留 10,000 行、4 个 KV group、持久化 meta、真实 region rewrite、历史摘要与表完整性断言。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不把 `REAL_TIKV_PD` 路径替换为文件内的 memory mock，不缓存跨进程可变 Domain/session，不减少 10,000 行、4 个 group 和断言。理由：都会违反本任务的真实服务与 Go 对齐要求。日期/作者：2026-10-13 / Codex。
+- 决策：标记 `已阻塞`，不创建源码 diff、不运行不适用的 fmt/lint、不提交。理由：已有真实执行证据证明物理/协议路径约为门槛的 9–13 倍；同时并行任务持续修改 Cargo 元数据，阻止规定脚本获得连续 5/5 有效样本。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：已阻塞。精确测试在真实 TiKV/PD/etcd 上正确通过，但有效隔离耗时为 `5.023676s`、`4.547541s`、`4.939773s`（预热 `6.405s`），无一次接近 `0.499s`。
+- 实际槽位：首次成功预编译/测量使用槽位 `9`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；重试又动态取得槽位 `8` 和 `4`，对应绝对路径分别为 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8` 与 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`；所有自有锁均已清理，缓存保留。
+- 命令/退出码：规定 before 命令在槽位 9 退出 `1`，报告 `target/rust-performance/task-0069-before.tsv`，其中 3 个有效测试全部 `ok`、失败/timeout 为 0，第 4、5 轮因共享 Cargo 锁不一致为零测试；槽位 8 重试在脚本预热阶段同样退出 `1`，槽位 4 重试在精确预编译阶段退出 `101`。
+- 命令/退出码：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-realtikvtest-importintotest4 --test global_sort_test -E 'binary_id(=astersql-tests-realtikvtest-importintotest4::global_sort_test) & test(=test_global_sort_recorded_step_summary)'` 首次在槽位 9 退出 `0`；`cargo metadata --format-version=1 --all-features --filter-platform aarch64-apple-darwin --locked` 在两个稳定窗口退出 `0`，但随后均被其他任务再次改变。
+- RealTiKV 生命周期：每次测量只在获得性能锁后启动 tag `rust-perf-0069`，PD `127.0.0.1:2379` 就绪后设置 `REAL_TIKV_PD=127.0.0.1:2379`；退出时停止 playground、执行 `tiup clean rust-perf-0069 --all`，并确认当前 PD 端点不可达。
+- 验证限制：未获得规定脚本的连续 5/5 有效 sample，未获得 after；无 Rust 代码改动，因此 `cargo fmt --all` 和 Ready `make lint` 不适用。后续只能在静态 workspace 中重跑，或由后续 Go 对齐 commit 对真实初始化/协议边界做等价优化；本 commit 不应扩大为重建 RealTiKV bootstrap 子系统。
 
 ## RealTiKV 生命周期
 

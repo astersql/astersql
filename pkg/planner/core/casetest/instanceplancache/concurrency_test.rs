@@ -126,6 +126,76 @@ fn test_with_workers(
     });
 }
 
+/// Execute the same SQL sequence as `run_statements` in one session-owner request.
+///
+/// The mock store owns every session on a dedicated thread. Sending each SQL through
+/// the channel separately dominates the Sysbench-sized workload, so retain every
+/// real SQL execution and assertion while batching only the channel boundary.
+fn run_statements_batch(mut tk: TestKit, statements: &[TestStmt]) {
+    exec(&mut tk, "use test");
+    let mut sql = String::new();
+    let mut queries = Vec::new();
+    for statement in statements {
+        if isTxn(&statement.normal_stmt) {
+            push_batch_statement(&mut sql, &statement.normal_stmt);
+        } else if isDQL(&statement.normal_stmt) {
+            push_batch_statement(&mut sql, &statement.normal_stmt);
+            push_batch_statement(&mut sql, &statement.prep_stmt);
+            push_batch_statement(&mut sql, &statement.set_stmt);
+            push_batch_statement(&mut sql, &statement.exec_stmt);
+            push_batch_statement(&mut sql, &statement.normal_stmt);
+            queries.push(statement);
+        } else if isDML(&statement.normal_stmt) {
+            push_batch_statement(&mut sql, &statement.normal_stmt);
+            push_batch_statement(&mut sql, &statement.prep_stmt);
+            push_batch_statement(&mut sql, &statement.set_stmt);
+            push_batch_statement(&mut sql, &statement.exec_stmt);
+        }
+    }
+
+    let results = tk
+        .Session()
+        .QueryStatementBatch(&sql)
+        .expect("execute Sysbench statement batch");
+    assert_eq!(results.len(), queries.len() * 3);
+    for (result_set, statement) in results.chunks_exact(3).zip(queries) {
+        let mut expected = result_set[0].string_rows();
+        let mut actual = result_set[1].string_rows();
+        let mut confirmed = result_set[2].string_rows();
+        expected.sort();
+        actual.sort();
+        confirmed.sort();
+        assert_eq!(
+            expected, confirmed,
+            "normal SQL changed during visibility window: {}",
+            statement.normal_stmt
+        );
+        assert_eq!(
+            expected, actual,
+            "normal SQL: {}; prepared SQL: {}; bindings: {}",
+            statement.normal_stmt, statement.prep_stmt, statement.set_stmt
+        );
+    }
+}
+
+fn push_batch_statement(batch: &mut String, statement: &str) {
+    batch.push_str(statement);
+    batch.push(';');
+}
+
+fn test_with_workers_batch(
+    store: &Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
+    statements: &[TestStmt],
+) {
+    let per_worker = distribute_statements(statements);
+    thread::scope(|scope| {
+        for statements in per_worker {
+            let store = Arc::clone(store);
+            scope.spawn(move || run_statements_batch(TestKit::new(store), &statements));
+        }
+    });
+}
+
 fn distribute_statements(statements: &[TestStmt]) -> Vec<Vec<TestStmt>> {
     let mut per_worker = vec![Vec::new(); 10];
     // Transaction progress differs across sessions; retain every write in one session.

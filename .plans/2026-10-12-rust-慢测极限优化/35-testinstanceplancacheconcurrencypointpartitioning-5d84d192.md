@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 35 的测试从 5.914 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,35 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 试验保持 10 worker、100 轮、随机表选择、真实 prepare/query/drop 和逐轮断言的最小优化；无性能收益后已撤回。
+- [x] 保存第二组五次数据、测试数量和失败原因；因未保留 Rust 代码改动，Ready lint 不适用。
+- [x] 自审并更新为已阻塞；保留本文件供后续扩大生产优化范围时回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.914s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 隔离 before 的五次功能执行均通过，但耗时为 `1.084257s` / `1.022797s` / `1.194919s` / `1.405255s` / `1.175051s`，最大值 `1.405255s`，严格门槛脚本退出码 `1`。
+- 临时改为直接调用真实 `PrepareStmt` / `QueryPreparedStmt` / `DropPreparedStmt`，只跳过 `PREPARE` / `SET` / `EXECUTE` 外层文本包装；保留两张 10 分区表、10 worker × 100 轮、每轮随机表与参数及结果断言。五次仍为 `1.134425s` / `1.052340s` / `1.272553s` / `1.131978s` / `1.052353s`，证明外层解析不是主瓶颈；该实验改动已撤回。
+- 执行期间工作区有其他并行任务的改动，本任务未修改、未回滚它们。
+- 2026-10-13 恢复任务后，利用最新共享 `QueryStatementBatch` 通道把每个 worker 的 100 组 `PREPARE + SET + EXECUTE` 交给同一 session-owner 请求；仍保留 10 worker、2 张 10 分区表、1,000 组真实 prepare/query 和 1,000 个结果断言。五次耗时为 `1.755874s` / `1.546392s` / `1.337254s` / `1.352455s` / `1.088850s`，比原路径更慢，该实验已撤回。
+- 又试验仅清理本用例实际使用的 `test` database，不改变业务执行；独占性能锁下单次仍为 `1.712s`，证明 fixture 清理不是主瓶颈，该实验也已撤回。
+- 恢复后首次复测曾因共享工作区 `pkg/session/runtime/typed_adapter_bridge.rs` 的临时未完成调试引用编译失败；对应并行 owner 随后自行修正，后续精确预编译和行为执行已通过，不将它当作本任务阻塞。
+- 继续追踪到 `execute_prepare` 会在同名同 SQL 重新 PREPARE 时丢弃内部 typed-plan handle。试验仅在 SQL 和 database 完全相同时继承该内部元数据，仍保留每轮解析、statement 替换、catalog/generation 校验和真实执行。五次为 `2.956478s` / `2.756716s` / `2.911915s` / `3.163710s` / `2.659233s`，无收益且回退，实验已撤回。调用链证据显示 `BuildPreparedKVPhysicalPlan` 对命中缓存的分区 scan 仍显式重建 logical plan 并调用 `DoOptimize`，因此仅保留 handle 无法消除主成本。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过事先准备两条 statement、减少每轮 prepare/drop、减少 worker/轮数，或改成非分区 mock 来达标。理由：这些都会删减 Go 用例的核心工作量或改变真实依赖。日期/作者：2026-10-12 / Codex。
+- 决策：状态记为已阻塞。若要继续，需独立的生产性能任务优化 `pkg/session/runtime/dispatch.rs` 中每轮真实 prepare、参数绑定、分区点查和 record-set drain 链路，并跑广泛会话/分区回归；该范围不能依据单一缓测任务安全扩大。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 重新评估后仍保持已阻塞。原因不是锁屏、Cargo 槽位、性能锁或权限，而是在不删减 Go 对齐工作量时，1,000 次真实重新 PREPARE/分区规划/执行的可测下界稳定高于 `0.499s`；已排除 channel 往返和 fixture 清理。继续需扩大为生产 prepare/planner 缓存重构，这不是对应 Go commit 增量的最小局部接线。日期/作者：2026-10-13 / Codex。
+- 决策：不在任务 35 中删除 `planning.rs` 对缓存分区 scan 的重优化保护。该保护的注释明确要求在所有 typed cached scan 都能重建分区 topology 后才能移除；直接删除会影响静态/动态剪枝、hash/range/list 分区和 schema-version 变化，需要独立设计与广泛分区回归。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞：`target/rust-performance/task-0035-before.tsv` 与 `target/rust-performance/task-0035-after.tsv` 各有 5 个 sample，每次均精确执行 1 个测试、状态 `ok`、零失败/超时，但最大耗时分别为 `1.405255s` 和 `1.272553s`，未达 `0.499s` 门槛。
+- 实际 Cargo 槽位：before 使用槽位 `1`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；实验/after 使用槽位 `10`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`。两阶段均按所有者检查清理自己的 Cargo/性能锁，保留编译缓存。
+- 保留的生产与测试代码改动：无。`cargo fmt --all` 退出码 `0`；精确预编译退出码 `0`；两次严格性能脚本因耗时超限退出码均为 `1`。因无可交付代码改动，未运行 `make lint`，未删除本任务文件，未创建提交。
+- 2026-10-13 恢复验证：批处理实验使用槽位 `1`，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；`cargo fmt --all` 与精确预编译退出码均为 `0`；`target/rust-performance/task-0035-final-after.tsv` 含 5 个状态 `ok`的精确单测 sample，严格性能脚本因最大耗时 `1.755874s` 退出 `1`。窄 fixture 探针也使用槽位 `1` 与同一绝对路径，功能通过但耗时 `1.712s`。两阶段的本会话 Cargo/性能锁均已清理。
+- 内部 typed-plan 继承实验使用槽位 `1` 与同一绝对 `CARGO_TARGET_DIR`；`cargo fmt --all` 和精确预编译退出 `0`；`target/rust-performance/task-0035-cache-after.tsv` 的 5 个 sample 全部功能通过，但最大耗时 `3.163710s`，脚本退出 `1`。实验代码已撤回，本会话锁已清理。

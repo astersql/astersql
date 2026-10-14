@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 79 的测试从 4.002 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,7 +87,7 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位；性能锁因共享资源环形等待未能取得。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
@@ -96,11 +96,14 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `4.002s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 实际领取 Cargo 槽位 4，绝对路径为 `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-4`。预热命令两次均在 Cargo metadata 阶段以退出码 102 失败：共享工作区 `Cargo.lock` 存在与当前 manifests 不一致的其他任务未提交改动（`astersql-tests-realtikvtest-addindextest` 多出 `astersql-session` 依赖），`--locked` 因此拒绝更新锁文件。
+- 同期 10 个 Cargo 槽位一度全部被活跃 PID 占用，且性能锁持有者反向等待 Cargo 槽位，其他多个槽位持有者等待性能锁；按规则未删除任何仍活跃的他人锁。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不回退或修改其他任务的 `Cargo.lock` 改动，也不去掉任务要求的 `--locked`。理由：两者都会越出任务范围并破坏可复现验证。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞：未修改源码或测试，未获得五次 sample。两次实际命令均为 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest-index --lib -E 'binary_id(=astersql-planner-core-casetest-index) & test(=index_test::test_row_function_match_the_index_range_scan)'`，退出码分别为 102、102，均因无法在 `--locked` 下更新 `Cargo.lock` 而未进入测试执行，有效测试数为 0。因缺少完成证据，任务文件保留，不标记完成、不提交。待共享 `Cargo.lock` 恢复与 manifests 一致后，重新领取槽位和性能锁，再执行 before 五次测量。

@@ -352,7 +352,6 @@ fn build_typed_physical_plan(
             maximum_chunk_size,
         )?));
     }
-
     if let Some(lock) = plan.as_any().downcast_ref::<LegacyPhysicalLock>() {
         if !locking || lock.LockType != "for update" {
             return Err(BuildError::new(

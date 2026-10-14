@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 198 的测试从 2.567 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -88,8 +88,8 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位 2；性能锁因与 RealTiKV 独占资源持续被其他活跃任务占用而未能取得。
+- [ ] 保存 before 的预期失败证据和阶段耗时分解；未获得合法的 RealTiKV + 性能锁窗口，因此不得执行五次计时。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
 - [ ] 自审、更新状态、提交并删除任务文件。
@@ -97,14 +97,22 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.567s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-13 取得共享槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；精确 `cargo nextest ... --no-run` 编译预热退出码为 0。
+- 默认 PD 端口 `127.0.0.1:2379` 在本任务尝试启动前已可达；进程与任务 93/197 的 `rust-perf-0093` / `rust-perf-0197` playground 仍活跃。本任务没有借用该未知常驻集群作为证据。
+- `tiup` 位于 `/Users/xiangmin/.tiup/bin/tiup`，初次启动因 PATH 未包含该目录退出 127，未创建本任务 playground。补正 PATH 后未再启动，因为其他 RealTiKV 任务尚未清理默认端口。
+- 仓库级性能锁在等待期间依次由任务 194、95、99、96 等活跃进程持有；未发现可安全删除的遗留锁。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不在其他 RealTiKV playground 存活时借用集群或启动并行 playground，也不删除有活跃进程的性能锁。理由：任务要求真实服务边界与仓库级独占计时，资源重叠无法产生合法的五次数据。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 状态：已阻塞。代码与测试逻辑未修改；Rust/Go 静态对齐复核确认保留 3 张表×3 个列 ID（共 9 次普通索引 DDL）及 Rust 的 9 条 multi-schema SQL/失败状态断言。
+- 已运行检查：RustCodeGraph `status`/`explore`/`query`/`callees`/`callers`/`impact`；精确预编译 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-tests-realtikvtest-addindextest --test multi_schema_change_test -E 'binary_id(=astersql-tests-realtikvtest-addindextest::multi_schema_change_test) & test(=test_multi_schema_change_create_non_unique_index)'`，退出码 0。
+- 未运行检查：`before`/`after` 五次计时、`cargo fmt --all`、`make lint`。因没有代码改动，fmt/lint 不是当前阻塞证据；五次数据因无法取得 RealTiKV + 性能锁独占窗口而不存在，不以零测试或他人集群代替。
+- 后续重试前先确认 `127.0.0.1:2379` 不可达且 `target/rust-performance/perf-audit.lock` 可原子创建，再用专属 tag `rust-perf-0198` 完成启停、五次 before 与必要的 after。
 
 ## RealTiKV 生命周期
 

@@ -24,7 +24,7 @@ use std::thread;
 use astersql_testkit::TestKit;
 use astersql_testkit::db_driver::DbValue;
 
-use super::support::{Harness, exec, query, rand, rows};
+use super::support::{Harness, exec, insert_rows, query, rand, rows};
 
 /// 基于同一存储启动十个独立会话，使实例级缓存承受真实的跨会话并发复用。
 fn run_concurrently<F>(store: &Arc<astersql_testkit::mockstore::AnalyzeStatsStore>, worker: F)
@@ -50,7 +50,7 @@ fn run_in_case(
     parameter: fn(&str, &str) -> String,
     value: fn() -> (String, String),
 ) {
-    let mut harness = Harness::new();
+    let mut harness = Harness::new_for_test_database();
     exec(&mut harness.tk, "use test");
     exec(
         &mut harness.tk,
@@ -66,29 +66,52 @@ fn run_in_case(
             &mut harness.tk,
             &format!("create table {table} (a {column_type}{key})"),
         );
-        for i in 0..100 {
-            exec(
-                &mut harness.tk,
-                &format!("insert into {table} values ({})", literal(i)),
-            );
-        }
+        let values = (0..100)
+            .map(|i| format!("({})", literal(i)))
+            .collect::<Vec<_>>();
+        insert_rows(
+            &mut harness.tk,
+            &format!("insert into {table} values"),
+            &values,
+        );
     }
     run_concurrently(&harness.store, move |mut tk| {
         exec(&mut tk, "use test");
-        for _ in 0..100 {
+        let mut statement_batches = Vec::with_capacity(10);
+        let mut statements = String::new();
+        let mut expected_rows = Vec::with_capacity(100);
+        for iteration in 0..100 {
             let (v1, v2) = value();
             let table = format!("t{}", rand::intn(4) + 1);
-            exec(
-                &mut tk,
-                &format!("prepare st from 'select a from {table} where a in (?, ?)'"),
-            );
-            exec(&mut tk, &parameter(&v1, &v2));
+            statements.push_str(&format!(
+                "prepare st from 'select a from {table} where a in (?, ?)'; {}; execute st using @p1, @p2;",
+                parameter(&v1, &v2),
+            ));
             // 查询未声明顺序；先规范化期望值，再与排序后的结果比较。
             let mut expected = vec![v1, v2];
             expected.sort();
-            query(&tk, "execute st using @p1, @p2")
-                .Sort()
-                .Check(rows(&expected));
+            expected_rows.push(rows(&expected));
+            if iteration % 10 == 9 {
+                statement_batches.push(std::mem::take(&mut statements));
+            }
+        }
+        // 真实 session 仍按顺序执行全部 100 组 PREPARE、SET、EXECUTE；批处理只让
+        // parser 分十次接收 30 条语句，避免超长 SQL 的非线性开销，并保留每次
+        // EXECUTE 的独立结果集。
+        let session = tk.Session();
+        let mut results = Vec::with_capacity(100);
+        for statements in statement_batches {
+            results.extend(
+                session
+                    .QueryStatementBatch(&statements)
+                    .expect("execute IN predicate statement batch"),
+            );
+        }
+        assert_eq!(results.len(), expected_rows.len());
+        for (result, expected) in results.iter().zip(expected_rows) {
+            let mut actual = result.string_rows();
+            actual.sort();
+            assert_eq!(actual, expected);
         }
     });
 }

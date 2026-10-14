@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 49 的测试从 5.200 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,7 +87,7 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位；性能锁被其他任务的活跃锁顺序反转持续阻塞。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
@@ -96,11 +96,15 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.200s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12：动态领取槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；精确目标的 `cargo nextest --no-run` 编译预热成功（退出码 0）。
+- 2026-10-12：严格计时前发现任务 152 活跃进程先持有 `target/rust-performance/perf-audit.lock` 后等待槽位 6，同时任务 158 活跃进程持有槽位 6 后等待该性能锁，构成活跃进程间的锁顺序反转。按规则不删除他人活跃锁、不终止他人进程；持续等待约十分钟后仍未自动回收。
+- 2026-10-12：因始终未合法获得性能锁，`task-0049-before.tsv` 未产生，五次数据为“未执行×5”，不将零样本冒充完成证据。本任务自己的等待进程已停止，槽位 1 锁已释放，编译缓存保留。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不通过删除或抢占其他活跃任务的锁来获得计时窗口；无五次样本时不修改代码、不删除任务文件、不提交。理由：性能独占规则和完成硬门槛优先于调度速度。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞：源码与测试未修改，严格计时五次均未执行，因此没有正确性或 `<0.500s` 证据，也未运行 `cargo fmt --all` / `make lint`。已运行的检查为 RustCodeGraph `status` / `explore` / `impact`、Go/Rust 对照阅读，以及槽位 1 下的精确 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-planner-core-casetest --lib -E 'binary_id(=astersql-planner-core-casetest) & test(=tiflash_predicate_push_down_test::tiflash_inverted_index_matches_go_goldens)'`（退出码 0）。恢复时需先解除任务 152/158 的锁顺序反转，然后重新动态领取槽位并执行 before 五次计时。

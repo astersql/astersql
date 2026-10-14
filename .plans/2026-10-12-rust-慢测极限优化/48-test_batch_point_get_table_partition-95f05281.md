@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 48 的测试从 5.310 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,7 +87,7 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位 10；性能锁因仓库级资源死锁无法取得。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
@@ -96,11 +96,17 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.310s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 22:26 +08:00 确认仓库级资源死锁：任务 152 进程 PID 14399 持有 `target/rust-performance/perf-audit.lock/task-0152.owner`，却等待 `target/rust-slot-locks/slot-6.lock`；任务 158 进程 PID 14002 持有槽位 6，却等待性能锁。两进程均活跃且已相互等待约 10 分钟，不能删除他人活跃锁或终止他人进程。
+- 任务 48 已动态领取槽位 10，绝对路径 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`；未能进入 Cargo 预热或严格计时，退出前已释放自己的槽位锁并保留缓存。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不绕过或破坏活跃锁，将任务标记为 `已阻塞`并保留本文件。理由：严格性能计时必须持有仓库级性能锁，当前死锁由其他任务的活跃进程构成，本任务无权终止。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞；未改动 Rust 源码、测试、case、断言、数据规模或 timeout。
+- 拟执行的 before 命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0048-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=integration_partition_test::test_batch_point_get_table_partition)'`。命令未进入脚本，因性能锁死锁中止；因此有效测试数为 0，五次 sample 均为“未产生”，不将缺失数据伪报为通过。
+- 已完成静态证据：RustCodeGraph 定位精确测试、`run_test_under_cascades`、fixture 加载、EXPLAIN/结果检查调用链；对照 Go 版确认 classic/cascades、dynamic/static、全部建表数据和断言规模必须保留。
+- 未运行 `cargo fmt --all`、after 性能命令或 `make lint`：无代码改动，且活跃性能锁规则禁止并行高负载命令。

@@ -4,6 +4,7 @@ use super::system_session::SystemSessionPool;
 use astersql_ddl_jobsubmit as submit;
 use astersql_meta_model::group_3::{Job, JobState};
 use std::sync::Arc;
+
 struct Bdr;
 impl submit::BdrPolicy for Bdr {
     fn is_denied(&self, role: &str, tp: submit::JobType, _: &submit::JobArgs) -> bool {

@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 154 的测试从 3.036 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,8 +87,8 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文，动态取得 Cargo 槽位 7，并完成目标测试的编译预热。
+- [ ] 保存 before 的预期失败证据和阶段耗时分解；性能锁与 Cargo 槽位发生跨任务循环等待，未能安全开始计时。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
 - [ ] 自审、更新状态、提交并删除任务文件。
@@ -96,11 +96,17 @@
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.036s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 阻塞：任务 152（PID 14399）持有 `target/rust-performance/perf-audit.lock` 并固定等待 `slot-6.lock`；任务 158（PID 14002）持有 `slot-6.lock` 并等待性能锁。两个进程均存活，形成循环等待。根据共享锁规则，不得删除其他活跃任务的锁或进程。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不中止 PID 14399/14002，不删除或改名它们的锁目录；将本任务标记为已阻塞并保留任务文件。理由：操作其他活跃任务会违反 Cargo/性能锁所有权规则并可能破坏其验证。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已用 RustCodeGraph 核对精确测试、`newExternalCheckpointStorage` 和 Go `getTS` 对齐路径；未修改生产或测试代码。
+- 实际 Cargo 槽位：7；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-7`。
+- 已运行编译预热：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-br-pkg-checkpoint --lib -E 'binary_id(=astersql-br-pkg-checkpoint) & test(=external_storage_test::get_ts_uses_go_aggressive_pd_attempt_count)'`，退出码 0。
+- before 五次数据：未产生（run 1–5 均为 N/A）；原因是上述活跃锁循环等待，不是测试失败。因没有五次性能证据，不宣称达标，不删除本文件。
+- Ready 检查：无 Rust 代码改动，`cargo fmt --all` 和 `make lint` 不适用；未执行 after。

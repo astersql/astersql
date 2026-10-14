@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 159 的测试从 2.991 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,24 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确测试的 callees/callers/impact，领取 Cargo 槽位 5 并完成精确目标编译预热。
 - [ ] 保存 before 的预期失败证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并记录阻塞；未修改源码，任务文件保留供重试。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `2.991s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 领取仓库共享槽位 5，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`；`cargo nextest list --locked --package astersql-planner-core-casetest-rule --lib -E 'binary_id(=astersql-planner-core-casetest-rule) & test(=rule_outer_to_semi_join_test::outer_to_semi_go_golden_cases_execute_in_both_planners)'` 退出码 0，精确列出 1 个测试，编译预热用时 42.14s。
+- 仓库级性能锁发生交叉等待：存活进程 PID 14399（任务 152）持有 `target/rust-performance/perf-audit.lock` 并固定等待 `target/rust-slot-locks/slot-6.lock`；存活进程 PID 14002（任务 158）持有槽位 6 并等待同一性能锁。已读取两个进程完整命令确认资源获取顺序反转。
+- 从 22:17 起以不超过 60 秒的短轮询连续观察至少五次，两个锁的 owner 和存活 PID 均未变；依性能锁规则不得删除无法确认失效的锁，因此未运行不受锁保护的计时。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不打断其他任务进程、不删除他人的锁、不绕过性能锁运行 before；释放本任务槽位 5 并标记阻塞。理由：两个 owner 进程仍存活，强行清理会违反共享槽位和性能独占规则，且不受锁保护的数据不能作为完成证据。日期/作者：2026-10-12 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞：精确测试已编译并确认数量为 1，但 before 的五次性能运行因他任务的活跃锁循环等待而无法合法开始。本任务未修改 Rust 源码、测试或 `plan.md`，因此未运行 fmt/lint，未生成 before/after TSV，也未提交或删除任务文件。后续需先解除任务 152/158 的资源顺序反转，然后从 before 五次隔离测量重试。

@@ -4,13 +4,25 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 38 的测试从 5.789 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
 来源任务：`target/rust-test.4uY80L` 第 38 个 `>=0.5s` 唯一测试身份
 
 预计会话范围：单一 binary/test 身份、单一性能门槛和一次聚焦提交；先复核噪声，再只修改剖析证明的热路径。原始测试若已失败或超时，正确性恢复与性能达标属于同一任务。
+
+2026-10-13 用户授权扩大范围：可修改 `pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/planning.rs`、相关 executor 与 TestKit 通用边界，但必须保持 Go 的 prepared statement 语句次数、跨会话 instance plan cache、事务、warning、kill signal、RU/资源统计、cache invalidation 和错误语义。禁止测试专用快路径。
+
+## 底层扩展 ExecPlan
+
+本节按仓库根目录 `PLANS.md` 维护。目标是让通用 prepared SELECT plan-cache-hit 路径减少重复计算和分配，使本测试保持 Go 对齐的 10 worker×100 组语句与逐结果断言后，五次最大耗时仍不超过 0.499 秒。这一改进应对所有同类 prepared SELECT 生效，而不识别测试名或 SQL 字面量。
+
+里程碑一是在性能锁下对最新十批次实现采样 CPU/分配热点，接受结果是能将主要耗时归因到精确通用函数，而不是根据墙钟推测。里程碑二是在该函数上实施最小优化，并用新回归测试证明 cache miss、cache hit、参数变化、schema/cache generation 失效和错误清理仍与 Go 一致。里程碑三是先 `cargo fmt --all`，再跑精确功能测试和五次 after，最后跑 `make lint`。
+
+底层调用链从 `pkg/testkit/mockstore.rs::execute_concrete_session` 进入 `ConcreteSession::Execute`，`EXECUTE st USING` 由 `pkg/session/runtime/dispatch.rs::execute_prepared` 完成缓存失效检查、参数绑定和执行，计划型 SELECT 最终经 `pkg/session/runtime/planning.rs` 的物理计划执行和 RecordSet/Chunk 排空。“plan-cache hit”是指 SQL 计划已存在于实例级缓存，本次只允许消除命中时不随参数变化的重复工作。
+
+恢复策略：所有 profiling 插桩和原型必须是局部可撤回的；若某变体未提速或改变语义，立即只撤回本任务的 hunk，不回滚共享工作区中他人改动。Cargo 和性能锁按本文后续规则领取，中断后只能清理已确认 PID 退出且 owner 为 task 38 的锁。
 
 本任务是依照仓库 `PLANS.md` 执行的独立活文档；执行中维护下方进度、意外发现、决策和结果，但不得修改只读 `plan.md`。
 
@@ -87,20 +99,45 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 复核保持语义的安全优化边界；现有批量 fixture 已消除无关单行提交，核心 10×100 text-protocol 负载仍构成不可突破下界。
+- [x] 保存精确测试数量、五次耗时与临时阶段剖析；本任务未保留代码修改，after 与 Ready lint 不适用。
+- [x] 自审并移除全部 task 38 诊断插桩；按协议更新为已阻塞并保留任务文件。
+- [x] 2026-10-13 解锁后重新领取槽位和性能锁，在最新共享工作区上重跑五次严格基线，不沿用旧锁状态。
+- [x] 复核同构用例的请求对、十批、单批及 binary-protocol 下界证据；均无法在保留 Go 对齐语义下达标。
+- [x] 扩展到 prepared SELECT 底层路径，验证 typed physical adapter 的 `IN`/decimal 可行性；不安全原型已精确撤回。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.789s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- before 精确选中 1 项，5 次均功能通过、零失败、零超时，耗时为 `1.456746 / 1.372771 / 1.276444 / 1.315508 / 1.187009s`，最大 `1.456746s > 0.499s`，严格门槛失败。
+- 持性能锁的单次阶段分解：Harness `0.125395s`，含 4 表×100 行批量写入的 fixture 累计到 `0.213409s`，完整测试 `1.891685s`；各 worker 的 100 次累计 prepare `0.125–0.205s`、bind `0.158–0.218s`、query `1.085–1.348s`，热点是真实 `EXECUTE ... USING` 查询主体。
+- 同构的 task 21 已独立验证：合并 text-protocol 请求会产生 `SELECT request dispatches retained by a worker`，不等价；复用 parser 临时栈无性能收益。两种路线均已撤回，不在本任务重复扩张。
+- 诊断第一次编译因共享文件的并行任务同时清理 `Duration/Instant` 导入而退出 101；补回临时导入后重试成功，最终已移除所有 task 38 插桩。
+- 2026-10-13 最新共享代码已将每 worker 的 100 组 `PREPARE/SET/EXECUTE` 分为 10 个 owner-thread text-protocol 批次，仍保留全部 1,000 组语句、100 个结果集/worker 和逐项断言。
+- 新五次严格基线为 `1.421406 / 1.231191 / 2.360974 / 1.248824 / 1.226501s`，5/5 功能通过、每次精确 1 test、零失败/零超时，最大 `2.360974s > 0.499s`。
+- 同构 task 21 的最新安全变体数据：请求对 `1.030–1.422s`，10 批次 `1.076–1.405s`，单个 300 语句批次 `2.699–3.682s`；巨型批次因超长 SQL 解析更慢。
+- 同构 task 24 的下界诊断在违规把每会话 100 次 prepare 降为 4 次后，保留 10×100 次真实 binary-protocol query 仍为 `0.775708s`；该诊断不能交付，但证明查询执行本身已超过门槛。
+- 底层原型一仅让 typed adapter 接受字符串 Datum，四个同构用例功能通过，但 decimal 单次仍为 `1.219229s`，未形成有效提速，报告为 `target/rust-performance/task-0038-typed-string-prototype.tsv`。
+- 底层原型二将 `IN (?, ?)` 与无索引表放行到 typed physical adapter：int 用例通过（约 `0.841s`），但 decimal/real/string 分别约 `0.942/0.905/0.945s` 且均返回空结果，与期望两行不符。这证明当前 typed range/table source 没有实现 Go 的字符串到 DECIMAL/REAL/VARCHAR 比较强制转换；原型已撤回。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不减少 10 worker×100 次 `PREPARE/SET/EXECUTE`，不合并 text-protocol 请求，不改用 protocol batch/mock，不放宽门槛。理由：这些都会削弱本测试的实例级计划缓存跨会话复用压力和 Go 对齐请求边界。日期/作者：2026-10-12 / Codex。
+- 决策：在安全批量 fixture 已存在的前提下，五次最大值仍为 `1.456746s`，且剖析证明剩余耗时为受保护的真实查询主体；因此按协议标记已阻塞。日期/作者：2026-10-12 / Codex。
+- 决策：2026-10-13 以新槽位、新性能锁和最新十批次共享实现重新判定，不沿用锁屏或锁等待作为阻塞。新最大值 `2.360974s`，且已测安全局部变体和更弱下界均不达标，故保持已阻塞。日期/作者：2026-10-13 / Codex。
+- 决策：不交付仅放宽 typed adapter 语法的快路径。理由：它改变 decimal/real/string 结果，偏离 Go；要继续底层优化，须先在通用 planner/executor 实现完整参数类型推导和 Go 兼容强转，或使通用 prepared path 持久化 AST/plan 以避免每次绑定后重解析。这是跨 planner/executor 的独立子系统工作，不应在本慢测中以不完整快路径替代。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 已阻塞。before 使用槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；预热编译退出 0，性能命令退出 1（仅因最大耗时超过 0.499s），报告 `target/rust-performance/task-0038-before.tsv`，有效测试数为 1×5，零失败、零超时。
+- 剖析重试使用槽位 3，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`；`cargo fmt --all` 退出 0，预热编译退出 0，持性能锁的精确单次测试退出 0 并输出上述阶段数据。另一次诊断编译因并行编辑短暂缺导入退出 101，未运行测试。
+- 本任务未保留 Rust 代码改动；目标文件中现有多值 INSERT 优化属于其他并行任务，本任务不提交、不回滚。因无可交付代码改动，after 和 `make lint` 未运行。
+- 自审：未删减 case、断言、行数、4 种表/索引路径、10 worker 或每 worker 100 次循环；未改动 Cargo 依赖、license 或只读 `plan.md`；所有 task 38 临时诊断已撤回。
+- 2026-10-13 重试首次使用槽位 9，预热编译退出 0，但在等待其他存活任务的性能锁时被用户中断；确认 PID 已退出后仅清理了属于 task 38 的遗留 slot-9 锁。
+- 最终重试使用槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；预热编译退出 0，严格命令退出 1（仅因超过 0.499s），报告 `target/rust-performance/task-0038-resume-before.tsv`，有效测试数 1×5、零失败/零超时。
+- 本次恢复未保留任何 task 38 源码改动；新的 `QueryStatementBatch` 与十批次 `run_in_case` 属于共享工作区的其他任务，本任务不提交、不回滚。因仍无可交付代码改动，`cargo fmt --all`、after 和 `make lint` 在本次恢复中不适用。
+- 扩展底层试验使用动态领取的槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；预热构建退出 0，`cargo fmt --all` 退出 0。四个同构精确测试共退出 100：int 通过，decimal/real/string 因结果错误失败；该语义变更已全部撤回，`git diff --check` 退出 0。
+- 仍无 task 38 可交付的生产代码，因此不运行 after/Ready lint，不创建提交，保留本任务文件为已阻塞证据。

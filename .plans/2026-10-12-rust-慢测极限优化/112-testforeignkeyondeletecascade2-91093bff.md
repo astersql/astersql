@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已阻塞
 
 目的：把日志排名第 112 的测试从 3.495 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
 
@@ -87,20 +87,33 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 与 2026-10-13 恢复复测失败证据，并完成 canonical/轻量 store 两组阶段耗时 profiling。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审并移除临时计时插桩；因缺少 after 证据，保留任务文件且不提交。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `3.495s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-12 隔离 before 精确选中 1 项，五次功能均通过、零失败、零超时，耗时为 2.846690 / 2.772714 / 2.952830 / 2.753942 / 3.700720 秒，最大 3.700720 秒，明确不属于已达标的并发噪声。
+- 测试体保留 Go 对齐的自引用级联、EXPLAIN ANALYZE、深度限制、RESTRICT 回滚、外键矩阵、悲观事务、20 列/外键链和 32,768 行大级联；不能在无 profiling 证据时通过删减这些语义达标。
+- 两次加入临时阶段计时并尝试运行：第一次性能锁 owner PID 已结束但对应会话仍 inProgress，按规则不能回收；第二次排队超过 14 分钟，刚取得锁时中断信号已发出，未产生阶段数据。插桩已全部删除，本任务未留下 Rust 源码变更。
+- 2026-10-13 阻塞恢复时共享槽位与性能锁已可正常取得；当前共享实现的五次严格复测为 2.579557 / 2.855119 / 2.631718 / 2.628446 / 2.556793 秒，最大 2.855119 秒，精确 1×5、零失败、零超时。
+- canonical store 单次阶段剖析约 2.380667 秒：初始化 0.582530 秒、小规模级联 0.062709 秒、RESTRICT/多外键 0.078881 秒、悲观事务 0.036053 秒、20 列外键 DDL 链 0.395238 秒、32K 大级联 1.225199 秒。
+- 仓库已有 CreatePlannerTestStoreAndDomain 仍使用真实 Domain、事务 KV、DDL、session 与 executor，仅省略无关统计系统表 bootstrap。试验性替换后完整测试通过，初始化降至 0.077–0.081 秒、DDL 链降至 0.084–0.096 秒，但总耗时仍为 1.368–1.441 秒，未接近 0.499 秒门槛，候选已回滚。
+- 轻量 store 下 32K 路径的累计分解为：建表约 0.002 秒、父表生成 0.284 秒、父表计数 0.289 秒、复制到子表 0.708 秒、真实 ON DELETE CASCADE 完成至 1.140 秒、最终总计 1.150 秒。仅此真实数据路径已超过门槛两倍以上。
 
 ## 决策日志
 
 - 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：不在缺少阶段 profiling 和 after 证据时推测性修改全局 DDL/TestKit 热路径，也不压缩 20 列外键链或 32,768 行级联规模。理由：这些都是 Go 对齐行为，且共享实现影响面大。日期/作者：2026-10-12 / Codex。
+- 决策：恢复审查后仍不保留轻量 store 局部候选。理由：候选虽等价并显著降低 bootstrap/DDL 开销，但 32K insert-select/copy/cascade 三段真实 SQL/KV 路径仍约 1.15 秒；单一测试任务无法在保留规模和真实依赖的前提下达到 0.499 秒。继续推进需要分别重构通用 bulk insert-select、FK cascade mutation 与 KV 扫描/提交路径，属于需用户授权的跨子系统范围扩张。日期/作者：2026-10-13 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 结果：before 命令在 Cargo 槽位 2（CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2）和仓库级性能锁下执行，退出码 1 仅因五次均超过 0.499 秒门槛；报告为 target/rust-performance/task-0112-before.tsv。
+- 精确命令：./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0112-before.tsv -- --locked --package astersql-executor-test-fktest --lib -E 'binary_id(=astersql-executor-test-fktest) & test(=foreign_key_test::TestForeignKeyOnDeleteCascade2)'。
+- 阻塞恢复结论：原共享锁阻塞已消失，但验收阻塞转为已测得的跨子系统性能下界。即使省掉约 0.50 秒 bootstrap 和约 0.30 秒 DDL 开销，32K 真实 SQL/KV 路径仍约 1.15 秒；满足 0.499 秒需要用户授权把范围扩大到通用 bulk insert-select、FK cascade mutation 和 KV 提交优化，不能由本任务通过删减规模、直写 fixture 或 mock 真实依赖解决。
+- 恢复验证：当前共享实现复测使用槽位 1，CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1，TSV 为 target/rust-performance/task-0112-resume-current.tsv，脚本退出 1 仅因最大 2.855119 秒超过门槛；canonical profiling 使用槽位 2，轻量 store profiling 使用槽位 1，均精确执行并通过目标测试。所有临时插桩和候选代码均已回滚。
+- 验证范围：使用 Ready 性能门槛命令完成 before；因最终无 Rust 代码变更，cargo fmt --all 与 make lint 不适用。未验证 after，不标记完成、不删除任务文件、不创建提交。
