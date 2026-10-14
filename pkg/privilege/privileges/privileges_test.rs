@@ -1777,7 +1777,9 @@ fn TestPasswordExpireWithoutSandBoxMode() {
     record.PasswordLastChanged = now_unix_for_test() - 86400;
     assert!(p.CheckPasswordExpired(&session, &record).is_ok());
     record.PasswordLastChanged = now_unix_for_test() - 2 * 86400;
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Put the timestamp beyond the expiration boundary instead of waiting for
+    // the wall clock to cross it.
+    record.PasswordLastChanged -= 1;
     assert!(p.CheckPasswordExpired(&session, &record).is_err());
 
     // PASSWORD EXPIRE DEFAULT
