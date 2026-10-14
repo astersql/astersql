@@ -684,6 +684,12 @@ pub fn run_recorded_step_summary() {
         Arc::new(NativeHost(bound_store)),
         transport.clone(),
         Arc::new(RetryPolicy),
+        local::import_pipeline::ImportOptions {
+            // Preserve the injected retry and physical rewrite while matching
+            // Go's adjustRegionJobRetryBackoff test failpoint.
+            adjust_retry_backoff: Some(Arc::new(|_| std::time::Duration::ZERO)),
+            ..Default::default()
+        },
     );
     let mut ctx = import::PlanCtx {
         TaskID: id,

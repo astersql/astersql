@@ -135,7 +135,6 @@ impl GlobalSortWriteIngestBackend {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn with_import_options(
         mut self,
         import_options: local::import_pipeline::ImportOptions,
@@ -317,6 +316,7 @@ pub struct GlobalSortImportHost {
     pub inner: Arc<dyn ImportStepHost>,
     pub store: astersql_objstore_storeapi::StorageRef,
     pub transport: Arc<dyn RegionImportTransport>,
+    import_options: local::import_pipeline::ImportOptions,
 }
 impl ImportStepHost for GlobalSortImportHost {
     fn TaskStore(&self) -> Arc<dyn astersql_kv::Storage + Send + Sync> {
@@ -328,11 +328,14 @@ impl ImportStepHost for GlobalSortImportHost {
         _: &crate::TaskMeta,
         _: Arc<dyn astersql_kv::Storage + Send + Sync>,
     ) -> Result<Arc<dyn WriteIngestBackend>, astersql_errors::SharedError> {
-        Ok(Arc::new(GlobalSortWriteIngestBackend::new(
-            self.store.clone(),
-            self.transport.clone(),
-            task.GetRuntimeSlots() as usize,
-        )))
+        Ok(Arc::new(
+            GlobalSortWriteIngestBackend::new(
+                self.store.clone(),
+                self.transport.clone(),
+                task.GetRuntimeSlots() as usize,
+            )
+            .with_import_options(self.import_options.clone()),
+        ))
     }
     fn NewStepExecutor(
         &self,
@@ -350,11 +353,13 @@ pub fn RegisterGlobalSortImportExecutor(
     inner: Arc<dyn ImportStepHost>,
     transport: Arc<dyn RegionImportTransport>,
     retry_policy: Arc<dyn astersql_dxf_framework_taskexecutor::Extension>,
+    import_options: local::import_pipeline::ImportOptions,
 ) {
     let host = Arc::new(GlobalSortImportHost {
         inner,
         store: runtime.ObjectStore.clone(),
         transport,
+        import_options,
     });
     crate::task_executor::RegisterImportExecutor(runtime, host, retry_policy);
 }
