@@ -14,14 +14,14 @@
 // limitations under the License.
 
 use crate::main_test::ensure_test_env;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest;
 use astersql_testkit::{NewTestKit, Rows};
 
 /// Go `TestConstantPropagation` 的真实 SQL/计划回归。
 #[test]
 fn test_constant_propagation() {
     ensure_test_env();
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut testkit = NewTestKit(store);
     testkit.MustExec("use test", Vec::new());
 
