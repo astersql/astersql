@@ -18,7 +18,9 @@
 // 用 `(store_id, owner_type)` 作为键保存当前 Owner ID，对应 Go 包内全局状态，
 // 供本地存储与 Owner 相关单测在无 etcd 时模拟竞选结果。
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+
+use tokio::sync::Notify;
 
 /// 进程级模拟 Owner 注册表，对应 Go 包内全局变量。
 /// Process-wide mock owner registry, matching the Go package global.
@@ -38,6 +40,7 @@ struct OwnerKey {
 #[derive(Debug, Default)]
 pub struct MockGlobalState {
     current_owner: Mutex<HashMap<OwnerKey, String>>,
+    owner_changed: Mutex<HashMap<OwnerKey, Arc<Notify>>>,
 }
 
 impl MockGlobalState {
@@ -55,6 +58,16 @@ impl MockGlobalState {
                 owner_type: owner_type.into(),
             },
         }
+    }
+
+    fn owner_changed(&self, key: &OwnerKey) -> Arc<Notify> {
+        Arc::clone(
+            self.owner_changed
+                .lock()
+                .expect("mock owner notification mutex poisoned")
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Notify::new())),
+        )
     }
 }
 
@@ -98,18 +111,29 @@ impl MockGlobalStateSelector<'_> {
     /// 仅当 `owner` 仍是当前 Owner 时清空条目，成功返回 true。
     /// Clears the entry only when `owner` is still the current owner.
     pub fn UnsetOwner(&self, owner: &str) -> bool {
-        let mut owners = self
-            .state
-            .current_owner
-            .lock()
-            .expect("mock owner mutex poisoned");
-        let current = owners.entry(self.key.clone()).or_default();
-        if current == owner {
-            current.clear();
-            true
-        } else {
-            false
+        let unset = {
+            let mut owners = self
+                .state
+                .current_owner
+                .lock()
+                .expect("mock owner mutex poisoned");
+            let current = owners.entry(self.key.clone()).or_default();
+            if current == owner {
+                current.clear();
+                true
+            } else {
+                false
+            }
+        };
+        if unset {
+            self.owner_changed().notify_one();
         }
+        unset
+    }
+
+    /// Returns the per-election signal used to wake one contender after release.
+    pub(crate) fn owner_changed(&self) -> Arc<Notify> {
+        self.state.owner_changed(&self.key)
     }
 
     /// 在与更新相同的锁下比较是否为当前 Owner。
