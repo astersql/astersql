@@ -982,7 +982,7 @@ pub(super) fn start_domain_ttl_job_manager_with_interval(
                     );
                     let hook_domain = Arc::clone(&domain);
                     let hook_owner = owner_id.clone();
-                    let runtime = NewTimerRuntimeBuilder("ttl".into(), store.clone())
+                    let runtime_builder = NewTimerRuntimeBuilder("ttl".into(), store.clone())
                         .SetCond(Arc::new(TimerCond {
                             Key: NewOptionalVal(
                                 astersql_ttl_ttlworker::timer_sync::TIMER_KEY_PREFIX.into(),
@@ -999,8 +999,16 @@ pub(super) fn start_domain_ttl_job_manager_with_interval(
                                     client,
                                 ))
                             }),
-                        )
-                        .Build();
+                        );
+                    let runtime_builder = if cfg!(test) {
+                        // Match Go's intest setup: production throttles trigger attempts to
+                        // protect CPU, while tests retain the same event path without the
+                        // one-second scheduler floor.
+                        runtime_builder.SetMinTriggerEventInterval(Duration::from_millis(1))
+                    } else {
+                        runtime_builder
+                    };
+                    let runtime = runtime_builder.Build();
                     runtime.Start();
                     timer_runtime = Some(DomainTtlTimerRuntime {
                         runtime,

@@ -391,6 +391,20 @@ fn test_next_try_trigger_duration() {
         runtime.getNextTryTriggerDuration(add(current, Duration::from_millis(100))),
         Duration::from_secs(1)
     );
+    let test_store = NewMemoryTimerStore();
+    let test_runtime = NewTimerRuntimeBuilder("g2".to_string(), test_store.clone())
+        .SetMinTriggerEventInterval(Duration::from_millis(1))
+        .Build();
+    test_runtime.setNowFunc(Arc::new(move || current));
+    test_runtime.initCtx();
+    let test_timer = new_test_timer("configured", "1.5m", base);
+    test_runtime.cacheUpdate(test_timer);
+    assert_eq!(
+        test_runtime.getNextTryTriggerDuration(current),
+        Duration::from_millis(500)
+    );
+    test_runtime.Stop();
+    test_store.Close();
     *now.lock().unwrap() = add(base, Duration::from_secs(3600));
     assert_eq!(runtime.getNextTryTriggerDuration(base), Duration::ZERO);
     runtime.Stop();

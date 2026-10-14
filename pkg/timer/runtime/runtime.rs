@@ -97,6 +97,7 @@ pub fn NewTimerRuntimeBuilder(groupID: String, store: TimerStore) -> TimerRuntim
                 fullRefreshTimerCounter: Counter::default(),
                 partialRefreshTimerCounter: Counter::default(),
                 retryLoopWait: Duration::from_secs(10),
+                minTriggerEventInterval,
                 watchRetryWaiter: Arc::new(crossbeam_channel::after),
                 #[cfg(test)]
                 recoveryEventSender: None,
@@ -128,6 +129,14 @@ impl TimerRuntimeBuilder {
         self
     }
 
+    /// Set the minimum delay between attempts to trigger timer events.
+    pub fn SetMinTriggerEventInterval(mut self, interval: Duration) -> Self {
+        Arc::get_mut(&mut self.rt.inner)
+            .expect("timer runtime builder must have exclusive ownership")
+            .minTriggerEventInterval = interval;
+        self
+    }
+
     /// 完成配置并得到可启动的分组运行时。
     pub fn Build(self) -> TimerGroupRuntime {
         self.rt
@@ -155,6 +164,7 @@ struct RuntimeInner {
     fullRefreshTimerCounter: Counter,
     partialRefreshTimerCounter: Counter,
     retryLoopWait: Duration,
+    minTriggerEventInterval: Duration,
     watchRetryWaiter: Arc<dyn Fn(Duration) -> Receiver<Instant> + Send + Sync>,
     #[cfg(test)]
     recoveryEventSender: Option<Sender<RecoveryEvent>>,
@@ -532,7 +542,10 @@ impl TimerGroupRuntime {
         if maxDuration.is_zero() {
             return Duration::ZERO;
         }
-        let minDuration = minTriggerEventInterval.saturating_sub(sinceLastTrigger);
+        let minDuration = self
+            .inner
+            .minTriggerEventInterval
+            .saturating_sub(sinceLastTrigger);
         let mut duration = maxDuration;
         self.inner
             .cache
