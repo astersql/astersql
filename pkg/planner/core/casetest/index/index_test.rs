@@ -437,7 +437,7 @@ fn run_null_condition_for_prefix_index_round(
 
 #[test]
 fn index_range_quota_preserves_table_and_prefix_residuals() {
-    run_under_cascades(|_, tk| {
+    run_under_cascades_in_parallel(|_, tk| {
         prepare_prefix_index_fixture(tk);
         for quota in [1, 1_000_000] {
             tk.MustExec(&format!("set tidb_opt_range_max_size={quota}"), Vec::new());
