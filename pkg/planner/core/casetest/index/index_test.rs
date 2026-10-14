@@ -1000,7 +1000,7 @@ fn test_inverted_index() {
 
 #[test]
 fn test_analyze_columnar_index() {
-    run_under_cascades(|domain, tk| {
+    run_under_cascades_in_parallel(|domain, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
             "create table t(a int, b vector(2), c datetime, j json, index(a))",
