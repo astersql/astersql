@@ -1809,6 +1809,8 @@ fn modify_column_fast_reorg_merges_concurrent_mutations() {
 
 #[test]
 fn masking_policy_sql_modify_ingest_rebuilds_secondary_index() {
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
     let _ingest = IngestEnvironment::new();
     let f = Fixture::new();
     seed_policy(&f, 9606);
