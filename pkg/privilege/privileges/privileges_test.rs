@@ -1719,8 +1719,9 @@ fn TestCheckPasswordExpired() {
     session.default_password_lifetime = 2;
     // use default_password_lifetime
     record.PasswordLifeTime = -1;
-    record.PasswordLastChanged = now_unix_for_test() - 2 * 86400;
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // Put the timestamp one second beyond the expiration boundary instead of
+    // waiting for the wall clock to cross it.
+    record.PasswordLastChanged = now_unix_for_test() - 2 * 86400 - 1;
     assert!(p.CheckPasswordExpired(&session, &record).is_err());
     record.PasswordLastChanged = now_unix_for_test() - 1 * 86400;
     assert!(p.CheckPasswordExpired(&session, &record).is_ok());
@@ -1732,8 +1733,7 @@ fn TestCheckPasswordExpired() {
 
     // expire with the specified time
     record.PasswordLifeTime = 3;
-    record.PasswordLastChanged = now_unix_for_test() - 3 * 86400;
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    record.PasswordLastChanged = now_unix_for_test() - 3 * 86400 - 1;
     assert!(p.CheckPasswordExpired(&session, &record).is_err());
     record.PasswordLastChanged = now_unix_for_test() - 2 * 86400;
     assert!(p.CheckPasswordExpired(&session, &record).is_ok());
