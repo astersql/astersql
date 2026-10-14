@@ -610,7 +610,9 @@ fn test_join_regression_leading_and_inlj_hints_from_historical_issues() {
 #[test]
 fn test_join_regression_runs_go_contract() {
     for cascades in [false, true] {
-        let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+        // This planner regression needs real DDL, SQL execution, and optimizer
+        // state, but none of the unrelated statistics system tables.
+        let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
         let mut tk = astersql_testkit::TestKit::new(store);
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
