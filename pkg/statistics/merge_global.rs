@@ -18,6 +18,7 @@ use crate::{Histogram, NewHistogram, NewTopN, TopN, TopNMeta, topNMetaToDatum};
 use astersql_errors::SharedError;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 type MergeResult<T> = Result<T, SharedError>;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -30,6 +31,7 @@ struct Candidate {
     encoded: Vec<u8>,
     count: u64,
     repeat: i64,
+    bucket_range: Option<Range<usize>>,
 }
 
 struct MergeContext<'a> {
@@ -147,7 +149,8 @@ impl BucketCursor<'_> {
         }
         Ok(r)
     }
-    fn group(&mut self, need_encoded: bool) -> MergeResult<(Vec<u8>, i64)> {
+    fn group(&mut self, need_encoded: bool) -> MergeResult<(Vec<u8>, i64, Range<usize>)> {
+        let refs_start = self.refs.len();
         let first = self.advance()?;
         let upper = self.upper(first).clone();
         let mut repeat =
@@ -167,6 +170,7 @@ impl BucketCursor<'_> {
                 Vec::new()
             },
             repeat,
+            refs_start..self.refs.len(),
         ))
     }
 }
@@ -174,7 +178,7 @@ impl BucketCursor<'_> {
 struct MergeRefs<'a> {
     refs: Vec<BucketRef>,
     hists: Vec<Option<Cow<'a, Histogram>>>,
-    promoted: HashSet<Vec<u8>>,
+    promoted: HashSet<BucketRef>,
     remaining: HashMap<BucketRef, i64>,
     effective: HashMap<BucketRef, types::Datum>,
     context: &'a MergeContext<'a>,
@@ -200,7 +204,7 @@ impl MergeRefs<'_> {
         let bi = r.bucket as usize;
         let mut mass = hist.BucketCount(bi);
         let mut repeat = hist.Buckets[bi].Repeat;
-        if self.promoted.contains(&self.context.encode(self.upper(r))?) {
+        if self.promoted.contains(&r) {
             mass -= repeat;
             repeat = 0;
         }
@@ -437,6 +441,7 @@ pub fn MergePartTopNAndHistToGlobal(
             encoded: e.Encoded.clone(),
             count: e.Count,
             repeat: 0,
+            bucket_range: None,
         })
         .collect::<Vec<_>>();
     let byte_ordered = is_index
@@ -548,15 +553,17 @@ pub fn MergePartTopNAndHistToGlobal(
                 encoded: Vec::new(),
                 count: 0,
                 repeat: 0,
+                bucket_range: None,
             }
         };
         if take_bucket {
-            let (key, repeat) = cur.group(!take_top)?;
+            let (key, repeat, bucket_range) = cur.group(!take_top)?;
             if !take_top {
                 e.encoded = key;
             }
             e.repeat = repeat;
             e.count += repeat as u64;
+            e.bucket_range = Some(bucket_range);
         }
         if e.count > 0 {
             candidates += 1;
@@ -575,9 +582,15 @@ pub fn MergePartTopNAndHistToGlobal(
     if num_top_n as u64 == vardef::AnalyzeDefaultNumTopN.Load() && candidates > num_top_n as usize {
         top_heap.retain(|e| e.count >= 2);
     }
-    let promoted = top_heap
+    let promoted_values = top_heap
         .iter()
         .map(|e| e.encoded.clone())
+        .collect::<HashSet<_>>();
+    let promoted = top_heap
+        .iter()
+        .filter_map(|e| e.bucket_range.clone())
+        .flatten()
+        .map(|index| cur.refs[index])
         .collect::<HashSet<_>>();
     let removed = top_heap.iter().map(|e| e.repeat).sum::<i64>();
     let global_top = if top_heap.is_empty() {
@@ -592,7 +605,7 @@ pub fn MergePartTopNAndHistToGlobal(
     };
     let virtual_entries = compact
         .into_iter()
-        .filter(|e| e.count > 0 && !promoted.contains(&e.encoded))
+        .filter(|e| e.count > 0 && !promoted_values.contains(&e.encoded))
         .collect::<Vec<_>>();
     let total = total - removed + virtual_entries.iter().map(|e| e.count as i64).sum::<i64>();
     let mut refs = MergeRefs {
