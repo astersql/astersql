@@ -6,11 +6,11 @@
 
 状态：未开始
 
-目的：把日志排名第 512 的测试从 1.391 秒优化到五次预热隔离运行均小于 0.500 秒，保持全部原始行为与 Go 对齐规模。
+目的：对日志排名第 512、原始耗时 1.391 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
 来源任务：`target/rust-test.4uY80L` 第 512 个 `>=0.5s` 唯一测试身份
 
-预计会话范围：单一 binary/test 身份、单一性能门槛和一次聚焦提交；先复核噪声，再只修改剖析证明的热路径。原始测试若已失败或超时，正确性恢复与性能达标属于同一任务。
+预计会话范围：单一 binary/test 身份、单一性能目标和一次聚焦提交；先复核噪声，再只修改剖析证明的热路径。原始测试若已失败或超时，正确性恢复与性能评估属于同一任务。
 
 本任务是依照仓库 `PLANS.md` 执行的独立活文档；执行中维护下方进度、意外发现、决策和结果，但不得修改只读 `plan.md`。
 
@@ -23,7 +23,7 @@
 
 ## 上下文
 
-- 原始排名/耗时/状态：`512` / `1.391s` / `PASS`；原日志已通过但超过性能门槛。
+- 原始排名/耗时/状态：`512` / `1.391s` / `PASS`；原日志已通过且达到本轮入选门槛。
 - Cargo package：`astersql-planner-core-casetest-partition`；target：`astersql_planner_core_casetest_partition`（`lib`）；features：原始 `make rust-test` 的默认 features，不启用额外 feature。
 - 完整测试名：`list_partition_integration_test::test_list_partition_order_limit`；binary id：`astersql-planner-core-casetest-partition`。
 - 初步分型：`initialization`。重点分解 Domain/TestKit/runtime 初始化、fixture/golden 解析、主体与 teardown；只复用不可变状态，复用可变会话或全局状态前必须证明 reset 完整。
@@ -51,14 +51,14 @@
 
 ## 测试计划
 
-- 行为：完整执行 `list_partition_integration_test::test_list_partition_order_limit` 的现有语义并把五次隔离运行最大耗时降至 `<=0.499s`。
+- 行为：完整执行 `list_partition_integration_test::test_list_partition_order_limit` 的现有语义，在保持语义的前提下取得可量化的明显提升，或证明已无合理继续优化空间。
 - 失败验证测试：现有 `pkg/planner/core/casetest/partition/list_partition_integration_test.rs` 中的精确测试，不新增同文件生产逻辑；性能门槛本身构成回归断言。
-- 失败验证命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0512-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
-- 基线判定：脚本必须精确选中 1 个测试；非零应归因为耗时越线、失败或超时。若五次已全部通过且最大值 `<=0.499s`，则记录全量并发噪声证据并停止改代码，不制造无意义 diff。
-- 通过验证命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0512-after.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
+- 失败验证命令：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-0512-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
+- 基线判定：脚本必须精确选中 1 个测试并产生 5 个成功 sample；`--max-seconds 300` 只是防失控护栏。before 用于建立中位数、最大值和抖动范围，不再以 0.5 秒判定成败。
+- 通过验证命令：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-0512-after.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
 - 模拟策略：优先真实依赖；仅在剖析证明外部、慢、不安全或非确定边界与被测语义无关时使用等价 mock，并补充真实边界回归。
 
-性能优化不新增重复的功能测试，因此传统“先新增失败测试”不适用；若隔离基线越线，以同一真实测试在严格性能门槛下先失败、优化后通过作为证据；若隔离基线已达标，则不发生行为变更，以五次基线作为并发噪声复核证据。原有功能断言在两种路径下都不得删减。
+性能优化不新增重复的功能测试，因此传统“先新增失败测试”不适用；以同一真实测试的五次 before/after 对比作为性能证据。默认在 after 的中位数和最大值均比 before 改善至少 20% 时认定为明显提升；若未达到，必须用剖析、已尝试方案和剩余下界证明继续优化不合理。原有功能断言始终不得删减。
 
 ## 步骤
 
@@ -66,29 +66,35 @@
 2. 按 Cargo 槽位规则领取槽位并设置绝对 `CARGO_TARGET_DIR`；按性能锁规则独占计时资源，运行 `before`，确认恰好 1 个有效测试并记录五次结果；若已达标，停止改代码并直接整理复核证据。
 3. 临时分解 setup、fixture/load、主体和 teardown 耗时；用证据确认瓶颈，提交前删除临时日志/计时插桩。
 4. 在不减少 case、断言、数据规模、并发量、planner 模式或真实服务边界的前提下，实施最小优化；测试逻辑与生产逻辑分文件，生产 Rust 修复达到可用后补 AsterSQL 版权行。
-5. 若修改了 Rust 代码，先运行 `cargo fmt --all`；随后在相同条件运行 `after`。任一次 `>=0.500s`、失败、超时或零测试都继续优化或记录真实阻塞；无代码修改时可把 before 报告同时作为 after 证据。
+5. 若修改了 Rust 代码，先运行 `cargo fmt --all`；随后在相同条件运行 `after`。失败、超时或零测试必须修复；若中位数和最大值均改善至少 20%，可按明显提升完成。未达到 20% 时继续剖析，或记录主要热点已消除、不可消除下界及继续优化会损害语义或投入产出失衡的证据。
 6. 若有代码修改，运行 `make lint`；无代码修改时记录 Ready lint 不适用。审查 diff 没有无关变更、Go 对齐逻辑删减、PingCAP license 删除、本地依赖覆盖或测试弱化。
-7. 更新本文件的进度、发现、决策、结果和状态；获得全部证据后标记 `已完成`，使用 `$git-commit` 只提交本任务变更并删除本任务文件。确实无法跨越物理/协议下界时标记 `已阻塞` 并保留证据。
+7. 更新本文件的进度、发现、决策、结果和状态；正确性通过，且取得明显提升或有充分停止优化证据后标记 `已完成`，使用 `-commit` 只提交本任务变更并删除本任务文件。只有缺少完成所需外部条件且无法取得上述证据时才标记 `已阻塞`。
 
 ## 验证
 
-- 失败验证：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0512-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
+- 失败验证：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-0512-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
 - 格式化：`cargo fmt --all`
-- 通过验证：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0512-after.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
+- 通过验证：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-0512-after.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=list_partition_integration_test::test_list_partition_order_limit)'`
 - Ready lint：`make lint`
-- 预期：before 精确选择 1 项；若越线或失败则优化后由 after 提供 5 个全部通过且最大值 `<=0.499s` 的 sample，若 before 已达标则不改代码并复用其 5 个 sample；有代码修改时 fmt 与 lint 退出码 0。
-- 所需证据：实际槽位和绝对 `CARGO_TARGET_DIR`、实际执行命令及退出码、before/after TSV 路径、五次耗时、测试数量 1×5、失败/超时数 0；有代码修改时还要提供 fmt、lint 与保留原始行为的 diff 自审摘要。
+- 预期：before/after 均精确选择 1 项并各提供 5 个成功 sample；默认 after 中位数和最大值均改善至少 20%，或提供充分的停止优化证据；有代码修改时 fmt 与 lint 退出码 0。
+- 所需证据：实际槽位和绝对 `CARGO_TARGET_DIR`、实际执行命令及退出码、before/after TSV 路径、各五次耗时、中位数与最大值改善比例、测试数量 1×5、失败/超时数 0；若按无法继续优化完成，附热点分解、已尝试方案、剩余下界和停止理由；有代码修改时还要提供 fmt、lint 与保留原始行为的 diff 自审摘要。
 
 ## 完成
 
 - 主要测试位置：`pkg/planner/core/casetest/partition/list_partition_integration_test.rs`，精确符号 `list_partition_integration_test::test_list_partition_order_limit`。
 - 只修改 profiling 证明必要的测试夹具或生产热路径；若需要超出上述文件，先在“决策日志”写明调用链依据和冲突检查。
-- 标记 `已完成` 的硬门槛是正确性通过与五次最大耗时 `<=0.499s`，不能用编译成功、零测试、放宽 timeout 或单次快结果替代。
+- 标记 `已完成` 的硬门槛是正确性通过，并满足以下之一：after 中位数和最大值均改善至少 20%；或证据证明主要安全热点已消除且继续优化不合理。不能用编译成功、零测试、放宽 timeout、单次快结果或主观判断替代。
+
+## 2026-10-14 验收规则更新
+
+- 本节规则覆盖下方历史进度、决策和结果中所有以 `0.499s`/`0.500s` 为硬门槛的旧结论；旧数字仅作为当时测量记录，不再构成阻塞理由。
+- 既有 before/after 若已证明中位数和最大值均改善至少 20%，或正确性通过且剖析、尝试方案和下界证据已证明无法合理继续优化，则本任务视为通过；无需为了跨越 0.5 秒再次修改或复测。
+- 只有正确性失败、零测试、证据不足、仍有明确安全热点，或外部环境/依赖不可用时，才保留未完成或阻塞状态。
 
 ## 进度
 
 - [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 的预期失败证据和阶段耗时分解。
+- [ ] 保存 before 基线证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
 - [ ] 自审、更新状态、提交并删除任务文件。
@@ -99,7 +105,7 @@
 
 ## 决策日志
 
-- 决策：以五次预热隔离最大值而非原日志单次值作为完成判据。理由：原日志并行 18,166 项，存在 CPU、I/O 和共享服务争用。日期/作者：2026-10-12 / 计划创建者。
+- 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
 
 ## 结果回顾
 
