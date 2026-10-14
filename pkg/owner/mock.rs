@@ -142,7 +142,6 @@ impl MockManager {
     /// 竞选循环：周期性尝试成为 Owner，并响应取消、上下文结束与主动卸任通知。
     async fn campaign_loop(self, cancel: CancellationToken) {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        let owner_changed = self.selector().owner_changed();
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // CampaignOwner 在启动循环前已做首次尝试，因此丢弃
         // tokio interval 的立即首 tick，以保持与 Go 相同的约 1 秒节奏。
@@ -168,7 +167,6 @@ impl MockManager {
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                     }
                 }
-                _ = owner_changed.notified() => self.try_become_owner().await,
                 _ = ticker.tick() => self.try_become_owner().await,
             }
         }
