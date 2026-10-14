@@ -33,7 +33,10 @@ use astersql_executor::foreign_key::{
 };
 use astersql_parser::NormalizeDigest;
 use astersql_parser_auth::parser::auth::auth::UserIdentity;
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain,
+    CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_testkit_testfailpoint::enable as enable_failpoint;
 
@@ -164,6 +167,10 @@ const FOREIGN_KEY_LOCK_CASES: &[&[&str]] = &[
 
 fn fk_testkit() -> TestKit {
     let store = create_fk_store();
+    configure_fk_testkit(store)
+}
+
+fn configure_fk_testkit(store: Arc<AnalyzeStatsStore>) -> TestKit {
     let mut tk = new_fk_testkit(store);
     tk.MustExec("set @@global.tidb_enable_foreign_key=1", Vec::new());
     tk.MustExec("set @@foreign_key_checks=1", Vec::new());
@@ -765,7 +772,10 @@ fn TestForeignKeyConcurrentInsertChildTable() {
 
 #[test]
 fn TestForeignKeyOnUpdateChildTable() {
-    let mut tk = fk_testkit();
+    // This test creates every schema it needs, so avoid bootstrapping unrelated
+    // mysql statistics tables while retaining the real Domain, KV, DDL, and SQL paths.
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let mut tk = configure_fk_testkit(store);
     for case in FOREIGN_KEY_CASES {
         prepare_case(&mut tk, *case);
         tk.MustExec(
