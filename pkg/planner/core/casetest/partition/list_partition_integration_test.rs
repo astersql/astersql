@@ -198,16 +198,16 @@ pub fn test_list_partition_random_transaction() {
                 let low = next_deterministic(&mut seed, 50);
                 let high = 50 + next_deterministic(&mut seed, 50);
                 let condition = format!("where a >= {low} and a <= {high}");
-                compare_sorted(
-                    &tk,
-                    &format!("select * from tnormal {condition}"),
-                    &format!("select * from tlist {condition}"),
-                );
-                compare_sorted(
-                    &tk,
-                    &format!("select * from tnormal {condition}"),
-                    &format!("select * from tcollist {condition}"),
-                );
+                let mut control =
+                    tk.MustQuery(&format!("select * from tnormal {condition}"), Vec::new());
+                control.Sort();
+                let control_rows = control.Rows();
+                for table in ["tlist", "tcollist"] {
+                    let candidate_sql = format!("select * from {table} {condition}");
+                    let mut candidate = tk.MustQuery(&candidate_sql, Vec::new());
+                    candidate.Sort();
+                    assert_eq!(control_rows, candidate.Rows(), "{candidate_sql}");
+                }
             }
             2 => {
                 let a = next_deterministic(&mut seed, 100);
