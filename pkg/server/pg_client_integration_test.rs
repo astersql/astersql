@@ -155,19 +155,30 @@ fn run_clients(pg_enabled: bool) {
         assert!(control.exists(), "DataGrip UI session timed out");
         std::fs::remove_file(control).unwrap();
     }
-    let result = Command::new("python3")
-        .arg("-c")
-        .arg(LIBPQ_WORKFLOW)
-        .arg(address.port().to_string())
-        .arg(crate::pg_catalog::DATABASES_SQL)
-        .args([
-            DATAGRIP_VIEW_SOURCES_SQL,
-            DATAGRIP_FUNCTION_SOURCES_SQL,
-            DATAGRIP_RELATIONS_SQL,
-        ])
-        .args([database.as_str(), view_source.as_str()])
-        .output();
-    let jdbc_result = run_jdbc(address.port(), &database, &view_source);
+    // The real libpq and JDBC clients use disjoint temporary object names and
+    // only share catalog reads, so run the independent client workflows while
+    // the same server fixture is alive instead of paying their latency serially.
+    let (result, jdbc_result) = std::thread::scope(|scope| {
+        let libpq = scope.spawn(|| {
+            Command::new("python3")
+                .arg("-c")
+                .arg(LIBPQ_WORKFLOW)
+                .arg(address.port().to_string())
+                .arg(crate::pg_catalog::DATABASES_SQL)
+                .args([
+                    DATAGRIP_VIEW_SOURCES_SQL,
+                    DATAGRIP_FUNCTION_SOURCES_SQL,
+                    DATAGRIP_RELATIONS_SQL,
+                ])
+                .args([database.as_str(), view_source.as_str()])
+                .output()
+        });
+        let jdbc_result = run_jdbc(address.port(), &database, &view_source);
+        (
+            libpq.join().expect("libpq workflow thread panicked"),
+            jdbc_result,
+        )
+    });
     assert_eq!(
         mysql_query(&mut mysql, "SELECT id FROM public.client_isolation"),
         vec![vec![Some(b"31".to_vec())]]
@@ -217,28 +228,47 @@ fn run_jdbc(port: u16, database: &str, view_source: &str) -> Result<(), String> 
     if libraries.is_empty() {
         return Err("PG_JDBC_LIBRARIES must include a real installed JDBC driver".into());
     }
-    let mut failures = Vec::new();
-    for library in libraries {
+    for library in &libraries {
         if !library.is_file() {
             return Err(format!(
                 "missing installed PostgreSQL JDBC driver: {}",
                 library.display()
             ));
         }
-        let output = Command::new(&java)
-            .arg("--class-path")
-            .arg(&library)
-            .arg(&source)
-            .arg(port.to_string())
-            .args([
-                DATAGRIP_VIEW_SOURCES_SQL,
-                DATAGRIP_FUNCTION_SOURCES_SQL,
-                DATAGRIP_RELATIONS_SQL,
-            ])
-            .args([database, view_source])
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg_datagrip"))
-            .output()
-            .map_err(|e| format!("start installed Java runtime: {e}"))?;
+    }
+    let outputs = std::thread::scope(|scope| {
+        let workers = libraries
+            .iter()
+            .enumerate()
+            .map(|(index, library)| {
+                let java = &java;
+                let source = &source;
+                scope.spawn(move || {
+                    Command::new(java)
+                        .arg("--class-path")
+                        .arg(library)
+                        .arg(source)
+                        .arg(port.to_string())
+                        .args([
+                            DATAGRIP_VIEW_SOURCES_SQL,
+                            DATAGRIP_FUNCTION_SOURCES_SQL,
+                            DATAGRIP_RELATIONS_SQL,
+                        ])
+                        .args([database, view_source])
+                        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg_datagrip"))
+                        .arg(index.to_string())
+                        .output()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("JDBC workflow thread panicked"))
+            .collect::<Vec<_>>()
+    });
+    let mut failures = Vec::new();
+    for output in outputs {
+        let output = output.map_err(|e| format!("start installed Java runtime: {e}"))?;
         println!("{}", String::from_utf8_lossy(&output.stdout));
         if !output.status.success() {
             failures.push(format!(
@@ -274,6 +304,8 @@ class PgIntrospection {
     }
     public static void main(String[] args) throws Exception {
         viewSource = args[5];
+        String parseTable = "jdbc_parse_ddl_" + args[7];
+        String liveTableName = "jdbc_client_live_" + args[7];
         String options = "sslmode=disable&gssEncMode=disable&prepareThreshold=1&connectTimeout=5&socketTimeout=10";
         try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:"+args[0]+"/"+args[4]+"?"+options, "root", ""); Statement s = c.createStatement()) {
             // Preserve the installed driver defaults for binary parameters/results.
@@ -292,17 +324,17 @@ class PgIntrospection {
                     oid.setValue("4294967295"); p.setObject(1, oid); try (ResultSet r=p.executeQuery()) { verify(r, i==2?5:3, false); }
                 }
             }
-            try (PreparedStatement p=c.prepareStatement("SELECT relname FROM pg_class WHERE relname='jdbc_parse_ddl'")) {
+            try (PreparedStatement p=c.prepareStatement("SELECT relname FROM pg_class WHERE relname='"+parseTable+"'")) {
                 check(p.getMetaData().getColumnCount()==1, "Parse-before-DDL Describe");
                 try(ResultSet r=p.executeQuery()) { check(!r.next(), "before DDL rows"); }
-                s.execute("CREATE TABLE public.jdbc_parse_ddl (id INT)");
-                try { try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("jdbc_parse_ddl") && !r.next(), "live rows after DDL"); } }
-                finally { s.execute("DROP TABLE public.jdbc_parse_ddl"); }
+                s.execute("CREATE TABLE public."+parseTable+" (id INT)");
+                try { try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals(parseTable) && !r.next(), "live rows after DDL"); } }
+                finally { s.execute("DROP TABLE public."+parseTable); }
                 try(ResultSet r=p.executeQuery()) { check(!r.next(), "live rows after DROP"); }
             }
-            s.execute("CREATE TABLE public.jdbc_client_live (id INT PRIMARY KEY, note VARCHAR(30))");
+            s.execute("CREATE TABLE public."+liveTableName+" (id INT PRIMARY KEY, note VARCHAR(30))");
             try {
-                try (PreparedStatement p=c.prepareStatement("SELECT c.oid, c.relname='jdbc_client_live' AS matched, i.indkey, i.indclass, i.indoption FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='jdbc_client_live'")) {
+                try (PreparedStatement p=c.prepareStatement("SELECT c.oid, c.relname='"+liveTableName+"' AS matched, i.indkey, i.indclass, i.indoption FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='"+liveTableName+"'")) {
                     for (int repeat=0;repeat<3;repeat++) { try (ResultSet r=p.executeQuery()) {
                         check(r.next() && r.getLong(1)>0 && r.getBoolean(2), "default binary catalog identity");
                         check(r.getString(3).equals("1"), "int2vector contents");
@@ -311,7 +343,7 @@ class PgIntrospection {
                     } }
                 }
                 long liveTable, liveIndex;
-                try (ResultSet r=s.executeQuery("SELECT c.oid, i.indexrelid FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='jdbc_client_live'")) {
+                try (ResultSet r=s.executeQuery("SELECT c.oid, i.indexrelid FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='"+liveTableName+"'")) {
                     check(r.next(), "live structure identity"); liveTable=r.getLong(1); liveIndex=r.getLong(2);
                 }
                 boolean fullFailed=false;
@@ -330,7 +362,7 @@ class PgIntrospection {
                                         while (r.next()) {
                                             for (int col=1;col<=count;col++) r.getObject(col);
                                             String name=file.getFileName().toString();
-                                            if (name.equals("1869280142.sql") && "jdbc_client_live".equals(r.getString("table_name"))) { check(r.getLong("table_id")>0, "real table OID"); found=true; }
+                                            if (name.equals("1869280142.sql") && liveTableName.equals(r.getString("table_name"))) { check(r.getLong("table_id")>0, "real table OID"); found=true; }
                                             if (name.equals("1869280153.sql") && "PRIMARY".equals(r.getString("index_name"))) { check(r.getBoolean("is_primary") && r.getLong("index_id")>0, "real primary index"); found=true; }
                                             if (name.equals("1869280154.sql") && r.getLong("table_id")==liveTable && "p".equals(r.getString("con_kind"))) { check(r.getArray("con_columns")!=null && r.getLong("index_id")==liveIndex, "primary constraint columns/identity"); found=true; }
                                             if (name.equals("RetrieveColumns.sql") && r.getLong("table_id")==liveTable && "note".equals(r.getString("column_name"))) { check(r.getInt("column_position")==2 && "character varying(30)".equals(r.getString("type_spec")), "real column structure"); found=true; }
@@ -347,16 +379,16 @@ class PgIntrospection {
                         }
                     }
                 }
-                try (PreparedStatement p=c.prepareStatement("INSERT INTO public.jdbc_client_live VALUES (?, ?)")) { p.setInt(1, 7); p.setNull(2, Types.VARCHAR); check(p.executeUpdate()==1, "prepared insert count"); }
-                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1)==null && r.wasNull() && !r.next(), "prepared NULL row"); } }
-                try (PreparedStatement p=c.prepareStatement("UPDATE public.jdbc_client_live SET note=? WHERE id=?")) { p.setString(1,"updated"); p.setInt(2,7); check(p.executeUpdate()==1, "prepared update count"); }
-                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("updated") && !r.next(), "prepared update row"); } }
-                try (PreparedStatement p=c.prepareStatement("DELETE FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); check(p.executeUpdate()==1, "prepared delete count"); }
-                try (ResultSet r=s.executeQuery("SELECT id FROM public.jdbc_client_live")) { check(!r.next(), "delete row"); }
+                try (PreparedStatement p=c.prepareStatement("INSERT INTO public."+liveTableName+" VALUES (?, ?)")) { p.setInt(1, 7); p.setNull(2, Types.VARCHAR); check(p.executeUpdate()==1, "prepared insert count"); }
+                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public."+liveTableName+" WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1)==null && r.wasNull() && !r.next(), "prepared NULL row"); } }
+                try (PreparedStatement p=c.prepareStatement("UPDATE public."+liveTableName+" SET note=? WHERE id=?")) { p.setString(1,"updated"); p.setInt(2,7); check(p.executeUpdate()==1, "prepared update count"); }
+                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public."+liveTableName+" WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("updated") && !r.next(), "prepared update row"); } }
+                try (PreparedStatement p=c.prepareStatement("DELETE FROM public."+liveTableName+" WHERE id=?")) { p.setInt(1,7); check(p.executeUpdate()==1, "prepared delete count"); }
+                try (ResultSet r=s.executeQuery("SELECT id FROM public."+liveTableName)) { check(!r.next(), "delete row"); }
                 try { s.executeQuery("SELECT oid FROM pg_catalog.pg_missing"); throw new AssertionError("missing catalog accepted"); } catch (SQLException e) { check("42P01".equals(e.getSQLState()), e.toString()); }
                 try (ResultSet r=s.executeQuery("SELECT 1")) { check(r.next() && r.getInt(1)==1, "error recovery"); }
                 check(!fullFailed, "full DataGrip SQL acceptance failed; see per-query evidence");
-            } finally { s.execute("DROP TABLE public.jdbc_client_live"); }
+            } finally { s.execute("DROP TABLE public."+liveTableName); }
             System.out.println("JDBC original introspection Statement/PreparedStatement, oid/NULL/boundary, Describe/Parse-before-DDL, public CRUD, SQLSTATE 42P01 and recovery passed");
         }
     }
