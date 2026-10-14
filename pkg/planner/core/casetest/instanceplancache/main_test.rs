@@ -23,6 +23,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use astersql_testkit::TestKit;
+use astersql_testkit::db_driver::DbValue;
 
 use super::support::{Harness, exec, query, rand, rows};
 
@@ -270,14 +271,38 @@ pub fn prepareTables(n: usize) -> Vec<String> {
 #[derive(Debug, Clone)]
 /// 一组可相互对照的直接查询与预处理语句执行步骤。
 pub struct TestCase {
-    /// 创建预处理语句的 SQL。
-    pub prep_stmt: String,
+    /// 通过 binary protocol 创建预处理语句的 SQL。
+    pub prepared_sql: String,
     /// 将参数直接代入模板后的查询，用于取得预期结果。
     pub sel_stmts: Vec<String>,
-    /// 每轮执行前设置用户变量的 SQL。
-    pub set_stmts: Vec<String>,
-    /// 使用对应用户变量执行预处理语句的 SQL。
-    pub exec_stmts: Vec<String>,
+    /// 与直接查询一一对应的 binary protocol 参数。
+    pub arguments: Vec<Vec<DbValue>>,
+}
+
+fn db_value(sql_literal: &str) -> DbValue {
+    if sql_literal.eq_ignore_ascii_case("null") {
+        DbValue::Null
+    } else if sql_literal.starts_with('\'') && sql_literal.ends_with('\'') {
+        DbValue::String(sql_literal[1..sql_literal.len() - 1].to_owned())
+    } else if sql_literal.contains('.') {
+        DbValue::F64(
+            sql_literal
+                .parse()
+                .unwrap_or_else(|error| panic!("parse float literal {sql_literal}: {error}")),
+        )
+    } else if sql_literal.starts_with('-') {
+        DbValue::I64(
+            sql_literal
+                .parse()
+                .unwrap_or_else(|error| panic!("parse signed literal {sql_literal}: {error}")),
+        )
+    } else {
+        DbValue::U64(
+            sql_literal
+                .parse()
+                .unwrap_or_else(|error| panic!("parse unsigned literal {sql_literal}: {error}")),
+        )
+    }
 }
 
 /// 根据查询模板生成预处理语句，以及 `n` 组直接查询和参数化执行步骤。
@@ -287,10 +312,9 @@ pub fn prepareStmts(query_template: &str, n_tables: usize, n: usize) -> TestCase
         query = query.replacen("{T}", &format!("t{}", rand::intn(n_tables as i32)), 1);
     }
     let mut case = TestCase {
-        prep_stmt: format!("prepare stmt from '{}'", query),
+        prepared_sql: query.clone(),
         sel_stmts: Vec::new(),
-        set_stmts: Vec::new(),
-        exec_stmts: Vec::new(),
+        arguments: Vec::new(),
     };
     for _ in 0..n {
         let parameter_count = query.matches('?').count();
@@ -304,22 +328,8 @@ pub fn prepareStmts(query_template: &str, n_tables: usize, n: usize) -> TestCase
             direct = direct.replacen('?', &value.to_string(), 1);
         }
         case.sel_stmts.push(direct);
-        case.set_stmts.push(format!(
-            "set {}",
-            values
-                .iter()
-                .enumerate()
-                .map(|(index, value)| format!("@p{index}={value}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
-        case.exec_stmts.push(format!(
-            "execute stmt using {}",
-            (0..parameter_count)
-                .map(|index| format!("@p{index}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
+        case.arguments
+            .push(values.iter().map(|value| db_value(value)).collect());
     }
     case
 }
@@ -421,21 +431,33 @@ pub fn randomFilter(table: &str, n_cols: usize) -> String {
 
 fn run_case(mut tk: TestKit, case: TestCase) {
     exec(&mut tk, "use test");
-    exec(&mut tk, &case.prep_stmt);
-    for (direct, (set, execute)) in case
+    let expected = case
         .sel_stmts
         .iter()
-        .zip(case.set_stmts.iter().zip(case.exec_stmts.iter()))
-    {
-        // 直接查询提供基准；预处理语句首次执行后再重复一次，以覆盖缓存计划复用路径。
-        let expected = query(&tk, direct);
-        exec(&mut tk, set);
-        let mut actual = query(&tk, execute);
-        actual.Sort();
-        let mut expected = expected;
-        expected.Sort().Check(actual.Rows());
-        query(&tk, execute).Sort().Check(actual.Rows());
-        query(&tk, execute).Sort().Check(actual.Rows());
+        .map(|direct| query(&tk, direct).Sort().Rows())
+        .collect::<Vec<_>>();
+    let session = tk.Session();
+    let (statement_id, _) = session
+        .PrepareStmt(&case.prepared_sql)
+        .expect("prepare instance plan cache query");
+    let repeated_arguments = case
+        .arguments
+        .iter()
+        .flat_map(|arguments| std::iter::repeat_n(arguments.clone(), 3))
+        .collect::<Vec<_>>();
+    let actual = session
+        .QueryPreparedStmtBatch(statement_id, &repeated_arguments)
+        .expect("execute instance plan cache query batch");
+    session
+        .DropPreparedStmt(statement_id)
+        .expect("drop instance plan cache query");
+    assert_eq!(actual.len(), expected.len() * 3);
+    for (expected, executions) in expected.iter().zip(actual.chunks_exact(3)) {
+        for rows in executions {
+            let mut actual = rows.string_rows();
+            actual.sort();
+            assert_eq!(&actual, expected);
+        }
     }
 }
 
