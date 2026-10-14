@@ -190,6 +190,10 @@ fn test_hint_for_intersection_index_merge() {
     for cascades in [false, true] {
         let mut tk = new_testkit();
         tk.MustExec(
+            "create table if not exists mysql.analyze_options (table_id bigint(64) not null,sample_num bigint(64) not null default 0,sample_rate double not null default -1,buckets bigint(64) not null default 0,topn bigint(64) not null default -1,column_choice enum('DEFAULT','ALL','PREDICATE','LIST') not null default 'DEFAULT',column_ids text(19372),primary key (table_id) clustered)",
+            Vec::new(),
+        );
+        tk.MustExec(
             &format!(
                 "set @@tidb_enable_cascades_planner = {}",
                 usize::from(cascades)
