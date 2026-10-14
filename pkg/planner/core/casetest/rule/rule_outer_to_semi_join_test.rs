@@ -22,6 +22,11 @@ use astersql_testkit::{Rows, TestKit};
 fn new_test_kit(cascades: bool) -> TestKit {
     let (store, _domain) = CreateMockStoreAndDomain();
     let mut test_kit = TestKit::new(store);
+    configure_test_kit(&mut test_kit, cascades);
+    test_kit
+}
+
+fn configure_test_kit(test_kit: &mut TestKit, cascades: bool) {
     test_kit.MustExec("use test", Vec::new());
     test_kit.MustExec(
         &format!(
@@ -30,7 +35,6 @@ fn new_test_kit(cascades: bool) -> TestKit {
         ),
         Vec::new(),
     );
-    test_kit
 }
 
 fn prepare_outer_to_semi_tables(test_kit: &mut TestKit) {
@@ -57,9 +61,13 @@ fn outer_to_semi_go_golden_cases_execute_in_both_planners() {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata");
     let suite = TestData::load_with_cascades(&directory, "outer_to_semi_join_suite", true)
         .expect("load Go outer-to-semi fixtures");
+    let (store, _domain) = CreateMockStoreAndDomain();
 
     for cascades in [false, true] {
-        let mut test_kit = new_test_kit(cascades);
+        // Keep independent sessions like the Go subtests while sharing the immutable
+        // store/Domain bootstrap. The table setup below resets every mutable fixture.
+        let mut test_kit = TestKit::new(store.clone());
+        configure_test_kit(&mut test_kit, cascades);
         prepare_outer_to_semi_tables(&mut test_kit);
         let mut mismatches = Vec::new();
         let (input, output) = suite
