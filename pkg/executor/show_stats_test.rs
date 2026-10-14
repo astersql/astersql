@@ -515,6 +515,7 @@ fn TestShowColumnStatsUsage() {
 /// 验证 analyze 任务完成/运行中状态字段，以及分区 merge global 作业。
 fn TestShowAnalyzeStatus() {
     let mut testkit = stats_testkit();
+    testkit.MustExec("delete from mysql.analyze_jobs", Vec::new());
     testkit.MustExec("create table job_t(a int, b int, index idx(b))", Vec::new());
     testkit.MustExec("insert into job_t values(1,1),(2,2)", Vec::new());
     testkit.MustExec("analyze table job_t", Vec::new());
@@ -541,6 +542,7 @@ fn TestShowAnalyzeStatus() {
     assert_eq!(rows[0][10], "<nil>");
     assert_eq!(rows[0][11], "<nil>");
 
+    testkit.MustExec("delete from mysql.analyze_jobs", Vec::new());
     testkit.MustExec(
         "create table job_p(a int, b int) partition by range(a) (partition p0 values less than (6))",
         Vec::new(),
@@ -561,20 +563,10 @@ fn TestShowAnalyzeStatus() {
     assert!(rows.iter().any(|row| row[2] == "p0"
         && row[3] == "analyze table all columns with 256 buckets, 100 topn, 1 samplerate"));
 
-    // Use a fresh analyze store for the Go subcase that deletes old jobs before
-    // adding an index; the lightweight test store intentionally keeps its
-    // in-memory job history when the SQL backing table is deleted from.
-    let mut indexed_testkit = stats_testkit();
-    indexed_testkit.MustExec(
-        "create table job_p(a int, b int) partition by range(a) (partition p0 values less than (6))",
-        Vec::new(),
-    );
-    indexed_testkit.MustExec("insert into job_p values(1,1),(2,2)", Vec::new());
-    indexed_testkit.MustExec("alter table job_p add index idx(b)", Vec::new());
-    indexed_testkit.MustExec("analyze table job_p index idx", Vec::new());
-    let rows = indexed_testkit
-        .MustQuery("show analyze status", Vec::new())
-        .Rows();
+    testkit.MustExec("delete from mysql.analyze_jobs", Vec::new());
+    testkit.MustExec("alter table job_p add index idx(b)", Vec::new());
+    testkit.MustExec("analyze table job_p index idx", Vec::new());
+    let rows = testkit.MustQuery("show analyze status", Vec::new()).Rows();
     assert_eq!(rows.len(), 3);
     let mut job_infos = rows.iter().map(|row| row[3].clone()).collect::<Vec<_>>();
     job_infos.sort();

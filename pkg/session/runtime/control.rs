@@ -2298,6 +2298,14 @@ impl ConcreteSession {
                 self.domain.clear_column_usage();
                 return Ok(());
             }
+            if sql == "delete from mysql.analyze_jobs" {
+                self.domain
+                    .stats_handle()
+                    .lock()
+                    .expect("domain stats handle lock poisoned")
+                    .clear_analyze_jobs();
+                return Ok(());
+            }
             self.domain
                 .restricted_stats_execute(&sql, &[])
                 .map_err(|error| session_error("delete mysql statistics system table", error))?;

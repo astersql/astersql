@@ -3266,7 +3266,7 @@ impl ConcreteSession {
         }
         match source.Source.Name.L.as_str() {
             "stats_table_locked" | "stats_meta" | "stats_histograms" | "stats_meta_history"
-            | "stats_history" | "stats_fm_sketch" | "column_stats_usage" => {}
+            | "stats_history" | "stats_fm_sketch" | "column_stats_usage" | "analyze_jobs" => {}
             _ => return None,
         }
         let mut sql = format!("delete from mysql.{}", source.Source.Name.L);
