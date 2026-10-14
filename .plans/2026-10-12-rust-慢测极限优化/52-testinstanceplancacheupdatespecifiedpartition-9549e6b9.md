@@ -107,6 +107,7 @@
 - 第一版 owner-thread pairs 已把五次降至 `0.648056 / 0.661687 / 0.630563 / 0.631331 / 0.633960s`，但仍未达标；后续两个数据库内等价判定实验分别最大 `2.836434s` 和 `1.451340s`，均已撤销。
 - 最终候选增加 TestKit 多语句/多结果集批处理边界，保留 100 轮、每轮两次 prepared execute、每轮缓存命中断言和每轮完整表行比较，仅消除重复 owner-thread 请求/解析边界。
 - 最终候选的严格 after 三次在预热前因无关 `Cargo.toml`/`Cargo.lock` 并行中间态失败，均为 `cargo metadata --locked` 退出 101；目标测试零执行，不作达标声明。
+- 2026-10-14 回归复核使用槽位 3，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`；成功取得性能锁后，严格 after 仍在预热编译阶段被共享工作区的无关 `concurrency_test.rs` 未完成修改阻断：5 处 `DbValue::I64` 参数为 `i32` 而期望 `i64`，Cargo 退出 101，目标测试零执行。本任务写入的槽位锁和性能锁均已在确认持有进程结束后清理，编译缓存保留。
 
 ## 决策日志
 
@@ -115,6 +116,7 @@
 
 ## 结果回顾
 
-- 状态为“已完成，待回归验证”：实现候选、`cargo fmt --all` 和 diff 自审已完成；最终候选尚缺编译、五次 `<0.500s` 与 `make lint` 证据。
+- 状态为“已完成，待回归验证”：实现候选、`cargo fmt --all` 和 diff 自审已完成；最终候选尚缺编译、五次成功 after 与 `make lint` 证据。
 - 需回归的精确命令为本文“通过验证命令”和 `make lint`；只有在共享 workspace manifest/lock 稳定后才能将状态改为“已完成”并删除本文件。
+- 2026-10-14 更新验收规则已复核：historical before 为 5 个成功样本，但最终候选仍缺 5 个成功 after 样本，因此不能仅凭早期 owner-thread 候选的数据直接收口。本轮失败由不属于任务 52 的并行源码修改引起，状态保持“已完成，待回归验证”，不删除任务文件。
 - 自审：未修改 `plan.md`，未删除 PingCAP/AsterSQL 版权，未改动 Cargo 依赖，未缩减 40 行、100 轮、随机分区分支、prepared 双执行、缓存命中或逐轮表等价断言。
