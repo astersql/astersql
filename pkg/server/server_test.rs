@@ -254,7 +254,7 @@ fn write_sql_resp_cursor_execute_and_fetch_use_production_lifecycle() {
 
 #[test]
 fn show_processlist_uses_live_server_session_manager() {
-    let server = start_real_server();
+    let server = start_real_server_without_bootstrap();
     let mysql_addr = server.listener_addr().expect("MySQL listener address");
     let mut stream = TcpStream::connect(mysql_addr).expect("connect real MySQL listener");
     stream
