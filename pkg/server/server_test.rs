@@ -211,7 +211,7 @@ fn deprecate_eof_result_set_starts_rows_immediately_after_columns() {
 
 #[test]
 fn write_sql_resp_cursor_execute_and_fetch_use_production_lifecycle() {
-    let server = start_real_server();
+    let server = start_real_server_without_bootstrap();
     let mysql_addr = server.listener_addr().expect("MySQL listener address");
     let mut stream = TcpStream::connect(mysql_addr).expect("connect real MySQL listener");
     stream
