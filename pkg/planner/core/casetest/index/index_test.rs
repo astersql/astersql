@@ -457,7 +457,7 @@ fn index_range_quota_preserves_table_and_prefix_residuals() {
 
 #[test]
 fn test_invisible_index() {
-    run_under_cascades(|_, tk| {
+    run_under_cascades_in_parallel(|_, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec("CREATE TABLE t1 (a INT, KEY(a) INVISIBLE)", Vec::new());
         tk.MustExec(
