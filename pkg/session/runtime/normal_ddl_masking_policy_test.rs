@@ -1889,6 +1889,7 @@ fn masking_policy_sql_modify_ingest_rebuilds_secondary_index() {
 struct IngestEnvironment {
     old: Option<std::path::PathBuf>,
     path: std::path::PathBuf,
+    _check_interval: astersql_dxf_framework_taskexecutor::CheckIntervalGuard,
 }
 impl IngestEnvironment {
     fn new() -> Self {
@@ -1896,7 +1897,12 @@ impl IngestEnvironment {
             std::env::temp_dir().join(format!("astersql-ddl-ingest-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         let old = astersql_ddl::index::replace_global_lightning_env_for_test(Some(path.clone()));
-        Self { old, path }
+        let check_interval = astersql_dxf_framework_taskexecutor::ReduceCheckIntervalForTest();
+        Self {
+            old,
+            path,
+            _check_interval: check_interval,
+        }
     }
 }
 impl Drop for IngestEnvironment {

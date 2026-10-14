@@ -9,7 +9,7 @@
 use crate::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 /// 任务轮询间隔（纳秒），默认 300ms；测试可缩短。
@@ -30,6 +30,39 @@ pub fn SetTaskCheckIntervalForTest(interval: Duration) -> Duration {
     let old = TaskCheckInterval();
     taskCheckIntervalNanos.store(interval.as_nanos() as u64, Ordering::Release);
     old
+}
+
+static CHECK_INTERVAL_OVERRIDE: Mutex<()> = Mutex::new(());
+
+/// Restores the production task and subtask polling intervals when dropped.
+pub struct CheckIntervalGuard {
+    task: Duration,
+    subtask: Duration,
+    max_subtask: Duration,
+    _override: MutexGuard<'static, ()>,
+}
+
+impl Drop for CheckIntervalGuard {
+    fn drop(&mut self) {
+        SetTaskCheckIntervalForTest(self.task);
+        SetSubtaskCheckIntervalForTest(self.subtask, self.max_subtask);
+    }
+}
+
+/// Applies Go's short test polling cadence without bypassing task execution.
+pub fn ReduceCheckIntervalForTest() -> CheckIntervalGuard {
+    let override_guard = CHECK_INTERVAL_OVERRIDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let interval = Duration::from_millis(1);
+    let task = SetTaskCheckIntervalForTest(interval);
+    let (subtask, max_subtask) = SetSubtaskCheckIntervalForTest(interval, interval);
+    CheckIntervalGuard {
+        task,
+        subtask,
+        max_subtask,
+        _override: override_guard,
+    }
 }
 /// 节点元数据恢复循环间隔。
 pub const recoverMetaInterval: Duration = Duration::from_secs(90);
