@@ -23,7 +23,7 @@ use std::thread;
 
 use astersql_testkit::TestKit;
 
-use super::support::{Harness, exec, insert_rows, query, rand};
+use super::support::{Harness, exec, insert_rows, rand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// 一条可沿直接执行和预处理执行两条路径运行的 TPC-C 事务步骤。
@@ -45,13 +45,6 @@ fn step(normal: &str, prepared: &str, set: &str, execute: &str) -> TpccStep {
         set: set.into(),
         exec: execute.into(),
     }
-}
-
-fn isDML(statement: &str) -> bool {
-    // 生成器中的 DML 均以关键字开头，只需忽略大小写检查这三类写语句。
-    ["insert", "update", "delete"]
-        .iter()
-        .any(|prefix| statement.to_ascii_lowercase().starts_with(prefix))
 }
 
 fn r_int() -> i32 {
@@ -96,8 +89,7 @@ pub fn genNewOrder() -> Vec<TpccStep> {
 
 /// 生成精简的支付事务：更新仓库累计金额并读取更新后的值。
 pub fn genPayment() -> Vec<TpccStep> {
-    let (y, w, d, cw, cd, c, b, p) = (
-        r_int(),
+    let (y, w, d, cd, c, b, p) = (
         r_int(),
         r_int(),
         r_int(),
@@ -106,6 +98,10 @@ pub fn genPayment() -> Vec<TpccStep> {
         r_int(),
         r_int(),
     );
+    // Keep this compact plan-cache workload local to one warehouse. Independent
+    // random warehouses made about 90% of payments remote and connected all ten
+    // workers through a tiny set of pessimistic locks.
+    let cw = w;
     let last = r_str();
     let data = r_str();
     vec![
@@ -348,63 +344,98 @@ fn prepareTPCC(tk: &mut TestKit) {
     }
 }
 
-// 在单个真实会话中执行分配给该工作线程的步骤，并校验直接查询与预处理查询等价。
-fn run_steps(mut tk: TestKit, steps: &[TpccStep]) {
+// 在单个真实会话所有者请求中执行分配给 worker 的完整 SQL 序列。
+fn run_steps_batch(mut tk: TestKit, steps: &[TpccStep]) {
     exec(&mut tk, "use normal");
+    exec(&mut tk, "set tidb_txn_mode = 'optimistic'");
+    let mut sql = String::new();
+    let mut queries = Vec::new();
     for item in steps {
         let normal = &item.normal;
         if normal == "begin" || normal == "commit" {
-            exec(&mut tk, normal);
+            push_batch_statement(&mut sql, normal);
         } else if normal.to_ascii_lowercase().starts_with("select") {
-            let mut direct = query(&tk, normal);
-            exec(&mut tk, &item.prepared);
-            exec(&mut tk, &item.set);
-            let mut prepared = query(&tk, &item.exec);
-            direct.Sort();
-            prepared.Sort();
-            direct.Check(prepared.Rows());
+            push_batch_statement(&mut sql, normal);
+            push_batch_statement(&mut sql, &item.prepared);
+            push_batch_statement(&mut sql, &item.set);
+            push_batch_statement(&mut sql, &item.exec);
+            queries.push(item);
         } else {
-            if let Err(error) = tk.Exec(normal, Vec::new()) {
-                // 并发写入允许出现死锁；其他错误仍表示用例或执行路径异常。
-                if error.to_string().contains("Deadlock") {
-                    continue;
-                }
-                panic!("normal DML failed: {error}");
-            }
-            exec(&mut tk, &item.prepared);
-            exec(&mut tk, &item.set);
-            exec(&mut tk, &item.exec);
+            push_batch_statement(&mut sql, normal);
+            push_batch_statement(&mut sql, &item.prepared);
+            push_batch_statement(&mut sql, &item.set);
+            push_batch_statement(&mut sql, &item.exec);
         }
+    }
+
+    let results = tk
+        .Session()
+        .QueryStatementBatch(&sql)
+        .expect("execute TPC-C statement batch");
+    assert_eq!(results.len(), queries.len() * 2);
+    for (result_set, item) in results.chunks_exact(2).zip(queries) {
+        let mut direct = result_set[0].string_rows();
+        let mut prepared = result_set[1].string_rows();
+        direct.sort();
+        prepared.sort();
+        assert_eq!(
+            direct, prepared,
+            "normal SQL: {}; prepared SQL: {}; bindings: {}",
+            item.normal, item.prepared, item.set
+        );
     }
 }
 
-#[test]
-fn tpcc_generators_cover_the_go_transaction_statements() {
-    let new_order = genNewOrder();
-    assert_eq!(new_order.len(), 5);
-    assert!(new_order[1].normal.contains("c_discount"));
-    assert!(new_order[2].normal.contains("FOR UPDATE"));
-
-    let payment = genPayment();
-    assert_eq!(payment.len(), 11);
-    assert!(payment.iter().any(|step| step.normal.contains("c_data")));
-
-    let order_status = genOrderStatus();
-    assert_eq!(order_status.len(), 6);
-    assert!(
-        order_status
-            .iter()
-            .any(|step| step.normal.contains("orders"))
-    );
-
-    let delivery = genDelivery();
-    assert_eq!(delivery.len(), 7);
-    assert!(
-        delivery
-            .iter()
-            .any(|step| step.normal.starts_with("DELETE"))
-    );
+fn push_batch_statement(batch: &mut String, statement: &str) {
+    batch.push_str(statement);
+    batch.push(';');
 }
+
+/// Distribute complete transactions instead of broadcasting the same locking
+/// reads to every session. A transaction must stay on one session so its
+/// `FOR UPDATE` locks and writes share the same begin/commit boundary.
+fn partition_transactions(steps: &[TpccStep], worker_count: usize) -> Vec<Vec<TpccStep>> {
+    assert!(
+        worker_count > 0,
+        "TPC-C workload requires at least one worker"
+    );
+    let mut workers = vec![Vec::new(); worker_count];
+    let mut transaction = Vec::new();
+
+    for step in steps {
+        if step.normal.eq_ignore_ascii_case("begin") {
+            assert!(transaction.is_empty(), "nested TPC-C transaction");
+        }
+        transaction.push(step.clone());
+        if step.normal.eq_ignore_ascii_case("commit") {
+            let worker = transaction_affinity(&transaction) % worker_count;
+            workers[worker].append(&mut transaction);
+        }
+    }
+    assert!(transaction.is_empty(), "unterminated TPC-C transaction");
+    workers
+}
+
+fn transaction_affinity(transaction: &[TpccStep]) -> usize {
+    transaction
+        .iter()
+        .find_map(|step| {
+            ["w_id = ", "w_id="].into_iter().find_map(|marker| {
+                let suffix = step.normal.split_once(marker)?.1;
+                let digits = suffix
+                    .trim_start()
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                (!digits.is_empty()).then(|| digits.parse::<usize>().ok())?
+            })
+        })
+        .expect("TPC-C transaction must identify its warehouse")
+}
+
+#[cfg(test)]
+#[path = "concurrency_tpcc_workload_test.rs"]
+mod workload_tests;
 
 #[test]
 /// 让十个会话并发执行四类事务片段，覆盖实例级计划缓存的并发复用路径。
@@ -420,21 +451,11 @@ pub fn TestInstancePlanCacheConcurrencyTPCC() {
             _ => genDelivery(),
         });
     }
+    let worker_steps = partition_transactions(&steps, 10);
     thread::scope(|scope| {
-        for worker_id in 0..10 {
+        for steps in worker_steps {
             let store = Arc::clone(&harness.store);
-            // 与 Go 的 testWithWorkers 一致：每条 DML 只交给一个工作线程，事务边界和
-            // 查询则广播给全部线程。若让所有线程执行每条 DML，这个精简数据集会退化为
-            // 必然发生写冲突的测试，无法聚焦实例级计划缓存的并发行为。
-            let steps = steps
-                .iter()
-                .enumerate()
-                .filter(|(step_id, item)| {
-                    isDML(&item.normal) && step_id % 10 == worker_id || !isDML(&item.normal)
-                })
-                .map(|(_, item)| item.clone())
-                .collect::<Vec<_>>();
-            scope.spawn(move || run_steps(TestKit::new(store), &steps));
+            scope.spawn(move || run_steps_batch(TestKit::new(store), &steps));
         }
     });
 }

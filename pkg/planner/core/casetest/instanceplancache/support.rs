@@ -31,6 +31,10 @@ pub mod rand {
 
     static STATE: AtomicU64 = AtomicU64::new(0x9e3779b97f4a7c15);
 
+    pub(super) fn bounded(value: u64, upper: u64) -> u64 {
+        ((value as u128 * upper as u128) >> u64::BITS) as u64
+    }
+
     /// 返回 `[0, upper)` 内的整数；非正上界与 Go 测试的非法调用一样直接失败。
     /// CAS 循环保证多个测试线程推进同一序列时不会丢失状态更新。
     pub fn intn(upper: i32) -> i32 {
@@ -39,12 +43,19 @@ pub mod rand {
         loop {
             let next = old.wrapping_mul(6364136223846793005).wrapping_add(1);
             match STATE.compare_exchange_weak(old, next, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return (next % upper as u64) as i32,
+                // The low bits of an LCG have very short periods. Scaling the
+                // full 64-bit state avoids stride-dependent patterns such as
+                // the TPC-C generators selecting only even warehouses.
+                Ok(_) => return bounded(next, upper as u64) as i32,
                 Err(current) => old = current,
             }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "support_rand_test.rs"]
+mod rand_tests;
 
 /// A fresh domain plus the store from which independent sessions can be made.
 /// 单个用例的测试环境：主会话负责初始化，共享存储用于派生相互独立的工作会话。
