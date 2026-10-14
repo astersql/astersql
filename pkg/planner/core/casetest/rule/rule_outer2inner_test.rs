@@ -24,7 +24,7 @@
 
 use std::path::PathBuf;
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::TestData;
 use astersql_testkit::{Rows, TestKit};
 
@@ -332,7 +332,7 @@ fn outer2inner_go_golden_plans_execute_in_both_planners() {
         .expect("load Go outer2inner fixtures");
 
     for cascades in [false, true] {
-        let (store, _domain) = CreateMockStoreAndDomain();
+        let (store, _domain) = CreatePlannerTestStoreAndDomain();
         let mut test_kit = TestKit::new(store);
         prepare_outer2inner_tables(&mut test_kit);
         test_kit.MustExec(
