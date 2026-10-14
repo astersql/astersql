@@ -47,6 +47,25 @@ fn run_under_cascades(mut test: impl FnMut(&Arc<Domain>, &mut TestKit)) {
     }
 }
 
+fn run_under_cascades_in_parallel(test: impl Fn(&Arc<Domain>, &mut TestKit) + Sync) {
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            let test = &test;
+            scope.spawn(move || {
+                let (domain, mut tk) = new_testkit_with_domain();
+                tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner = {}",
+                        if cascades { 1 } else { 0 }
+                    ),
+                    Vec::new(),
+                );
+                test(&domain, &mut tk);
+            });
+        }
+    });
+}
+
 fn load_suite(name: &str) -> astersql_testkit::testdata::TestData {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
     LoadTestSuiteDataWithCascades(
@@ -771,7 +790,8 @@ fn test_row_function_match_the_index_range_scan() {
 
 #[test]
 fn test_ordered_index_with_is_null() {
-    run_under_cascades(|_, tk| {
+    // Each planner mode owns an isolated store and domain, so their expensive setup can overlap.
+    run_under_cascades_in_parallel(|_, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
             "CREATE TABLE t1 (a int key, b int, c int, index (b,c))",
