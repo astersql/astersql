@@ -261,7 +261,14 @@ fn test_last_failed_analysis_duration_use_correct_timezone() {
     insert_analyze_job(&mut store, &mut job, "test-instance", 1).expect("insert job");
     assert!(job.id.is_some());
 
-    start_analyze_job(&mut store, Some(&mut job), SystemTime::now());
+    // Preserve the Go test's two-second elapsed interval without making the
+    // test wait on wall-clock time. `start_analyze_job` already accepts the
+    // observation time explicitly, so backdating that input exercises the
+    // same duration and timezone conversion deterministically.
+    let analysis_start = SystemTime::now()
+        .checked_sub(Duration::from_secs(2))
+        .expect("current time should be more than two seconds after the Unix epoch");
+    start_analyze_job(&mut store, Some(&mut job), analysis_start);
     let stored_start = store
         .jobs
         .get(&job.id.expect("inserted job id"))
@@ -274,7 +281,6 @@ fn test_last_failed_analysis_duration_use_correct_timezone() {
             >= Duration::from_secs(60 * 60),
         "stored start time must include the Europe/Berlin session conversion"
     );
-    std::thread::sleep(Duration::from_secs(2));
     finish_analyze_job(
         &mut store,
         Some(&mut job),
