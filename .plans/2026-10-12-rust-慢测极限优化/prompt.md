@@ -1308,3 +1308,9573 @@
 任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
 注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
 ```
+
+## 任务 321: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_intersection_test::test_plan_cache_for_intersection_index_merge`（原始 1.987s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/321-test_plan_cache_for_intersection_index_merge-305e7449.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/321-test_plan_cache_for_intersection_index_merge-305e7449.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 322: 优化 `astersql-planner-core-casetest-partition::list_partition_integration_test::test_list_partition_random_transaction`（原始 1.980s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/322-test_list_partition_random_transaction-8dabd4f5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/322-test_list_partition_random_transaction-8dabd4f5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 323: 优化 `astersql-expression-test-constantpropagation::constant_propagation_test::test_constant_propagation`（原始 1.976s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/323-test_constant_propagation-b38115ec.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/323-test_constant_propagation-b38115ec.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 325: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_uses_shared_election_and_hands_off`（原始 1.973s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/325-go_merge_43_crossks_owner_uses_shared_election_and_hands_off-a0b2217d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/325-go_merge_43_crossks_owner_uses_shared_election_and_hands_off-a0b2217d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 329: 优化 `astersql-planner-core-casetest-ch::ch_test::ch_test_q2_runs_through_cascades_planner`（原始 1.951s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/329-ch_test_q2_runs_through_cascades_planner-a93d5cb9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/329-ch_test_q2_runs_through_cascades_planner-a93d5cb9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 331: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::partitioned_clustered_tables_match_normal_table_queries`（原始 1.947s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/331-partitioned_clustered_tables_match_normal_table_queries-ef765d50.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/331-partitioned_clustered_tables_match_normal_table_queries-ef765d50.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 332: 优化 `astersql-testkit::stats_runtime_aster_unit_test::dynamic_partition_analyze_uses_requested_production_worker_concurrency`（原始 1.947s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/332-dynamic_partition_analyze_uses_requested_production_worker_concurrency-882cf244.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/332-dynamic_partition_analyze_uses_requested_production_worker_concurrency-882cf244.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 333: 优化 `astersql-planner-core-casetest-partition::integration_partition_test::test_generated_column_with_partition`（原始 1.942s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/333-test_generated_column_with_partition-7ff81cd3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/333-test_generated_column_with_partition-7ff81cd3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 335: 优化 `astersql-planner-core-casetest-rule::rule_predicate_pushdown_test::predicate_pushdown_issue_paths_execute`（原始 1.927s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/335-predicate_pushdown_issue_paths_execute-02aa72f3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/335-predicate_pushdown_issue_paths_execute-02aa72f3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 337: 优化 `astersql-planner-core-casetest-rule::rule_outer_to_semi_join_test::semi_join_rewrite_hint_matches_go`（原始 1.926s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/337-semi_join_rewrite_hint_matches_go-1b31366d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/337-semi_join_rewrite_hint_matches_go-1b31366d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 338: 优化 `astersql-session-test-temporarytabletest::temporary_table_test::local_temporary_table_delete_matches_go_transaction_matrix`（原始 1.922s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/338-local_temporary_table_delete_matches_go_transaction_matrix-2573db17.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/338-local_temporary_table_delete_matches_go_transaction_matrix-2573db17.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 341: 优化 `astersql-planner-core-casetest-windows::window_with_exist_subquery_test::window_subquery_rewrite_matches_go_results`（原始 1.898s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/341-window_subquery_rewrite_matches_go_results-eef6766d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/341-window_subquery_rewrite_matches_go_results-eef6766d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 342: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_plan_golden_is_executed`（原始 1.895s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/342-test_mpp_join_plan_golden_is_executed-e40b4be9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/342-test_mpp_join_plan_golden_is_executed-e40b4be9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 344: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_shared_validator_checks_related_table_deltas`（原始 1.889s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/344-crossks_align_lifecycle_shared_validator_checks_related_table_deltas-d596a1da.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/344-crossks_align_lifecycle_shared_validator_checks_related_table_deltas-d596a1da.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 346: 优化 `astersql-planner-core-casetest-ch::ch_test::ch_test_q2_runs_through_legacy_planner`（原始 1.874s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/346-ch_test_q2_runs_through_legacy_planner-c7675155.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/346-ch_test_q2_runs_through_legacy_planner-c7675155.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 347: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_relinquishes_election_for_other_ddl_types`（原始 1.872s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/347-go_merge_43_crossks_owner_relinquishes_election_for_other_ddl_types-151270c9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/347-go_merge_43_crossks_owner_relinquishes_election_for_other_ddl_types-151270c9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 348: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnDeleteParentTableCheck`（原始 1.865s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/348-testforeignkeyondeleteparenttablecheck-75e229ce.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/348-testforeignkeyondeleteparenttablecheck-75e229ce.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 349: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_suite_queries_reach_real_optimizer`（原始 1.861s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/349-test_dag_plan_suite_queries_reach_real_optimizer-f1fd43f5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/349-test_dag_plan_suite_queries_reach_real_optimizer-f1fd43f5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 351: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::concurrent_historical_meta_failpoint_guards_are_domain_scoped`（原始 1.859s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/351-concurrent_historical_meta_failpoint_guards_are_domain_scoped-c3765b23.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/351-concurrent_historical_meta_failpoint_guards_are_domain_scoped-c3765b23.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 353: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnDeleteCascade`（原始 1.845s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/353-testforeignkeyondeletecascade-66aa7e4e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/353-testforeignkeyondeletecascade-66aa7e4e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 354: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_order_by_limit_above_preallocation_cap_returns_all_rows`（原始 1.845s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/354-index_merge_order_by_limit_above_preallocation_cap_returns_all_rows-a1edfaa0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/354-index_merge_order_by_limit_above_preallocation_cap_returns_all_rows-a1edfaa0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 357: 优化 `astersql-session-test-txn::txn_test::txn_lazy_initialize_matches_optimistic_and_pessimistic_modes`（原始 1.835s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/357-txn_lazy_initialize_matches_optimistic_and_pessimistic_modes-d72f14b3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/357-txn_lazy_initialize_matches_optimistic_and_pessimistic_modes-d72f14b3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 358: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_incremental_modify_count_update`（原始 1.832s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/358-go_test_incremental_modify_count_update-69d74904.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/358-go_test_incremental_modify_count_update-69d74904.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 359: 优化 `astersql-executor-test-infoschema::infoschema_test::index_usage_aggregates_real_scan_data_for_all_index_kinds`（原始 1.831s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/359-index_usage_aggregates_real_scan_data_for_all_index_kinds-ca980154.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/359-index_usage_aggregates_real_scan_data_for_all_index_kinds-ca980154.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 362: 优化 `astersql-server::runtime_test::normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle`（原始 1.824s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/362-normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle-81573b1a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/362-normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle-81573b1a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 366: 优化 `astersql-planner-core-casetest-ch::ch_test::ch_test_q5_runs_through_legacy_planner`（原始 1.805s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/366-ch_test_q5_runs_through_legacy_planner-860c4964.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/366-ch_test_q5_runs_through_legacy_planner-860c4964.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 367: 优化 `astersql-planner-core-casetest-ch::ch_test::ch_test_q5_runs_through_cascades_planner`（原始 1.800s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/367-ch_test_q5_runs_through_cascades_planner-be1b460e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/367-ch_test_q5_runs_through_cascades_planner-be1b460e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 369: 优化 `astersql-testkit::stats_runtime_aster_unit_test::analyze_batch_save_failure_is_atomic_and_records_failed_jobs`（原始 1.799s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/369-analyze_batch_save_failure_is_atomic_and_records_failed_jobs-13badd51.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/369-analyze_batch_save_failure_is_atomic_and_records_failed_jobs-13badd51.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 370: 优化 `astersql-executor-test-unstabletest::memory_test::pb_memory_leak_scans_release_result_sets`（原始 1.794s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/370-pb_memory_leak_scans_release_result_sets-c8e8bbdd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/370-pb_memory_leak_scans_release_result_sets-c8e8bbdd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 372: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnUpdateCascade`（原始 1.782s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/372-testforeignkeyonupdatecascade-d9449269.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/372-testforeignkeyonupdatecascade-d9449269.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 374: 优化 `astersql-session::paging_rpc::global_budget_updates_preserve_all_rpc_pages_and_full_sql_results`（原始 1.768s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/374-global_budget_updates_preserve_all_rpc_pages_and_full_sql_results-8d705233.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/374-global_budget_updates_preserve_all_rpc_pages_and_full_sql_results-8d705233.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 377: 优化 `astersql-executor-test-memtest::mem_test::TestGlobalMemArbitrator`（原始 1.741s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/377-testglobalmemarbitrator-34807ab5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/377-testglobalmemarbitrator-34807ab5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 380: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorArithmatic`（原始 1.738s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/380-testvectorarithmatic-aeabd705.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/380-testvectorarithmatic-aeabd705.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 381: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_limit_cross_estimation_matches_go_suite_fixture`（原始 1.731s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/381-test_cbo_limit_cross_estimation_matches_go_suite_fixture-971845cc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/381-test_cbo_limit_cross_estimation_matches_go_suite_fixture-971845cc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 383: 优化 `astersql-session::runtime::scan_adapter_runtime_test::go_merge_20_187_195_197_production_ru_point_collects_evidence`（原始 1.722s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/383-go_merge_20_187_195_197_production_ru_point_collects_evidence-f2232f30.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/383-go_merge_20_187_195_197_production_ru_point_collects_evidence-f2232f30.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 384: 优化 `astersql-executor-test-ddl::ddl_test::test_shard_row_id_bits`（原始 1.718s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/384-test_shard_row_id_bits-e0c8ad87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/384-test_shard_row_id_bits-e0c8ad87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 385: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_fixture_tables_get_real_stats_after_analyze`（原始 1.704s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/385-test_mpp_join_fixture_tables_get_real_stats_after_analyze-b0e93af6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/385-test_mpp_join_fixture_tables_get_real_stats_after_analyze-b0e93af6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 387: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_registration_lease_and_response_failure_cleanup`（原始 1.698s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/387-crossks_align_lifecycle_registration_lease_and_response_failure_cleanu-fce0af75.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/387-crossks_align_lifecycle_registration_lease_and_response_failure_cleanu-fce0af75.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 388: 优化 `astersql-planner-core-casetest-instanceplancache::builtin_func_test::test_builtin_decimal_is_true_false`（原始 1.695s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/388-test_builtin_decimal_is_true_false-71e3564c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/388-test_builtin_decimal_is_true_false-71e3564c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 389: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_exchange_column_prune_fixture_tables`（原始 1.692s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/389-test_mpp_join_exchange_column_prune_fixture_tables-0eca13b6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/389-test_mpp_join_exchange_column_prune_fixture_tables-0eca13b6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 391: 优化 `astersql-dxf-importinto::clean_up_test::clean_drain_moves_all_bounded_batches_through_real_sql_history`（原始 1.683s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/391-clean_drain_moves_all_bounded_batches_through_real_sql_history-ad78482a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/391-clean_drain_moves_all_bounded_batches_through_real_sql_history-ad78482a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 394: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorConversion`（原始 1.678s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/394-testvectorconversion-86627adc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/394-testvectorconversion-86627adc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 395: 优化 `astersql-executor-test-jointest::join_test::test_join2`（原始 1.677s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/395-test_join2-363bbdd4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/395-test_join2-363bbdd4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 397: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorColumnInfo`（原始 1.649s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/397-testvectorcolumninfo-cbd63fb7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/397-testvectorcolumninfo-cbd63fb7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 398: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_analyze_suite_matches_go_state_sequence`（原始 1.648s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/398-test_cbo_analyze_suite_matches_go_state_sequence-b66c7333.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/398-test_cbo_analyze_suite_matches_go_state_sequence-b66c7333.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 399: 优化 `astersql-planner-core-casetest-dag::dag_test::lead_lag_argument_matrix_reaches_real_optimizer`（原始 1.642s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/399-lead_lag_argument_matrix_reaches_real_optimizer-d7229e01.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/399-lead_lag_argument_matrix_reaches_real_optimizer-d7229e01.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 400: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnInsertOnDuplicateParentTableCheck`（原始 1.638s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/400-testforeignkeyoninsertonduplicateparenttablecheck-e5a7dd1c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/400-testforeignkeyoninsertonduplicateparenttablecheck-e5a7dd1c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 401: 优化 `astersql-statistics-handle-usage-collector::migration_aster_unit_test::parallel_send_delta_sync_matches_go_without_loss`（原始 1.635s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/401-parallel_send_delta_sync_matches_go_without_loss-5dd84ee5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/401-parallel_send_delta_sync_matches_go_without_loss-5dd84ee5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 402: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_path_test::test_multi_mv_index_random`（原始 1.631s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/402-test_multi_mv_index_random-c8f53d22.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/402-test_multi_mv_index_random-c8f53d22.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 403: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVector`（原始 1.630s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/403-testvector-8825b469.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/403-testvector-8825b469.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 404: 优化 `astersql-planner-core-casetest-scalarsubquery::cases_test::TestSubqueryInExplainAnalyze`（原始 1.628s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/404-testsubqueryinexplainanalyze-7a86519c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/404-testsubqueryinexplainanalyze-7a86519c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 406: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnReplaceIntoChildTable`（原始 1.622s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/406-testforeignkeyonreplaceintochildtable-59126b6c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/406-testforeignkeyonreplaceintochildtable-59126b6c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 407: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_join_with_remove_useless_exchange_fixture_tables`（原始 1.622s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/407-test_mpp_join_with_remove_useless_exchange_fixture_tables-4b62ec1b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/407-test_mpp_join_with_remove_useless_exchange_fixture_tables-4b62ec1b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 408: 优化 `astersql-sessionctx-sessionstates::session_token_test::signing_algorithm_matrix_matches_go`（原始 1.622s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/408-signing_algorithm_matrix_matches_go-157f956c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/408-signing_algorithm_matrix_matches_go-157f956c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 410: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorConstantExplain`（原始 1.621s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/410-testvectorconstantexplain-2a2e61d9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/410-testvectorconstantexplain-2a2e61d9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 412: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestFixedVector`（原始 1.617s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/412-testfixedvector-b33adbba.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/412-testfixedvector-b33adbba.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 413: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorExplainTruncate`（原始 1.617s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/413-testvectorexplaintruncate-8c7ef275.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/413-testvectorexplaintruncate-8c7ef275.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 414: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnInsertChildTable`（原始 1.613s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/414-testforeignkeyoninsertchildtable-27d100de.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/414-testforeignkeyoninsertchildtable-27d100de.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 415: 优化 `astersql-executor-test-writetest::write_test::TestDeferConstraintCheckForInsert`（原始 1.598s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/415-testdeferconstraintcheckforinsert-f3c675d8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/415-testdeferconstraintcheckforinsert-f3c675d8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 416: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_correlated_estimation_matches_go_suite_fixture`（原始 1.593s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/416-test_cbo_correlated_estimation_matches_go_suite_fixture-d2c89020.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/416-test_cbo_correlated_estimation_matches_go_suite_fixture-d2c89020.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 417: 优化 `astersql-server::pg_conn_test::catalog_error_recovery_and_cleanup`（原始 1.591s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/417-catalog_error_recovery_and_cleanup-e8ced2ce.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/417-catalog_error_recovery_and_cleanup-e8ced2ce.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 418: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_load_shared_workers_complete_singleflight_followers`（原始 1.589s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/418-test_plan_stats_load_shared_workers_complete_singleflight_followers-765f603d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/418-test_plan_stats_load_shared_workers_complete_singleflight_followers-765f603d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 420: 优化 `astersql-session::bench_test::benchmark_entrypoints_execute_canonical_paths`（原始 1.586s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/420-benchmark_entrypoints_execute_canonical_paths-221777cd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/420-benchmark_entrypoints_execute_canonical_paths-221777cd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 421: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_partition_pruner_regression`（原始 1.582s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/421-test_partition_pruner_regression-95dbfdab.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/421-test_partition_pruner_regression-95dbfdab.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 422: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::overlong_point_get_obeys_chunk_reuse_memory_gate`（原始 1.581s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/422-overlong_point_get_obeys_chunk_reuse_memory_gate-be034985.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/422-overlong_point_get_obeys_chunk_reuse_memory_gate-be034985.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 424: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnUpdateParentTableCheck`（原始 1.579s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/424-testforeignkeyonupdateparenttablecheck-16f2b134.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/424-testforeignkeyonupdateparenttablecheck-16f2b134.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 425: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_nested_cte_self_join_preserves_seed_column_identity`（原始 1.579s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/425-test_nested_cte_self_join_preserves_seed_column_identity-bbfe8981.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/425-test_nested_cte_self_join_preserves_seed_column_identity-bbfe8981.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 427: 优化 `astersql-executor-test-ddl::ddl_test::test_alter_table_modify_column`（原始 1.578s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/427-test_alter_table_modify_column-d7dfa906.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/427-test_alter_table_modify_column-d7dfa906.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 429: 优化 `astersql-bindinfo-tests::cross_db_binding_test::test_cross_db_binding_basic`（原始 1.567s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/429-test_cross_db_binding_basic-6f12370f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/429-test_cross_db_binding_basic-6f12370f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 430: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_empty_table_matches_go_suite_roots`（原始 1.565s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/430-test_cbo_empty_table_matches_go_suite_roots-6575e7eb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/430-test_cbo_empty_table_matches_go_suite_roots-6575e7eb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 431: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::partition_index_merge_dynamic_and_static_pruning_match`（原始 1.561s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/431-partition_index_merge_dynamic_and_static_pruning_match-ce19982c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/431-partition_index_merge_dynamic_and_static_pruning_match-ce19982c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 432: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_inconsistent_estimation_matches_go_suite_fixture`（原始 1.557s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/432-test_cbo_inconsistent_estimation_matches_go_suite_fixture-98c78222.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/432-test_cbo_inconsistent_estimation_matches_go_suite_fixture-98c78222.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 433: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_estimation_matches_go_suite_fixture`（原始 1.553s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/433-test_cbo_estimation_matches_go_suite_fixture-de98b18c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/433-test_cbo_estimation_matches_go_suite_fixture-de98b18c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 434: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_operators_match_unprepared_queries`（原始 1.551s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/434-prepared_plan_cache_operators_match_unprepared_queries-a2b699d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/434-prepared_plan_cache_operators_match_unprepared_queries-a2b699d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 436: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_newest_and_read_committed_fixture`（原始 1.546s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/436-test_enforce_mpp_newest_and_read_committed_fixture-bc22946d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/436-test_enforce_mpp_newest_and_read_committed_fixture-bc22946d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 438: 优化 `astersql-util-metricsutil::common_test::test_register_metrics_for_br_passes_pd_options_retries_and_closes`（原始 1.543s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/438-test_register_metrics_for_br_passes_pd_options_retries_and_closes-3a303d19.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/438-test_register_metrics_for_br_passes_pd_options_retries_and_closes-3a303d19.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 439: 优化 `astersql-dxf-importinto::task_executor_testkit_test::import_step_run_subtask_cleans_real_local_engines_before_retry`（原始 1.542s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/439-import_step_run_subtask_cleans_real_local_engines_before_retry-5fb8d84c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/439-import_step_run_subtask_cleans_real_local_engines_before_retry-5fb8d84c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 440: 优化 `astersql-executor-test-fktest::foreign_key_test::TestLockKeysInDML`（原始 1.540s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/440-testlockkeysindml-0b18f56a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/440-testlockkeysindml-0b18f56a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 441: 优化 `astersql-executor-test-fktest::foreign_key_test::TestLockKeysInInsertIgnore`（原始 1.539s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/441-testlockkeysininsertignore-223a70af.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/441-testlockkeysininsertignore-223a70af.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 444: 优化 `astersql-statistics-handle-usage-collector::collector_test::TestSessionParallelSendDeltaSync`（原始 1.531s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/444-testsessionparallelsenddeltasync-c9fcf6d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/444-testsessionparallelsenddeltasync-c9fcf6d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 445: 优化 `astersql-util-cpuprofile::cpuprofile_test::TestGetCPUProfile`（原始 1.529s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/445-testgetcpuprofile-c4494924.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/445-testgetcpuprofile-c4494924.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 446: 优化 `astersql-planner-core-casetest-rule::rule_common_handle_range_test::index_range_estimation_with_prefixed_common_handle`（原始 1.528s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/446-index_range_estimation_with_prefixed_common_handle-f2341f86.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/446-index_range_estimation_with_prefixed_common_handle-f2341f86.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 447: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_embedded_limit_preserves_reference_row_count`（原始 1.515s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/447-index_merge_embedded_limit_preserves_reference_row_count-48fe574e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/447-index_merge_embedded_limit_preserves_reference_row_count-48fe574e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 449: 优化 `astersql-server::conn_stmt_test::empty_results_and_successful_flush_are_accounted`（原始 1.512s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/449-empty_results_and_successful_flush_are_accounted-88b08c72.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/449-empty_results_and_successful_flush_are_accounted-88b08c72.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 450: 优化 `astersql-executor-test-writetest::write_test::TestInsertIgnore`（原始 1.507s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/450-testinsertignore-ed653f92.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/450-testinsertignore-ed653f92.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 451: 优化 `astersql-session::runtime::ttl_worker_session_test::ttl_timestamp_pagination_preserves_instants_across_time_zones`（原始 1.507s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/451-ttl_timestamp_pagination_preserves_instants_across_time_zones-ba0a6d8b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/451-ttl_timestamp_pagination_preserves_instants_across_time_zones-ba0a6d8b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 453: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestGlobalMemoryControlForAnalyze`（原始 1.503s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/453-testglobalmemorycontrolforanalyze-e7570b6b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/453-testglobalmemorycontrolforanalyze-e7570b6b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 454: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_new_collation_tables_keep_distinct_collations`（原始 1.500s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/454-test_mpp_new_collation_tables_keep_distinct_collations-c93b280c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/454-test_mpp_new_collation_tables_keep_distinct_collations-c93b280c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 455: 优化 `astersql-server::conn_stmt_test::binary_query_and_cursor_metadata_errors_are_accounted`（原始 1.500s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/455-binary_query_and_cursor_metadata_errors_are_accounted-efe74410.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/455-binary_query_and_cursor_metadata_errors_are_accounted-efe74410.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 456: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::explain_expand_reports_grouping_argument_error`（原始 1.497s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/456-explain_expand_reports_grouping_argument_error-77792919.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/456-explain_expand_reports_grouping_argument_error-77792919.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 457: 优化 `astersql-executor-test-fktest::foreign_key_test::TestDMLExplainAnalyzeFKInfo`（原始 1.494s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/457-testdmlexplainanalyzefkinfo-c736aac2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/457-testdmlexplainanalyzefkinfo-c736aac2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 458: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_fastscan_plan_goldens`（原始 1.494s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/458-test_go_integration_suite_fastscan_plan_goldens-897ef9b4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/458-test_go_integration_suite_fastscan_plan_goldens-897ef9b4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 462: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::index_hint_keeps_the_non_ignored_shorter_index`（原始 1.480s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/462-index_hint_keeps_the_non_ignored_shorter_index-7d75cb4a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/462-index_hint_keeps_the_non_ignored_shorter_index-7d75cb4a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 464: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_59563_and_61792_plan_goldens`（原始 1.473s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/464-test_cbo_issue_59563_and_61792_plan_goldens-f5354592.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/464-test_cbo_issue_59563_and_61792_plan_goldens-f5354592.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 465: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_plan_goldens`（原始 1.473s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/465-test_go_integration_suite_plan_goldens-b3c31e3f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/465-test_go_integration_suite_plan_goldens-b3c31e3f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 466: 优化 `astersql-planner-core-casetest-parallelapply::parallel_apply_test::test_lateral_hierarchy_parallel_apply`（原始 1.471s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/466-test_lateral_hierarchy_parallel_apply-92d5acab.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/466-test_lateral_hierarchy_parallel_apply-92d5acab.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 467: 优化 `astersql-dxf-framework-handle::handle_test::test_metering_and_object_store_hooks`（原始 1.470s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/467-test_metering_and_object_store_hooks-ff15c6ff.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/467-test_metering_and_object_store_hooks-ff15c6ff.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 468: 优化 `astersql-dxf-framework-handle::handle_test::test_handle`（原始 1.468s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/468-test_handle-5435a0a5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/468-test_handle-5435a0a5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 469: 优化 `astersql-dxf-framework-handle::handle_test::test_handles_preserve_go_cloud_storage_prefix_matrix`（原始 1.466s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/469-test_handles_preserve_go_cloud_storage_prefix_matrix-566e1537.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/469-test_handles_preserve_go_cloud_storage_prefix_matrix-566e1537.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 470: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_issue_25700`（原始 1.465s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/470-go_test_issue_25700-6028d763.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/470-go_test_issue_25700-6028d763.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 471: 优化 `astersql-server::pg_catalog_query_test::pg_introspection_oid_live_casts`（原始 1.464s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/471-pg_introspection_oid_live_casts-40fc5ccb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/471-pg_introspection_oid_live_casts-40fc5ccb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 472: 优化 `astersql-session::runtime::ttl_sysvar_test::set_global_gc_lifetime_notifies_effective_value`（原始 1.464s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/472-set_global_gc_lifetime_notifies_effective_value-691b8899.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/472-set_global_gc_lifetime_notifies_effective_value-691b8899.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 473: 优化 `astersql-executor-test-fktest::foreign_key_test::TestExplainAnalyzeDMLWithFKInfo`（原始 1.455s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/473-testexplainanalyzedmlwithfkinfo-7d5ea7d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/473-testexplainanalyzedmlwithfkinfo-7d5ea7d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 474: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_get_schedule_status`（原始 1.449s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/474-test_get_schedule_status-08e7556b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/474-test_get_schedule_status-08e7556b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 475: 优化 `astersql-lightning-mydump::schema_import_test::TestSchemaImporterManyTables`（原始 1.448s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/475-testschemaimportermanytables-5fb0ae32.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/475-testschemaimportermanytables-5fb0ae32.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 476: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_get_schedule_tune_factors`（原始 1.447s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/476-test_get_schedule_tune_factors-ab1684b1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/476-test_get_schedule_tune_factors-ab1684b1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 477: 优化 `astersql-server::runtime_test::local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence`（原始 1.447s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/477-local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence-f19ced4b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/477-local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence-f19ced4b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 478: 优化 `astersql-planner-core-tests-null::null_test::TestIssue54803`（原始 1.444s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/478-testissue54803-65fde97f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/478-testissue54803-65fde97f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 479: 优化 `astersql-executor-test-ddl::ddl_test::test_rename_table_with_reload`（原始 1.441s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/479-test_rename_table_with_reload-8de46971.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/479-test_rename_table_with_reload-8de46971.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 480: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_outdated_analyze_matches_go_suite_fixture`（原始 1.440s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/480-test_cbo_outdated_analyze_matches_go_suite_fixture-395dddef.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/480-test_cbo_outdated_analyze_matches_go_suite_fixture-395dddef.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 481: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_list_managed_nodes`（原始 1.439s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/481-test_list_managed_nodes-3af8145d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/481-test_list_managed_nodes-3af8145d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 482: 优化 `astersql-session::runtime::scan_adapter_runtime_test::file_transfer_statement_ru_post_compile_outcome_and_terminal`（原始 1.438s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/482-file_transfer_statement_ru_post_compile_outcome_and_terminal-185f4d71.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/482-file_transfer_statement_ru_post_compile_outcome_and_terminal-185f4d71.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 483: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_schedule_flag`（原始 1.437s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/483-test_schedule_flag-e567ca9b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/483-test_schedule_flag-e567ca9b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 484: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_equal_unknown_matches_go_suite_fixture`（原始 1.436s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/484-test_cbo_index_equal_unknown_matches_go_suite_fixture-88a1a5d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/484-test_cbo_index_equal_unknown_matches_go_suite_fixture-88a1a5d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 485: 优化 `astersql-dxf-framework-handle::status_testkit_test::test_node_info_and_busy_nodes`（原始 1.434s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/485-test_node_info_and_busy_nodes-c62e4770.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/485-test_node_info_and_busy_nodes-c62e4770.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 487: 优化 `astersql-planner-core-casetest-scalarsubquery::cases_test::TestExplainNonEvaledSubquery`（原始 1.432s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/487-testexplainnonevaledsubquery-52ec36e3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/487-testexplainnonevaledsubquery-52ec36e3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 488: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_restrict_kill_query_preserves_stats_and_records_failure`（原始 1.428s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/488-analyze_restrict_kill_query_preserves_stats_and_records_failure-2ff2b78c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/488-analyze_restrict_kill_query_preserves_stats_and_records_failure-2ff2b78c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 489: 优化 `astersql-executor-test-ddl::ddl_test::test_rename_multi_tables`（原始 1.428s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/489-test_rename_multi_tables-3bbad9a4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/489-test_rename_multi_tables-3bbad9a4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 491: 优化 `astersql-server::conn_stmt_test::text_metadata_and_eof_failures_are_accounted`（原始 1.424s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/491-text_metadata_and_eof_failures_are_accounted-dfc4dcb4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/491-text_metadata_and_eof_failures_are_accounted-dfc4dcb4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 493: 优化 `astersql-planner-core-casetest-rule::rule_eliminate_projection_test::test_eliminate_projection_suite`（原始 1.419s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/493-test_eliminate_projection_suite-61d19b93.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/493-test_eliminate_projection_suite-61d19b93.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 494: 优化 `astersql-session::runtime::crossks_runtime_test::crossks_align_submit_only_waits_for_go_history_errors_and_reports_unexpected_states`（原始 1.415s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/494-crossks_align_submit_only_waits_for_go_history_errors_and_reports_unex-f1ad90f3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/494-crossks_align_submit_only_waits_for_go_history_errors_and_reports_unex-f1ad90f3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 495: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_range_date_pruning_extract`（原始 1.414s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/495-test_range_date_pruning_extract-b06d622a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/495-test_range_date_pruning_extract-b06d622a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 496: 优化 `astersql-server::conn_stmt_test::multichunk_next_failure_preserves_written_rows`（原始 1.412s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/496-multichunk_next_failure_preserves_written_rows-fde78a59.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/496-multichunk_next_failure_preserves_written_rows-fde78a59.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 497: 优化 `astersql-server::runtime_test::long_data_mem_quota_is_deferred_on_real_connection`（原始 1.411s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/497-long_data_mem_quota_is_deferred_on_real_connection-cc29db92.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/497-long_data_mem_quota_is_deferred_on_real_connection-cc29db92.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 498: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_62438_cost_trace_structure`（原始 1.408s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/498-test_cbo_issue_62438_cost_trace_structure-c4419344.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/498-test_cbo_issue_62438_cost_trace_structure-c4419344.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 500: 优化 `astersql-executor::infoschema_reader_bench_test::benchmark_infoschema_tables_queries_remain_stable`（原始 1.407s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/500-benchmark_infoschema_tables_queries_remain_stable-e341c2c4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/500-benchmark_infoschema_tables_queries_remain_stable-e341c2c4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 501: 优化 `astersql-executor-test-showtest::show_test::show_warnings_reports_tiflash_expression_pushdown_rejections`（原始 1.404s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/501-show_warnings_reports_tiflash_expression_pushdown_rejections-ef2c2859.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/501-show_warnings_reports_tiflash_expression_pushdown_rejections-ef2c2859.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 502: 优化 `astersql-server::pg_catalog_test::pg_introspection_joins_live`（原始 1.404s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/502-pg_introspection_joins_live-a5e4b14c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/502-pg_introspection_joins_live-a5e4b14c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 503: 优化 `astersql-executor-test-cte::cte_test::test_cte_del_spill_file_cleans_statement_state_after_error`（原始 1.399s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/503-test_cte_del_spill_file_cleans_statement_state_after_error-808ea113.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/503-test_cte_del_spill_file_cleans_statement_state_after_error-808ea113.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 504: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_limit_index_estimation_matches_go_suite_fixture`（原始 1.397s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/504-test_cbo_limit_index_estimation_matches_go_suite_fixture-f3856250.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/504-test_cbo_limit_index_estimation_matches_go_suite_fixture-f3856250.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 506: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_issue_48257_full_scan_sync_and_async_stats_transition`（原始 1.394s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/506-test_issue_48257_full_scan_sync_and_async_stats_transition-d92ce4d1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/506-test_issue_48257_full_scan_sync_and_async_stats_transition-d92ce4d1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 509: 优化 `astersql-executor-test-ddl::ddl_test::test_column_charset_and_collate`（原始 1.393s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/509-test_column_charset_and_collate-9435cf38.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/509-test_column_charset_and_collate-9435cf38.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 510: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_join_prefers_covering_index`（原始 1.392s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/510-test_cbo_index_join_prefers_covering_index-8ddf49d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/510-test_cbo_index_join_prefers_covering_index-8ddf49d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 511: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_read_suite_inputs_are_explainable`（原始 1.391s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/511-test_cbo_index_read_suite_inputs_are_explainable-dc19288b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/511-test_cbo_index_read_suite_inputs_are_explainable-dc19288b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 512: 优化 `astersql-planner-core-casetest-partition::list_partition_integration_test::test_list_partition_order_limit`（原始 1.391s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/512-test_list_partition_order_limit-089a7670.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/512-test_list_partition_order_limit-089a7670.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 514: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_native_introspection_supports_boolean_projection_and_positional_order`（原始 1.390s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/514-datagrip_native_introspection_supports_boolean_projection_and_position-5066c8ae.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/514-datagrip_native_introspection_supports_boolean_projection_and_position-5066c8ae.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 516: 优化 `astersql-executor-test-writetest::write_test::TestLatch`（原始 1.387s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/516-testlatch-9bb0e276.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/516-testlatch-9bb0e276.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 517: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestBuiltinFuncJSONMergePatch_InColumn`（原始 1.386s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/517-testbuiltinfuncjsonmergepatch_incolumn-e749d97c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/517-testbuiltinfuncjsonmergepatch_incolumn-e749d97c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 518: 优化 `astersql-session::paging_global::paging_global_updates_existing_sessions_without_changing_captured_requests`（原始 1.386s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/518-paging_global_updates_existing_sessions_without_changing_captured_requ-7b372768.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/518-paging_global_updates_existing_sessions_without_changing_captured_requ-7b372768.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 519: 优化 `astersql-planner-core-casetest-partition::list_partition_integration_test::test_list_partition_agg`（原始 1.385s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/519-test_list_partition_agg-e48022e4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/519-test_list_partition_agg-e48022e4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 520: 优化 `astersql-planner-core-tests-subquery::subquery_test::TestCollateSubQuery`（原始 1.385s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/520-testcollatesubquery-7e79107b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/520-testcollatesubquery-7e79107b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 521: 优化 `astersql-server-handler-tests::http_handler_test::test_set_labels_concurrent_with_store_topology`（原始 1.385s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/521-test_set_labels_concurrent_with_store_topology-e6debb01.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/521-test_set_labels_concurrent_with_store_topology-e6debb01.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 522: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_analyze_produces_non_pseudo_stats_for_every_table`（原始 1.379s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/522-test_tpcds_analyze_produces_non_pseudo_stats_for_every_table-33b9e2bd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/522-test_tpcds_analyze_produces_non_pseudo_stats_for_every_table-33b9e2bd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 523: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertWideTableWithNonLiteralGC`（原始 1.377s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/523-benchmarkinsertwidetablewithnonliteralgc-ec7de64e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/523-benchmarkinsertwidetablewithnonliteralgc-ec7de64e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 524: 优化 `astersql-planner-core-tests-cte::cte_test::TestCTEWithDifferentSchema`（原始 1.377s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/524-testctewithdifferentschema-11c753dd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/524-testctewithdifferentschema-11c753dd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 525: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_61389_explain_golden`（原始 1.375s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/525-test_cbo_issue_61389_explain_golden-59f6ec04.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/525-test_cbo_issue_61389_explain_golden-59f6ec04.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 526: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_outer_join_build_side_fixture_tables`（原始 1.375s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/526-test_mpp_outer_join_build_side_fixture_tables-41c9b982.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/526-test_mpp_outer_join_build_side_fixture_tables-41c9b982.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 527: 优化 `astersql-executor-join-test-mergejoin::merge_join_test::merge_join_setup_uses_real_testkit_session_variables_and_tables`（原始 1.374s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/527-merge_join_setup_uses_real_testkit_session_variables_and_tables-93cf049a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/527-merge_join_setup_uses_real_testkit_session_variables_and_tables-93cf049a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 528: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_low_sel_index_greedy_search_matches_go_root`（原始 1.373s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/528-test_cbo_low_sel_index_greedy_search_matches_go_root-03b55a17.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/528-test_cbo_low_sel_index_greedy_search_matches_go_root-03b55a17.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 529: 优化 `astersql-statistics-handle-usage-indexusage::collector_test::test_flush_concurrent_index_collector`（原始 1.373s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/529-test_flush_concurrent_index_collector-336326a0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/529-test_flush_concurrent_index_collector-336326a0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 530: 优化 `astersql-dxf-importinto::job_testkit_test::large_task_ids_isolate_history_aggregation`（原始 1.372s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/530-large_task_ids_isolate_history_aggregation-82a41fba.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/530-large_task_ids_isolate_history_aggregation-82a41fba.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 531: 优化 `astersql-server-tests::tidb_serial_test::test_load_data_1`（原始 1.370s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/531-test_load_data_1-aed88215.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/531-test_load_data_1-aed88215.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 533: 优化 `astersql-executor::show_stats_test::TestShowStatsMeta`（原始 1.366s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/533-testshowstatsmeta-54d61d14.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/533-testshowstatsmeta-54d61d14.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 534: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_issue_9562_join_cases`（原始 1.364s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/534-test_cbo_issue_9562_join_cases-87ed320a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/534-test_cbo_issue_9562_join_cases-87ed320a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 535: 优化 `astersql-executor::historical_stats_test::TestAssertHistoricalStatsAfterAlterTable`（原始 1.359s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/535-testasserthistoricalstatsafteraltertable-3670e199.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/535-testasserthistoricalstatsafteraltertable-3670e199.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 536: 优化 `astersql-executor-test-unstabletest::memory_test::global_memory_control_kills_top1_session_tracker`（原始 1.358s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/536-global_memory_control_kills_top1_session_tracker-4fc17727.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/536-global_memory_control_kills_top1_session_tracker-4fc17727.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 537: 优化 `astersql-planner-core-casetest-correlated::correlated_test::test_wrong_decorrelate`（原始 1.356s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/537-test_wrong_decorrelate-ec26e44a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/537-test_wrong_decorrelate-ec26e44a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 538: 优化 `astersql-planner-core-casetest-instanceplancache::dml_test::TestInstancePlanCacheDMLPartitioning`（原始 1.353s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/538-testinstanceplancachedmlpartitioning-0568978b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/538-testinstanceplancachedmlpartitioning-0568978b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 541: 优化 `astersql-executor-test-analyzetest-panictest::panic_test::TestPanicInHandleAnalyzeWorkerPanic`（原始 1.347s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/541-testpanicinhandleanalyzeworkerpanic-2df84489.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/541-testpanicinhandleanalyzeworkerpanic-2df84489.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 542: 优化 `astersql-executor-test-loaddatatest::main_test::shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers`（原始 1.346s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/542-shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consume-fa00e01f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/542-shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consume-fa00e01f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 543: 优化 `astersql-server::conn_stmt_test::text_failed_row_write_is_accounted`（原始 1.345s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/543-text_failed_row_write_is_accounted-fab0e939.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/543-text_failed_row_write_is_accounted-fab0e939.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 544: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_extracts_topn_for_columns_and_indexes`（原始 1.341s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/544-analyze_extracts_topn_for_columns_and_indexes-c82fb99c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/544-analyze_extracts_topn_for_columns_and_indexes-c82fb99c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 545: 优化 `astersql-executor-test-loaddatatest::load_data_test::test_load_data_low_priority_sets_kv_low_priority`（原始 1.339s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/545-test_load_data_low_priority_sets_kv_low_priority-004798f9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/545-test_load_data_low_priority_sets_kv_low_priority-004798f9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 546: 优化 `astersql-server::pg_transaction_test::prepared_dml_commit_and_rollback`（原始 1.338s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/546-prepared_dml_commit_and_rollback-208197b6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/546-prepared_dml_commit_and_rollback-208197b6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 550: 优化 `astersql-dxf-importinto::job_testkit_test::large_task_ids_isolate_active_subtasks_and_last_update_time`（原始 1.334s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/550-large_task_ids_isolate_active_subtasks_and_last_update_time-04f9739b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/550-large_task_ids_isolate_active_subtasks_and_last_update_time-04f9739b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 551: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::sql_killer_interrupts_failpoint_paused_analyze`（原始 1.334s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/551-sql_killer_interrupts_failpoint_paused_analyze-7b1f6770.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/551-sql_killer_interrupts_failpoint_paused_analyze-7b1f6770.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 552: 优化 `astersql-server::pg_query_test::pg_introspection_names_live_tables`（原始 1.333s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/552-pg_introspection_names_live_tables-8f5878ea.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/552-pg_introspection_names_live_tables-8f5878ea.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 553: 优化 `astersql-executor-test-showtest::show_test::show_warnings_preserves_previous_statement_and_resets_counts`（原始 1.332s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/553-show_warnings_preserves_previous_statement_and_resets_counts-25ce62df.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/553-show_warnings_preserves_previous_statement_and_resets_counts-25ce62df.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 554: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_top2_seed_greedy_join_reorder_with_loaded_stats`（原始 1.332s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/554-test_cbo_top2_seed_greedy_join_reorder_with_loaded_stats-ec239a71.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/554-test_cbo_top2_seed_greedy_join_reorder_with_loaded_stats-ec239a71.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 555: 优化 `astersql-executor-test-oomtest::oom_test::TestMemTracker4DeleteExec`（原始 1.331s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/555-testmemtracker4deleteexec-c54147ea.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/555-testmemtracker4deleteexec-c54147ea.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 557: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestMemQuotaAnalyze`（原始 1.329s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/557-testmemquotaanalyze-c5bcb76c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/557-testmemquotaanalyze-c5bcb76c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 558: 优化 `astersql-executor-test-ddl::ddl_test::test_rename_table`（原始 1.329s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/558-test_rename_table-b63e1ff9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/558-test_rename_table-b63e1ff9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 559: 优化 `astersql-server::pg_transaction_test::failed_transaction_requires_rollback`（原始 1.329s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/559-failed_transaction_requires_rollback-d8dd82f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/559-failed_transaction_requires_rollback-d8dd82f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 560: 优化 `astersql-executor-test-ddl::ddl_test::test_create_table`（原始 1.328s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/560-test_create_table-b71375d2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/560-test_create_table-b71375d2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 561: 优化 `astersql-util-topsql::topsql_test::test_top_sql_pub_sub`（原始 1.325s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/561-test_top_sql_pub_sub-4fcb107a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/561-test_top_sql_pub_sub-4fcb107a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 562: 优化 `astersql-executor-test-infoschema::infoschema_test::columns_exclude_non_public_modify_column_artifacts`（原始 1.324s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/562-columns_exclude_non_public_modify_column_artifacts-ecd4a06c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/562-columns_exclude_non_public_modify_column_artifacts-ecd4a06c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 563: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_collects_real_stats_for_every_partition`（原始 1.323s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/563-analyze_partition_collects_real_stats_for_every_partition-604156cf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/563-analyze_partition_collects_real_stats_for_every_partition-604156cf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 564: 优化 `astersql-util-topsql::topsql_test::test_top_sql_reporter`（原始 1.323s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/564-test_top_sql_reporter-7556c32a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/564-test_top_sql_reporter-7556c32a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 565: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_dump_plan_replayer_api`（原始 1.322s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/565-test_dump_plan_replayer_api-7bbac02c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/565-test_dump_plan_replayer_api-7bbac02c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 566: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_straight_join_creates_four_tables`（原始 1.321s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/566-test_cbo_straight_join_creates_four_tables-ce87365f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/566-test_cbo_straight_join_creates_four_tables-ce87365f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 568: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorIndexExplain`（原始 1.320s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/568-testvectorindexexplain-fd4d06b3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/568-testvectorindexexplain-fd4d06b3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 569: 优化 `astersql-server::conn_stmt_test::cursor_iteration_is_timed_and_notification_excluded`（原始 1.320s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/569-cursor_iteration_is_timed_and_notification_excluded-c953ab7a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/569-cursor_iteration_is_timed_and_notification_excluded-c953ab7a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 570: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestDecodetoChunkReuse`（原始 1.319s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/570-testdecodetochunkreuse-3947b8be.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/570-testdecodetochunkreuse-3947b8be.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 571: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnDeleteSetNull`（原始 1.317s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/571-testforeignkeyondeletesetnull-1855d484.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/571-testforeignkeyondeletesetnull-1855d484.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 572: 优化 `astersql-planner-core-casetest-indexmerge::indexmerge_path_test::test_mv_index_random`（原始 1.317s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/572-test_mv_index_random-3c4e3ed5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/572-test_mv_index_random-3c4e3ed5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 574: 优化 `astersql-executor-test-tiflashtest::tiflash_test::tiflash_dispatch_policy_round_trips_canonical_names`（原始 1.316s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/574-tiflash_dispatch_policy_round_trips_canonical_names-8e58841d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/574-tiflash_dispatch_policy_round_trips_canonical_names-8e58841d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 575: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::hnsw_query_plan_matches_execution`（原始 1.316s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/575-hnsw_query_plan_matches_execution-09b96193.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/575-hnsw_query_plan_matches_execution-09b96193.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 577: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_sampling_workers_publish_complete_stats`（原始 1.312s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/577-analyze_sampling_workers_publish_complete_stats-639fc175.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/577-analyze_sampling_workers_publish_complete_stats-639fc175.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 578: 优化 `astersql-server::conn_stmt_test::cursor_eof_and_flush_errors_are_accounted`（原始 1.310s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/578-cursor_eof_and_flush_errors_are_accounted-43aeebdf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/578-cursor_eof_and_flush_errors_are_accounted-43aeebdf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 579: 优化 `astersql-server::runtime_test::connection_lifecycle_logs_current_user_and_remote_address`（原始 1.310s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/579-connection_lifecycle_logs_current_user_and_remote_address-8df12965.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/579-connection_lifecycle_logs_current_user_and_remote_address-8df12965.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 580: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_table_dual_matches_go_suite_fixture`（原始 1.309s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/580-test_cbo_table_dual_matches_go_suite_fixture-c24eb347.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/580-test_cbo_table_dual_matches_go_suite_fixture-c24eb347.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 581: 优化 `astersql-session::runtime::lifecycle_test::crossks_align_lifecycle_factory_submits_durable_job_without_consuming_it`（原始 1.309s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/581-crossks_align_lifecycle_factory_submits_durable_job_without_consuming_-8cab7c15.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/581-crossks_align_lifecycle_factory_submits_durable_job_without_consuming_-8cab7c15.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 582: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::sql_killer_cancels_parallel_build_workers_without_leaking_active_count`（原始 1.307s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/582-sql_killer_cancels_parallel_build_workers_without_leaking_active_count-c4636502.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/582-sql_killer_cancels_parallel_build_workers_without_leaking_active_count-c4636502.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 583: 优化 `astersql-executor-test-infoschema::infoschema_test::analyze_status_matches_show_analyze_status_after_analyze`（原始 1.305s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/583-analyze_status_matches_show_analyze_status_after_analyze-49263cb3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/583-analyze_status_matches_show_analyze_status_after_analyze-49263cb3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 584: 优化 `astersql-executor-test-jointest::join_test::test_issue30211`（原始 1.304s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/584-test_issue30211-ed83e88c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/584-test_issue30211-ed83e88c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 585: 优化 `astersql-server::conn_stmt_test::binary_encoding_failure_is_accounted`（原始 1.304s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/585-binary_encoding_failure_is_accounted-44614409.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/585-binary_encoding_failure_is_accounted-44614409.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 587: 优化 `astersql-executor-test-ddl::ddl_test::cross_database_rename_does_not_reuse_single_point_auto_id`（原始 1.303s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/587-cross_database_rename_does_not_reuse_single_point_auto_id-61173ff2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/587-cross_database_rename_does_not_reuse_single_point_auto_id-61173ff2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 588: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestExprPushdownBlacklist`（原始 1.303s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/588-testexprpushdownblacklist-b7b1151d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/588-testexprpushdownblacklist-b7b1151d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 589: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_validates_before_deleting_and_retries_rolled_back_bootstrap`（原始 1.303s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/589-starter_privilege_reset_validates_before_deleting_and_retries_rolled_b-d97b23b5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/589-starter_privilege_reset_validates_before_deleting_and_retries_rolled_b-d97b23b5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 590: 优化 `astersql-executor::historical_stats_test::TestDumpHistoricalStatsMetaForMultiTables`（原始 1.302s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/590-testdumphistoricalstatsmetaformultitables-6ea5bf8b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/590-testdumphistoricalstatsmetaformultitables-6ea5bf8b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 591: 优化 `astersql-executor::show_stats_test::TestShowStatsBucketWithDateNullValue`（原始 1.302s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/591-testshowstatsbucketwithdatenullvalue-9ea10ea5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/591-testshowstatsbucketwithdatenullvalue-9ea10ea5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 594: 优化 `astersql-executor-test-cte::cte_test::test_cte_issue_49096_executes_insert_select_without_deadlock`（原始 1.301s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/594-test_cte_issue_49096_executes_insert_select_without_deadlock-77104141.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/594-test_cte_issue_49096_executes_insert_select_without_deadlock-77104141.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 595: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart2`（原始 1.300s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/595-testmemtableinfoschemaextractorpart2-e8c70dc8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/595-testmemtableinfoschemaextractorpart2-e8c70dc8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 596: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_many_partitions_preserves_physical_stats`（原始 1.299s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/596-analyze_many_partitions_preserves_physical_stats-6fe49e19.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/596-analyze_many_partitions_preserves_physical_stats-6fe49e19.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 597: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::physical_plan_hint_is_reflected_in_real_explain`（原始 1.299s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/597-physical_plan_hint_is_reflected_in_real_explain-7615915b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/597-physical_plan_hint_is_reflected_in_real_explain-7615915b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 599: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_creates_ddl_notifier_table_at_current_ddl_version`（原始 1.298s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/599-bootstrap_creates_ddl_notifier_table_at_current_ddl_version-c0f85371.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/599-bootstrap_creates_ddl_notifier_table_at_current_ddl_version-c0f85371.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 600: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyAndLockView`（原始 1.298s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/600-testforeignkeyandlockview-ec4e7779.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/600-testforeignkeyandlockview-ec4e7779.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 601: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_normalized_plan_digest_inputs`（原始 1.298s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/601-test_ann_index_normalized_plan_digest_inputs-196784e9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/601-test_ann_index_normalized_plan_digest_inputs-196784e9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 602: 优化 `astersql-server::pg_query_test::namespace_catalog_live_metadata`（原始 1.298s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/602-namespace_catalog_live_metadata-6912ebc3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/602-namespace_catalog_live_metadata-6912ebc3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 604: 优化 `astersql-planner-core-casetest-cascades::memo_test::test_cascades_template_sqls_parse`（原始 1.297s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/604-test_cascades_template_sqls_parse-269655c6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/604-test_cascades_template_sqls_parse-269655c6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 607: 优化 `astersql-executor::historical_stats_test::TestDumpHistoricalStatsFallback`（原始 1.295s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/607-testdumphistoricalstatsfallback-0459f742.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/607-testdumphistoricalstatsfallback-0459f742.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 608: 优化 `astersql-executor-test-showtest::show_test::show_variables_follow_registered_scopes_and_case_insensitive_like`（原始 1.293s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/608-show_variables_follow_registered_scopes_and_case_insensitive_like-79b6dac1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/608-show_variables_follow_registered_scopes_and_case_insensitive_like-79b6dac1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 609: 优化 `astersql-executor::show_stats_test::TestShowStatsHasNullValue`（原始 1.292s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/609-testshowstatshasnullvalue-59da2bf8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/609-testshowstatshasnullvalue-59da2bf8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 611: 优化 `astersql-br-pkg-backup::client_test::test_observe_store_changes_async`（原始 1.291s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/611-test_observe_store_changes_async-1730bb89.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/611-test_observe_store_changes_async-1730bb89.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 612: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_dump_plan_replayer_api_with_history_stats`（原始 1.291s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/612-test_dump_plan_replayer_api_with_history_stats-fdecde42.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/612-test_dump_plan_replayer_api_with_history_stats-fdecde42.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 613: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_tiflash_scan_without_selection_keeps_filter_text`（原始 1.290s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/613-test_cbo_tiflash_scan_without_selection_keeps_filter_text-147b2f9e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/613-test_cbo_tiflash_scan_without_selection_keeps_filter_text-147b2f9e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 614: 优化 `astersql-executor::temporary_table_test::issue_58875_empty_temporary_inner_lookup_has_no_execution_info`（原始 1.289s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/614-issue_58875_empty_temporary_inner_lookup_has_no_execution_info-94b81ba5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/614-issue_58875_empty_temporary_inner_lookup_has_no_execution_info-94b81ba5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 616: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_requires_exact_job_state_and_failure`（原始 1.288s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/616-analyze_status_requires_exact_job_state_and_failure-0774dabb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/616-analyze_status_requires_exact_job_state_and_failure-0774dabb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 617: 优化 `astersql-planner-core-joinorder::bitset_bench_test::joinorder_conflict_detector_resolves_all_scales`（原始 1.287s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/617-joinorder_conflict_detector_resolves_all_scales-4fcf8d68.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/617-joinorder_conflict_detector_resolves_all_scales-4fcf8d68.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 618: 优化 `astersql-executor::temporary_table_test::local_temporary_table_no_network_with_create_outside_txn`（原始 1.285s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/618-local_temporary_table_no_network_with_create_outside_txn-9b507949.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/618-local_temporary_table_no_network_with_create_outside_txn-9b507949.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 619: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_issue43192`（原始 1.285s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/619-test_issue43192-e3384744.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/619-test_issue43192-e3384744.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 620: 优化 `astersql-executor-test-loadremotetest::error_test::test_data_errors_and_duplicate_modes`（原始 1.283s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/620-test_data_errors_and_duplicate_modes-d51feb61.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/620-test_data_errors_and_duplicate_modes-d51feb61.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 621: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepared_issue17419`（原始 1.283s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/621-test_prepared_issue17419-89562f0c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/621-test_prepared_issue17419-89562f0c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 622: 优化 `astersql-session-test-schematest::schema_test::batch_update_preserves_row_count_after_rewriting_every_row`（原始 1.283s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/622-batch_update_preserves_row_count_after_rewriting_every_row-dac50656.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/622-batch_update_preserves_row_count_after_rewriting_every_row-dac50656.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 623: 优化 `astersql-executor::historical_stats_test::TestGCOutdatedHistoryStats`（原始 1.282s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/623-testgcoutdatedhistorystats-4720208e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/623-testgcoutdatedhistorystats-4720208e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 624: 优化 `astersql-executor-test-admintest::admin_test::admin_index_maintenance_executes_through_real_sql`（原始 1.282s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/624-admin_index_maintenance_executes_through_real_sql-d7a7470a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/624-admin_index_maintenance_executes_through_real_sql-d7a7470a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 625: 优化 `astersql-executor-test-showtest::show_test::show_create_table_escapes_identifiers_for_sql_mode`（原始 1.282s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/625-show_create_table_escapes_identifiers_for_sql_mode-a06f2ff8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/625-show_create_table_escapes_identifiers_for_sql_mode-a06f2ff8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 626: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart1`（原始 1.282s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/626-testmemtableinfoschemaextractorpart1-1b956d73.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/626-testmemtableinfoschemaextractorpart1-1b956d73.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 627: 优化 `astersql-server::pg_extended_test::parse_bind_execute_sync`（原始 1.282s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/627-parse_bind_execute_sync-010f312f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/627-parse_bind_execute_sync-010f312f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 628: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_selection_plan_goldens`（原始 1.281s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/628-test_go_integration_suite_selection_plan_goldens-8290224b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/628-test_go_integration_suite_selection_plan_goldens-8290224b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 629: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_numeric_stored_generated_column_completes`（原始 1.280s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/629-analyze_numeric_stored_generated_column_completes-d938b17c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/629-analyze_numeric_stored_generated_column_completes-d938b17c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 630: 优化 `astersql-server::pg_query_test::pg_introspection_namespace_session_state`（原始 1.280s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/630-pg_introspection_namespace_session_state-233b4cee.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/630-pg_introspection_namespace_session_state-233b4cee.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 631: 优化 `astersql-server-tests-standby::standby_test::canonical_standby_activation_starts_status_server_and_controller_route`（原始 1.280s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/631-canonical_standby_activation_starts_status_server_and_controller_route-7db94f87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/631-canonical_standby_activation_starts_status_server_and_controller_route-7db94f87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 632: 优化 `astersql-executor-test-cte::cte_test::test_cte_iteration_memory_tracker_is_released_after_explain_analyze`（原始 1.279s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/632-test_cte_iteration_memory_tracker_is_released_after_explain_analyze-add21d32.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/632-test_cte_iteration_memory_tracker_is_released_after_explain_analyze-add21d32.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 633: 优化 `astersql-executor-test-seqtest::prepared_test::test_prepare_dealloc`（原始 1.279s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/633-test_prepare_dealloc-84a6ae6d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/633-test_prepare_dealloc-84a6ae6d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 634: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorFunctions`（原始 1.279s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/634-testvectorfunctions-2c017712.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/634-testvectorfunctions-2c017712.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 635: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_after_adding_columns_does_not_panic`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/635-analyze_partition_after_adding_columns_does_not_panic-d50b0a1e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/635-analyze_partition_after_adding_columns_does_not_panic-d50b0a1e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 636: 优化 `astersql-executor-test-analyzetest-panictest::panic_test::TestPanicInHandleResultErrorWithSingleGoroutine`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/636-testpanicinhandleresulterrorwithsinglegoroutine-da200f70.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/636-testpanicinhandleresulterrorwithsinglegoroutine-da200f70.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 637: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestInfoBuiltin`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/637-testinfobuiltin-498b7cff.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/637-testinfobuiltin-498b7cff.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 638: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_analyze_partitioned_table_matches_go_definitions`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/638-test_cbo_analyze_partitioned_table_matches_go_definitions-a9b13518.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/638-test_cbo_analyze_partitioned_table_matches_go_definitions-a9b13518.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 639: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_the_join_column_resolution_regression`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/639-real_session_executes_the_join_column_resolution_regression-962e7302.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/639-real_session_executes_the_join_column_resolution_regression-962e7302.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 640: 优化 `astersql-server-internal-testserverclient::server_client_test::load_data_go_scenarios_execute_against_canonical_session`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/640-load_data_go_scenarios_execute_against_canonical_session-7bda410c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/640-load_data_go_scenarios_execute_against_canonical_session-7bda410c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 641: 优化 `astersql-session-test-bootstraptest2::boot_test::upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values`（原始 1.278s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/641-upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values-ea72d274.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/641-upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values-ea72d274.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 642: 优化 `astersql-executor-test-oomtest::oom_test::TestMemTracker4InsertAndReplaceExec`（原始 1.277s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/642-testmemtracker4insertandreplaceexec-97874f62.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/642-testmemtracker4insertandreplaceexec-97874f62.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 643: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_fixture_tables_and_session_vars`（原始 1.277s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/643-test_enforce_mpp_fixture_tables_and_session_vars-aa73b7f0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/643-test_enforce_mpp_fixture_tables_and_session_vars-aa73b7f0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 644: 优化 `astersql-executor::show_stats_test::TestShowStatsBuckets`（原始 1.274s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/644-testshowstatsbuckets-eaec5a48.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/644-testshowstatsbuckets-eaec5a48.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 645: 优化 `astersql-bindinfo-tests::bind_test::go_merge_41_explain_conflicting_hint_reports_binding_warning`（原始 1.273s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/645-go_merge_41_explain_conflicting_hint_reports_binding_warning-14608262.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/645-go_merge_41_explain_conflicting_hint_reports_binding_warning-14608262.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 648: 优化 `astersql-session-test-common::common_test::affected_rows_match_go_for_duplicate_key_updates`（原始 1.272s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/648-affected_rows_match_go_for_duplicate_key_updates-9e95bcd3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/648-affected_rows_match_go_for_duplicate_key_updates-9e95bcd3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 649: 优化 `astersql-br-pkg-metautil::load_test::benchmark_load_backup_meta_10240`（原始 1.271s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/649-benchmark_load_backup_meta_10240-4139e9f7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/649-benchmark_load_backup_meta_10240-4139e9f7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 650: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_global_snapshot_setting_is_observed`（原始 1.271s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/650-analyze_global_snapshot_setting_is_observed-00c8da61.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/650-analyze_global_snapshot_setting_is_observed-00c8da61.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 651: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_exposes_system_schema_catalog_for_jdbc_clients`（原始 1.271s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/651-mysql_protocol_exposes_system_schema_catalog_for_jdbc_clients-d7816325.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/651-mysql_protocol_exposes_system_schema_catalog_for_jdbc_clients-d7816325.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 652: 优化 `astersql-executor-test-autoidtest::autoid_test::TestAutoIncrementNegativeExplicitIdThroughSession`（原始 1.270s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/652-testautoincrementnegativeexplicitidthroughsession-820afdf9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/652-testautoincrementnegativeexplicitidthroughsession-820afdf9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 653: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::prepared_partition_index_cache_crosses_partitions`（原始 1.270s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/653-prepared_partition_index_cache_crosses_partitions-305a07ee.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/653-prepared_partition_index_cache_crosses_partitions-305a07ee.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 654: 优化 `astersql-executor-test-plancache::plan_cache_test::point_get_prepared_plan_reuses_parameters_and_invalidates_schema`（原始 1.268s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/654-point_get_prepared_plan_reuses_parameters_and_invalidates_schema-0d1bc723.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/654-point_get_prepared_plan_reuses_parameters_and_invalidates_schema-0d1bc723.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 655: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_tiflash_ann_index_matches_go_golden`（原始 1.268s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/655-test_tiflash_ann_index_matches_go_golden-bb64cba6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/655-test_tiflash_ann_index_matches_go_golden-bb64cba6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 656: 优化 `astersql-executor-test-analyzetest::analyze_test::auto_analyze_new_index_keeps_column_and_index_stats`（原始 1.266s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/656-auto_analyze_new_index_keeps_column_and_index_stats-e1718ace.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/656-auto_analyze_new_index_keeps_column_and_index_stats-e1718ace.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 657: 优化 `astersql-executor-test-tiflashtest::tiflash_test::tiflash_replica_rejects_gbk_table_with_go_error`（原始 1.265s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/657-tiflash_replica_rejects_gbk_table_with_go_error-11b3295e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/657-tiflash_replica_rejects_gbk_table_with_go_error-11b3295e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 658: 优化 `astersql-executor-test-admintest::admin_test::admin_check_accepts_consistent_multi_valued_index`（原始 1.264s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/658-admin_check_accepts_consistent_multi_valued_index-32e93753.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/658-admin_check_accepts_consistent_multi_valued_index-32e93753.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 659: 优化 `astersql-executor-test-autoidtest::autoid_test::TestFilterDifferentAllocators`（原始 1.264s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/659-testfilterdifferentallocators-343b8097.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/659-testfilterdifferentallocators-343b8097.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 661: 优化 `astersql-executor-test-infoschema::infoschema_test::tables_table_applies_schema_name_and_id_predicates`（原始 1.262s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/661-tables_table_applies_schema_name_and_id_predicates-7c24646a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/661-tables_table_applies_schema_name_and_id_predicates-7c24646a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 662: 优化 `astersql-planner-core-casetest::integration_test::integration_regression_unsigned_bigint_transaction_and_ordering_match_go`（原始 1.262s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/662-integration_regression_unsigned_bigint_transaction_and_ordering_match_-e0c274b5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/662-integration_regression_unsigned_bigint_transaction_and_ordering_match_-e0c274b5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 663: 优化 `astersql-server-tests::tidb_serial_test::test_load_data_list_partition`（原始 1.262s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/663-test_load_data_list_partition-1b2c989f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/663-test_load_data_list_partition-1b2c989f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 664: 优化 `astersql-executor-test-jointest::join_test::test_issue18070`（原始 1.261s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/664-test_issue18070-56478dec.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/664-test_issue18070-56478dec.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 665: 优化 `astersql-server::pg_types_test::common_type_oids_and_values`（原始 1.261s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/665-common_type_oids_and_values-0d2eaa01.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/665-common_type_oids_and_values-0d2eaa01.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 666: 优化 `astersql-executor::historical_stats_test::TestDumpHistoricalStatsByTable`（原始 1.258s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/666-testdumphistoricalstatsbytable-0ec879f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/666-testdumphistoricalstatsbytable-0ec879f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 667: 优化 `astersql-executor::historical_stats_test::TestPartitionTableHistoricalStats`（原始 1.258s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/667-testpartitiontablehistoricalstats-17563a6c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/667-testpartitiontablehistoricalstats-17563a6c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 669: 优化 `astersql-executor-test-jointest::join_test::test_issue11896`（原始 1.257s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/669-test_issue11896-64eb15a3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/669-test_issue11896-64eb15a3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 670: 优化 `astersql-executor-test-jointest::join_test::test_issue20779`（原始 1.257s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/670-test_issue20779-d6a9f53e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/670-test_issue20779-d6a9f53e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 671: 优化 `astersql-executor-test-memtest::mem_test::TestInsertUpdateTrackerOnCleanUp`（原始 1.257s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/671-testinsertupdatetrackeroncleanup-82b2b654.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/671-testinsertupdatetrackeroncleanup-82b2b654.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 672: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorAggregations`（原始 1.257s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/672-testvectoraggregations-33211def.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/672-testvectoraggregations-33211def.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 673: 优化 `astersql-server::pg_query_test::postgres_create_table_simple_query`（原始 1.257s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/673-postgres_create_table_simple_query-8b55a563.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/673-postgres_create_table_simple_query-8b55a563.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 674: 优化 `astersql-executor-test-ddl::ddl_test::test_create_drop_database`（原始 1.255s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/674-test_create_drop_database-87f0beb2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/674-test_create_drop_database-87f0beb2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 675: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestIssue52592`（原始 1.255s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/675-testissue52592-12b6158f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/675-testissue52592-12b6158f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 676: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertWideTableNoGC`（原始 1.254s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/676-benchmarkinsertwidetablenogc-63fd09b2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/676-benchmarkinsertwidetablenogc-63fd09b2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 677: 优化 `astersql-executor-test-admintest::admin_test::partial_multi_valued_indexes_reject_admin_checks`（原始 1.254s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/677-partial_multi_valued_indexes_reject_admin_checks-8b13b48e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/677-partial_multi_valued_indexes_reject_admin_checks-8b13b48e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 678: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_dynamic_merge_includes_all_rows`（原始 1.254s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/678-analyze_partition_dynamic_merge_includes_all_rows-f861efe2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/678-analyze_partition_dynamic_merge_includes_all_rows-f861efe2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 679: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_range_time_pruning_extract`（原始 1.253s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/679-test_range_time_pruning_extract-1ec7cbb1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/679-test_range_time_pruning_extract-1ec7cbb1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 680: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_load_matrix_skips_failed_cases`（原始 1.253s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/680-test_plan_stats_sync_load_matrix_skips_failed_cases-6afe3f6e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/680-test_plan_stats_sync_load_matrix_skips_failed_cases-6afe3f6e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 681: 优化 `astersql-server::pg_catalog_test::pg_introspection_columns_live`（原始 1.253s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/681-pg_introspection_columns_live-83e3372b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/681-pg_introspection_columns_live-83e3372b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 682: 优化 `astersql-planner-core-casetest-physicalplantest::physical_plan_test::semi_join_rewriter_matches_go_plan_tree`（原始 1.252s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/682-semi_join_rewriter_matches_go_plan_tree-ae94b82f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/682-semi_join_rewriter_matches_go_plan_tree-ae94b82f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 683: 优化 `astersql-executor-test-showtest::show_test::show_full_columns_tables_and_collations_use_metadata_contract`（原始 1.251s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/683-show_full_columns_tables_and_collations_use_metadata_contract-3f033fed.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/683-show_full_columns_tables_and_collations_use_metadata_contract-3f033fed.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 684: 优化 `astersql-executor-test-loadremotetest::error_test::test_column_number_mismatch`（原始 1.250s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/684-test_column_number_mismatch-98c029e8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/684-test_column_number_mismatch-98c029e8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 685: 优化 `astersql-server::pg_catalog_test::pg_introspection_dependencies_live`（原始 1.250s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/685-pg_introspection_dependencies_live-eccbe9ed.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/685-pg_introspection_dependencies_live-eccbe9ed.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 686: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertWideTableWithGC`（原始 1.249s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/686-benchmarkinsertwidetablewithgc-913c70cb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/686-benchmarkinsertwidetablewithgc-913c70cb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 687: 优化 `astersql-executor::historical_stats_test::TestGCHistoryStatsAfterDropTable`（原始 1.249s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/687-testgchistorystatsafterdroptable-a055eb8b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/687-testgchistorystatsafterdroptable-a055eb8b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 688: 优化 `astersql-executor-test-ddl::ddl_test::test_set_ddl_error_count_limit`（原始 1.248s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/688-test_set_ddl_error_count_limit-6733111d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/688-test_set_ddl_error_count_limit-6733111d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 689: 优化 `astersql-session-test-bootstraptest::boot_test::materialized_view_system_tables_survive_rebootstrap`（原始 1.248s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/689-materialized_view_system_tables_survive_rebootstrap-9e9228ba.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/689-materialized_view_system_tables_survive_rebootstrap-9e9228ba.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 690: 优化 `astersql-executor::temporary_table_test::global_temporary_table_no_network_with_create_and_truncate`（原始 1.247s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/690-global_temporary_table_no_network_with_create_and_truncate-3b1b1fed.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/690-global_temporary_table_no_network_with_create_and_truncate-3b1b1fed.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 691: 优化 `astersql-executor-importer::precheck_test::requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints`（原始 1.247s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/691-requirements_reject_enabled_ttl_before_external_checks_in_both_entrypo-23ab380e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/691-requirements_reject_enabled_ttl_before_external_checks_in_both_entrypo-23ab380e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 692: 优化 `astersql-executor-test-ddl::ddl_test::test_rename_with_small_auto_id_step`（原始 1.247s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/692-test_rename_with_small_auto_id_step-081e0997.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/692-test_rename_with_small_auto_id_step-081e0997.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 693: 优化 `astersql-executor-test-infoschema::infoschema_test::columns_table_includes_view_columns_and_filters_them`（原始 1.247s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/693-columns_table_includes_view_columns_and_filters_them-60b16654.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/693-columns_table_includes_view_columns_and_filters_them-60b16654.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 694: 优化 `astersql-server::pg_catalog_test::pg_introspection_constraints_live`（原始 1.247s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/694-pg_introspection_constraints_live-ccdaaf70.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/694-pg_introspection_constraints_live-ccdaaf70.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 695: 优化 `astersql-server::pg_catalog_test::pg_introspection_relations_live`（原始 1.246s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/695-pg_introspection_relations_live-a7d3b7f6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/695-pg_introspection_relations_live-a7d3b7f6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 696: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_97_initializes_opt_range_max_size_to_zero`（原始 1.245s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/696-upgrade_97_initializes_opt_range_max_size_to_zero-24fc92f4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/696-upgrade_97_initializes_opt_range_max_size_to_zero-24fc92f4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 697: 优化 `astersql-session-test::session_test::parse_with_params_escape_contract_matches_go`（原始 1.243s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/697-parse_with_params_escape_contract_matches_go-0b8c00b8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/697-parse_with_params_escape_contract_matches_go-0b8c00b8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 698: 优化 `astersql-planner-core-casetest-tpch::tpch_test::test_q5`（原始 1.242s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/698-test_q5-8bfa680d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/698-test_q5-8bfa680d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 699: 优化 `astersql-executor::temporary_table_test::normal_global_temporary_table_no_network`（原始 1.241s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/699-normal_global_temporary_table_no_network-d29c587d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/699-normal_global_temporary_table_no_network-d29c587d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 700: 优化 `astersql-executor-test-plancache::plan_cache_test::point_update_prepared_plan_reuses_current_parameters_and_schema`（原始 1.241s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/700-point_update_prepared_plan_reuses_current_parameters_and_schema-8f346719.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/700-point_update_prepared_plan_reuses_current_parameters_and_schema-8f346719.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 701: 优化 `astersql-server::pg_catalog_test::pg_introspection_cte_live`（原始 1.241s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/701-pg_introspection_cte_live-bf0a12be.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/701-pg_introspection_cte_live-bf0a12be.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 703: 优化 `astersql-bindinfo-tests::bind_test::go_merge_41_prepared_binding_survives_group_by_alias_rewrite`（原始 1.239s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/703-go_merge_41_prepared_binding_survives_group_by_alias_rewrite-46206234.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/703-go_merge_41_prepared_binding_survives_group_by_alias_rewrite-46206234.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 704: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_dml_is_invalidated_when_foreign_key_metadata_changes`（原始 1.239s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/704-prepared_dml_is_invalidated_when_foreign_key_metadata_changes-08905e45.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/704-prepared_dml_is_invalidated_when_foreign_key_metadata_changes-08905e45.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 705: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestGetLock`（原始 1.239s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/705-testgetlock-8db45d61.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/705-testgetlock-8db45d61.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 706: 优化 `astersql-executor-test-loadremotetest::error_test::test_assignment_evaluation_errors`（原始 1.238s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/706-test_assignment_evaluation_errors-e5975154.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/706-test_assignment_evaluation_errors-e5975154.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 707: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue16697`（原始 1.238s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/707-testissue16697-91009ba6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/707-testissue16697-91009ba6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 708: 优化 `astersql-session::runtime::scan_adapter_runtime_test::file_transfer_result_set_statement_ru_post_compile_outcome_and_terminal`（原始 1.237s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/708-file_transfer_result_set_statement_ru_post_compile_outcome_and_termina-0b01c340.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/708-file_transfer_result_set_statement_ru_post_compile_outcome_and_termina-0b01c340.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 709: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_single_session_insert`（原始 1.237s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/709-go_test_single_session_insert-93f390f0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/709-go_test_single_session_insert-93f390f0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 712: 优化 `astersql-session-test-schematest::schema_test::batch_delete_leaves_exactly_the_expected_remaining_row_count`（原始 1.235s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/712-batch_delete_leaves_exactly_the_expected_remaining_row_count-11fa66b8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/712-batch_delete_leaves_exactly_the_expected_remaining_row_count-11fa66b8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 713: 优化 `astersql-br-pkg-utils::register_test::test_task_register_failed_grant`（原始 1.234s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/713-test_task_register_failed_grant-d565303a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/713-test_task_register_failed_grant-d565303a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 715: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_handles_long_instance_text`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/715-analyze_status_handles_long_instance_text-99fac275.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/715-analyze_status_handles_long_instance_text-99fac275.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 716: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_load_matrix_rejects_all_failed_cases`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/716-test_plan_stats_sync_load_matrix_rejects_all_failed_cases-a41c5bf5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/716-test_plan_stats_sync_load_matrix_rejects_all_failed_cases-a41c5bf5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 717: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_unsupported_join_plan_goldens`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/717-test_go_integration_suite_unsupported_join_plan_goldens-2ac595e3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/717-test_go_integration_suite_unsupported_join_plan_goldens-2ac595e3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 718: 优化 `astersql-server::mysql_error_protocol_test::common_mysql_errors_preserve_errno_sqlstate_and_message`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/718-common_mysql_errors_preserve_errno_sqlstate_and_message-a42477b7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/718-common_mysql_errors_preserve_errno_sqlstate_and_message-a42477b7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 719: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_two_managers_single_event_and_takeover`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/719-go_merge_43_ttl_two_managers_single_event_and_takeover-c2497441.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/719-go_merge_43_ttl_two_managers_single_event_and_takeover-c2497441.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 720: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_from_52_uses_current_memory_quota_without_legacy_tidb_row`（原始 1.233s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/720-upgrade_from_52_uses_current_memory_quota_without_legacy_tidb_row-3a62140d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/720-upgrade_from_52_uses_current_memory_quota_without_legacy_tidb_row-3a62140d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 721: 优化 `astersql-br-pkg-utils::register_test::test_task_register_failed_reput`（原始 1.232s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/721-test_task_register_failed_reput-b4234571.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/721-test_task_register_failed_reput-b4234571.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 722: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_replans_when_sql_select_limit_changes`（原始 1.232s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/722-prepared_plan_cache_replans_when_sql_select_limit_changes-06eb2959.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/722-prepared_plan_cache_replans_when_sql_select_limit_changes-06eb2959.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 724: 优化 `astersql-executor-test-jointest::join_test::test_issue11895`（原始 1.230s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/724-test_issue11895-fb21acc7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/724-test_issue11895-fb21acc7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 725: 优化 `astersql-executor-test-loadremotetest::multi_file_test::test_filename_asterisk`（原始 1.230s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/725-test_filename_asterisk-b7845dbb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/725-test_filename_asterisk-b7845dbb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 726: 优化 `astersql-ingestor-ingestctrl::localhelper_test::store_write_limiter_matches_go_burst_chunking_and_store_isolation`（原始 1.230s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/726-store_write_limiter_matches_go_burst_chunking_and_store_isolation-22b104d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/726-store_write_limiter_matches_go_burst_chunking_and_store_isolation-22b104d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 727: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_waits_for_delayed_publication`（原始 1.229s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/727-analyze_status_waits_for_delayed_publication-40faf2d5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/727-analyze_status_waits_for_delayed_publication-40faf2d5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 728: 优化 `astersql-executor-test-infoschema::infoschema_test::tidb_servers_info_matches_current_infosync_server`（原始 1.229s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/728-tidb_servers_info_matches_current_infosync_server-9c0f9fd5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/728-tidb_servers_info_matches_current_infosync_server-9c0f9fd5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 729: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_load_matrix`（原始 1.229s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/729-test_plan_stats_sync_load_matrix-05b18e85.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/729-test_plan_stats_sync_load_matrix-05b18e85.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 731: 优化 `astersql-planner-core-casetest-scalarsubquery::cases_test::test_plan_tree_fixture_cases`（原始 1.227s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/731-test_plan_tree_fixture_cases-c78e8298.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/731-test_plan_tree_fixture_cases-c78e8298.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 732: 优化 `astersql-session::runtime::ttl_worker_session_test::ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes`（原始 1.227s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/732-ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_cha-03a884c4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/732-ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_cha-03a884c4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 733: 优化 `astersql-executor-test-ddl::ddl_test::test_alter_table_add_column`（原始 1.226s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/733-test_alter_table_add_column-878385a2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/733-test_alter_table_add_column-878385a2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 734: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestSetVariables`（原始 1.226s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/734-testsetvariables-f9705c79.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/734-testsetvariables-f9705c79.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 735: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorMiscFunctions`（原始 1.225s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/735-testvectormiscfunctions-b54f6aba.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/735-testvectormiscfunctions-b54f6aba.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 736: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestAnalyzeSessionMemTrackerDetachOnClose`（原始 1.223s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/736-testanalyzesessionmemtrackerdetachonclose-c6717a66.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/736-testanalyzesessionmemtrackerdetachonclose-c6717a66.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 737: 优化 `astersql-executor-test-indexmergereadtest::index_merge_reader_test::index_merge_intersection_matches_reference_for_concurrency_modes`（原始 1.223s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/737-index_merge_intersection_matches_reference_for_concurrency_modes-da63c607.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/737-index_merge_intersection_matches_reference_for_concurrency_modes-da63c607.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 738: 优化 `astersql-executor-test-loadremotetest::error_test::test_issue_43555_truncation_and_missing_columns`（原始 1.223s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/738-test_issue_43555_truncation_and_missing_columns-95385ff6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/738-test_issue_43555_truncation_and_missing_columns-95385ff6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 739: 优化 `astersql-executor-test-showtest::show_test::show_create_table_restores_placement_for_tables_and_partitions`（原始 1.223s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/739-show_create_table_restores_placement_for_tables_and_partitions-efbbe065.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/739-show_create_table_restores_placement_for_tables_and_partitions-efbbe065.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 740: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestMemQuotaAnalyze2`（原始 1.222s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/740-testmemquotaanalyze2-72b9f343.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/740-testmemquotaanalyze2-72b9f343.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 741: 优化 `astersql-executor-test-infoschema::infoschema_test::show_columns_from_subquery_view_returns_view_metadata`（原始 1.222s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/741-show_columns_from_subquery_view_returns_view_metadata-7c9e838c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/741-show_columns_from_subquery_view_returns_view_metadata-7c9e838c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 742: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_null_aware_semi_join_fixture`（原始 1.222s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/742-test_mpp_null_aware_semi_join_fixture-5f0107f7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/742-test_mpp_null_aware_semi_join_fixture-5f0107f7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 743: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_partial_stats_explain_transitions_after_histogram_load`（原始 1.222s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/743-test_partial_stats_explain_transitions_after_histogram_load-d7d8cd22.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/743-test_partial_stats_explain_transitions_after_histogram_load-d7d8cd22.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 744: 优化 `astersql-util-topsql::topsql_test::test_top_sql_cpu_profile`（原始 1.221s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/744-test_top_sql_cpu_profile-4740a228.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/744-test_top_sql_cpu_profile-4740a228.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 746: 优化 `astersql-executor-test-showtest::show_test::show_create_table_strips_deprecated_integer_widths_and_reports_warnings`（原始 1.220s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/746-show_create_table_strips_deprecated_integer_widths_and_reports_warning-1a29c388.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/746-show_create_table_strips_deprecated_integer_widths_and_reports_warning-1a29c388.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 747: 优化 `astersql-executor-test-loadremotetest::error_test::test_error_message_before_remote_storage_access`（原始 1.219s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/747-test_error_message_before_remote_storage_access-4fdbd5c8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/747-test_error_message_before_remote_storage_access-4fdbd5c8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 748: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_selection_replans_when_parameter_shape_changes`（原始 1.219s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/748-prepared_plan_selection_replans_when_parameter_shape_changes-23287396.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/748-prepared_plan_selection_replans_when_parameter_shape_changes-23287396.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 749: 优化 `astersql-server::pg_types_test::missing_original_metadata_is_explicitly_unsupported`（原始 1.219s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/749-missing_original_metadata_is_explicitly_unsupported-40ca66a5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/749-missing_original_metadata_is_explicitly_unsupported-40ca66a5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 750: 优化 `astersql-executor::show_stats_test::TestShowStatusSnapshot`（原始 1.218s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/750-testshowstatussnapshot-ab76b27c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/750-testshowstatussnapshot-ab76b27c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 751: 优化 `astersql-executor-test-loadremotetest::one_csv_test::test_multi_value_index_and_user_variables_contract`（原始 1.218s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/751-test_multi_value_index_and_user_variables_contract-fe6e68b8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/751-test_multi_value_index_and_user_variables_contract-fe6e68b8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 752: 优化 `astersql-planner-core-casetest-hint::hint_test::test_qb_hint_handler_duplicate_objects`（原始 1.218s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/752-test_qb_hint_handler_duplicate_objects-264ec6e0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/752-test_qb_hint_handler_duplicate_objects-264ec6e0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 754: 优化 `astersql-executor-importer::precheck_test::async_prepare_checks_data_source_access_without_discovering_matches`（原始 1.217s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/754-async_prepare_checks_data_source_access_without_discovering_matches-190f65a1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/754-async_prepare_checks_data_source_access_without_discovering_matches-190f65a1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 755: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_succeeds_with_follower_replica_read`（原始 1.217s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/755-analyze_succeeds_with_follower_replica_read-e94baa1d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/755-analyze_succeeds_with_follower_replica_read-e94baa1d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 756: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_uses_go_database`（原始 1.217s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/756-test_tpcds_schema_uses_go_database-78807e12.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/756-test_tpcds_schema_uses_go_database-78807e12.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 757: 优化 `astersql-planner-core-tests-redact::redact_test::test_join_not_supported_by_tiflash_redact_modes`（原始 1.217s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/757-test_join_not_supported_by_tiflash_redact_modes-37604f85.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/757-test_join_not_supported_by_tiflash_redact_modes-37604f85.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 758: 优化 `astersql-executor-test-loadremotetest::one_csv_test::test_ignore_lines_and_generated_columns_contract`（原始 1.216s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/758-test_ignore_lines_and_generated_columns_contract-9835926b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/758-test_ignore_lines_and_generated_columns_contract-9835926b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 759: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestDeepCopyRetType`（原始 1.216s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/759-testdeepcopyrettype-30b64c46.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/759-testdeepcopyrettype-30b64c46.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 760: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_metadata_packets_preserve_column_identity_and_flags`（原始 1.216s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/760-mysql_metadata_packets_preserve_column_identity_and_flags-31629f72.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/760-mysql_metadata_packets_preserve_column_identity_and_flags-31629f72.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 763: 优化 `astersql-session-test-bootstraptest::boot_test::analyze_version_upgrades_missing_and_legacy_values_to_two`（原始 1.213s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/763-analyze_version_upgrades_missing_and_legacy_values_to_two-0a711715.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/763-analyze_version_upgrades_missing_and_legacy_values_to_two-0a711715.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 764: 优化 `astersql-bindinfo-tests::bind_test::test_batch_drop_bindings`（原始 1.212s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/764-test_batch_drop_bindings-659ac9dd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/764-test_batch_drop_bindings-659ac9dd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 766: 优化 `astersql-statistics-handle-cache-internal-lfu::lfu_cache_test::TestLFUCachePutGetWithManyConcurrencyAndSmallConcurrency`（原始 1.212s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/766-testlfucacheputgetwithmanyconcurrencyandsmallconcurrency-8e304949.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/766-testlfucacheputgetwithmanyconcurrencyandsmallconcurrency-8e304949.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 767: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_serves_performance_schema_compatibility_tables`（原始 1.211s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/767-mysql_protocol_serves_performance_schema_compatibility_tables-56067cbd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/767-mysql_protocol_serves_performance_schema_compatibility_tables-56067cbd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 770: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyConcurrentInsertChildTable`（原始 1.210s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/770-testforeignkeyconcurrentinsertchildtable-4682a31d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/770-testforeignkeyconcurrentinsertchildtable-4682a31d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 771: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_random_flush_plan_cache`（原始 1.210s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/771-test_random_flush_plan_cache-857ab986.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/771-test_random_flush_plan_cache-857ab986.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 772: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_68_restores_clustered_index_default`（原始 1.210s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/772-upgrade_68_restores_clustered_index_default-473c02fe.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/772-upgrade_68_restores_clustered_index_default-473c02fe.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 773: 优化 `astersql-session::scatter_presplit::create_table_presplit_sends_physical_keys_and_scatter_group_to_storage`（原始 1.210s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/773-create_table_presplit_sends_physical_keys_and_scatter_group_to_storage-03f34533.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/773-create_table_presplit_sends_physical_keys_and_scatter_group_to_storage-03f34533.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 774: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_2phase_agg_push_down_fixture`（原始 1.208s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/774-test_mpp_2phase_agg_push_down_fixture-0d1368f4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/774-test_mpp_2phase_agg_push_down_fixture-0d1368f4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 775: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_metadata`（原始 1.208s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/775-pg_datagrip_metadata-77edfa87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/775-pg_datagrip_metadata-77edfa87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 778: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_clustered_primary_builds_buckets_without_topn`（原始 1.207s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/778-analyze_clustered_primary_builds_buckets_without_topn-1ee52c76.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/778-analyze_clustered_primary_builds_buckets_without_topn-1ee52c76.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 779: 优化 `astersql-executor-test-loadremotetest::one_csv_test::test_load_csv_and_transaction_contract`（原始 1.207s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/779-test_load_csv_and_transaction_contract-98243acd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/779-test_load_csv_and_transaction_contract-98243acd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 780: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_postgres_column_lifecycle`（原始 1.207s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/780-pg_datagrip_postgres_column_lifecycle-196fd05f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/780-pg_datagrip_postgres_column_lifecycle-196fd05f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 781: 优化 `astersql-server::pg_extended_test::postgres_create_table_extended_query`（原始 1.206s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/781-postgres_create_table_extended_query-3d3936fc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/781-postgres_create_table_extended_query-3d3936fc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 782: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_choice_by_ndv_prefers_k2`（原始 1.205s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/782-test_cbo_index_choice_by_ndv_prefers_k2-0149b922.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/782-test_cbo_index_choice_by_ndv_prefers_k2-0149b922.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 783: 优化 `astersql-executor::temporary_table_test::local_temporary_table_no_network_with_create_inside_txn`（原始 1.204s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/783-local_temporary_table_no_network_with_create_inside_txn-8012a2e9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/783-local_temporary_table_no_network_with_create_inside_txn-8012a2e9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 785: 优化 `astersql-server::conn_test::canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153`（原始 1.201s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/785-canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153-49843663.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/785-canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153-49843663.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 786: 优化 `astersql-executor-test-showtest::show_test::unprivileged_show_table_status_filters_invisible_tables`（原始 1.200s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/786-unprivileged_show_table_status_filters_invisible_tables-f129ea00.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/786-unprivileged_show_table_status_filters_invisible_tables-f129ea00.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 787: 优化 `astersql-server::pg_query_test::datagrip_catalog_live_metadata`（原始 1.200s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/787-datagrip_catalog_live_metadata-6c8cb58c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/787-datagrip_catalog_live_metadata-6c8cb58c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 789: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_union_and_union_scan_fixture`（原始 1.199s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/789-test_dag_plan_builder_union_and_union_scan_fixture-e3bdcb5c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/789-test_dag_plan_builder_union_and_union_scan_fixture-e3bdcb5c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 791: 优化 `astersql-executor-test-cte::cte_test::test_cte_table_invalid_task_has_recursive_plan_without_warnings`（原始 1.198s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/791-test_cte_table_invalid_task_has_recursive_plan_without_warnings-3248d542.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/791-test_cte_table_invalid_task_has_recursive_plan_without_warnings-3248d542.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 792: 优化 `astersql-server::mysql_compat_test_support::tests::mysql_compat_test_support_round_trips_packets`（原始 1.196s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/792-mysql_compat_test_support_round_trips_packets-1490d28f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/792-mysql_compat_test_support_round_trips_packets-1490d28f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 793: 优化 `astersql-executor::historical_stats_test::TestRecordHistoryStatsMetaAfterAnalyze`（原始 1.194s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/793-testrecordhistorystatsmetaafteranalyze-b59d6208.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/793-testrecordhistorystatsmetaafteranalyze-b59d6208.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 794: 优化 `astersql-executor-test-showtest::show_test::show_visibility_tracks_database_and_table_privileges`（原始 1.194s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/794-show_visibility_tracks_database_and_table_privileges-c9f1bbc9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/794-show_visibility_tracks_database_and_table_privileges-c9f1bbc9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 795: 优化 `astersql-session::exchange_partition_privileges::exchange_partition_checks_both_tables_privileges`（原始 1.194s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/795-exchange_partition_checks_both_tables_privileges-ff152ffb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/795-exchange_partition_checks_both_tables_privileges-ff152ffb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 796: 优化 `astersql-br-pkg-utils::pprof_test::profile_handler_returns_decodable_pprof_data`（原始 1.193s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/796-profile_handler_returns_decodable_pprof_data-f3f3a92d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/796-profile_handler_returns_decodable_pprof_data-f3f3a92d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 797: 优化 `astersql-executor::bench_gencol_test::BenchmarkInsertYCSBLike`（原始 1.193s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/797-benchmarkinsertycsblike-b9697e9d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/797-benchmarkinsertycsblike-b9697e9d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 798: 优化 `astersql-executor-test-ddl::ddl_test::test_auto_random_table_option`（原始 1.193s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/798-test_auto_random_table_option-0566d3d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/798-test_auto_random_table_option-0566d3d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 799: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue57608`（原始 1.193s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/799-testissue57608-a8023f47.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/799-testissue57608-a8023f47.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 800: 优化 `astersql-executor-test-ddl::ddl_test::test_add_not_null_column_no_default`（原始 1.191s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/800-test_add_not_null_column_no_default-5aa7a03b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/800-test_add_not_null_column_no_default-5aa7a03b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 801: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestTiDBRowChecksumBuiltin`（原始 1.191s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/801-testtidbrowchecksumbuiltin-40c90dbf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/801-testtidbrowchecksumbuiltin-40c90dbf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 802: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_option_merge_survives_dynamic_switch`（原始 1.190s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/802-analyze_partition_option_merge_survives_dynamic_switch-ad0bd47d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/802-analyze_partition_option_merge_survives_dynamic_switch-ad0bd47d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 803: 优化 `astersql-planner-core-casetest-parallelapply::parallel_apply_test::test_parallel_apply_ordered_plan`（原始 1.190s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/803-test_parallel_apply_ordered_plan-b902be1e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/803-test_parallel_apply_ordered_plan-b902be1e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 805: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_135_initializes_advanced_join_hint_to_off`（原始 1.190s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/805-upgrade_135_initializes_advanced_join_hint_to_off-71d38ca4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/805-upgrade_135_initializes_advanced_join_hint_to_off-71d38ca4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 806: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_window_concurrency`（原始 1.189s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/806-test_dag_plan_builder_window_concurrency-7f3fc838.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/806-test_dag_plan_builder_window_concurrency-7f3fc838.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 807: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_session_defaults_match_golden`（原始 1.189s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/807-test_enforce_mpp_session_defaults_match_golden-f8d1c345.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/807-test_enforce_mpp_session_defaults_match_golden-f8d1c345.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 808: 优化 `astersql-server::pg_catalog_test::catalog_database_description_semantics`（原始 1.189s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/808-catalog_database_description_semantics-cdcd7b05.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/808-catalog_database_description_semantics-cdcd7b05.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 810: 优化 `astersql-executor-test-fktest::foreign_key_test::TestFKBuild`（原始 1.188s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/810-testfkbuild-c3ce88c0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/810-testfkbuild-c3ce88c0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 811: 优化 `astersql-session::mysql_type_compat_test::common_mysql_types_round_trip_without_metadata_or_value_loss`（原始 1.187s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/811-common_mysql_types_round_trip_without_metadata_or_value_loss-9dc24949.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/811-common_mysql_types_round_trip_without_metadata_or_value_loss-9dc24949.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 812: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue55886`（原始 1.185s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/812-testissue55886-a486a834.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/812-testissue55886-a486a834.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 813: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_index_read_ddl_creates_expected_indexes`（原始 1.185s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/813-test_cbo_index_read_ddl_creates_expected_indexes-d503a793.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/813-test_cbo_index_read_ddl_creates_expected_indexes-d503a793.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 814: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_with_non_int_clustered_pk_uses_full_vector_range`（原始 1.185s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/814-test_ann_index_with_non_int_clustered_pk_uses_full_vector_range-50f9c254.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/814-test_ann_index_with_non_int_clustered_pk_uses_full_vector_range-50f9c254.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 817: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_indexed_generated_column_when_json_is_skipped`（原始 1.184s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/817-analyze_indexed_generated_column_when_json_is_skipped-478cc2e9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/817-analyze_indexed_generated_column_when_json_is_skipped-478cc2e9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 818: 优化 `astersql-executor-test-distsqltest::distsql_test::TestDistsqlPartitionTableConcurrency`（原始 1.182s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/818-testdistsqlpartitiontableconcurrency-f643aa99.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/818-testdistsqlpartitiontableconcurrency-f643aa99.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 819: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorAssignVariable`（原始 1.182s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/819-testvectorassignvariable-8e8b1782.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/819-testvectorassignvariable-8e8b1782.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 820: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_templates_sets`（原始 1.182s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/820-pg_datagrip_templates_sets-3ae76dca.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/820-pg_datagrip_templates_sets-3ae76dca.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 821: 优化 `astersql-executor-test-infoschema::infoschema_test::tables_stats_fields_follow_analyze_and_flush_updates`（原始 1.181s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/821-tables_stats_fields_follow_analyze_and_flush_updates-dc3ef60d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/821-tables_stats_fields_follow_analyze_and_flush_updates-dc3ef60d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 823: 优化 `astersql-session-test-nontransactionaltest::nontransactional_test::batch_style_update_and_delete_cover_sharded_dml_visibility`（原始 1.181s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/823-batch_style_update_and_delete_cover_sharded_dml_visibility-f4c7f328.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/823-batch_style_update_and_delete_cover_sharded_dml_visibility-f4c7f328.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 824: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeWithDynamicPartitionPruneMode`（原始 1.181s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/824-testanalyzewithdynamicpartitionprunemode-39d07658.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/824-testanalyzewithdynamicpartitionprunemode-39d07658.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 826: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_join_concurrency_vars`（原始 1.180s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/826-test_dag_plan_builder_join_concurrency_vars-70a9b721.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/826-test_dag_plan_builder_join_concurrency_vars-70a9b721.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 827: 优化 `astersql-server::pg_extended_test::pg_introspection_parameters_live`（原始 1.180s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/827-pg_introspection_parameters_live-59f22fc1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/827-pg_introspection_parameters_live-59f22fc1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 828: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_workflow_retries_pd_cas_and_rechecks_stale_codec`（原始 1.180s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/828-starter_privilege_reset_workflow_retries_pd_cas_and_rechecks_stale_cod-d486e17c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/828-starter_privilege_reset_workflow_retries_pd_cas_and_rechecks_stale_cod-d486e17c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 830: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_dynamic_partition_rewrite_keeps_all_columns`（原始 1.179s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/830-analyze_dynamic_partition_rewrite_keeps_all_columns-2011f37d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/830-analyze_dynamic_partition_rewrite_keeps_all_columns-2011f37d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 831: 优化 `astersql-executor-test-infoschema::infoschema_test::foreign_key_metadata_preserves_referenced_schema`（原始 1.179s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/831-foreign_key_metadata_preserves_referenced_schema-70838551.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/831-foreign_key_metadata_preserves_referenced_schema-70838551.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 832: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue51842`（原始 1.179s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/832-testissue51842-4d7dcd13.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/832-testissue51842-4d7dcd13.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 833: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_binding_change_invalidates_previous_plan`（原始 1.178s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/833-prepared_plan_cache_binding_change_invalidates_previous_plan-fac43070.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/833-prepared_plan_cache_binding_change_invalidates_previous_plan-fac43070.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 834: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_plan_cache_clustered_index_reuses_composite_key_plans`（原始 1.178s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/834-prepared_plan_cache_clustered_index_reuses_composite_key_plans-8cc83ccf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/834-prepared_plan_cache_clustered_index_reuses_composite_key_plans-8cc83ccf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 835: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_null_count_matches_go_suite_fixture`（原始 1.178s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/835-test_cbo_null_count_matches_go_suite_fixture-caaa75d9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/835-test_cbo_null_count_matches_go_suite_fixture-caaa75d9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 837: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_full_sampling_handles_virtual_and_prefix_indexes`（原始 1.177s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/837-analyze_full_sampling_handles_virtual_and_prefix_indexes-de9d515c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/837-analyze_full_sampling_handles_virtual_and_prefix_indexes-de9d515c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 838: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestGlobalMemoryControlForAutoAnalyze`（原始 1.176s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/838-testglobalmemorycontrolforautoanalyze-270208dd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/838-testglobalmemorycontrolforautoanalyze-270208dd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 840: 优化 `astersql-br-pkg-backup::client_test::test_main_backup_loop`（原始 1.175s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/840-test_main_backup_loop-e339473a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/840-test_main_backup_loop-e339473a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 841: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_generated_columns_and_indexes`（原始 1.175s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/841-analyze_generated_columns_and_indexes-1ec39ec0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/841-analyze_generated_columns_and_indexes-1ec39ec0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 842: 优化 `astersql-executor-test-showtest::show_test::show_create_table_region_split_policies_round_trip`（原始 1.175s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/842-show_create_table_region_split_policies_round_trip-56793d7b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/842-show_create_table_region_split_policies_round_trip-56793d7b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 843: 优化 `astersql-session-test-bootstraptest::boot_test::index_merge_upgrade_preserves_existing_choice_and_defaults_old_missing_to_off`（原始 1.175s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/843-index_merge_upgrade_preserves_existing_choice_and_defaults_old_missing-046336d7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/843-index_merge_upgrade_preserves_existing_choice_and_defaults_old_missing-046336d7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 846: 优化 `astersql-executor::show_stats_test::TestShowColumnStatsUsage`（原始 1.174s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/846-testshowcolumnstatsusage-ed833ff8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/846-testshowcolumnstatsusage-ed833ff8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 847: 优化 `astersql-executor::historical_stats_test::TestRecordHistoryStatsAfterAnalyze`（原始 1.173s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/847-testrecordhistorystatsafteranalyze-e9e8b007.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/847-testrecordhistorystatsafteranalyze-e9e8b007.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 848: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_agg_fixture`（原始 1.173s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/848-test_dag_plan_builder_agg_fixture-b44c74fb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/848-test_dag_plan_builder_agg_fixture-b44c74fb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 849: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_token_only_require_preserves_existing_tls`（原始 1.173s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/849-mysql_alter_user_token_only_require_preserves_existing_tls-1e3cffa5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/849-mysql_alter_user_token_only_require_preserves_existing_tls-1e3cffa5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 852: 优化 `astersql-executor::temporary_table_test::global_temporary_table_no_network_with_create_then_normal_table`（原始 1.170s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/852-global_temporary_table_no_network_with_create_then_normal_table-ec336d54.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/852-global_temporary_table_no_network_with_create_then_normal_table-ec336d54.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 853: 优化 `astersql-server::pg_conn_test::startup_negotiation_and_secure_mode_reject`（原始 1.170s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/853-startup_negotiation_and_secure_mode_reject-fb2909ba.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/853-startup_negotiation_and_secure_mode_reject-fb2909ba.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 855: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_collation_keys_build_stats_without_error`（原始 1.169s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/855-analyze_collation_keys_build_stats_without_error-1c82e461.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/855-analyze_collation_keys_build_stats_without_error-1c82e461.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 856: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorSearchPreparedStatement`（原始 1.169s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/856-testvectorsearchpreparedstatement-f4381c5f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/856-testvectorsearchpreparedstatement-f4381c5f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 858: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_exchange_partition_should_change_nothing`（原始 1.168s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/858-test_exchange_partition_should_change_nothing-38013ca3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/858-test_exchange_partition_should_change_nothing-38013ca3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 859: 优化 `astersql-server::pg_conn_test::startup_auth_roundtrip`（原始 1.167s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/859-startup_auth_roundtrip-66e0a51b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/859-startup_auth_roundtrip-66e0a51b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 863: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_null_param_selects_table_dual`（原始 1.166s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/863-prepared_null_param_selects_table_dual-c3a6d5cb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/863-prepared_null_param_selects_table_dual-c3a6d5cb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 864: 优化 `astersql-server::mysql_metadata_protocol_test::mysql_protocol_exposes_collations_and_persisted_users`（原始 1.166s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/864-mysql_protocol_exposes_collations_and_persisted_users-532bc973.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/864-mysql_protocol_exposes_collations_and_persisted_users-532bc973.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 865: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_partition_prune_mode_session_variable`（原始 1.166s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/865-go_test_partition_prune_mode_session_variable-aac4b562.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/865-go_test_partition_prune_mode_session_variable-aac4b562.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 866: 优化 `astersql-executor-test-executor::executor_test::scalar_subquery_rejects_more_than_one_row`（原始 1.165s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/866-scalar_subquery_rejects_more_than_one_row-07902a15.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/866-scalar_subquery_rejects_more_than_one_row-07902a15.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 867: 优化 `astersql-util-ddl-checker::executable_checker_test::test_execute`（原始 1.165s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/867-test_execute-a8b197f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/867-test_execute-a8b197f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 869: 优化 `astersql-executor::show_stats_test::TestShowStatsHistograms`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/869-testshowstatshistograms-3e4e37f1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/869-testshowstatshistograms-3e4e37f1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 870: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_skip_json_also_skips_dependent_generated_columns`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/870-analyze_skip_json_also_skips_dependent_generated_columns-a9f8445e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/870-analyze_skip_json_also_skips_dependent_generated_columns-a9f8445e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 871: 优化 `astersql-planner-core-casetest-schema::cannot_find_column_test::real_session_executes_join_dml_outer_join_and_type_coercion`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/871-real_session_executes_join_dml_outer_join_and_type_coercion-26b4b25b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/871-real_session_executes_join_dml_outer_join_and_type_coercion-26b4b25b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 872: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestPointGetPlanCache`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/872-testpointgetplancache-625fc4f0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/872-testpointgetplancache-625fc4f0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 874: 优化 `astersql-session::starter_bootstrap_file_test::starter_factory_requires_manifest_when_metadata_requests_privilege_reset`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/874-starter_factory_requires_manifest_when_metadata_requests_privilege_res-f0f93990.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/874-starter_factory_requires_manifest_when_metadata_requests_privilege_res-f0f93990.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 875: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_auto_analyze_skip_column_types`（原始 1.164s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/875-go_test_auto_analyze_skip_column_types-ad2d5ec3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/875-go_test_auto_analyze_skip_column_types-ad2d5ec3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 876: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_unique_index_on_stored_generated_column`（原始 1.162s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/876-analyze_unique_index_on_stored_generated_column-f670640d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/876-analyze_unique_index_on_stored_generated_column-f670640d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 877: 优化 `astersql-executor-test-showtest::show_test::show_and_select_respect_sql_select_limit_and_filters`（原始 1.162s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/877-show_and_select_respect_sql_select_limit_and_filters-7b8fbc2f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/877-show_and_select_respect_sql_select_limit_and_filters-7b8fbc2f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 880: 优化 `astersql-executor::explain_test::explain_select_uses_live_catalog_and_flushed_row_count`（原始 1.161s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/880-explain_select_uses_live_catalog_and_flushed_row_count-983d03c0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/880-explain_select_uses_live_catalog_and_flushed_row_count-983d03c0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 881: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_static_mode_keeps_column_scope`（原始 1.161s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/881-analyze_partition_static_mode_keeps_column_scope-874406aa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/881-analyze_partition_static_mode_keeps_column_scope-874406aa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 882: 优化 `astersql-executor-test-infoschema::infoschema_test::same_table_name_in_two_schemas_isolated_by_schema_and_id`（原始 1.161s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/882-same_table_name_in_two_schemas_isolated_by_schema_and_id-7a5bfdac.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/882-same_table_name_in_two_schemas_isolated_by_schema_and_id-7a5bfdac.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 883: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_projection_coprocessor_plan_goldens`（原始 1.161s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/883-test_go_integration_suite_projection_coprocessor_plan_goldens-4282e489.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/883-test_go_integration_suite_projection_coprocessor_plan_goldens-4282e489.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 884: 优化 `astersql-executor-test-cte::cte_test::test_cte_panics_are_recovered_as_query_errors`（原始 1.160s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/884-test_cte_panics_are_recovered_as_query_errors-dd6b8622.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/884-test_cte_panics_are_recovered_as_query_errors-dd6b8622.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 886: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyLargeTxnErr`（原始 1.159s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/886-testforeignkeylargetxnerr-b8463b7c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/886-testforeignkeylargetxnerr-b8463b7c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 887: 优化 `astersql-server::pg_query_test::simple_query_roundtrip`（原始 1.158s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/887-simple_query_roundtrip-23056132.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/887-simple_query_roundtrip-23056132.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 889: 优化 `astersql-tests-readonlytest::readonly_test::test_restriction_with_connection_pool`（原始 1.158s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/889-test_restriction_with_connection_pool-e2ec35a8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/889-test_restriction_with_connection_pool-e2ec35a8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 891: 优化 `astersql-executor-test-ddl::ddl_test::test_alter_table_add_columns`（原始 1.157s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/891-test_alter_table_add_columns-12eb5f0e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/891-test_alter_table_add_columns-12eb5f0e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 892: 优化 `astersql-executor-test-infoschema::infoschema_test::infoschema_conditions_filter_constraints_and_unpartitioned_tables`（原始 1.157s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/892-infoschema_conditions_filter_constraints_and_unpartitioned_tables-c4408868.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/892-infoschema_conditions_filter_constraints_and_unpartitioned_tables-c4408868.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 893: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_static_to_dynamic_rebuilds_global_stats`（原始 1.156s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/893-analyze_partition_static_to_dynamic_rebuilds_global_stats-857b7c11.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/893-analyze_partition_static_to_dynamic_rebuilds_global_stats-857b7c11.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 894: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_shared_cte_scan_tpch_like_tables`（原始 1.156s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/894-test_mpp_shared_cte_scan_tpch_like_tables-02d5118c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/894-test_mpp_shared_cte_scan_tpch_like_tables-02d5118c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 895: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_job_status_records_completed_job`（原始 1.155s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/895-analyze_job_status_records_completed_job-8753d13b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/895-analyze_job_status_records_completed_job-8753d13b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 896: 优化 `astersql-executor-test-infoschema::infoschema_test::statistics_only_exposes_public_indexes`（原始 1.155s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/896-statistics_only_exposes_public_indexes-54a16d8f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/896-statistics_only_exposes_public_indexes-54a16d8f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 897: 优化 `astersql-executor-test-oomtest::oom_test::TestOOMActionPriority`（原始 1.155s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/897-testoomactionpriority-5ed7bf0f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/897-testoomactionpriority-5ed7bf0f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 898: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_creates_all_thirteen_tables_with_expected_columns`（原始 1.155s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/898-test_tpcds_schema_creates_all_thirteen_tables_with_expected_columns-d19f37a6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/898-test_tpcds_schema_creates_all_thirteen_tables_with_expected_columns-d19f37a6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 900: 优化 `astersql-executor::show_stats_test::TestShowStatsLocked`（原始 1.154s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/900-testshowstatslocked-40d4962a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/900-testshowstatslocked-40d4962a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 901: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_without_analyze_matches_go_suite_fixture`（原始 1.154s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/901-test_cbo_without_analyze_matches_go_suite_fixture-446ba4c2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/901-test_cbo_without_analyze_matches_go_suite_fixture-446ba4c2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 903: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorCompare`（原始 1.153s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/903-testvectorcompare-a8ea7333.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/903-testvectorcompare-a8ea7333.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 904: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_stats_analyzed_during_ddl_nine_step_sequence`（原始 1.153s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/904-test_stats_analyzed_during_ddl_nine_step_sequence-0bf6581b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/904-test_stats_analyzed_during_ddl_nine_step_sequence-0bf6581b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 905: 优化 `astersql-session::runtime::scan_adapter_runtime_test::explain_statement_ru_post_compile_outcome_and_terminal`（原始 1.153s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/905-explain_statement_ru_post_compile_outcome_and_terminal-a97f4d48.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/905-explain_statement_ru_post_compile_outcome_and_terminal-a97f4d48.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 908: 优化 `astersql-executor-test-loadremotetest::multi_file_test::test_multi_batch_with_ignore_lines`（原始 1.152s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/908-test_multi_batch_with_ignore_lines-58075c3e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/908-test_multi_batch_with_ignore_lines-58075c3e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 909: 优化 `astersql-planner-core-tests-redact::redact_test::test_list_partition_redaction_preserves_plan_identifiers`（原始 1.152s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/909-test_list_partition_redaction_preserves_plan_identifiers-e4e1b6b7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/909-test_list_partition_redaction_preserves_plan_identifiers-e4e1b6b7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 910: 优化 `astersql-executor-test-loadremotetest::util_test::test_load_remote_suite_lifecycle`（原始 1.151s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/910-test_load_remote_suite_lifecycle-229031d7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/910-test_load_remote_suite_lifecycle-229031d7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 911: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_nondeterministic_function_is_recomputed`（原始 1.151s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/911-prepared_nondeterministic_function_is_recomputed-3276615d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/911-prepared_nondeterministic_function_is_recomputed-3276615d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 914: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorSetOperation`（原始 1.150s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/914-testvectorsetoperation-aaf31d6b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/914-testvectorsetoperation-aaf31d6b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 915: 优化 `astersql-bindinfo-tests::bind_test::test_gc_bind_record`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/915-test_gc_bind_record-19dcd562.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/915-test_gc_bind_record-19dcd562.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 916: 优化 `astersql-executor-test-cte::cte_test::test_cte_recursive_limit_error_is_recovered_and_reusable`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/916-test_cte_recursive_limit_error_is_recovered_and_reusable-98a77ea6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/916-test_cte_recursive_limit_error_is_recovered_and_reusable-98a77ea6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 917: 优化 `astersql-executor-test-showtest::show_test::show_auto_random_bases_and_unsigned_region_keys_are_stable`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/917-show_auto_random_bases_and_unsigned_region_keys_are_stable-8fcf6390.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/917-show_auto_random_bases_and_unsigned_region_keys_are_stable-8fcf6390.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 918: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorOperators`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/918-testvectoroperators-7a53362d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/918-testvectoroperators-7a53362d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 919: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_session_variables_accept_real_set_statements`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/919-test_cbo_session_variables_accept_real_set_statements-88108554.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/919-test_cbo_session_variables_accept_real_set_statements-88108554.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 920: 优化 `astersql-session::dml_runtime_test::sql_defaults_and_bootstrap_upgrade`（原始 1.149s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/920-sql_defaults_and_bootstrap_upgrade-6a76a726.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/920-sql_defaults_and_bootstrap_upgrade-6a76a726.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 923: 优化 `astersql-executor-test-analyzetest::analyze_test::auto_analyze_table_schedule_advances_stats`（原始 1.148s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/923-auto_analyze_table_schedule_advances_stats-b3cb3117.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/923-auto_analyze_table_schedule_advances_stats-b3cb3117.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 924: 优化 `astersql-executor-test-infoschema::infoschema_test::information_schema_rows_follow_authenticated_role_privileges`（原始 1.148s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/924-information_schema_rows_follow_authenticated_role_privileges-3a4ba1fa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/924-information_schema_rows_follow_authenticated_role_privileges-3a4ba1fa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 925: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue44706`（原始 1.148s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/925-testissue44706-b1f25cee.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/925-testissue44706-b1f25cee.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 926: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue55885`（原始 1.148s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/926-testissue55885-1360e29d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/926-testissue55885-1360e29d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 927: 优化 `astersql-server::pg_catalog_test::pg_introspection_predicates_live`（原始 1.148s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/927-pg_introspection_predicates_live-693429bb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/927-pg_introspection_predicates_live-693429bb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 928: 优化 `astersql-bindinfo-tests::bind_test::test_real_session_binding_catalog_matches_created_binding`（原始 1.147s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/928-test_real_session_binding_catalog_matches_created_binding-602a9094.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/928-test_real_session_binding_catalog_matches_created_binding-602a9094.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 929: 优化 `astersql-br-pkg-gc::safepoint_test::test_keyspace_safepoint_keeper`（原始 1.147s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/929-test_keyspace_safepoint_keeper-9662d80b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/929-test_keyspace_safepoint_keeper-9662d80b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 930: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_selected_columns_preserve_unselected_statistics`（原始 1.147s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/930-analyze_selected_columns_preserve_unselected_statistics-bf6a20eb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/930-analyze_selected_columns_preserve_unselected_statistics-bf6a20eb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 931: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorWindow`（原始 1.147s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/931-testvectorwindow-af59ce3b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/931-testvectorwindow-af59ce3b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 933: 优化 `astersql-executor-test-jointest::join_test::test_issue37932`（原始 1.145s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/933-test_issue37932-1cc9284a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/933-test_issue37932-1cc9284a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 934: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_skewed_group_distinct_rewrite_fixture`（原始 1.145s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/934-test_mpp_skewed_group_distinct_rewrite_fixture-b8a6f592.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/934-test_mpp_skewed_group_distinct_rewrite_fixture-b8a6f592.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 935: 优化 `astersql-planner-core-issuetest::planner_issue_test::planner_issue_boundary_regressions_keep_errors_and_plan_shape`（原始 1.145s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/935-planner_issue_boundary_regressions_keep_errors_and_plan_shape-8e2eff65.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/935-planner_issue_boundary_regressions_keep_errors_and_plan_shape-8e2eff65.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 936: 优化 `astersql-session::mlog_purge::purge_materialized_view_log_requires_a_database`（原始 1.144s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/936-purge_materialized_view_log_requires_a_database-60114a5a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/936-purge_materialized_view_log_requires_a_database-60114a5a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 937: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_analyze_ratio`（原始 1.144s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/937-go_test_auto_analyze_ratio-2a9f8a8c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/937-go_test_auto_analyze_ratio-2a9f8a8c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 938: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_failed_request_v2_reports_missing_index`（原始 1.143s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/938-analyze_failed_request_v2_reports_missing_index-0afb54f7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/938-analyze_failed_request_v2_reports_missing_index-0afb54f7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 939: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::fix_control_rejects_partitioned_cached_point_get`（原始 1.143s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/939-fix_control_rejects_partitioned_cached_point_get-fee2fc62.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/939-fix_control_rejects_partitioned_cached_point_get-fee2fc62.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 941: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_status_job_info_contains_selected_options`（原始 1.142s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/941-analyze_status_job_info_contains_selected_options-2d71871e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/941-analyze_status_job_info_contains_selected_options-2d71871e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 942: 优化 `astersql-executor-test-analyzetest-memorycontrol::memory_control_test::TestAnalyzeV2MemoryUsageMetricNeverNegative`（原始 1.142s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/942-testanalyzev2memoryusagemetricnevernegative-16b8e95b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/942-testanalyzev2memoryusagemetricnevernegative-16b8e95b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 943: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestCompareBuiltin`（原始 1.142s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/943-testcomparebuiltin-c5fd5497.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/943-testcomparebuiltin-c5fd5497.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 945: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update`（原始 1.142s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/945-go_test_auto_update-aca7181a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/945-go_test_auto_update-aca7181a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 946: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_index_fm_sketch`（原始 1.141s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/946-go_test_index_fm_sketch-e8ec862b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/946-go_test_index_fm_sketch-e8ec862b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 948: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_tiflash_cost_model_matches_go_suite_fixture`（原始 1.139s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/948-test_cbo_tiflash_cost_model_matches_go_suite_fixture-abd490cf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/948-test_cbo_tiflash_cost_model_matches_go_suite_fixture-abd490cf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 949: 优化 `astersql-server::pg_types_test::native_metadata_bridge_preserves_boolean_and_mysql_columns`（原始 1.139s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/949-native_metadata_bridge_preserves_boolean_and_mysql_columns-3b809d6f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/949-native_metadata_bridge_preserves_boolean_and_mysql_columns-3b809d6f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 950: 优化 `astersql-standby::idle_watcher_test::in_transaction_sleep_connection_prevents_idle_exit`（原始 1.138s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/950-in_transaction_sleep_connection_prevents_idle_exit-6bf39624.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/950-in_transaction_sleep_connection_prevents_idle_exit-6bf39624.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 951: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning4_join_tables_and_hash_join_version`（原始 1.137s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/951-test_enforce_mpp_warning4_join_tables_and_hash_join_version-d48e6a14.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/951-test_enforce_mpp_warning4_join_tables_and_hash_join_version-d48e6a14.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 953: 优化 `astersql-session::system_session_alignment_test::crossks_align_infoschema_sql_mdl_barrier_and_release`（原始 1.137s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/953-crossks_align_infoschema_sql_mdl_barrier_and_release-26aded52.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/953-crossks_align_infoschema_sql_mdl_barrier_and_release-26aded52.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 954: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_small_tables_record_global_and_partition_counts`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/954-analyze_small_tables_record_global_and_partition_counts-2ea6b731.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/954-analyze_small_tables_record_global_and_partition_counts-2ea6b731.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 955: 优化 `astersql-executor-test-showtest::show_test::show_create_user_restores_authentication_and_account_options`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/955-show_create_user_restores_authentication_and_account_options-fb11a0d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/955-show_create_user_restores_authentication_and_account_options-fb11a0d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 956: 优化 `astersql-executor-test-writetest::write_test::TestRebaseIfNeeded`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/956-testrebaseifneeded-685e7277.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/956-testrebaseifneeded-685e7277.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 957: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestTiDBRowChecksumBuiltinAfterAddColumn`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/957-testtidbrowchecksumbuiltinafteraddcolumn-435b7394.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/957-testtidbrowchecksumbuiltinafteraddcolumn-435b7394.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 958: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_analyze_partition_table_after_adding_index`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/958-go_test_auto_analyze_partition_table_after_adding_index-b66dd913.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/958-go_test_auto_analyze_partition_table_after_adding_index-b66dd913.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 959: 优化 `astersql-testkit::mockstore_domain_stats_test::analyze_session_workers_join_on_explicit_close_and_drop`（原始 1.136s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/959-analyze_session_workers_join_on_explicit_close_and_drop-742ab43d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/959-analyze_session_workers_join_on_explicit_close_and_drop-742ab43d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 960: 优化 `astersql-planner-core-casetest-tpcds::tpcds_test::test_tpcds_schema_primary_keys_match_go_schema`（原始 1.135s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/960-test_tpcds_schema_primary_keys_match_go_schema-83431950.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/960-test_tpcds_schema_primary_keys_match_go_schema-83431950.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 961: 优化 `astersql-executor::statement_ru_plan_walk_test::go_merge_20_187_195_197_production_ru_canonical_sql`（原始 1.134s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/961-go_merge_20_187_195_197_production_ru_canonical_sql-38de121a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/961-go_merge_20_187_195_197_production_ru_canonical_sql-38de121a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 962: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart4`（原始 1.134s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/962-testmemtableinfoschemaextractorpart4-91612237.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/962-testmemtableinfoschemaextractorpart4-91612237.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 963: 优化 `astersql-executor-test-cte::cte_test::test_spill_to_disk_preserves_recursive_union_distinct_results`（原始 1.133s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/963-test_spill_to_disk_preserves_recursive_union_distinct_results-473db966.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/963-test_spill_to_disk_preserves_recursive_union_distinct_results-473db966.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 964: 优化 `astersql-expression-test-multivaluedindex::multi_valued_index_test::test_write_multi_valued_index`（原始 1.133s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/964-test_write_multi_valued_index-a3a33fdb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/964-test_write_multi_valued_index-a3a33fdb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 965: 优化 `astersql-session::system_session::crossks_align_infoschema_sql_mdl_barrier_and_release`（原始 1.133s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/965-crossks_align_infoschema_sql_mdl_barrier_and_release-188f361d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/965-crossks_align_infoschema_sql_mdl_barrier_and_release-188f361d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 966: 优化 `astersql-util-stmtsummary-v2::stmtsummary_test::test_window_evicted_count_reset_on_rotate`（原始 1.133s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/966-test_window_evicted_count_reset_on_rotate-c3e85652.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/966-test_window_evicted_count_reset_on_rotate-c3e85652.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 967: 优化 `astersql-executor-test-showtest::show_test::show_create_placement_policy_executes_sql_contract`（原始 1.132s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/967-show_create_placement_policy_executes_sql_contract-1113e076.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/967-show_create_placement_policy_executes_sql_contract-1113e076.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 969: 优化 `astersql-session-test-common::common_test::index_column_length_is_visible_on_blob_prefix_index`（原始 1.132s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/969-index_column_length_is_visible_on_blob_prefix_index-787fe7a9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/969-index_column_length_is_visible_on_blob_prefix_index-787fe7a9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 970: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorIndexSyntax`（原始 1.131s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/970-testvectorindexsyntax-a80ba3d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/970-testvectorindexsyntax-a80ba3d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 974: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_single_sample_scales_topn_count`（原始 1.130s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/974-analyze_single_sample_scales_topn_count-52ea3fcb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/974-analyze_single_sample_scales_topn_count-52ea3fcb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 976: 优化 `astersql-util-stmtsummary-v2::stmtsummary_test::test_stmt_summary`（原始 1.130s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/976-test_stmt_summary-ddf44797.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/976-test_stmt_summary-ddf44797.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 977: 优化 `astersql-session-test-bootstraptest::boot_test::upgrade_215_initializes_inl_join_inner_multi_pattern_to_off`（原始 1.128s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/977-upgrade_215_initializes_inl_join_inner_multi_pattern_to_off-db951f45.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/977-upgrade_215_initializes_inl_join_inner_multi_pattern_to_off-db951f45.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 978: 优化 `astersql-parser-terror::parser_terror_test::terror_constructors_register_codes_and_freeze_in_subprocess`（原始 1.127s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/978-terror_constructors_register_codes_and_freeze_in_subprocess-9489f132.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/978-terror_constructors_register_codes_and_freeze_in_subprocess-9489f132.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 979: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_go_integration_suite_projection_plan_goldens`（原始 1.127s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/979-test_go_integration_suite_projection_plan_goldens-e201eab5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/979-test_go_integration_suite_projection_plan_goldens-e201eab5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 980: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_correlation`（原始 1.127s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/980-go_test_correlation-09ac62bd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/980-go_test_correlation-09ac62bd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 981: 优化 `astersql-session::runtime_test::typed_adapter_bridge::sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_explain`（原始 1.126s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/981-sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_expl-638cbe80.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/981-sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_expl-638cbe80.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 982: 优化 `astersql-session-test-temporarytabletest::temporary_table_test::global_temporary_table_schema_change_keeps_transaction_usable`（原始 1.126s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/982-global_temporary_table_schema_change_keeps_transaction_usable-7eb973d1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/982-global_temporary_table_schema_change_keeps_transaction_usable-7eb973d1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 984: 优化 `astersql-parser-terror::parser_terror_test::terror_helpers_match_go_terminal_and_logging_semantics`（原始 1.125s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/984-terror_helpers_match_go_terminal_and_logging_semantics-967ae1a2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/984-terror_helpers_match_go_terminal_and_logging_semantics-967ae1a2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 985: 优化 `astersql-cmd-tidb-server::main_test::canonical_listener_starts_on_port_zero_and_preserves_cleanup_order`（原始 1.124s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/985-canonical_listener_starts_on_port_zero_and_preserves_cleanup_order-5f68d693.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/985-canonical_listener_starts_on_port_zero_and_preserves_cleanup_order-5f68d693.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 986: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_partition_table`（原始 1.123s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/986-test_partition_table-ef58c858.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/986-test_partition_table-ef58c858.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 987: 优化 `astersql-session-test-bootstraptest2::boot_test::upgrade_from_178_is_nonfatal_for_every_dist_task_state`（原始 1.123s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/987-upgrade_from_178_is_nonfatal_for_every_dist_task_state-dac55066.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/987-upgrade_from_178_is_nonfatal_for_every_dist_task_state-dac55066.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 988: 优化 `astersql-bindinfo-tests::bind_test::test_simplified_create_binding`（原始 1.122s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/988-test_simplified_create_binding-00649e4c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/988-test_simplified_create_binding-00649e4c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 989: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::test_ann_index_with_simple_cbo_uses_vector_index`（原始 1.122s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/989-test_ann_index_with_simple_cbo_uses_vector_index-e63b8a0f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/989-test_ann_index_with_simple_cbo_uses_vector_index-e63b8a0f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 990: 优化 `astersql-executor-test-infoschema::infoschema_test::infoschema_tables_projection_and_count_queries_return_correct_results`（原始 1.121s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/990-infoschema_tables_projection_and_count_queries_return_correct_results-6d8d2736.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/990-infoschema_tables_projection_and_count_queries_return_correct_results-6d8d2736.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 991: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestTiDBRowChecksumBuiltinAfterDropColumn`（原始 1.121s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/991-testtidbrowchecksumbuiltinafterdropcolumn-dfd9406d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/991-testtidbrowchecksumbuiltinafterdropcolumn-dfd9406d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 993: 优化 `astersql-br-pkg-encryption-master-key::parity_test::cloud_backends_use_production_kms_constructors`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/993-cloud_backends_use_production_kms_constructors-7a623851.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/993-cloud_backends_use_production_kms_constructors-7a623851.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 994: 优化 `astersql-br-pkg-gc::safepoint_test::test_global_safepoint_keeper`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/994-test_global_safepoint_keeper-d6907e87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/994-test_global_safepoint_keeper-d6907e87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 995: 优化 `astersql-executor-test-jointest::join_test::test_null_empty_aware_semijoin_executes_null_contract`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/995-test_null_empty_aware_semijoin_executes_null_contract-668a7d0d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/995-test_null_empty_aware_semijoin_executes_null_contract-668a7d0d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 996: 优化 `astersql-executor-test-showtest::show_test::show_table_status_reports_stable_fields_and_partition_comment`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/996-show_table_status_reports_stable_fields_and_partition_comment-8b4a666d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/996-show_table_status_reports_stable_fields_and_partition_comment-8b4a666d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 997: 优化 `astersql-planner-core-casetest-pushdown::push_down_test::test_tiflash_fastscan_rejects_ordered_scan`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/997-test_tiflash_fastscan_rejects_ordered_scan-9dc1335e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/997-test_tiflash_fastscan_rejects_ordered_scan-9dc1335e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 998: 优化 `astersql-server::pg_catalog_test::catalog_projection_variants`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/998-catalog_projection_variants-468b5c47.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/998-catalog_projection_variants-468b5c47.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 999: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_metadata_templates`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/999-pg_datagrip_metadata_templates-e6cb9ee0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/999-pg_datagrip_metadata_templates-e6cb9ee0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1000: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_corrupted_statistics`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1000-go_test_load_corrupted_statistics-59ff3ea3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1000-go_test_load_corrupted_statistics-59ff3ea3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1001: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_lock_and_unlock_partition_stats`（原始 1.120s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1001-test_lock_and_unlock_partition_stats-a371d5fd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1001-test_lock_and_unlock_partition_stats-a371d5fd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1004: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestIssue18042`（原始 1.118s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1004-testissue18042-1006889d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1004-testissue18042-1006889d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1005: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_history_tables_have_matching_column_catalogs`（原始 1.118s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1005-bootstrap_history_tables_have_matching_column_catalogs-36ed6b1f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1005-bootstrap_history_tables_have_matching_column_catalogs-36ed6b1f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1006: 优化 `astersql-planner-core-tests-analyze::analyze_test::test_auto_analyze_for_missing_partition`（原始 1.117s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1006-test_auto_analyze_for_missing_partition-d9bce9bf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1006-test_auto_analyze_for_missing_partition-d9bce9bf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1007: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_column_lifecycle`（原始 1.117s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1007-pg_datagrip_column_lifecycle-b8777902.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1007-pg_datagrip_column_lifecycle-b8777902.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1009: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_auto_analyze_with_predicate_columns`（原始 1.117s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1009-go_test_auto_analyze_with_predicate_columns-312577b7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1009-go_test_auto_analyze_with_predicate_columns-312577b7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1010: 优化 `astersql-executor-test-fktest::foreign_key_test::TestPrivilegeCheckInForeignKeyCascade`（原始 1.116s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1010-testprivilegecheckinforeignkeycascade-a274df75.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1010-testprivilegecheckinforeignkeycascade-a274df75.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1011: 优化 `astersql-executor-test-oomtest::oom_test::TestMemTracker4UpdateExec`（原始 1.116s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1011-testmemtracker4updateexec-1b27ec2f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1011-testmemtracker4updateexec-1b27ec2f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1014: 优化 `astersql-executor-test-infoschema::infoschema_test::index_usage_table_lists_supported_indexes_and_filters`（原始 1.115s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1014-index_usage_table_lists_supported_indexes_and_filters-7dc4bd76.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1014-index_usage_table_lists_supported_indexes_and_filters-7dc4bd76.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1015: 优化 `astersql-server-handler-tests::dxf_test::canonical_history_http_preserves_failed_tasks`（原始 1.115s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1015-canonical_history_http_preserves_failed_tasks-116ae58a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1015-canonical_history_http_preserves_failed_tasks-116ae58a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1016: 优化 `astersql-session-test::session_test::fix_set_tidb_snapshot_ts_matches_go`（原始 1.115s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1016-fix_set_tidb_snapshot_ts_matches_go-5a1b44b4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1016-fix_set_tidb_snapshot_ts_matches_go-5a1b44b4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1017: 优化 `astersql-planner-core-casetest-vectorsearch::vector_index_test::tiflash_replica_state_reaches_vector_planner`（原始 1.114s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1017-tiflash_replica_state_reaches_vector_planner-5d28ec08.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1017-tiflash_replica_state_reaches_vector_planner-5d28ec08.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1018: 优化 `astersql-session-test-bootstraptest::boot_test::cost_model_upgrade_defaults_old_missing_to_one_and_preserves_existing_value`（原始 1.114s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1018-cost_model_upgrade_defaults_old_missing_to_one_and_preserves_existing_-853fd750.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1018-cost_model_upgrade_defaults_old_missing_to_one_and_preserves_existing_-853fd750.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1019: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update_partition`（原始 1.114s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1019-go_test_auto_update_partition-e806b9f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1019-go_test_auto_update_partition-e806b9f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1020: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorControlFlow`（原始 1.113s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1020-testvectorcontrolflow-92477de9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1020-testvectorcontrolflow-92477de9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1021: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::analyze_and_show_stats_share_canonical_session_state`（原始 1.113s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1021-analyze_and_show_stats_share_canonical_session_state-21cfb2c5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1021-analyze_and_show_stats_share_canonical_session_state-21cfb2c5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1022: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_table_analyzed`（原始 1.111s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1022-go_test_table_analyzed-bd94b9c5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1022-go_test_table_analyzed-bd94b9c5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1023: 优化 `astersql-planner-core-casetest-join::join_test::test_join_simplify_condition_runs_go_plan_contract`（原始 1.110s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1023-test_join_simplify_condition_runs_go_plan_contract-59684e8e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1023-test_join_simplify_condition_runs_go_plan_contract-59684e8e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1024: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::TestMemtableInfoschemaExtractorPart3`（原始 1.110s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1024-testmemtableinfoschemaextractorpart3-c6fc7179.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1024-testmemtableinfoschemaextractorpart3-c6fc7179.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1026: 优化 `astersql-session-test::session_test::schema_checker_sql_matches_go_normal_and_partition_paths`（原始 1.110s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1026-schema_checker_sql_matches_go_normal_and_partition_paths-36c19f5a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1026-schema_checker_sql_matches_go_normal_and_partition_paths-36c19f5a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1027: 优化 `astersql-executor::detach_integration_test::detached_reader_context_survives_its_real_sql_session`（原始 1.109s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1027-detached_reader_context_survives_its_real_sql_session-f1adcd13.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1027-detached_reader_context_survives_its_real_sql_session-f1adcd13.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1028: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::non_prepared_partition_index_rebuilds_only_for_a_new_partition_set`（原始 1.109s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1028-non_prepared_partition_index_rebuilds_only_for_a_new_partition_set-b776615d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1028-non_prepared_partition_index_rebuilds_only_for_a_new_partition_set-b776615d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1029: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_column_statistics_after_table_drop`（原始 1.109s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1029-go_test_load_column_statistics_after_table_drop-63df864e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1029-go_test_load_column_statistics_after_table_drop-63df864e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1030: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_dynamic_mode_builds_global_and_partition_stats`（原始 1.108s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1030-analyze_partition_dynamic_mode_builds_global_and_partition_stats-3bfef53c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1030-analyze_partition_dynamic_mode_builds_global_and_partition_stats-3bfef53c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1031: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue66661`（原始 1.108s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1031-testissue66661-3d4b2afa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1031-testissue66661-3d4b2afa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1032: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestTimeBuiltin`（原始 1.108s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1032-testtimebuiltin-eb63a76a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1032-testtimebuiltin-eb63a76a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1033: 优化 `astersql-server::conn_test::change_user_auth_failure_restores_old_session`（原始 1.108s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1033-change_user_auth_failure_restores_old_session-04086a4c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1033-change_user_auth_failure_restores_old_session-04086a4c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1034: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyOnInsertOnDuplicateUpdate`（原始 1.107s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1034-testforeignkeyoninsertonduplicateupdate-9b1f053c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1034-testforeignkeyoninsertonduplicateupdate-9b1f053c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1035: 优化 `astersql-planner-core-tests-pointget::point_get_plan_test::TestIssue20692`（原始 1.106s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1035-testissue20692-82e52a57.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1035-testissue20692-82e52a57.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1036: 优化 `astersql-server::pg_client_integration_test::pg_introspection_clients_mysql_only`（原始 1.106s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1036-pg_introspection_clients_mysql_only-4b557449.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1036-pg_introspection_clients_mysql_only-4b557449.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1037: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_index_statistics_after_table_drop`（原始 1.106s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1037-go_test_load_index_statistics_after_table_drop-8fb872b4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1037-go_test_load_index_statistics_after_table_drop-8fb872b4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1038: 优化 `astersql-bindinfo-tests::bind_test::test_drop_bind_by_sql_digest`（原始 1.105s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1038-test_drop_bind_by_sql_digest-9d87726d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1038-test_drop_bind_by_sql_digest-9d87726d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1039: 优化 `astersql-executor-test-autoidtest::main_test::TestMain`（原始 1.105s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1039-testmain-0937fa38.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1039-testmain-0937fa38.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1040: 优化 `astersql-statistics-handle-autoanalyze::autoanalyze_test::go_test_enable_auto_analyze_priority_queue`（原始 1.105s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1040-go_test_enable_auto_analyze_priority_queue-3f5b12e6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1040-go_test_enable_auto_analyze_priority_queue-3f5b12e6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1041: 优化 `astersql-statistics-handle-updatetest::main_test::support_common_setup_and_database_cleanup_wrap_the_session`（原始 1.105s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1041-support_common_setup_and_database_cleanup_wrap_the_session-88b6cda1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1041-support_common_setup_and_database_cleanup_wrap_the_session-88b6cda1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1042: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_columns_reports_invalid_column_and_predicate_warning`（原始 1.104s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1042-analyze_columns_reports_invalid_column_and_predicate_warning-46a49e87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1042-analyze_columns_reports_invalid_column_and_predicate_warning-46a49e87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1043: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_status_records_all_evicted_items`（原始 1.104s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1043-test_plan_stats_status_records_all_evicted_items-12fb0038.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1043-test_plan_stats_status_records_all_evicted_items-12fb0038.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1044: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_tick_resumes_expired_owner_job_with_original_watermark`（原始 1.104s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1044-go_merge_43_ttl_tick_resumes_expired_owner_job_with_original_watermark-51cea54d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1044-go_merge_43_ttl_tick_resumes_expired_owner_job_with_original_watermark-51cea54d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1045: 优化 `astersql-session::system_session::crossks_align_infoschema_prepared_read_and_transaction_cleanup`（原始 1.104s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1045-crossks_align_infoschema_prepared_read_and_transaction_cleanup-e0426b57.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1045-crossks_align_infoschema_prepared_read_and_transaction_cleanup-e0426b57.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1046: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_single_distinct_3_stage_collation_fixture`（原始 1.102s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1046-test_mpp_single_distinct_3_stage_collation_fixture-a4bb91ef.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1046-test_mpp_single_distinct_3_stage_collation_fixture-a4bb91ef.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1047: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_analyze_all_columns_marks_table_non_pseudo`（原始 1.102s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1047-test_analyze_all_columns_marks_table_non_pseudo-4462721e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1047-test_analyze_all_columns_marks_table_non_pseudo-4462721e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1048: 优化 `astersql-server::conn_stmt_test::query_flush_failure_is_accounted`（原始 1.102s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1048-query_flush_failure_is_accounted-b0dea372.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1048-query_flush_failure_is_accounted-b0dea372.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1049: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_tables`（原始 1.102s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1049-pg_datagrip_tables-996f5114.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1049-pg_datagrip_tables-996f5114.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1050: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_global_index_with_historical_stats`（原始 1.102s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1050-go_test_global_index_with_historical_stats-bb26cd0b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1050-go_test_global_index_with_historical_stats-bb26cd0b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1052: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_partition_under_dynamic_updates_target_partition`（原始 1.100s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1052-analyze_partition_under_dynamic_updates_target_partition-5d70bd68.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1052-analyze_partition_under_dynamic_updates_target_partition-5d70bd68.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1053: 优化 `astersql-executor-test-ddl::ddl_test::test_load_ddl_distribute_vars`（原始 1.100s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1053-test_load_ddl_distribute_vars-656b8ea1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1053-test_load_ddl_distribute_vars-656b8ea1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1054: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestIssue9710`（原始 1.100s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1054-testissue9710-ac738e79.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1054-testissue9710-ac738e79.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1055: 优化 `astersql-expression-integration_test::integration_part1_aster_unit_test::TestVectorStringCompare`（原始 1.099s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1055-testvectorstringcompare-889fee38.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1055-testvectorstringcompare-889fee38.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1056: 优化 `astersql-server::pg_conn_test::startup_protocol_30_roundtrip`（原始 1.099s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1056-startup_protocol_30_roundtrip-eca4c3b1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1056-startup_protocol_30_roundtrip-eca4c3b1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1057: 优化 `astersql-session::mysql_ddl_compat_test::common_mysql_ddl_round_trips_through_catalog_and_storage`（原始 1.099s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1057-common_mysql_ddl_round_trips_through_catalog_and_storage-5319acc5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1057-common_mysql_ddl_round_trips_through_catalog_and_storage-5319acc5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1058: 优化 `astersql-session-test-txn::txn_test::closing_pessimistic_transaction_releases_rollback_state`（原始 1.099s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1058-closing_pessimistic_transaction_releases_rollback_state-2d7dcb9e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1058-closing_pessimistic_transaction_releases_rollback_state-2d7dcb9e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1059: 优化 `astersql-executor::slow_query_sql_test::slow_query_threshold_records_statement_and_plan`（原始 1.098s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1059-slow_query_threshold_records_statement_and_plan-e2ef22f9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1059-slow_query_threshold_records_statement_and_plan-e2ef22f9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1060: 优化 `astersql-executor-test-executor::executor_test::not_fill_cache_flag_matches_go_matrix`（原始 1.098s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1060-not_fill_cache_flag_matches_go_matrix-ba1e46bf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1060-not_fill_cache_flag_matches_go_matrix-ba1e46bf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1061: 优化 `astersql-executor-test-showtest::show_test::show_grants_and_databases_include_active_default_roles`（原始 1.098s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1061-show_grants_and_databases_include_active_default_roles-c33f83fd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1061-show_grants_and_databases_include_active_default_roles-c33f83fd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1062: 优化 `astersql-session::exchange_partition_privileges::alter_rename_checks_target_database_without_exchange_extras`（原始 1.097s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1062-alter_rename_checks_target_database_without_exchange_extras-b097f55b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1062-alter_rename_checks_target_database_without_exchange_extras-b097f55b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1063: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::canonical_preflush_targets_dynamic_global_and_static_partitions`（原始 1.097s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1063-canonical_preflush_targets_dynamic_global_and_static_partitions-48ea3d6d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1063-canonical_preflush_targets_dynamic_global_and_static_partitions-48ea3d6d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1064: 优化 `astersql-planner-core-casetest-cbotest::cbo_test::test_cbo_table_dual_flush_stats_reflects_inserted_rows`（原始 1.096s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1064-test_cbo_table_dual_flush_stats_reflects_inserted_rows-12ad8e5c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1064-test_cbo_table_dual_flush_stats_reflects_inserted_rows-12ad8e5c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1065: 优化 `astersql-server::mysql_prepared_protocol_test::mysql_prepared_statements_execute_real_sql_with_binary_values`（原始 1.096s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1065-mysql_prepared_statements_execute_real_sql_with_binary_values-8051b606.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1065-mysql_prepared_statements_execute_real_sql_with_binary_values-8051b606.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1066: 优化 `astersql-executor::statement_ru_plan_walk_test::go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_publication`（原始 1.095s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1066-go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_p-ca0c4f68.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1066-go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_p-ca0c4f68.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1067: 优化 `astersql-executor-test-fktest::foreign_key_test::TestForeignKeyIssue39732`（原始 1.095s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1067-testforeignkeyissue39732-61e7b367.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1067-testforeignkeyissue39732-61e7b367.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1068: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_simple_case_kernel_gate`（原始 1.095s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1068-test_dag_plan_builder_simple_case_kernel_gate-2d0ade71.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1068-test_dag_plan_builder_simple_case_kernel_gate-2d0ade71.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1070: 优化 `astersql-session::runtime::scan_adapter_runtime_test::canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_partial_row`（原始 1.095s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1070-canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_par-977f229b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1070-canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_par-977f229b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1071: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_long_json_column_preserves_size_without_histogram_payload`（原始 1.094s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1071-analyze_long_json_column_preserves_size_without_histogram_payload-a843698b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1071-analyze_long_json_column_preserves_size_without_histogram_payload-a843698b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1072: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_takeover_scans_all_persisted_ranges`（原始 1.094s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1072-go_merge_43_ttl_takeover_scans_all_persisted_ranges-02a2986c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1072-go_merge_43_ttl_takeover_scans_all_persisted_ranges-02a2986c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1073: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_exposes_paging_default_in_global_and_session_scopes`（原始 1.094s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1073-bootstrap_exposes_paging_default_in_global_and_session_scopes-d73342ce.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1073-bootstrap_exposes_paging_default_in_global_and_session_scopes-d73342ce.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1074: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_system_timezone_query_survives_ansi_sql_mode`（原始 1.094s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1074-bootstrap_system_timezone_query_survives_ansi_sql_mode-45186ec4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1074-bootstrap_system_timezone_query_survives_ansi_sql_mode-45186ec4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1075: 优化 `astersql-executor-test-ddl::ddl_test::test_set_ddl_reorg_max_write_speed`（原始 1.093s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1075-test_set_ddl_reorg_max_write_speed-94d2f845.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1075-test_set_ddl_reorg_max_write_speed-94d2f845.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1076: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_table_test::prepared_point_get_reads_the_selected_partition`（原始 1.093s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1076-prepared_point_get_reads_the_selected_partition-bc26042d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1076-prepared_point_get_reads_the_selected_partition-bc26042d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1077: 优化 `astersql-planner-core-casetest-tpch::tpch_test::test_tpch_schema_matches_go_helpers`（原始 1.093s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1077-test_tpch_schema_matches_go_helpers-954a9a6c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1077-test_tpch_schema_matches_go_helpers-954a9a6c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1078: 优化 `astersql-server::runtime_test::concrete_session_driver_authenticates_and_returns_real_sql_results`（原始 1.092s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1078-concrete_session_driver_authenticates_and_returns_real_sql_results-feaabbae.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1078-concrete_session_driver_authenticates_and_returns_real_sql_results-feaabbae.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1079: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestTiDBDecodeKeyFunc`（原始 1.091s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1079-testtidbdecodekeyfunc-2e3c5266.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1079-testtidbdecodekeyfunc-2e3c5266.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1080: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_load_timeout_and_pseudo_fallback`（原始 1.091s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1080-test_plan_stats_load_timeout_and_pseudo_fallback-6903868e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1080-test_plan_stats_load_timeout_and_pseudo_fallback-6903868e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1081: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_statistics_after_index_drop`（原始 1.091s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1081-go_test_load_statistics_after_index_drop-187391de.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1081-go_test_load_statistics_after_index_drop-187391de.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1082: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_auto_update_partition_in_dynamic_only_mode`（原始 1.091s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1082-go_test_auto_update_partition_in_dynamic_only_mode-96730534.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1082-go_test_auto_update_partition_in_dynamic_only_mode-96730534.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1083: 优化 `astersql-executor-test-showtest::show_test::show_stats_extended_reports_feature_removed`（原始 1.090s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1083-show_stats_extended_reports_feature_removed-c3e62dda.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1083-show_stats_extended_reports_feature_removed-c3e62dda.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1084: 优化 `astersql-planner-core-tests-null::null_test::TestIssue56745`（原始 1.090s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1084-testissue56745-e9db09d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1084-testissue56745-e9db09d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1085: 优化 `astersql-session::runtime::scan_adapter_runtime_test::restricted_adapter_analyze_publishes_stats_and_restores_temporary_session_settings`（原始 1.090s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1085-restricted_adapter_analyze_publishes_stats_and_restores_temporary_sess-75fef310.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1085-restricted_adapter_analyze_publishes_stats_and_restores_temporary_sess-75fef310.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1086: 优化 `astersql-session::runtime_pessimistic_test::explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info`（原始 1.090s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1086-explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info-3f2943d2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1086-explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info-3f2943d2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1087: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_mpp_multi_distinct_3_stage_session_vars`（原始 1.089s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1087-test_mpp_multi_distinct_3_stage_session_vars-2bbde259.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1087-test_mpp_multi_distinct_3_stage_session_vars-2bbde259.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1091: 优化 `astersql-session::starter_bootstrap_file_test::starter_privilege_reset_workflow_rejects_copied_newer_version_and_bad_pd_refresh`（原始 1.088s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1091-starter_privilege_reset_workflow_rejects_copied_newer_version_and_bad_-addfe05b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1091-starter_privilege_reset_workflow_rejects_copied_newer_version_and_bad_-addfe05b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1092: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_batch_point_get_plan_cache_mixed_in_list`（原始 1.087s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1092-test_batch_point_get_plan_cache_mixed_in_list-551a0e14.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1092-test_batch_point_get_plan_cache_mixed_in_list-551a0e14.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1093: 优化 `astersql-server::pg_datagrip_test::pg_datagrip_structure`（原始 1.087s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1093-pg_datagrip_structure-4c34204c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1093-pg_datagrip_structure-4c34204c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1094: 优化 `astersql-session::dml_runtime_test::saved_options_precede_changed_globals`（原始 1.087s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1094-saved_options_precede_changed_globals-cd9f879e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1094-saved_options_precede_changed_globals-cd9f879e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1096: 优化 `astersql-dxf-importinto::scheduler_test::import_extension_dispatches_done_and_prepared_local_import_batches`（原始 1.086s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1096-import_extension_dispatches_done_and_prepared_local_import_batches-6b461f7b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1096-import_extension_dispatches_done_and_prepared_local_import_batches-6b461f7b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1097: 优化 `astersql-server-tests::tidb_serial_test::test_load_data_auto_random_with_special_term`（原始 1.086s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1097-test_load_data_auto_random_with_special_term-8ed0dc1a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1097-test_load_data_auto_random_with_special_term-8ed0dc1a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1098: 优化 `astersql-session::runtime::scan_adapter_runtime_test::canonical_locked_unique_point_get_locks_index_and_record_and_rr_missing_index_key`（原始 1.086s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1098-canonical_locked_unique_point_get_locks_index_and_record_and_rr_missin-28d1f315.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1098-canonical_locked_unique_point_get_locks_index_and_record_and_rr_missin-28d1f315.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1099: 优化 `astersql-server::mysql_protocol_compat_test::mysql_protocol_connection_commands_match_mysql_80`（原始 1.085s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1099-mysql_protocol_connection_commands_match_mysql_80-72cf4f5d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1099-mysql_protocol_connection_commands_match_mysql_80-72cf4f5d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1100: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_conflicting_commit_rolls_back_metadata`（原始 1.084s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1100-crossks_align_durable_scheduler_conflicting_commit_rolls_back_metadata-f1d8cd5d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1100-crossks_align_durable_scheduler_conflicting_commit_rolls_back_metadata-f1d8cd5d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1102: 优化 `astersql-executor-test-writetest::write_test::TestPessimisticDeleteYourWrites`（原始 1.082s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1102-testpessimisticdeleteyourwrites-cb65115f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1102-testpessimisticdeleteyourwrites-cb65115f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1103: 优化 `astersql-server::pg_conn_test::startup_datagrip_date_style`（原始 1.082s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1103-startup_datagrip_date_style-d6dec44a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1103-startup_datagrip_date_style-d6dec44a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1104: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_exec_auto_analyze_rewrites_legacy_stats_version_to_v2`（原始 1.082s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1104-test_exec_auto_analyze_rewrites_legacy_stats_version_to_v2-62a7a328.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1104-test_exec_auto_analyze_rewrites_legacy_stats_version_to_v2-62a7a328.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1105: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestCastJSONTimeDuration`（原始 1.081s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1105-testcastjsontimeduration-11faa7ee.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1105-testcastjsontimeduration-11faa7ee.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1106: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue16205`（原始 1.081s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1106-testissue16205-b3a09b0f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1106-testissue16205-b3a09b0f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1107: 优化 `astersql-session::runtime_test::planning::forced_index_hint_matches_index_name_instead_of_a_leading_column`（原始 1.081s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1107-forced_index_hint_matches_index_name_instead_of_a_leading_column-3c73ce56.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1107-forced_index_hint_matches_index_name_instead_of_a_leading_column-3c73ce56.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1108: 优化 `astersql-session-test-resourcegrouptest::resource_group_test::resource_group_hint_in_txn_matches_go_test`（原始 1.081s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1108-resource_group_hint_in_txn_matches_go_test-654339b1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1108-resource_group_hint_in_txn_matches_go_test-654339b1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1109: 优化 `astersql-util-globalconn::pool_test::TestLockBasedPoolConcurrencySafety`（原始 1.081s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1109-testlockbasedpoolconcurrencysafety-1b66cd9e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1109-testlockbasedpoolconcurrencysafety-1b66cd9e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1110: 优化 `astersql-planner-core-tests-partition::bench_test::partitioned_batch_point_get_wrapper_uses_table_reader_plan`（原始 1.080s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1110-partitioned_batch_point_get_wrapper_uses_table_reader_plan-11abc751.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1110-partitioned_batch_point_get_wrapper_uses_table_reader_plan-11abc751.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1111: 优化 `astersql-session::starter_bootstrap_file_test::starter_bootstrap_executes_one_statement_and_restores_restricted_mode`（原始 1.079s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1111-starter_bootstrap_executes_one_statement_and_restores_restricted_mode-f0c9124e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1111-starter_bootstrap_executes_one_statement_and_restores_restricted_mode-f0c9124e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1112: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_reloads_sql_job_after_restart`（原始 1.078s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1112-crossks_align_durable_scheduler_reloads_sql_job_after_restart-24e1414c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1112-crossks_align_durable_scheduler_reloads_sql_job_after_restart-24e1414c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1113: 优化 `astersql-session-test-meta::session_test::init_meta_tables_preserves_table_metadata_across_databases`（原始 1.078s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1113-init_meta_tables_preserves_table_metadata_across_databases-438d189a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1113-init_meta_tables_preserves_table_metadata_across_databases-438d189a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1114: 优化 `astersql-executor-test-plancache::plan_cache_test::prepared_point_plans_do_not_hide_cross_session_writes`（原始 1.077s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1114-prepared_point_plans_do_not_hide_cross_session_writes-2df3eb22.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1114-prepared_point_plans_do_not_hide_cross_session_writes-2df3eb22.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1115: 优化 `astersql-planner-core-tests-partition::bench_test::prepared_benchmark_hits_plan_cache_after_first_execution`（原始 1.077s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1115-prepared_benchmark_hits_plan_cache_after_first_execution-1ea55add.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1115-prepared_benchmark_hits_plan_cache_after_first_execution-1ea55add.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1116: 优化 `astersql-session::runtime_test::ddl::registered_import_scheduler_dispatches_durable_subtask_with_storage_adapter`（原始 1.077s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1116-registered_import_scheduler_dispatches_durable_subtask_with_storage_ad-2f98ddfa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1116-registered_import_scheduler_dispatches_durable_subtask_with_storage_ad-2f98ddfa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1117: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::truncated_handle_estimation_preserves_bounds_and_merges_prefixes`（原始 1.076s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1117-truncated_handle_estimation_preserves_bounds_and_merges_prefixes-ceda2702.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1117-truncated_handle_estimation_preserves_bounds_and_merges_prefixes-ceda2702.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1118: 优化 `astersql-planner-core-tests-analyze::analyze_test::test_analyze_virtual_columns`（原始 1.076s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1118-test_analyze_virtual_columns-cfc7e6f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1118-test_analyze_virtual_columns-cfc7e6f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1119: 优化 `astersql-server::mysql_type_protocol_test::mysql_type_packets_expose_correct_type_flags_charset_and_decimal`（原始 1.076s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1119-mysql_type_packets_expose_correct_type_flags_charset_and_decimal-8abd893e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1119-mysql_type_packets_expose_correct_type_flags_charset_and_decimal-8abd893e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1120: 优化 `astersql-session-test-common::common_test::affected_rows_include_matched_rows_with_client_found_rows`（原始 1.076s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1120-affected_rows_include_matched_rows_with_client_found_rows-f2ce0ccc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1120-affected_rows_include_matched_rows_with_client_found_rows-f2ce0ccc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1122: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_drop_partition_should_clean_up_lock_info`（原始 1.075s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1122-test_drop_partition_should_clean_up_lock_info-6ce2a5ff.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1122-test_drop_partition_should_clean_up_lock_info-6ce2a5ff.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1123: 优化 `astersql-planner-core-casetest-join::join_test::test_semi_join_order_runs_go_result_contract`（原始 1.074s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1123-test_semi_join_order_runs_go_result_contract-22c442ad.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1123-test_semi_join_order_runs_go_result_contract-22c442ad.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1124: 优化 `astersql-server::conn_test::change_user_malformed_packet_preserves_identity`（原始 1.074s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1124-change_user_malformed_packet_preserves_identity-184643ec.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1124-change_user_malformed_packet_preserves_identity-184643ec.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1125: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_sample_rate_notes_describe_the_selected_rate`（原始 1.073s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1125-analyze_sample_rate_notes_describe_the_selected_rate-fb49a819.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1125-analyze_sample_rate_notes_describe_the_selected_rate-fb49a819.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1126: 优化 `astersql-executor-test-autoidtest::autoid_test::TestIssue52622`（原始 1.073s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1126-testissue52622-ea57df7a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1126-testissue52622-ea57df7a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1127: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_full_introspection_materializes_system_metadata_in_derived_queries`（原始 1.073s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1127-datagrip_full_introspection_materializes_system_metadata_in_derived_qu-b8879df6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1127-datagrip_full_introspection_materializes_system_metadata_in_derived_qu-b8879df6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1129: 优化 `astersql-session::runtime_pessimistic_test::pessimistic_nowait_locks_and_release_follow_transaction_lifetime`（原始 1.073s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1129-pessimistic_nowait_locks_and_release_follow_transaction_lifetime-90745c45.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1129-pessimistic_nowait_locks_and_release_follow_transaction_lifetime-90745c45.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1130: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::inline_projection_hash_join_executes_duplicate_column_contract`（原始 1.072s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1130-inline_projection_hash_join_executes_duplicate_column_contract-4cdeede3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1130-inline_projection_hash_join_executes_duplicate_column_contract-4cdeede3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1131: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_partition_with_varied_data_sources`（原始 1.072s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1131-test_partition_with_varied_data_sources-1a0f4108.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1131-test_partition_with_varied_data_sources-1a0f4108.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1133: 优化 `astersql-session-test-schematest::schema_test::batch_insert_updates_realtime_row_count_for_table_statistics`（原始 1.072s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1133-batch_insert_updates_realtime_row_count_for_table_statistics-ec81e3fe.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1133-batch_insert_updates_realtime_row_count_for_table_statistics-ec81e3fe.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1134: 优化 `astersql-br-pkg-registry::heartbeat::heartbeat_test::ticker_starts_before_the_initial_heartbeat_like_go`（原始 1.071s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1134-ticker_starts_before_the_initial_heartbeat_like_go-d5af508e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1134-ticker_starts_before_the_initial_heartbeat_like_go-d5af508e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1135: 优化 `astersql-session::runtime_pessimistic_test::topology_and_runtime_faults_drive_cluster_rows_rpc_counts_and_commit_retries`（原始 1.071s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1135-topology_and_runtime_faults_drive_cluster_rows_rpc_counts_and_commit_r-522fae71.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1135-topology_and_runtime_faults_drive_cluster_rows_rpc_counts_and_commit_r-522fae71.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1136: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestBuiltinFuncJSONMergePatch_InExpression`（原始 1.070s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1136-testbuiltinfuncjsonmergepatch_inexpression-228697e2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1136-testbuiltinfuncjsonmergepatch_inexpression-228697e2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1137: 优化 `astersql-server-internal-testserverclient::server_client_test::prepared_strings_execute_against_canonical_store`（原始 1.070s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1137-prepared_strings_execute_against_canonical_store-2de1aa1d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1137-prepared_strings_execute_against_canonical_store-2de1aa1d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1138: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_privilege_tables_follow_grant_revoke_lifecycle`（原始 1.070s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1138-mysql_privilege_tables_follow_grant_revoke_lifecycle-f12f548b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1138-mysql_privilege_tables_follow_grant_revoke_lifecycle-f12f548b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1140: 优化 `astersql-executor-test-showtest::show_test::show_grants_enforces_target_privileges_and_authenticated_host`（原始 1.069s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1140-show_grants_enforces_target_privileges_and_authenticated_host-23eb2efa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1140-show_grants_enforces_target_privileges_and_authenticated_host-23eb2efa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1142: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_column_tracking`（原始 1.069s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1142-go_test_column_tracking-66f84423.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1142-go_test_column_tracking-66f84423.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1145: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_index_only_rebuilds_buckets_after_drop_stats`（原始 1.068s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1145-analyze_index_only_rebuilds_buckets_after_drop_stats-6de95541.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1145-analyze_index_only_rebuilds_buckets_after_drop_stats-6de95541.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1146: 优化 `astersql-server-internal-testserverclient::server_client_test::prepared_timestamps_execute_against_canonical_store`（原始 1.068s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1146-prepared_timestamps_execute_against_canonical_store-02c6ae09.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1146-prepared_timestamps_execute_against_canonical_store-02c6ae09.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1148: 优化 `astersql-session::runtime::scan_adapter_runtime_test::execute_statement_ru_post_compile_outcome_and_terminal`（原始 1.068s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1148-execute_statement_ru_post_compile_outcome_and_terminal-ccb2b231.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1148-execute_statement_ru_post_compile_outcome_and_terminal-ccb2b231.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1149: 优化 `astersql-session::runtime_dispatch_test::explain_ru_requires_analyze`（原始 1.068s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1149-explain_ru_requires_analyze-b1bc22a2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1149-explain_ru_requires_analyze-b1bc22a2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1150: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestTimestamp`（原始 1.067s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1150-testtimestamp-bc4882b9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1150-testtimestamp-bc4882b9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1151: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_collect_depending_virtual_columns_from_table_metadata`（原始 1.067s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1151-test_collect_depending_virtual_columns_from_table_metadata-080adfe6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1151-test_collect_depending_virtual_columns_from_table_metadata-080adfe6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1152: 优化 `astersql-util-cpuprofile::migration_aster_unit_test::http_handler_returns_pprof_and_rejects_excessive_duration`（原始 1.067s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1152-http_handler_returns_pprof_and_rejects_excessive_duration-8a602d49.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1152-http_handler_returns_pprof_and_rejects_excessive_duration-8a602d49.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1153: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_load_needed_histograms_is_idempotent_after_analyze`（原始 1.066s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1153-test_load_needed_histograms_is_idempotent_after_analyze-eea659c0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1153-test_load_needed_histograms_is_idempotent_after_analyze-eea659c0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1154: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_kill_in_windows`（原始 1.066s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1154-test_kill_in_windows-d0045073.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1154-test_kill_in_windows-d0045073.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1155: 优化 `astersql-executor-test-executor::executor_test::check_index_preserves_success_and_missing_index_errors`（原始 1.065s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1155-check_index_preserves_success_and_missing_index_errors-3cda5e8e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1155-check_index_preserves_success_and_missing_index_errors-3cda5e8e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1156: 优化 `astersql-executor-test-infoschema::infoschema_test::infoschema_ddl_jobs_exposes_completed_history_and_running_filter`（原始 1.065s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1156-infoschema_ddl_jobs_exposes_completed_history_and_running_filter-daeec7dd.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1156-infoschema_ddl_jobs_exposes_completed_history_and_running_filter-daeec7dd.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1157: 优化 `astersql-expression-integration_test::integration_part3_aster_unit_test::TestIssue43527`（原始 1.065s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1157-testissue43527-2b38e716.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1157-testissue43527-2b38e716.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1158: 优化 `astersql-server::mysql_metadata_protocol_test::show_processlist_reports_integer_scale_over_mysql_protocol`（原始 1.065s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1158-show_processlist_reports_integer_scale_over_mysql_protocol-21bc3418.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1158-show_processlist_reports_integer_scale_over_mysql_protocol-21bc3418.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1161: 优化 `astersql-util-memory::arbitrator_test::go_merge_26_soft_risk_reaches_oom_without_running_pool`（原始 1.064s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1161-go_merge_26_soft_risk_reaches_oom_without_running_pool-2140aa39.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1161-go_merge_26_soft_risk_reaches_oom_without_running_pool-2140aa39.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1162: 优化 `astersql-planner-core-casetest-mpp::mpp_test::test_mpp_session_variables_accept_real_set_statements`（原始 1.063s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1162-test_mpp_session_variables_accept_real_set_statements-aac02351.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1162-test_mpp_session_variables_accept_real_set_statements-aac02351.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1164: 优化 `astersql-session-test::session_test::issue_60266_no_backslash_escapes_matches_go`（原始 1.063s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1164-issue_60266_no_backslash_escapes_matches_go-1b5abc31.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1164-issue_60266_no_backslash_escapes_matches_go-1b5abc31.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1165: 优化 `astersql-server::pg_query_test::tablespace_catalog_empty_relation`（原始 1.062s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1165-tablespace_catalog_empty_relation-1950b3ca.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1165-tablespace_catalog_empty_relation-1950b3ca.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1167: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_stats_cache_update_skip`（原始 1.062s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1167-go_test_stats_cache_update_skip-b946513d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1167-go_test_stats_cache_update_skip-b946513d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1168: 优化 `astersql-server::pg_extended_test::pg_introspection_binary_results_and_recovery`（原始 1.061s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1168-pg_introspection_binary_results_and_recovery-854dd9ae.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1168-pg_introspection_binary_results_and_recovery-854dd9ae.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1169: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_recovers_committed_step_after_sync_interruption`（原始 1.061s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1169-crossks_align_durable_scheduler_recovers_committed_step_after_sync_int-55191e78.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1169-crossks_align_durable_scheduler_recovers_committed_step_after_sync_int-55191e78.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1170: 优化 `astersql-executor-test-infoschema::infoschema_test::joined_system_table_query_contains_view_and_time_value_columns`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1170-joined_system_table_query_contains_view_and_time_value_columns-f5290725.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1170-joined_system_table_query_contains_view_and_time_value_columns-f5290725.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1171: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue52902_executes_correlated_exists_case_contract`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1171-issue52902_executes_correlated_exists_case_contract-c2ae201c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1171-issue52902_executes_correlated_exists_case_contract-c2ae201c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1172: 优化 `astersql-planner-core-casetest-dag::dag_test::test_dag_plan_builder_subquery_and_topn`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1172-test_dag_plan_builder_subquery_and_topn-d40f1e73.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1172-test_dag_plan_builder_subquery_and_topn-d40f1e73.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1173: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_cache_hit_in_for_update_read`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1173-test_cache_hit_in_for_update_read-5090c3f6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1173-test_cache_hit_in_for_update_read-5090c3f6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1174: 优化 `astersql-server::conn_test::change_user_plugin_exchange_failure_preserves_old_session`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1174-change_user_plugin_exchange_failure_preserves_old_session-2d0f608a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1174-change_user_plugin_exchange_failure_preserves_old_session-2d0f608a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1176: 优化 `astersql-session::runtime_dispatch_test::explain_ru_analyze_preserves_operator_rows`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1176-explain_ru_analyze_preserves_operator_rows-ad982a56.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1176-explain_ru_analyze_preserves_operator_rows-ad982a56.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1177: 优化 `astersql-session-test::session_test::prepare_zero_matches_go`（原始 1.060s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1177-prepare_zero_matches_go-a49007f0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1177-prepare_zero_matches_go-a49007f0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1178: 优化 `astersql-session::runtime::durable_scheduler_test::crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_admin_change`（原始 1.059s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1178-crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_-200fadf6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1178-crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_-200fadf6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1181: 优化 `astersql-statistics-asyncload::async_load_test::go_test_load_statistics_after_column_drop`（原始 1.058s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1181-go_test_load_statistics_after_column_drop-782d38b2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1181-go_test_load_statistics_after_column_drop-782d38b2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1182: 优化 `astersql-session-test-bootstraptest::boot_test::default_analyze_background_only_affects_fresh_bootstrap`（原始 1.057s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1182-default_analyze_background_only_affects_fresh_bootstrap-d97bd88d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1182-default_analyze_background_only_affects_fresh_bootstrap-d97bd88d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1183: 优化 `astersql-planner-core-casetest-plancache::plan_cache_partition_test::static_partition_union_stays_uncacheable`（原始 1.056s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1183-static_partition_union_stays_uncacheable-f413d17f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1183-static_partition_union_stays_uncacheable-f413d17f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1184: 优化 `astersql-server::pg_conn_test::startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients`（原始 1.056s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1184-startup_real_dual_listener_shutdown_closes_pending_and_authenticated_c-9355ca62.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1184-startup_real_dual_listener_shutdown_closes_pending_and_authenticated_c-9355ca62.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1185: 优化 `astersql-testkit::analyze_stats_runtime_aster_unit_test::canonical_preflush_uses_cancelled_statement_context_and_local_handle`（原始 1.056s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1185-canonical_preflush_uses_cancelled_statement_context_and_local_handle-1d6dfdcb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1185-canonical_preflush_uses_cancelled_statement_context_and_local_handle-1d6dfdcb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1186: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_stats_lease_round_trip_matches_go_defer_pattern`（原始 1.055s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1186-test_stats_lease_round_trip_matches_go_defer_pattern-88f536e8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1186-test_stats_lease_round_trip_matches_go_defer_pattern-88f536e8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1187: 优化 `astersql-planner-core-tests-rewriter::rewriter_test::TestVariableRewritter`（原始 1.055s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1187-testvariablerewritter-7cd6110f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1187-testvariablerewritter-7cd6110f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1188: 优化 `astersql-server::conn_stmt_test::cursor_failed_row_write_is_accounted`（原始 1.055s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1188-cursor_failed_row_write_is_accounted-ef9a10b1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1188-cursor_failed_row_write_is_accounted-ef9a10b1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1190: 优化 `astersql-session::runtime_test::ddl::dxf_backend_exposes_current_transaction_start_ts_for_import_stats`（原始 1.055s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1190-dxf_backend_exposes_current_transaction_start_ts_for_import_stats-4e2c0be7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1190-dxf_backend_exposes_current_transaction_start_ts_for_import_stats-4e2c0be7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1191: 优化 `astersql-owner::manager_1_aster_unit_test::mock_managers_compete_resign_and_notify_like_go`（原始 1.054s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1191-mock_managers_compete_resign_and_notify_like_go-1570a4d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1191-mock_managers_compete_resign_and_notify_like_go-1570a4d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1192: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_prepared_plan_cache_recovers_after_sync_timeout_fallback`（原始 1.054s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1192-test_prepared_plan_cache_recovers_after_sync_timeout_fallback-c689167d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1192-test_prepared_plan_cache_recovers_after_sync_timeout_fallback-c689167d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1193: 优化 `astersql-session::mysql_metadata_compat_test::datagrip_connector_j_discovers_complete_table_metadata`（原始 1.054s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1193-datagrip_connector_j_discovers_complete_table_metadata-6f8adf83.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1193-datagrip_connector_j_discovers_complete_table_metadata-6f8adf83.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1195: 优化 `astersql-session-test::session_test::internal_request_source_is_required_and_preserved`（原始 1.053s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1195-internal_request_source_is_required_and_preserved-b9954392.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1195-internal_request_source_is_required_and_preserved-b9954392.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1196: 优化 `astersql-testkit::stats_runtime_aster_unit_test::history_fallback_multi_table_version_and_drop_gc_are_canonical`（原始 1.053s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1196-history_fallback_multi_table_version_and_drop_gc_are_canonical-53d9ccdb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1196-history_fallback_multi_table_version_and_drop_gc_are_canonical-53d9ccdb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1197: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue56214_executes_correlated_scalar_subquery_contract`（原始 1.052s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1197-issue56214_executes_correlated_scalar_subquery_contract-44aa6264.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1197-issue56214_executes_correlated_scalar_subquery_contract-44aa6264.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1198: 优化 `astersql-session-test-privileges::privileges_test::session_auth_rejects_unknown_user_with_empty_password`（原始 1.052s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1198-session_auth_rejects_unknown_user_with_empty_password-85170f62.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1198-session_auth_rejects_unknown_user_with_empty_password-85170f62.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1199: 优化 `astersql-session-test::session_test::result_type_and_field_text_match_go`（原始 1.051s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1199-result_type_and_field_text_match_go-5749f840.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1199-result_type_and_field_text_match_go-5749f840.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1200: 优化 `astersql-session-test-meta::main_test::meta_test_main_preserves_go_setup_and_cleanup_contract`（原始 1.051s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1200-meta_test_main_preserves_go_setup_and_cleanup_contract-c1b83b13.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1200-meta_test_main_preserves_go_setup_and_cleanup_contract-c1b83b13.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1201: 优化 `astersql-dxf-importinto::scheduler_test::registered_import_scheduler_reuses_encode_runtime_services`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1201-registered_import_scheduler_reuses_encode_runtime_services-b45009d2.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1201-registered_import_scheduler_reuses_encode_runtime_services-b45009d2.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1202: 优化 `astersql-executor::slow_query_sql_test::slow_query_without_slow_log_is_empty`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1202-slow_query_without_slow_log_is_empty-e0a20470.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1202-slow_query_without_slow_log_is_empty-e0a20470.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1203: 优化 `astersql-executor-test-ddl::ddl_test::test_def_shard_tables`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1203-test_def_shard_tables-b103e4bb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1203-test_def_shard_tables-b103e4bb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1204: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_rollup_mpp_grouping_error_and_sales_fixture`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1204-test_rollup_mpp_grouping_error_and_sales_fixture-12811d7a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1204-test_rollup_mpp_grouping_error_and_sales_fixture-12811d7a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1205: 优化 `astersql-planner-core-casetest-partition::partition_pruner_test::test_list_columns_partition_pruner`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1205-test_list_columns_partition_pruner-096de531.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1205-test_list_columns_partition_pruner-096de531.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1206: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_prepare_over_max_prepared_stmt_count`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1206-test_prepare_over_max_prepared_stmt_count-bf5ef48f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1206-test_prepare_over_max_prepared_stmt_count-bf5ef48f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1207: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_go_semantics_cancelling_job_does_not_change_table`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1207-go_merge_43_crossks_owner_go_semantics_cancelling_job_does_not_change_-5a2e8b50.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1207-go_merge_43_crossks_owner_go_semantics_cancelling_job_does_not_change_-5a2e8b50.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1209: 优化 `astersql-tests-readonlytest::readonly_test::test_restriction`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1209-test_restriction-6d3a0871.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1209-test_restriction-6d3a0871.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1210: 优化 `astersql-util-cpuprofile::cpuprofile_test::TestProfileHTTPHandler`（原始 1.050s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1210-testprofilehttphandler-14e4cef8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1210-testprofilehttphandler-14e4cef8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1211: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning1_generated_and_enum_fixture`（原始 1.049s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1211-test_enforce_mpp_warning1_generated_and_enum_fixture-947be12d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1211-test_enforce_mpp_warning1_generated_and_enum_fixture-947be12d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1213: 优化 `astersql-session-test-privileges::privileges_test::skip_with_grant_toggles_session_auth_and_allows_role_grants`（原始 1.049s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1213-skip_with_grant_toggles_session_auth_and_allows_role_grants-26eba589.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1213-skip_with_grant_toggles_session_auth_and_allows_role_grants-26eba589.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1214: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_plan_cache_snapshot`（原始 1.048s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1214-test_plan_cache_snapshot-593a1688.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1214-test_plan_cache_snapshot-593a1688.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1215: 优化 `astersql-server::conn_stmt_test::cursor_iterator_error_is_accounted`（原始 1.048s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1215-cursor_iterator_error_is_accounted-98e28044.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1215-cursor_iterator_error_is_accounted-98e28044.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1217: 优化 `astersql-session::runtime_test::ddl::import_scheduler_classic_table_empty_check_runs_on_canonical_session`（原始 1.048s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1217-import_scheduler_classic_table_empty_check_runs_on_canonical_session-c0014109.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1217-import_scheduler_classic_table_empty_check_runs_on_canonical_session-c0014109.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1218: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::clustered_primary_key_dml_and_union_scan_match_go_row_visibility`（原始 1.048s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1218-clustered_primary_key_dml_and_union_scan_match_go_row_visibility-ce1cfcc7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1218-clustered_primary_key_dml_and_union_scan_match_go_row_visibility-ce1cfcc7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1219: 优化 `astersql-session::system_session::crossks_align_system_session_callbacks_and_metadata_error`（原始 1.048s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1219-crossks_align_system_session_callbacks_and_metadata_error-2c793099.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1219-crossks_align_system_session_callbacks_and_metadata_error-2c793099.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1221: 优化 `astersql-planner-core-casetest-enforcempp::enforce_mpp_test::test_enforce_mpp_warning2_hash_partition_fixture`（原始 1.047s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1221-test_enforce_mpp_warning2_hash_partition_fixture-2c3a84f9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1221-test_enforce_mpp_warning2_hash_partition_fixture-2c3a84f9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1223: 优化 `astersql-session-test::session_test::match_identity_specificity_matches_go`（原始 1.047s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1223-match_identity_specificity_matches_go-d201b0fc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1223-match_identity_specificity_matches_go-d201b0fc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1224: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_enables_statement_summary_by_default`（原始 1.047s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1224-bootstrap_enables_statement_summary_by_default-608bcd0d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1224-bootstrap_enables_statement_summary_by_default-608bcd0d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1225: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_writes_ddl_table_version_to_mysql_tidb`（原始 1.047s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1225-bootstrap_writes_ddl_table_version_to_mysql_tidb-f7b94482.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1225-bootstrap_writes_ddl_table_version_to_mysql_tidb-f7b94482.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1226: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_version`（原始 1.047s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1226-go_test_version-c01f0a9b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1226-go_test_version-c01f0a9b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1227: 优化 `astersql-expression-integration_test::integration_part2_aster_unit_test::TestPrimaryKeyRequiredSysvar`（原始 1.046s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1227-testprimarykeyrequiredsysvar-c31a3df4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1227-testprimarykeyrequiredsysvar-c31a3df4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1229: 优化 `astersql-session-test-txn::main_test::txn_harness_clears_async_commit_timing_windows`（原始 1.046s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1229-txn_harness_clears_async_commit_timing_windows-fe3a25f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1229-txn_harness_clears_async_commit_timing_windows-fe3a25f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1230: 优化 `astersql-server-internal-testserverclient::server_client_test::prepared_result_type_executes_against_canonical_store`（原始 1.045s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1230-prepared_result_type_executes_against_canonical_store-da3982be.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1230-prepared_result_type_executes_against_canonical_store-da3982be.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1231: 优化 `astersql-session::mysql_metadata_compat_test::performance_schema_mysql_introspection_uses_registered_empty_tables`（原始 1.045s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1231-performance_schema_mysql_introspection_uses_registered_empty_tables-822912c1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1231-performance_schema_mysql_introspection_uses_registered_empty_tables-822912c1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1232: 优化 `astersql-executor-test-analyzetest::analyze_test::analyze_json_expression_index_completes`（原始 1.044s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1232-analyze_json_expression_index_completes-4dd71f3d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1232-analyze_json_expression_index_completes-4dd71f3d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1233: 优化 `astersql-server::mysql_protocol_stress_test::malformed_connections_are_isolated_from_following_ping_and_select`（原始 1.044s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1233-malformed_connections_are_isolated_from_following_ping_and_select-5ee9cd08.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1233-malformed_connections_are_isolated_from_following_ping_and_select-5ee9cd08.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1234: 优化 `astersql-session-test-common::common_test::affected_rows_reflect_matched_and_unchanged_updates`（原始 1.044s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1234-affected_rows_reflect_matched_and_unchanged_updates-82df068c.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1234-affected_rows_reflect_matched_and_unchanged_updates-82df068c.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1237: 优化 `astersql-session::runtime::scan_adapter_runtime_test::prepared_statement_ru_post_compile_outcome_and_terminal`（原始 1.043s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1237-prepared_statement_ru_post_compile_outcome_and_terminal-b134ee45.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1237-prepared_statement_ru_post_compile_outcome_and_terminal-b134ee45.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1238: 优化 `astersql-testkit::mockstore_domain_ddl_test::create_and_drop_existence_options_are_explicit_metadata_noops`（原始 1.043s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1238-create_and_drop_existence_options_are_explicit_metadata_noops-1e934c25.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1238-create_and_drop_existence_options_are_explicit_metadata_noops-1e934c25.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1240: 优化 `astersql-testkit::stats_runtime_aster_unit_test::domain_auto_analyze_flushes_and_analyzes_an_eligible_table`（原始 1.042s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1240-domain_auto_analyze_flushes_and_analyzes_an_eligible_table-f6318d4d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1240-domain_auto_analyze_flushes_and_analyzes_an_eligible_table-f6318d4d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1241: 优化 `astersql-session::runtime::crossks_job_submit_test::go_merge_43_crossks_submits_durable_table_mode_job_with_target_metadata`（原始 1.041s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1241-go_merge_43_crossks_submits_durable_table_mode_job_with_target_metadat-01685dca.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1241-go_merge_43_crossks_submits_durable_table_mode_job_with_target_metadat-01685dca.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1242: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_column_ids`（原始 1.041s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1242-go_test_column_ids-49f74b1b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1242-go_test_column_ids-49f74b1b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1243: 优化 `astersql-planner-core-tests-redact::redact_test::test_redact_explain_modes_and_fixture_tables`（原始 1.040s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1243-test_redact_explain_modes_and_fixture_tables-28991779.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1243-test_redact_explain_modes_and_fixture_tables-28991779.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1244: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_records_failed_job_in_history`（原始 1.039s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1244-go_merge_43_crossks_owner_records_failed_job_in_history-aa2241a9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1244-go_merge_43_crossks_owner_records_failed_job_in_history-aa2241a9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1246: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_takeover_resumes_after_persisted_cursor`（原始 1.039s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1246-go_merge_43_ttl_takeover_resumes_after_persisted_cursor-6705fb83.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1246-go_merge_43_ttl_takeover_resumes_after_persisted_cursor-6705fb83.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1247: 优化 `astersql-session-test-schematest::schema_test::per_table_delete_removes_matching_rows_from_each_table_independently`（原始 1.039s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1247-per_table_delete_removes_matching_rows_from_each_table_independently-614a5149.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1247-per_table_delete_removes_matching_rows_from_each_table_independently-614a5149.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1249: 优化 `astersql-session::runtime_pessimistic_test::savepoint_restores_transaction_rows_and_releases_later_locks`（原始 1.038s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1249-savepoint_restores_transaction_rows_and_releases_later_locks-d29a4334.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1249-savepoint_restores_transaction_rows_and_releases_later_locks-d29a4334.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1251: 优化 `astersql-dumpling-export::status_test::production_failpoint_refreshes_on_log_tick`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1251-production_failpoint_refreshes_on_log_tick-175b67a5.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1251-production_failpoint_refreshes_on_log_tick-175b67a5.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1252: 优化 `astersql-planner-core-casetest-rule::rule_join_reorder_test::join_reorder_go_fixture_cases`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1252-join_reorder_go_fixture_cases-93cf1e42.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1252-join_reorder_go_fixture_cases-93cf1e42.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1253: 优化 `astersql-session::runtime_test::session::show_collation_and_mysql_user_catalog_match_go_metadata`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1253-show_collation_and_mysql_user_catalog_match_go_metadata-168ccf3a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1253-show_collation_and_mysql_user_catalog_match_go_metadata-168ccf3a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1254: 优化 `astersql-session::system_session_alignment_test::crossks_align_system_session_callbacks_and_metadata_error`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1254-crossks_align_system_session_callbacks_and_metadata_error-af79d191.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1254-crossks_align_system_session_callbacks_and_metadata_error-af79d191.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1255: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_record_historical_stats_to_storage`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1255-go_test_record_historical_stats_to_storage-79df25ed.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1255-go_test_record_historical_stats_to_storage-79df25ed.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1256: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeMetricsCounters`（原始 1.037s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1256-testanalyzemetricscounters-37c89345.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1256-testanalyzemetricscounters-37c89345.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1258: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_load_stats_for_bit_column`（原始 1.036s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1258-go_test_load_stats_for_bit_column-c345be52.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1258-go_test_load_stats_for_bit_column-c345be52.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1259: 优化 `astersql-dxf-importinto::scheduler_test::prepare_import_task_persists_real_file_controller_result`（原始 1.035s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1259-prepare_import_task_persists_real_file_controller_result-6a9a7bc0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1259-prepare_import_task_persists_real_file_controller_result-6a9a7bc0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1260: 优化 `astersql-server::pg_catalog_test::pg_introspection_functions_live`（原始 1.035s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1260-pg_introspection_functions_live-e6bd496e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1260-pg_introspection_functions_live-e6bd496e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1261: 优化 `astersql-session::mysql_transaction_compat_test::common_mysql_transactions_preserve_visibility_savepoints_and_status`（原始 1.035s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1261-common_mysql_transactions_preserve_visibility_savepoints_and_status-2b7eb409.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1261-common_mysql_transactions_preserve_visibility_savepoints_and_status-2b7eb409.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1262: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_duplicate_fm_sketch`（原始 1.035s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1262-go_test_duplicate_fm_sketch-6e59cddc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1262-go_test_duplicate_fm_sketch-6e59cddc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1263: 优化 `astersql-session-test::session_test::write_on_multiple_cached_tables_matches_go`（原始 1.034s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1263-write_on_multiple_cached_tables_matches_go-efab62c6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1263-write_on_multiple_cached_tables_matches_go-efab62c6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1264: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_stats_cache_should_not_cache_temporary_table`（原始 1.034s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1264-go_test_stats_cache_should_not_cache_temporary_table-7f774a86.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1264-go_test_stats_cache_should_not_cache_temporary_table-7f774a86.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1265: 优化 `astersql-statistics-handle-handletest::integration_test::go_test_null_on_full_sampling`（原始 1.034s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1265-go_test_null_on_full_sampling-fb8e738e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1265-go_test_null_on_full_sampling-fb8e738e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1266: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_plan_cache_union_scan`（原始 1.033s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1266-test_plan_cache_union_scan-36136a6e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1266-test_plan_cache_union_scan-36136a6e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1267: 优化 `astersql-server::mysql_catalog_protocol_test::mysql_catalog_protocol_manifest_matches_wire_metadata`（原始 1.033s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1267-mysql_catalog_protocol_manifest_matches_wire_metadata-edbaf87b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1267-mysql_catalog_protocol_manifest_matches_wire_metadata-edbaf87b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1268: 优化 `astersql-executor-test-autoidtest::autoid_test::TestIssue39528`（原始 1.032s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1268-testissue39528-0c828c3d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1268-testissue39528-0c828c3d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1269: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_plan_cache_with_rc_when_info_schema_changes`（原始 1.032s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1269-test_plan_cache_with_rc_when_info_schema_changes-33e882b3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1269-test_plan_cache_with_rc_when_info_schema_changes-33e882b3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1271: 优化 `astersql-session::main_test::test_main_callback_waits_for_mvcc_cleanup_and_preserves_exit_code`（原始 1.031s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1271-test_main_callback_waits_for_mvcc_cleanup_and_preserves_exit_code-8f91b645.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1271-test_main_callback_waits_for_mvcc_cleanup_and_preserves_exit_code-8f91b645.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1272: 优化 `astersql-session::mysql_sys_schema_compat_test::sys_schema_and_routine_catalog_respect_compatibility_manifest`（原始 1.031s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1272-sys_schema_and_routine_catalog_respect_compatibility_manifest-b47354dc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1272-sys_schema_and_routine_catalog_respect_compatibility_manifest-b47354dc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1273: 优化 `astersql-session::mysql_system_catalog_compat_test::mysql_system_catalog_manifest_matches_canonical_session`（原始 1.031s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1273-mysql_system_catalog_manifest_matches_canonical_session-43e587f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1273-mysql_system_catalog_manifest_matches_canonical_session-43e587f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1274: 优化 `astersql-session-test::session_test::rollback_on_compile_error_matches_go`（原始 1.031s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1274-rollback_on_compile_error_matches_go-c46006f8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1274-rollback_on_compile_error_matches_go-c46006f8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1276: 优化 `astersql-executor-test-jointest::join_test::test_join2_executes_the_join_contract`（原始 1.030s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1276-test_join2_executes_the_join_contract-3250171d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1276-test_join2_executes_the_join_contract-3250171d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1277: 优化 `astersql-lightning-common::pause_test::test_pause`（原始 1.030s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1277-test_pause-1380e26a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1277-test_pause-1380e26a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1279: 优化 `astersql-session::runtime_session_test::terminal_auto_id_rpc_error_aborts_all_insert_ignore_paths`（原始 1.030s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1279-terminal_auto_id_rpc_error_aborts_all_insert_ignore_paths-c0fe4a40.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1279-terminal_auto_id_rpc_error_aborts_all_insert_ignore_paths-c0fe4a40.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1280: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_delta_in_lock_info_can_be_negative`（原始 1.030s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1280-test_delta_in_lock_info_can_be_negative-78eff61d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1280-test_delta_in_lock_info_can_be_negative-78eff61d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1281: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_dump_column_stats_usage`（原始 1.030s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1281-go_test_dump_column_stats_usage-739e1687.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1281-go_test_dump_column_stats_usage-739e1687.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1283: 优化 `astersql-executor-test-loadremotetest::multi_file_test::test_last_insert_id`（原始 1.029s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1283-test_last_insert_id-76df8a04.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1283-test_last_insert_id-76df8a04.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1284: 优化 `astersql-session::mysql_dml_compat_test::bit_column_update_arithmetic_preserves_unsigned_values_and_text_columns`（原始 1.029s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1284-bit_column_update_arithmetic_preserves_unsigned_values_and_text_column-22f841ff.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1284-bit_column_update_arithmetic_preserves_unsigned_values_and_text_column-22f841ff.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1286: 优化 `astersql-dxf-importinto::scheduler_testkit_test::scheduler_local_sort_runs_go_import_validate_done_and_revert_phases`（原始 1.028s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1286-scheduler_local_sort_runs_go_import_validate_done_and_revert_phases-1771b656.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1286-scheduler_local_sort_runs_go_import_validate_done_and_revert_phases-1771b656.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1287: 优化 `astersql-session-test-common::common_test::last_message_matches_go_for_changed_and_unmatched_update`（原始 1.028s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1287-last_message_matches_go_for_changed_and_unmatched_update-12656f52.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1287-last_message_matches_go_for_changed_and_unmatched_update-12656f52.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1288: 优化 `astersql-session::exchange_partition_privileges::exchange_partition_rejects_reserved_system_table_target`（原始 1.028s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1288-exchange_partition_rejects_reserved_system_table_target-5ef7337d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1288-exchange_partition_rejects_reserved_system_table_target-5ef7337d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1289: 优化 `astersql-dxf-importinto::scheduler_testkit_test::scheduler_prepare_mode_runs_real_file_discovery_and_persists_chunks`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1289-scheduler_prepare_mode_runs_real_file_discovery_and_persists_chunks-5106264e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1289-scheduler_prepare_mode_runs_real_file_discovery_and_persists_chunks-5106264e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1290: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue54755_executes_symmetric_outer_join_aggregate_contract`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1290-issue54755_executes_symmetric_outer_join_aggregate_contract-d2e214e4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1290-issue54755_executes_symmetric_outer_join_aggregate_contract-d2e214e4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1291: 优化 `astersql-server::conn_test::change_user_success_replaces_and_closes_old_session`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1291-change_user_success_replaces_and_closes_old_session-0eb2f494.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1291-change_user_success_replaces_and_closes_old_session-0eb2f494.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1293: 优化 `astersql-session::runtime_test::query::cte_string_projection_uses_string_comparison_semantics`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1293-cte_string_projection_uses_string_comparison_semantics-6711b613.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1293-cte_string_projection_uses_string_comparison_semantics-6711b613.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1294: 优化 `astersql-session-test-temporarytabletest::main_test::temporarytabletest_harness_waits_for_mvcc_cleanup`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1294-temporarytabletest_harness_waits_for_mvcc_cleanup-7f2854fc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1294-temporarytabletest_harness_waits_for_mvcc_cleanup-7f2854fc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1295: 优化 `astersql-testkit::stats_runtime_aster_unit_test::index_only_analyze_and_null_index_buckets_match_go`（原始 1.027s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1295-index_only_analyze_and_null_index_buckets_match_go-2b371c80.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1295-index_only_analyze_and_null_index_buckets_match_go-2b371c80.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1296: 优化 `astersql-session::mysql_dml_compat_test::common_mysql_dml_preserves_rows_constraints_and_statement_state`（原始 1.026s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1296-common_mysql_dml_preserves_rows_constraints_and_statement_state-739f3bf4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1296-common_mysql_dml_preserves_rows_constraints_and_statement_state-739f3bf4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1298: 优化 `astersql-session-test-clusteredindextest::clustered_index_test::clustered_insert_ignore_on_varchar_primary_key_keeps_single_row`（原始 1.026s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1298-clustered_insert_ignore_on_varchar_primary_key_keeps_single_row-2266e897.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1298-clustered_insert_ignore_on_varchar_primary_key_keeps_single_row-2266e897.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1299: 优化 `astersql-testkit::db_driver_test::TestMockDB`（原始 1.026s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1299-testmockdb-69bfb908.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1299-testmockdb-69bfb908.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1302: 优化 `astersql-executor-test-jointest::join_test::test_issue49033`（原始 1.025s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1302-test_issue49033-82459d25.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1302-test_issue49033-82459d25.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1303: 优化 `astersql-session::mysql_metadata_compat_test::information_schema_table_ids_keep_pairs_when_schema_is_dropped`（原始 1.025s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1303-information_schema_table_ids_keep_pairs_when_schema_is_dropped-e3ad3d80.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1303-information_schema_table_ids_keep_pairs_when_schema_is_dropped-e3ad3d80.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1305: 优化 `astersql-br-pkg-restore-snap-client::pipeline_items_test::test_update_stats_meta_retries_transient_storage_errors`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1305-test_update_stats_meta_retries_transient_storage_errors-2fd03a47.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1305-test_update_stats_meta_retries_transient_storage_errors-2fd03a47.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1306: 优化 `astersql-executor-test-loadremotetest::multi_file_test::test_mixed_compression`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1306-test_mixed_compression-ca0df2d4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1306-test_mixed_compression-ca0df2d4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1307: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_invisible_index_prepare`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1307-test_invisible_index_prepare-67888d87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1307-test_invisible_index_prepare-67888d87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1308: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_require_mutations_are_atomic`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1308-mysql_alter_user_require_mutations_are_atomic-1efd3e74.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1308-mysql_alter_user_require_mutations_are_atomic-1efd3e74.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1313: 优化 `astersql-timer-runtime::runtime_test::go_merge_43_timer_watch_update_triggers_manual_request_promptly`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1313-go_merge_43_timer_watch_update_triggers_manual_request_promptly-75c733de.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1313-go_merge_43_timer_watch_update_triggers_manual_request_promptly-75c733de.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1314: 优化 `astersql-util-memory::arbitrator_test::go_merge_24_soft_risk_waits_before_killing_sql`（原始 1.024s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1314-go_merge_24_soft_risk_waits_before_killing_sql-44f7ec56.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1314-go_merge_24_soft_risk_waits_before_killing_sql-44f7ec56.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1315: 优化 `astersql-planner-core-issuetest::panicrisk_tier2_test::push_down_sequence_with_table_dual_returns_empty_result`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1315-push_down_sequence_with_table_dual_returns_empty_result-b60ef6fa.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1315-push_down_sequence_with_table_dual_returns_empty_result-b60ef6fa.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1316: 优化 `astersql-session::mysql_relational_query_compat_test::count_extrema_sql_duplicates_nulls_and_sliding_window`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1316-count_extrema_sql_duplicates_nulls_and_sliding_window-8ca9227b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1316-count_extrema_sql_duplicates_nulls_and_sliding_window-8ca9227b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1318: 优化 `astersql-statistics-handle-autoanalyze-exec::exec_test::test_exec_auto_analyzes`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1318-test_exec_auto_analyzes-7d22613a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1318-test_exec_auto_analyzes-7d22613a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1319: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_issue_39336`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1319-go_test_issue_39336-bc46f448.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1319-go_test_issue_39336-bc46f448.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1320: 优化 `astersql-store-copr::main_test::test_main_returns_test_code_after_mvcc_cleanup_wait`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1320-test_main_returns_test_code_after_mvcc_cleanup_wait-f0f069a7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1320-test_main_returns_test_code_after_mvcc_cleanup_wait-f0f069a7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1324: 优化 `astersql-util::wait_group_wrapper_test::TestWaitGroupWrapperCheck`（原始 1.023s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1324-testwaitgroupwrappercheck-32232b72.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1324-testwaitgroupwrappercheck-32232b72.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1326: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_cache_hit_in_rc`（原始 1.022s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1326-test_cache_hit_in_rc-c3a28282.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1326-test_cache_hit_in_rc-c3a28282.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1328: 优化 `astersql-testkit::db_driver_test::mock_stmt_query_row_is_first_row_and_reports_empty_result`（原始 1.022s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1328-mock_stmt_query_row_is_first_row_and_reports_empty_result-8c3e9411.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1328-mock_stmt_query_row_is_first_row_and_reports_empty_result-8c3e9411.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1333: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_point_get_for_update_autocommit_cache`（原始 1.021s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1333-test_point_get_for_update_autocommit_cache-30ce474f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1333-test_point_get_for_update_autocommit_cache-30ce474f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1334: 优化 `astersql-server-handler-optimizor::plan_replayer_test::test_issue64802`（原始 1.021s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1334-test_issue64802-007da4c6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1334-test_issue64802-007da4c6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1336: 优化 `astersql-session::runtime_dispatch_test::explain_ru_context_bypasses_plan_cache`（原始 1.021s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1336-explain_ru_context_bypasses_plan_cache-6a2e0567.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1336-explain_ru_context_bypasses_plan_cache-6a2e0567.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1337: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_lock_and_unlock_partition_stats_repeatedly`（原始 1.021s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1337-test_lock_and_unlock_partition_stats_repeatedly-21218db7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1337-test_lock_and_unlock_partition_stats_repeatedly-21218db7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1344: 优化 `astersql-domain-serverinfo::syncer_test::status_endpoint_failed_cleanup_is_bounded_and_keeps_store_error`（原始 1.020s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1344-status_endpoint_failed_cleanup_is_bounded_and_keeps_store_error-43d86866.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1344-status_endpoint_failed_cleanup_is_bounded_and_keeps_store_error-43d86866.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1345: 优化 `astersql-session::runtime_statistics_test::combined_merge_global_index_exact_topn_estimates`（原始 1.020s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1345-combined_merge_global_index_exact_topn_estimates-02e4fe90.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1345-combined_merge_global_index_exact_topn_estimates-02e4fe90.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1350: 优化 `astersql-inference::openai_test::openai_cancellation_aborts_inflight_http_request`（原始 1.019s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1350-openai_cancellation_aborts_inflight_http_request-6323ce06.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1350-openai_cancellation_aborts_inflight_http_request-6323ce06.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1351: 优化 `astersql-session::runtime::ttl_runtime_test::go_merge_43_ttl_tick_persists_job_and_deletes_expired_rows`（原始 1.019s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1351-go_merge_43_ttl_tick_persists_job_and_deletes_expired_rows-c1a0ad47.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1351-go_merge_43_ttl_tick_persists_job_and_deletes_expired_rows-c1a0ad47.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1352: 优化 `astersql-testkit::stats_runtime_aster_unit_test::partition_history_dump_respects_dynamic_and_static_pruning`（原始 1.019s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1352-partition_history_dump_respects_dynamic_and_static_pruning-5ed57937.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1352-partition_history_dump_respects_dynamic_and_static_pruning-5ed57937.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1355: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_runner_retry_on_storage`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1355-test_checkpoint_runner_retry_on_storage-da6cfb37.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1355-test_checkpoint_runner_retry_on_storage-da6cfb37.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1356: 优化 `astersql-executor-test-infoschema::infoschema_test::partitions_table_exposes_partition_names_descriptions_and_ids`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1356-partitions_table_exposes_partition_names_descriptions_and_ids-49884a87.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1356-partitions_table_exposes_partition_names_descriptions_and_ids-49884a87.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1357: 优化 `astersql-server-internal-testserverclient::server_client_test::regression_scenario_executes_against_canonical_store`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1357-regression_scenario_executes_against_canonical_store-b581ff36.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1357-regression_scenario_executes_against_canonical_store-b581ff36.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1359: 优化 `astersql-store-gcworker::gc_worker_test::TestRunDistGCJobAPI`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1359-testrundistgcjobapi-699c110d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1359-testrundistgcjobapi-699c110d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1360: 优化 `astersql-store-gcworker::gc_worker_test::TestRunGCJob`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1360-testrungcjob-ef30287e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1360-testrungcjob-ef30287e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1361: 优化 `astersql-store-gcworker::gc_worker_test::TestRunGCJobAPI`（原始 1.018s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1361-testrungcjobapi-99816deb.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1361-testrungcjobapi-99816deb.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1364: 优化 `astersql-server-internal-testserverclient::server_client_test::special_types_execute_against_canonical_store`（原始 1.017s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1364-special_types_execute_against_canonical_store-4c2dea58.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1364-special_types_execute_against_canonical_store-4c2dea58.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1365: 优化 `astersql-server-tests::tidb_serial_test::test_explain_for`（原始 1.017s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1365-test_explain_for-912b3096.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1365-test_explain_for-912b3096.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1366: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_upgrade_fixture_forks_are_isolated`（原始 1.017s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1366-bootstrap_upgrade_fixture_forks_are_isolated-5b76f180.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1366-bootstrap_upgrade_fixture_forks_are_isolated-5b76f180.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1367: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestAnalyzeVirtualCol`（原始 1.017s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1367-testanalyzevirtualcol-3eaf71c0.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1367-testanalyzevirtualcol-3eaf71c0.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1368: 优化 `astersql-store-gcworker::gc_worker_test::gc_job_notifies_controller_after_success`（原始 1.017s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1368-gc_job_notifies_controller_after_success-b447fc47.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1368-gc_job_notifies_controller_after_success-b447fc47.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1373: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_runner_retry_on_table`（原始 1.016s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1373-test_checkpoint_runner_retry_on_table-3c2aef16.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1373-test_checkpoint_runner_retry_on_table-3c2aef16.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1374: 优化 `astersql-session::load_data_runtime_test::local_infile_set_assignments_resolve_case_insensitive_user_variables`（原始 1.016s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1374-local_infile_set_assignments_resolve_case_insensitive_user_variables-03d85148.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1374-local_infile_set_assignments_resolve_case_insensitive_user_variables-03d85148.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1375: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_unlock_the_unlocked_table_would_generate_warning`（原始 1.016s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1375-test_unlock_the_unlocked_table_would_generate_warning-db892ba3.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1375-test_unlock_the_unlocked_table_would_generate_warning-db892ba3.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1376: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_lock_and_unlock_table_stats`（原始 1.016s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1376-test_lock_and_unlock_table_stats-a7c5a63f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1376-test_lock_and_unlock_table_stats-a7c5a63f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1377: 优化 `astersql-testkit::mockstore_domain_stats_test::unlock_failure_rolls_back_meta_and_locked_row_together`（原始 1.016s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1377-unlock_failure_rolls_back_meta_and_locked_row_together-3b87fe21.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1377-unlock_failure_rolls_back_meta_and_locked_row_together-3b87fe21.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1382: 优化 `astersql-planner-core-casetest-planstats::plan_stats_test::test_plan_stats_sync_loads_only_predicate_column`（原始 1.015s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1382-test_plan_stats_sync_loads_only_predicate_column-99ecf769.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1382-test_plan_stats_sync_loads_only_predicate_column-99ecf769.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1383: 优化 `astersql-session::runtime::crossks_owner_test::go_merge_43_crossks_owner_completes_persisted_table_mode_job`（原始 1.015s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1383-go_merge_43_crossks_owner_completes_persisted_table_mode_job-d5908248.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1383-go_merge_43_crossks_owner_completes_persisted_table_mode_job-d5908248.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1385: 优化 `astersql-session-test::session_test::primary_key_auto_increment_matches_go`（原始 1.015s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1385-primary_key_auto_increment_matches_go-28760768.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1385-primary_key_auto_increment_matches_go-28760768.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1386: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_load_histogram_with_collate`（原始 1.015s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1386-go_test_load_histogram_with_collate-8b18d45f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1386-go_test_load_histogram_with_collate-8b18d45f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1391: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_runner_no_retry_on_storage`（原始 1.014s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1391-test_checkpoint_runner_no_retry_on_storage-f64d5e9a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1391-test_checkpoint_runner_no_retry_on_storage-f64d5e9a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1392: 优化 `astersql-executor::write_concurrent_test::batch_insert_with_on_duplicate`（原始 1.014s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1392-batch_insert_with_on_duplicate-4a6ea0d7.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1392-batch_insert_with_on_duplicate-4a6ea0d7.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1393: 优化 `astersql-executor-test-writetest::write_test::TestReplaceLog`（原始 1.014s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1393-testreplacelog-031feb90.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1393-testreplacelog-031feb90.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1394: 优化 `astersql-planner-core-tests-extractor::memtable_infoschema_extractor_test::infoschema_table_name_like_honors_custom_escape`（原始 1.014s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1394-infoschema_table_name_like_honors_custom_escape-b112d45f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1394-infoschema_table_name_like_honors_custom_escape-b112d45f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1395: 优化 `astersql-session-test-common::common_test::prepare_parameterized_insert_match_go_prepare_execute_shape`（原始 1.014s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1395-prepare_parameterized_insert_match_go_prepare_execute_shape-6cc957fc.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1395-prepare_parameterized_insert_match_go_prepare_execute_shape-6cc957fc.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1402: 优化 `astersql-statistics-handle-ddl-testutil::util_test::find_event_timeout_returns_none_at_deadline`（原始 1.013s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1402-find_event_timeout_returns_none_at_deadline-83f44814.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1402-find_event_timeout_returns_none_at_deadline-83f44814.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1403: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_static_partition_prune_mode`（原始 1.013s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1403-go_test_static_partition_prune_mode-770f7cf1.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1403-go_test_static_partition_prune_mode-770f7cf1.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1404: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_fill_missing_stats_meta`（原始 1.013s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1404-go_test_fill_missing_stats_meta-7505af45.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1404-go_test_fill_missing_stats_meta-7505af45.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1414: 优化 `astersql-timer-runtime::runtime_test::test_try_trigger_time_priority`（原始 1.013s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1414-test_try_trigger_time_priority-7047ff92.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1414-test_try_trigger_time_priority-7047ff92.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1415: 优化 `astersql-br-pkg-checkpoint::checkpoint_test::test_checkpoint_runner_no_retry_on_table`（原始 1.012s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1415-test_checkpoint_runner_no_retry_on_table-c5b245c4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1415-test_checkpoint_runner_no_retry_on_table-c5b245c4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1416: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_new_partition_should_be_locked_if_whole_table_locked`（原始 1.012s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1416-test_new_partition_should_be_locked_if_whole_table_locked-abbb5dad.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1416-test_new_partition_should_be_locked_if_whole_table_locked-abbb5dad.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1417: 优化 `astersql-testkit::mockstore_domain_stats_test::restricted_stats_rows_are_shared_by_normal_sessions`（原始 1.012s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1417-restricted_stats_rows_are_shared_by_normal_sessions-42ca048d.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1417-restricted_stats_rows_are_shared_by_normal_sessions-42ca048d.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1425: 优化 `astersql-server::pg_extended_test::canonical_prepare_parameter_syntax_probe`（原始 1.011s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1425-canonical_prepare_parameter_syntax_probe-ead196a9.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1425-canonical_prepare_parameter_syntax_probe-ead196a9.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1426: 优化 `astersql-session::mysql_privilege_persistence_test::mysql_alter_user_preserves_require`（原始 1.011s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1426-mysql_alter_user_preserves_require-23ef4f15.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1426-mysql_alter_user_preserves_require-23ef4f15.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1433: 优化 `astersql-util-topsql-reporter::datamodel_1_aster_unit_test::subscription_parsing_send_order_channel_full_and_ticker_match_go`（原始 1.011s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1433-subscription_parsing_send_order_channel_full_and_ticker_match_go-6bff6409.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1433-subscription_parsing_send_order_channel_full_and_ticker_match_go-6bff6409.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1434: 优化 `astersql-executor-test-jointest-hashjoin::hash_join_test::issue55016_executes_mixed_string_key_contract`（原始 1.010s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1434-issue55016_executes_mixed_string_key_contract-0c890e20.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1434-issue55016_executes_mixed_string_key_contract-0c890e20.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1435: 优化 `astersql-executor-test-showtest::show_test::show_cluster_config_has_filterable_four_column_contract`（原始 1.009s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1435-show_cluster_config_has_filterable_four_column_contract-d750a0d6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1435-show_cluster_config_has_filterable_four_column_contract-d750a0d6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1436: 优化 `astersql-server-internal-testserverclient::server_client_test::sum_and_average_execute_against_canonical_store`（原始 1.009s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1436-sum_and_average_execute_against_canonical_store-59a4854b.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1436-sum_and_average_execute_against_canonical_store-59a4854b.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1437: 优化 `astersql-statistics-handle-updatetest::update_test::go_test_stats_lock_unlock_for_auto_analyze`（原始 1.009s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1437-go_test_stats_lock_unlock_for_auto_analyze-bd1b890e.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1437-go_test_stats_lock_unlock_for_auto_analyze-bd1b890e.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1438: 优化 `astersql-session-test-common::common_test::query_string_tracks_multi_statement_and_prepared_ddl`（原始 1.008s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1438-query_string_tracks_multi_statement_and_prepared_ddl-3ccaaea6.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1438-query_string_tracks_multi_statement_and_prepared_ddl-3ccaaea6.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1439: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_stats_cache_should_not_cache_system_table`（原始 1.008s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1439-go_test_stats_cache_should_not_cache_system_table-129ebe02.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1439-go_test_stats_cache_should_not_cache_system_table-129ebe02.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1440: 优化 `astersql-statistics-handle-handletest-lockstats::lock_partition_stats_test::test_reorganize_partition_should_clean_up_lock_info`（原始 1.008s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1440-test_reorganize_partition_should_clean_up_lock_info-24128f48.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1440-test_reorganize_partition_should_clean_up_lock_info-24128f48.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1443: 优化 `astersql-parser::parser_no_legacy_dependency_aster_unit_test::parser_no_legacy_source_dependency`（原始 1.007s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1443-parser_no_legacy_source_dependency-e655a736.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1443-parser_no_legacy_source_dependency-e655a736.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1444: 优化 `astersql-server-handler-tests::dxf_test::batch_history_transfer_redacts_meta_and_keeps_adjacent_large_ids`（原始 1.007s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1444-batch_history_transfer_redacts_meta_and_keeps_adjacent_large_ids-a1ca7ccf.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1444-batch_history_transfer_redacts_meta_and_keeps_adjacent_large_ids-a1ca7ccf.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1445: 优化 `astersql-session-test-common::common_test::last_message_matches_go_for_single_and_multi_row_insert`（原始 1.007s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1445-last_message_matches_go_for_single_and_multi_row_insert-edd733ca.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1445-last_message_matches_go_for_single_and_multi_row_insert-edd733ca.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1446: 优化 `astersql-planner-core-tests-prepare::prepare_test::test_prepare_cache_queries_and_indexes`（原始 1.006s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1446-test_prepare_cache_queries_and_indexes-796d06e4.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1446-test_prepare_cache_queries_and_indexes-796d06e4.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1447: 优化 `astersql-testkit::db_driver_test::mock_stmt_does_not_count_question_marks_inside_sql_literals_as_parameters`（原始 1.006s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1447-mock_stmt_does_not_count_question_marks_inside_sql_literals_as_paramet-3e493f56.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1447-mock_stmt_does_not_count_question_marks_inside_sql_literals_as_paramet-3e493f56.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1448: 优化 `astersql-executor::slow_query_sql_test::tiflash_replica_with_tikv_hint_uses_tikv_plan`（原始 1.005s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1448-tiflash_replica_with_tikv_hint_uses_tikv_plan-8113280f.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1448-tiflash_replica_with_tikv_hint_uses_tikv_plan-8113280f.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1450: 优化 `astersql-statistics-handle-handletest-analyze::analyze_test::TestFMSWithAnalyzePartition`（原始 1.005s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1450-testfmswithanalyzepartition-b92a4159.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1450-testfmswithanalyzepartition-b92a4159.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1452: 优化 `astersql-session::runtime_test::ddl::import_scheduler_stats_delta_runs_on_canonical_transaction`（原始 1.004s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1452-import_scheduler_stats_delta_runs_on_canonical_transaction-e493d934.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1452-import_scheduler_stats_delta_runs_on_canonical_transaction-e493d934.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1453: 优化 `astersql-session-test-schematest::schema_test::index_lookup_reader_returns_full_and_filtered_rows_in_order`（原始 1.004s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1453-index_lookup_reader_returns_full_and_filtered_rows_in_order-f99fe120.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1453-index_lookup_reader_returns_full_and_filtered_rows_in_order-f99fe120.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1455: 优化 `astersql-session::mysql_relational_query_compat_test::common_mysql_aggregate_join_subquery_and_union_queries_match_expected_rows`（原始 1.003s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1455-common_mysql_aggregate_join_subquery_and_union_queries_match_expected_-e5dd1e73.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1455-common_mysql_aggregate_join_subquery_and_union_queries_match_expected_-e5dd1e73.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1458: 优化 `astersql-session::runtime_test::ddl::concrete_repeat_create_index_and_admin_check_index_use_production_paths`（原始 1.002s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1458-concrete_repeat_create_index_and_admin_check_index_use_production_path-76a0a2a8.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1458-concrete_repeat_create_index_and_admin_check_index_use_production_path-76a0a2a8.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1459: 优化 `astersql-session-test-common::prepare_dedup_cache_test::protocol_prepare_after_schema_change_reports_current_projection`（原始 1.002s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1459-protocol_prepare_after_schema_change_reports_current_projection-6f25f39a.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1459-protocol_prepare_after_schema_change_reports_current_projection-6f25f39a.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1460: 优化 `astersql-statistics-handle-handletest::handle_test::go_test_uninitialized_stats_status`（原始 1.002s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1460-go_test_uninitialized_stats_status-9d88c547.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1460-go_test_uninitialized_stats_status-9d88c547.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1461: 优化 `astersql-planner-core-casetest-plancache::plan_cache_test::drop_prepare_executes_and_releases_real_plan_cache_statement`（原始 1.001s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1461-drop_prepare_executes_and_releases_real_plan_cache_statement-d00fdc52.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1461-drop_prepare_executes_and_releases_real_plan_cache_statement-d00fdc52.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1462: 优化 `astersql-server::conn_test::ttl_import_precheck_error_is_encoded_as_8173`（原始 1.001s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1462-ttl_import_precheck_error_is_encoded_as_8173-f88ab819.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1462-ttl_import_precheck_error_is_encoded_as_8173-f88ab819.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1463: 优化 `astersql-statistics-handle-handletest-lockstats::lock_table_stats_test::test_lock_and_unlock_tables_stats`（原始 1.001s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1463-test_lock_and_unlock_tables_stats-28338704.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1463-test_lock_and_unlock_tables_stats-28338704.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1464: 优化 `astersql-server::pg_conn_test::startup_server_version_parameter`（原始 1.000s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1464-startup_server_version_parameter-3e46a0ef.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1464-startup_server_version_parameter-3e46a0ef.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1465: 优化 `astersql-session::runtime_session_test::single_point_auto_id_factory_preserves_successful_insert_and_rebase`（原始 1.000s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1465-single_point_auto_id_factory_preserves_successful_insert_and_rebase-f58b4e40.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1465-single_point_auto_id_factory_preserves_successful_insert_and_rebase-f58b4e40.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
+
+## 任务 1466: 优化 `astersql-session-test-bootstraptest::boot_test::bootstrap_masking_policy_table_schema_is_complete`（原始 1.000s）【系统自动调度】
+
+```text
+请使用技能 ./skills/do-task-plans/SKILL.md 执行 `.plans/2026-10-12-rust-慢测极限优化/1466-bootstrap_masking_policy_table_schema_is_complete-2166f941.md`。
+
+开始前先阅读 `.plans/2026-10-12-rust-慢测极限优化/plan.md` 和该任务文件。本任务无业务前置依赖，直接交给系统自动并行调度，不要等待人工批次。本任务涉及 Rust/Cargo：执行任何 Cargo 构建、检查、测试或调用 Cargo 的脚本前，先阅读并遵守 `.plans/2026-10-12-rust-慢测极限优化/1466-bootstrap_masking_policy_table_schema_is_complete-2166f941.md` 中的“Cargo 共享槽位规则”，动态领取仓库共享槽位 1–10，设置绝对路径 CARGO_TARGET_DIR；阶段结束后清理自己的锁并保留缓存，最终报告实际槽位和 CARGO_TARGET_DIR。
+按任务文件中的性能失败验证—通过验证计划实施，保持 Go 对齐规模、全部 case、断言和真实依赖；不得通过删减逻辑、降低数据/并发规模、改不等价 mock 或放宽 timeout 达标。严格性能计时只在持有仓库级性能锁时执行；锁被占用时由系统继续调度其他可运行工作，不要把锁等待转换成人工批次依赖。
+任务获得所需验证证据后，标记为 `已完成`，使用技能 `$git-commit` 提交该任务的变更，在最终回复中报告完成证据并删除该任务文件；如果被阻塞，首先尽可能突破阻塞，缺少局部依赖可在调用链证据支持下扩大范围；如果仍无法突破，只在任务文件中更新为 `已阻塞` 并记录具体原因、五次数据和已运行检查；如果因为无关本次修改的原因导致无法运行验证，可改为 `已完成，待回归`，使用技能 `$git-commit` 提交本任务变更并保留任务文件供回归。
+注意，`.plans/2026-10-12-rust-慢测极限优化/plan.md` 为只读，不要修改该文件的任何部分；进度、发现和阻塞只写入本任务文件。
+```
