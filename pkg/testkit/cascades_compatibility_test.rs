@@ -26,18 +26,26 @@ fn assert_cascades_disabled(test_kit: &crate::TestKit, round: &str, caller: &str
 fn runs_each_compatibility_helper_only_with_cascades_off() {
     CALLBACKS.store(0, Ordering::SeqCst);
 
-    RunTestUnderCascades(|test_kit, round, caller| {
-        assert_cascades_disabled(test_kit, round, caller);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            RunTestUnderCascades(|test_kit, round, caller| {
+                assert_cascades_disabled(test_kit, round, caller);
+            });
+        });
+        scope.spawn(|| {
+            RunTestUnderCascadesWithDomain(|test_kit, _domain, round, caller| {
+                assert_cascades_disabled(test_kit, round, caller);
+            });
+        });
+        scope.spawn(|| {
+            RunTestUnderCascadesAndDomainWithSchemaLease(
+                Duration::from_millis(10),
+                |test_kit, _domain, round, caller| {
+                    assert_cascades_disabled(test_kit, round, caller);
+                },
+            );
+        });
     });
-    RunTestUnderCascadesWithDomain(|test_kit, _domain, round, caller| {
-        assert_cascades_disabled(test_kit, round, caller);
-    });
-    RunTestUnderCascadesAndDomainWithSchemaLease(
-        Duration::from_millis(10),
-        |test_kit, _domain, round, caller| {
-            assert_cascades_disabled(test_kit, round, caller);
-        },
-    );
 
     assert_eq!(CALLBACKS.load(Ordering::SeqCst), 3);
 }

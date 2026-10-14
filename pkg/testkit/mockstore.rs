@@ -304,8 +304,7 @@ where
 
 fn test_callback_caller<F>() -> &'static str {
     type_name::<F>()
-        .strip_suffix("::{{closure}}")
-        .unwrap_or_else(|| type_name::<F>())
+        .trim_end_matches("::{{closure}}")
         .rsplit("::")
         .next()
         .expect("callback type name must not be empty")
