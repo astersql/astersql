@@ -961,7 +961,7 @@ fn test_vector_index() {
 
 #[test]
 fn test_inverted_index() {
-    run_under_cascades(|domain, tk| {
+    run_under_cascades_in_parallel(|domain, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec("create table t (a int, b bigint, c tinyint, d smallint unsigned, columnar index idx_a (a) using inverted, columnar index idx_b (b) using inverted)", Vec::new());
         tk.MustExec(
