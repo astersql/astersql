@@ -237,11 +237,21 @@ fn order_aware_join_reorder_pushes_selection_and_keeps_order() {
 
 #[test]
 fn dp_join_reorder_leading_hint_reports_go_warning() {
+    let mut setup_tk = new_testkit(false);
+    for table in ["t1", "t2", "t3"] {
+        setup_tk.MustExec(&format!("create table {table}(a int,b int)"), Vec::new());
+    }
+    let store = setup_tk.Store();
     for cascades in [false, true] {
-        let mut tk = new_testkit(cascades);
-        for table in ["t1", "t2", "t3"] {
-            tk.MustExec(&format!("create table {table}(a int,b int)"), Vec::new());
-        }
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
         tk.MustExec(
             "set @@tidb_opt_enable_advanced_join_reorder = 1",
             Vec::new(),
