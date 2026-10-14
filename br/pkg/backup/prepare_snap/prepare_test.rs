@@ -129,6 +129,8 @@ struct MockStore {
     clock: Mutex<Option<Arc<FakeClock>>>,
     /// 可选响应 epoch 覆盖，用于验证 protobuf nil getter 的零值语义。
     response_epoch: Mutex<Option<metapb::RegionEpoch>>,
+    /// UpdateLease 入队后的测试钩子，用于等待真实续租事件而非固定睡眠。
+    on_update_lease: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// 指向自身的弱引用，供延迟线程 upgrade。
     self_weak: Mutex<Weak<MockStore>>,
 }
@@ -150,6 +152,7 @@ impl MockStore {
             inject_conn_err: Mutex::new(None),
             clock: Mutex::new(None),
             response_epoch: Mutex::new(None),
+            on_update_lease: Mutex::new(None),
             self_weak: Mutex::new(Weak::new()),
         });
         // 保存弱引用，供延迟线程在强引用消失时放弃 push。
@@ -263,6 +266,9 @@ impl PrepareClient for MockStore {
                 });
                 drop(g);
                 self.cv.notify_all();
+                if let Some(on_update_lease) = self.on_update_lease.lock().unwrap().as_ref() {
+                    on_update_lease();
+                }
             }
             // Finish：回报一次 UpdateLeaseResult，清空 lease 并关闭流。
             brpb::PrepareSnapshotBackupRequestType::Finish => {
@@ -673,10 +679,20 @@ fn test_lease_timeout() {
 fn test_lease_timeout_while_taking_snapshot() {
     let ms = MockStores::new(&[1, 2, 3], &dummy_regions(100));
     let clock = FakeClock::new();
+    let lease_updates = Arc::new((Mutex::new(0usize), Condvar::new()));
     *ms.on_create_store.lock().unwrap() = Some(Box::new({
         let clock = Arc::clone(&clock);
+        let lease_updates = Arc::clone(&lease_updates);
         move |store: &Arc<MockStore>| {
             *store.clock.lock().unwrap() = Some(Arc::clone(&clock));
+            *store.on_update_lease.lock().unwrap() = Some(Arc::new({
+                let lease_updates = Arc::clone(&lease_updates);
+                move || {
+                    let mut count = lease_updates.0.lock().unwrap();
+                    *count += 1;
+                    lease_updates.1.notify_all();
+                }
+            }));
         }
     }));
     let ctx = Context::background();
@@ -686,10 +702,23 @@ fn test_lease_timeout_while_taking_snapshot() {
     // 不走完整 DriveLoop，以便在 WaitApply 进行中制造超时。
     // Go: AdvanceState alone; it loads holes and dials stores via streamOf.
     prep.AdvanceState(&ctx).expect("AdvanceState");
+    let initial_lease_updates = *lease_updates.0.lock().unwrap();
     // 拨快远超 LeaseDuration，迫使 Finalize 观测到过期。
     clock.advance(Duration::from_secs(100 * 60));
-    // 给续约/事件线程一点时间，再进入等待循环。
-    thread::sleep(Duration::from_secs(2));
+    // 等待后台 lease loop 真正完成下一次续租，避免用固定睡眠猜测事件时序。
+    let deadline = Instant::now() + prep.LeaseDuration;
+    let mut updates = lease_updates.0.lock().unwrap();
+    while *updates == initial_lease_updates {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for lease renewal");
+        let (next, timeout) = lease_updates.1.wait_timeout(updates, remaining).unwrap();
+        updates = next;
+        assert!(
+            !timeout.timed_out() || *updates > initial_lease_updates,
+            "timed out waiting for lease renewal"
+        );
+    }
+    drop(updates);
     // 1s 后取消子上下文，防止事件循环永久卡住。
     let (cx, cancel) = Context::with_cancel(&ctx);
     let cancel = Arc::new(cancel);
