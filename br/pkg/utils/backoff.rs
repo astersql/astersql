@@ -352,12 +352,20 @@ pub fn NewTiKVStoreBackoffStrategyWithOptions(
 
 // import SST 预置参数 + ErrorContext("import sst", 3)。
 pub fn NewImportSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
+    NewImportSSTBackoffStrategyWithOptions(Vec::new())
+}
+
+/// Import SST strategy with optional overrides for deterministic callers.
+pub fn NewImportSSTBackoffStrategyWithOptions(
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
     let errContext = NewErrorContext("import sst", 3);
-    NewTiKVStoreBackoffStrategy(
+    NewTiKVStoreBackoffStrategyWithOptions(
         importSSTRetryTimes,
         importSSTWaitInterval,
         importSSTMaxWaitInterval,
         errContext,
+        opts,
     )
 }
 

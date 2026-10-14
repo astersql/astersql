@@ -36,8 +36,8 @@ use crate::backoff::{
     ConstantBackoff, IoEof, NewAggressivePDBackoffStrategyWithOptions,
     NewBackupSSTBackoffStrategyWithOptions, NewChecksumBackoffStrategy,
     NewDownloadSSTBackoffStrategy, NewDownloadSSTBackoffStrategyWithOptions,
-    NewFlashBackBackoffStrategy, NewImportSSTBackoffStrategy, NewRecoveryBackoffStrategy,
-    NewTiKVStoreBackoffStrategy, WithDelayTime, WithMaxDelayTime,
+    NewFlashBackBackoffStrategy, NewImportSSTBackoffStrategyWithOptions,
+    NewRecoveryBackoffStrategy, NewTiKVStoreBackoffStrategy, WithDelayTime, WithMaxDelayTime,
 };
 use crate::error_handling::NewDefaultContext;
 use crate::retry::{WithRetry, WithRetryReturnLastErr, WithRetryV2};
@@ -323,8 +323,11 @@ fn test_pd_backoff_with_retryable_error() {
 #[test]
 fn test_new_import_sst_backoffer_with_success() {
     let mut counter = 0;
-    // Import SST 专用退避策略。
-    let backoff_strategy = NewImportSSTBackoffStrategy();
+    // Import SST 专用退避策略；只覆盖等待时长，保留默认重试次数与错误分类。
+    let backoff_strategy = NewImportSSTBackoffStrategyWithOptions(vec![
+        WithDelayTime(Duration::ZERO),
+        WithMaxDelayTime(Duration::ZERO),
+    ]);
     let err = WithRetry(
         &Context::new(),
         Box::new(|| {
