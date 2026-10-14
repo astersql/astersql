@@ -367,6 +367,19 @@ pub fn newStoreWithRetryAndInterval(
     maxRetries: usize,
     retryInterval: Duration,
 ) -> Result<Option<StorageRef>, StoreError> {
+    newStoreWithRetryAndBackoff(path, maxRetries, retryInterval, thread::sleep)
+}
+
+/// Runs the store-open retry loop with an injectable backoff operation.
+///
+/// Production entry points pass `thread::sleep`; tests use this seam to verify
+/// the complete Go-compatible backoff schedule without waiting in real time.
+pub(crate) fn newStoreWithRetryAndBackoff(
+    path: &str,
+    maxRetries: usize,
+    retryInterval: Duration,
+    mut backoff: impl FnMut(Duration),
+) -> Result<Option<StorageRef>, StoreError> {
     // Registry only owns the scheme. The concrete TiKV driver parses the
     // authority because client-go-compatible comma-separated PD endpoints are
     // not representable by the generic URL parser.
@@ -399,7 +412,7 @@ pub fn newStoreWithRetryAndInterval(
                     return Err(error);
                 }
                 last_error = Some(error);
-                thread::sleep(retryInterval.saturating_mul(attempt as u32));
+                backoff(retryInterval.saturating_mul(attempt as u32));
             }
         }
     }

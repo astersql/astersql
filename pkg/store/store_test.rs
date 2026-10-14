@@ -21,7 +21,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use astersql_kv as kv;
 use astersql_store_driver::{InMemoryBackend, TiKVDriver};
@@ -30,6 +30,7 @@ use config_dependency::{self as config, StoreType, StoreTypeMockTiKV, StoreTypeT
 use kv::{Getter, Mutator, Retriever, Storage as KvStorage};
 use serial_test::serial;
 
+use crate::store::newStoreWithRetryAndBackoff;
 use crate::{
     Driver, LocalStoreDriver, New, Register, ResetStoreStateForTest, StoreError, StoreErrorKind,
     TiKVStoreDriver, newStoreWithRetry,
@@ -645,10 +646,26 @@ fn test_retry_open_store() {
         opens: AtomicUsize::new(0),
     });
     Register(StoreTypeMockTiKV, driver.clone()).unwrap();
-    let started = Instant::now();
-    assert!(newStoreWithRetry("mocktikv://dummy-store", 3).is_err());
+    let mut backoffs = Vec::new();
+    assert!(
+        newStoreWithRetryAndBackoff(
+            "mocktikv://dummy-store",
+            3,
+            Duration::from_millis(500),
+            |duration| backoffs.push(duration),
+        )
+        .is_err()
+    );
     assert_eq!(driver.opens.load(Ordering::SeqCst), 3);
-    assert!(started.elapsed() >= Duration::from_secs(3));
+    assert_eq!(
+        backoffs,
+        [
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_millis(1_500),
+        ]
+    );
+    assert_eq!(backoffs.iter().sum::<Duration>(), Duration::from_secs(3));
 
     let tso = StoreError::new(StoreErrorKind::PdClientGetTso, "not leader");
     let leader = StoreError::new(StoreErrorKind::PdClientGetLeader, "not leader");
