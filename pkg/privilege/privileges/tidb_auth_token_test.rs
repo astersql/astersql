@@ -294,10 +294,9 @@ fn test_auth_token_claims() {
     verified.remove("iat");
     let err = checkAuthTokenClaims(&verified, &record, defaultTokenLife).unwrap_err();
     assert!(err.to_string().contains("lack 'iat'"), "{err}");
-    // Go sleeps 2s here so `now` (the token's `iat`) is provably older than
-    // the 1s token life being tested against; mirror that real-time wait.
-    std::thread::sleep(Duration::from_secs(2));
-    verified.insert("iat".into(), json!(now));
+    // Make `iat` provably older than the 1s token life without a wall-clock
+    // wait. This exercises the same production expiry branch deterministically.
+    verified.insert("iat".into(), json!(now - 2));
     let err = checkAuthTokenClaims(&verified, &record, Duration::from_secs(1)).unwrap_err();
     assert!(err.to_string().contains("out of its life time"), "{err}");
     verified.insert("iat".into(), json!(now + 3600));
@@ -309,7 +308,7 @@ fn test_auth_token_claims() {
     verified.remove("exp");
     let err = checkAuthTokenClaims(&verified, &record, defaultTokenLife).unwrap_err();
     assert!(err.to_string().contains("lack 'exp'"), "{err}");
-    verified.insert("exp".into(), json!(now));
+    verified.insert("exp".into(), json!(now - 1));
     let err = checkAuthTokenClaims(&verified, &record, defaultTokenLife).unwrap_err();
     assert!(err.to_string().contains("has been expired"), "{err}");
     verified.insert("exp".into(), json!(now + 100 * 3600));
