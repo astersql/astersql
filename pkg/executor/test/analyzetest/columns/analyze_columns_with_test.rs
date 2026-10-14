@@ -368,8 +368,10 @@ fn TestAnalyzeColumnsWithIndex() {
 #[test]
 /// 聚簇复合主键既是行句柄，也是必须随目标列一起分析的索引依赖。
 fn TestAnalyzeColumnsWithClusteredIndex() {
+    let (store, _) = CreateMockStoreAndDomain();
     for choice in [ColumnChoice::List, ColumnChoice::Predicate] {
-        let (mut testkit, store) = setup(
+        let mut testkit = setup_with_store(
+            Arc::clone(&store),
             "create table t (a int, b int, c int, d int, primary key(b, d) clustered)",
             "insert into t values (1,1,null,1), (2,2,9,2), (1,3,8,3), (2,4,7,4), \
              (1,5,7,5), (2,6,6,6), (1,7,6,7), (2,8,6,8), (1,9,6,9)",
