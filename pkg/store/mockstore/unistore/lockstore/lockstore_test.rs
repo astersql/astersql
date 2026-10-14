@@ -176,6 +176,7 @@ mod tests {
     fn runReader(
         ls: Arc<RwLock<Box<MemStore>>>,
         stop: Arc<AtomicBool>,
+        writer_waiting: Arc<AtomicBool>,
         started: Arc<Barrier>,
         i: usize,
     ) -> usize {
@@ -184,6 +185,10 @@ mod tests {
         let mut buf = Vec::with_capacity(100);
         started.wait();
         while !stop.load(Ordering::Relaxed) {
+            // Go's RWMutex prevents new readers from starving a waiting writer.
+            while writer_waiting.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
             reads += 1;
             let result = ls.read().unwrap().Get(&key, &mut buf);
             if let Some(result) = result {
@@ -201,13 +206,15 @@ mod tests {
         let concurrent_keys: Vec<_> = (0..KEY_RANGE).map(numToKey).collect();
         let ls = Arc::new(RwLock::new(MemStore::NewMemStore(1 << 20)));
         let stop = Arc::new(AtomicBool::new(false));
+        let writer_waiting = Arc::new(AtomicBool::new(false));
         let started = Arc::new(Barrier::new(KEY_RANGE + 1));
         let readers: Vec<_> = (0..KEY_RANGE)
             .map(|i| {
                 let ls = Arc::clone(&ls);
                 let stop = Arc::clone(&stop);
+                let writer_waiting = Arc::clone(&writer_waiting);
                 let started = Arc::clone(&started);
-                thread::spawn(move || runReader(ls, stop, started, i))
+                thread::spawn(move || runReader(ls, stop, writer_waiting, started, i))
             })
             .collect();
 
@@ -218,11 +225,17 @@ mod tests {
         started.wait();
         for _ in 0..WRITE_ROUNDS {
             let key = &concurrent_keys[rng.gen_range(0..KEY_RANGE)];
-            if ls.write().unwrap().PutWithHint(key, key, Some(&mut hint)) {
+            writer_waiting.store(true, Ordering::Release);
+            let inserted = ls.write().unwrap().PutWithHint(key, key, Some(&mut hint));
+            writer_waiting.store(false, Ordering::Release);
+            if inserted {
                 total_insert += 1;
             }
             let key = &concurrent_keys[rng.gen_range(0..KEY_RANGE)];
-            if ls.write().unwrap().DeleteWithHint(key, Some(&mut hint)) {
+            writer_waiting.store(true, Ordering::Release);
+            let deleted = ls.write().unwrap().DeleteWithHint(key, Some(&mut hint));
+            writer_waiting.store(false, Ordering::Release);
+            if deleted {
                 total_delete += 1;
             }
         }
