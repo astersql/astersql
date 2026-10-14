@@ -71,6 +71,13 @@ fn setup_tpcds_schema(cascades: bool) -> (Arc<Domain>, TestKit) {
             .unwrap_or_else(|error| panic!("set tpcds.{table} TiFlash replica: {error}"));
     }
 
+    configure_tpcds_session(&mut tk, cascades);
+
+    (domain, tk)
+}
+
+/// Apply the Go TPC-DS callback's session-local planner settings.
+fn configure_tpcds_session(tk: &mut TestKit, cascades: bool) {
     // Go TestTPCDSQ64 在建表之后设置的 MPP/broadcast join 会话变量。
     tk.MustExec("set @@tidb_enforce_mpp=ON", Vec::new());
     tk.MustExec(
@@ -86,8 +93,6 @@ fn setup_tpcds_schema(cascades: bool) -> (Arc<Domain>, TestKit) {
         &format!("set @@session.tidb_enable_cascades_planner = {cascades}"),
         Vec::new(),
     );
-
-    (domain, tk)
 }
 
 /// 从 Domain InfoSchema 取出 `tpcds.<table>` 的 `TableInfo`。
@@ -103,15 +108,24 @@ fn table_info(domain: &Domain, table: &str) -> Arc<astersql_meta_model::TableInf
 #[test]
 fn test_tpcds_setup_supports_go_cascades_off_mode() {
     // Go's TypeBool sysvar stores its canonical OFF/ON value after assignment.
-    for (cascades, expected) in [(false, "OFF"), (true, "ON")] {
-        let (_domain, tk) = setup_tpcds_schema(cascades);
+    let (_domain, tk) = setup_tpcds_schema(false);
+    assert_eq!(
+        tk.MustQuery("select @@session.tidb_enable_cascades_planner", Vec::new(),)
+            .Rows(),
+        vec![vec!["OFF".to_owned()]],
+    );
 
-        assert_eq!(
-            tk.MustQuery("select @@session.tidb_enable_cascades_planner", Vec::new(),)
-                .Rows(),
-            vec![vec![expected.to_owned()]],
-        );
-    }
+    // The planner mode is session-local. Reuse the immutable schema and Domain,
+    // but create a distinct session just as Go does for the cascades-on pass.
+    let mut cascades_tk = TestKit::new(tk.Store());
+    cascades_tk.MustExec("use tpcds", Vec::new());
+    configure_tpcds_session(&mut cascades_tk, true);
+    assert_eq!(
+        cascades_tk
+            .MustQuery("select @@session.tidb_enable_cascades_planner", Vec::new(),)
+            .Rows(),
+        vec![vec!["ON".to_owned()]],
+    );
 }
 
 /// Go `TestTPCDSQ64` creates and selects the dedicated `tpcds` database before
