@@ -61,26 +61,28 @@ macro_rules! string_rows {
     }};
 }
 
-fn prepare_tables(tk: &mut TestKit) {
-    for statement in [
-        "create table t0 (id varchar(64) primary key, a int, b int)",
-        "create table t1 (id varchar(64) primary key, a int, b int)",
-        "create table t2 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, primary key (c1,c2,c3), key c3 (c3))",
-        "create table t3 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, primary key (c1,c2,c3), key c3 (c3))",
-        "create table t4 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, state varchar(64) not null default 'ACTIVE', primary key (c1,c2,c3), key c3 (c3))",
-        "create table t5 (c1 varchar(64) not null, c2 varchar(64) not null, primary key (c1,c2))",
-        "create table t6(a int, b int, c int, d int, index(a,b))",
-        "create table t7c899916 (col_37 text collate gbk_bin default null, col_38 datetime default current_timestamp, col_39 tinyint unsigned not null, col_40 json not null, col_41 char(140) collate gbk_bin not null, col_42 json default null, col_43 tinytext collate gbk_bin default null, col_44 json default null, col_45 date default '2010-01-29', col_46 char(221) collate gbk_bin default null, col_47 timestamp, unique key idx_15 (col_41,col_39,col_38)) engine=InnoDB default charset=gbk collate=gbk_bin",
-        "create table tlfdfece63 (col_41 timestamp null default null, col_42 json not null, col_43 varchar(330) collate utf8_general_ci default null, col_44 char(192) collate utf8_general_ci not null default '^_', col_45 text collate utf8_general_ci default null, col_46 double default '8900.485367052326', col_47 decimal(59,2) default null, col_48 varchar(493) collate utf8_general_ci default null, primary key (col_44), key idx_20 (col_41,col_47), unique key idx_21 ((cast(col_42 as char(64) array)),col_45(4),col_43(3)), key idx_22 (col_48(4),col_46)) engine=InnoDB default charset=utf8 collate=utf8_general_ci",
-        "create table tad03b424 (col_41 timestamp null default null, col_42 json not null, col_43 varchar(330) collate utf8_general_ci default null, col_44 char(192) collate utf8_general_ci not null default '^_', col_45 text collate utf8_general_ci default null, col_46 double default '8900.485367052326', col_47 decimal(59,2) default null, col_48 varchar(493) collate utf8_general_ci default null, primary key (col_44), key idx_20 (col_41,col_47), unique key idx_21 ((cast(col_42 as char(64) array)),col_45(4),col_43(3)), key idx_22 (col_48(4),col_46)) engine=InnoDB default charset=utf8 collate=utf8_general_ci",
-        "create table ISSUE64263 (column_1 bigint unsigned not null, column_2 int unsigned not null, column_3 varchar(255) collate utf8mb4_general_ci not null, column_4 int unsigned not null, column_5 text default null, column_6 datetime not null, primary key (column_1), key idx_4_6 (column_4,column_6), key idx_4 (column_4), key idx_6 (column_6), key idx_4_3_2 (column_4,column_3,column_2), key idx_3_2 (column_3,column_2)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_general_ci",
-    ] {
-        tk.MustExec(statement, Vec::new());
+fn prepare_tables(tk: &mut TestKit, initialize_schema: bool) {
+    if initialize_schema {
+        for statement in [
+            "create table t0 (id varchar(64) primary key, a int, b int)",
+            "create table t1 (id varchar(64) primary key, a int, b int)",
+            "create table t2 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, primary key (c1,c2,c3), key c3 (c3))",
+            "create table t3 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, primary key (c1,c2,c3), key c3 (c3))",
+            "create table t4 (c1 varchar(64) not null, c2 varchar(64) not null, c3 varchar(64) not null, state varchar(64) not null default 'ACTIVE', primary key (c1,c2,c3), key c3 (c3))",
+            "create table t5 (c1 varchar(64) not null, c2 varchar(64) not null, primary key (c1,c2))",
+            "create table t6(a int, b int, c int, d int, index(a,b))",
+            "create table t7c899916 (col_37 text collate gbk_bin default null, col_38 datetime default current_timestamp, col_39 tinyint unsigned not null, col_40 json not null, col_41 char(140) collate gbk_bin not null, col_42 json default null, col_43 tinytext collate gbk_bin default null, col_44 json default null, col_45 date default '2010-01-29', col_46 char(221) collate gbk_bin default null, col_47 timestamp, unique key idx_15 (col_41,col_39,col_38)) engine=InnoDB default charset=gbk collate=gbk_bin",
+            "create table tlfdfece63 (col_41 timestamp null default null, col_42 json not null, col_43 varchar(330) collate utf8_general_ci default null, col_44 char(192) collate utf8_general_ci not null default '^_', col_45 text collate utf8_general_ci default null, col_46 double default '8900.485367052326', col_47 decimal(59,2) default null, col_48 varchar(493) collate utf8_general_ci default null, primary key (col_44), key idx_20 (col_41,col_47), unique key idx_21 ((cast(col_42 as char(64) array)),col_45(4),col_43(3)), key idx_22 (col_48(4),col_46)) engine=InnoDB default charset=utf8 collate=utf8_general_ci",
+            "create table tad03b424 (col_41 timestamp null default null, col_42 json not null, col_43 varchar(330) collate utf8_general_ci default null, col_44 char(192) collate utf8_general_ci not null default '^_', col_45 text collate utf8_general_ci default null, col_46 double default '8900.485367052326', col_47 decimal(59,2) default null, col_48 varchar(493) collate utf8_general_ci default null, primary key (col_44), key idx_20 (col_41,col_47), unique key idx_21 ((cast(col_42 as char(64) array)),col_45(4),col_43(3)), key idx_22 (col_48(4),col_46)) engine=InnoDB default charset=utf8 collate=utf8_general_ci",
+            "create table ISSUE64263 (column_1 bigint unsigned not null, column_2 int unsigned not null, column_3 varchar(255) collate utf8mb4_general_ci not null, column_4 int unsigned not null, column_5 text default null, column_6 datetime not null, primary key (column_1), key idx_4_6 (column_4,column_6), key idx_4 (column_4), key idx_6 (column_6), key idx_4_3_2 (column_4,column_3,column_2), key idx_3_2 (column_3,column_2)) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_general_ci",
+            "set global tidb_opt_fix_control = '44830:ON'",
+            "set global tidb_enable_non_prepared_plan_cache=on",
+        ] {
+            tk.MustExec(statement, Vec::new());
+        }
     }
     for statement in [
-        "set global tidb_opt_fix_control = '44830:ON'",
         "set tidb_opt_fix_control = '44830:ON'",
-        "set global tidb_enable_non_prepared_plan_cache=on",
         "set tidb_enable_non_prepared_plan_cache=on",
     ] {
         tk.MustExec(statement, Vec::new());
@@ -167,9 +169,20 @@ fn run_fixture(tk: &mut TestKit, suite: &TestData, cascades: bool) {
 #[test]
 fn predicate_simplification_go_fixture_cases() {
     let suite = load_suite();
-    for cascades in [false, true] {
-        let mut tk = new_testkit(cascades);
-        prepare_tables(&mut tk);
+    let (store, _domain) = CreateMockStoreAndDomain();
+    for (round, cascades) in [false, true].into_iter().enumerate() {
+        // The fixture only reads schema state, so both planner modes can share
+        // one initialized store while retaining isolated session/cache state.
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner={}",
+                if cascades { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
+        prepare_tables(&mut tk, round == 0);
         run_fixture(&mut tk, &suite, cascades);
     }
 }
