@@ -44,7 +44,7 @@ fn get_ts_uses_go_aggressive_pd_attempt_count() {
     });
     let timer_for_storage: Arc<dyn GlobalTimer> = timer.clone();
 
-    newExternalCheckpointStorage(&ctx, storage, Some(timer_for_storage), test_flush_path())
+    newExternalCheckpointStorageForTest(&ctx, storage, Some(timer_for_storage), test_flush_path())
         .unwrap();
     assert_eq!(timer.calls.load(Ordering::SeqCst), 9);
 }
