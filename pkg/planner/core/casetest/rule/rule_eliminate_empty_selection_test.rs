@@ -20,7 +20,7 @@
 //
 // Selection：过滤算子；Empty Selection：conditions 为空、对结果无影响的冗余节点。
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
 
 /// 对齐 Go `testkit.RunTestUnderCascades`，两种 planner 模式各用独立会话。
@@ -29,7 +29,7 @@ where
     F: FnMut(&mut TestKit, &str),
 {
     for cascades in ["off", "on"] {
-        let (store, _domain) = CreateMockStoreAndDomain();
+        let (store, _domain) = CreatePlannerTestStoreAndDomain();
         let mut test_kit = TestKit::new(store);
         test_kit.MustExec("use test;", Vec::new());
         test_kit.MustExec(
