@@ -259,13 +259,7 @@ fn writes_share_one_worker_and_preserve_transaction_order() {
 }
 
 /// 构造单表点查数据，并在十个会话中用随机键反复验证缓存计划的查询结果。
-fn run_point_case(
-    ddl: &str,
-    prepare: &str,
-    set: &str,
-    execute: &str,
-    expected: fn(usize) -> Vec<String>,
-) {
+fn run_point_case(ddl: &str, prepare: &str, expected: fn(usize) -> Vec<String>) {
     let mut harness = Harness::new();
     exec(&mut harness.tk, "use test");
     exec(
@@ -277,12 +271,26 @@ fn run_point_case(
     insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, move |mut tk| {
         exec(&mut tk, "use test");
-        exec(&mut tk, prepare);
-        for _ in 0..100 {
-            let value = rand::intn(100) as usize;
-            exec(&mut tk, &set.replace("{v}", &value.to_string()));
-            query(&tk, execute).Check(vec![expected(value)]);
+        let session = tk.Session();
+        let (statement_id, fields) = session.PrepareStmt(prepare).expect("prepare point query");
+        assert_eq!(fields.len(), 2);
+        let values = (0..100)
+            .map(|_| rand::intn(100) as usize)
+            .collect::<Vec<_>>();
+        let arguments = values
+            .iter()
+            .map(|&value| vec![DbValue::I64(value as i64)])
+            .collect::<Vec<_>>();
+        let results = session
+            .QueryPreparedStmtBatch(statement_id, &arguments)
+            .expect("execute point queries");
+        assert_eq!(results.len(), values.len());
+        for (rows, value) in results.iter().zip(values) {
+            assert_eq!(rows.string_rows(), vec![expected(value)]);
         }
+        session
+            .DropPreparedStmt(statement_id)
+            .expect("drop point query");
     });
 }
 
@@ -290,9 +298,7 @@ fn run_point_case(
 pub fn TestInstancePlanCacheConcurrencyPointNoTxn() {
     run_point_case(
         "create table t (a int, b int, primary key(a))",
-        "prepare st from 'select * from t where a=?'",
-        "set @v={v}",
-        "execute st using @v",
+        "select * from t where a=?",
         |value| vec![value.to_string(), value.to_string()],
     );
 }
