@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：已阻塞
+状态：已完成，待回归验证
 
 目的：对日志排名第 48、原始耗时 5.310 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,26 +93,32 @@
 
 ## 进度
 
-- [x] 阅读上下文并取得 Cargo 槽位 10；性能锁因仓库级资源死锁无法取得。
-- [ ] 保存 before 基线证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
+- [x] 阅读上下文，复核历史阻塞，并用 RustCodeGraph 核对 Rust/Go 调用链与用例规模。
+- [x] 保存 before 基线证据和阶段耗时分解。
+- [x] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审、更新状态并提交；因状态为“已完成，待回归验证”保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `5.310s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
 - 2026-10-12 22:26 +08:00 确认仓库级资源死锁：任务 152 进程 PID 14399 持有 `target/rust-performance/perf-audit.lock/task-0152.owner`，却等待 `target/rust-slot-locks/slot-6.lock`；任务 158 进程 PID 14002 持有槽位 6，却等待性能锁。两进程均活跃且已相互等待约 10 分钟，不能删除他人活跃锁或终止他人进程。
 - 任务 48 已动态领取槽位 10，绝对路径 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-10`；未能进入 Cargo 预热或严格计时，退出前已释放自己的槽位锁并保留缓存。
+- 2026-10-14 复核时历史死锁已消失；before 使用槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`，精确选中 1 个测试且 5/5 成功：`0.862111, 0.813574, 0.804012, 0.795257, 1.012634s`，中位数 `0.813574s`，最大值 `1.012634s`。
+- 静态分解显示 classic/cascades 两路均重复执行 Domain/TestKit 初始化、8 张表的建表/插入和同一不可变 fixture 解析；两路主体只执行 EXPLAIN/查询并切换 session variable，不修改表数据。同目录 `test_partition_table_explain` 和 `test_batch_point_get_partition_for_access_object` 已采用同类复用。
+- 优化后两次 60 秒和一次高频 60 秒动态重试均未取得性能锁。锁由无关任务 42 的活跃会话 PID 83796 持有；其 `task-0042-after.tsv` 已产生 5 个 sample，但持有者进程未退出，按规则不得删除他人活跃锁。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
 - 决策：不绕过或破坏活跃锁，将任务标记为 `已阻塞`并保留本文件。理由：严格性能计时必须持有仓库级性能锁，当前死锁由其他任务的活跃进程构成，本任务无权终止。日期/作者：2026-10-12 / Codex。
+- 决策：复用单个 TestKit、单次建表数据和单次 fixture 加载，然后依次切换 classic/cascades；保留 dynamic/static、全部 case 和计划/结果断言。理由：两路被测操作对表数据只读，且该复用方式与同目录已交付优化一致。日期/作者：2026-10-14 / Codex。
+- 决策：本次标记 `已完成，待回归验证`并保留任务文件。理由：before 正确性与基线已完成，代码已格式化，但 after 和 lint 被无关活跃会话长时间持有的性能锁阻止；符合“因无关本次修改的原因无法验证”的待回归交付条件。日期/作者：2026-10-14 / Codex。
 
 ## 结果回顾
 
-- 已阻塞；未改动 Rust 源码、测试、case、断言、数据规模或 timeout。
-- 拟执行的 before 命令：`./tools/check/rust-test-performance.sh --max-seconds 0.499 --runs 5 --output target/rust-performance/task-0048-before.tsv -- --locked --package astersql-planner-core-casetest-partition --lib -E 'binary_id(=astersql-planner-core-casetest-partition) & test(=integration_partition_test::test_batch_point_get_table_partition)'`。命令未进入脚本，因性能锁死锁中止；因此有效测试数为 0，五次 sample 均为“未产生”，不将缺失数据伪报为通过。
+- 已完成保持语义的最小优化：消除第二套 planner 模式重复的 Domain/TestKit、建表/插入和 fixture 解析；未删减 SQL、case、断言、数据规模、planner 模式或 timeout。
+- before 命令退出码 0，TSV 为 `target/rust-performance/task-0048-before.tsv`，有效测试数 1×5，失败/超时 0；使用槽位 2 和绝对 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。
+- `cargo fmt --all` 使用槽位 3 和绝对 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`，退出码 0。
+- after 和 `make lint` 未执行：无关任务 42 的活跃会话持有仓库性能锁，按独占规则不得并行运行测试、lint 或其他高负载命令。待锁持有者退出后，必须按原 after 命令完成 5 次回归并运行 `make lint`。
 - 已完成静态证据：RustCodeGraph 定位精确测试、`run_test_under_cascades`、fixture 加载、EXPLAIN/结果检查调用链；对照 Go 版确认 classic/cascades、dynamic/static、全部建表数据和断言规模必须保留。
-- 未运行 `cargo fmt --all`、after 性能命令或 `make lint`：无代码改动，且活跃性能锁规则禁止并行高负载命令。

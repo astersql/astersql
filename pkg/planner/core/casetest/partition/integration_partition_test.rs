@@ -170,22 +170,38 @@ pub fn test_batch_point_get_table_partition() {
         "github.com/pingcap/tidb/pkg/planner/core/forceDynamicPrune",
         "return(true)",
     );
-    crate::support::run_test_under_cascades(|tk, cascades, caller| {
-        tk.MustExec("use test", Vec::new());
-        for sql in BATCH_POINT_GET_TABLE_SETUP {
-            tk.MustExec(sql, Vec::new());
-        }
-        for case in
-            load_integration_partition_cases(cascades, caller, "TestBatchPointGetTablePartition")
-        {
+    let mut tk = crate::support::new_testkit();
+    tk.MustExec("use test", Vec::new());
+    for sql in BATCH_POINT_GET_TABLE_SETUP {
+        tk.MustExec(sql, Vec::new());
+    }
+    let data = testdata::LoadTestSuiteDataWithCascades(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/testdata"),
+        "integration_partition_suite",
+        true,
+    )
+    .unwrap_or_else(|error| panic!("load integration_partition_suite: {error}"));
+    for (cascades, _) in [("off", "classic"), ("on", "cascades")] {
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner = {}",
+                if cascades == "on" { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
+        for case in integration_partition_cases_from_data(
+            &data,
+            cascades == "on",
+            "TestBatchPointGetTablePartition",
+        ) {
             tk.MustExec("set @@tidb_partition_prune_mode = 'dynamic'", Vec::new());
-            check_plan(tk, &explain(&case.sql), &case.dynamic_plan);
-            check_result(tk, &case.sql, &case.result);
+            check_plan(&tk, &explain(&case.sql), &case.dynamic_plan);
+            check_result(&tk, &case.sql, &case.result);
             tk.MustExec("set @@tidb_partition_prune_mode = 'static'", Vec::new());
-            check_plan(tk, &explain(&case.sql), &case.static_plan);
-            check_result(tk, &case.sql, &case.result);
+            check_plan(&tk, &explain(&case.sql), &case.static_plan);
+            check_result(&tk, &case.sql, &case.result);
         }
-    });
+    }
 }
 
 #[test]
