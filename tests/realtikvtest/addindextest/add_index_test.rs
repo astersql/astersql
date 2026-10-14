@@ -198,6 +198,7 @@ fn test_create_unique_index() {
 // 保持这层拆分可以让后续定位回归更直接。
 fn test_create_primary_key() {
     let (_serial, t) = prepare_case();
+    let _ddl_interval = astersql_testkit::ReduceDDLDispatchLoopWaitingIntervalForTest();
     reduce_check_interval(&t);
     let failpoints = enable_fast_add_index_failpoints();
     let ctx = testutils::InitTest(&t);
