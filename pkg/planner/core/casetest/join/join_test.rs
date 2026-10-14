@@ -890,8 +890,14 @@ fn test_index_join_inner_row_count_uses_usable_join_keys() {
 /// Propagated constants must not make the low-NDV `idx_c` dominate the usable join-key index.
 #[test]
 fn test_index_join_inner_index_selection_uses_adjusted_access_count() {
-    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    // This planner regression needs real ANALYZE and SQL execution, but none
+    // of the unrelated statistics-worker bootstrap tables.
+    let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
     let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec(
+        "CREATE TABLE IF NOT EXISTS mysql.analyze_options (table_id BIGINT(64) NOT NULL, sample_num BIGINT(64) NOT NULL DEFAULT 0, sample_rate DOUBLE NOT NULL DEFAULT -1, buckets BIGINT(64) NOT NULL DEFAULT 0, topn BIGINT(64) NOT NULL DEFAULT -1, column_choice enum('DEFAULT','ALL','PREDICATE','LIST') NOT NULL DEFAULT 'DEFAULT', column_ids TEXT(19372), PRIMARY KEY (table_id) CLUSTERED)",
+        Vec::new(),
+    );
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table t_outer (id int not null, c varchar(36) not null, primary key (id), key idx_c (c))",
