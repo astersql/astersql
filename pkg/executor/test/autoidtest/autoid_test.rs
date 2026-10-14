@@ -32,7 +32,10 @@ use astersql_meta_autoid::{
     Allocator, AllocatorType, Allocators, Context, InMemoryAllocator, ShardIdFormat,
 };
 use astersql_parser_mysql::r#type::TypeLonglong;
-use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+use astersql_testkit::{
+    NewTestKit, Rows,
+    mockstore::{CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest},
+};
 use astersql_testkit_testutil::MaskSortHandles;
 
 /// AutoidCase 对应 Go helper testInsertWithAutoidSchema 中的表驱动测试项。
@@ -647,7 +650,9 @@ fn TestInsertWithAutoidSchema() {
     let _guard = crate::AUTOID_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (store, _) = CreateMockStoreAndDomain();
+    // This scenario only addresses user tables in `test`; skipping unrelated
+    // system-schema bootstrapping preserves the real Domain/TestKit SQL path.
+    let (store, _) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
