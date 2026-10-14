@@ -880,9 +880,13 @@ fn go_test_dump_column_stats_usage() {
 /// PREPARE 不收集谓词列；EXECUTE 收集；计划缓存命中时二次 EXECUTE 不再收集。
 #[test]
 fn go_test_collect_predicate_columns_from_execute() {
+    let (bootstrap_testkit, store, _guard) = new_mock_store_and_domain();
+    drop(bootstrap_testkit);
+    let domain = store.domain();
     for plan_cache in [false, true] {
-        let (mut testkit, store, _guard) = new_mock_store_and_domain();
-        let domain = store.domain();
+        // Keep the Go subcases session-isolated while reusing the expensive Domain.
+        // Reset their mutable schema and usage state explicitly before each run.
+        let mut testkit = TestKit::new(store.clone());
         testkit.MustExec(
             &format!(
                 "set tidb_enable_prepared_plan_cache={}",
@@ -891,6 +895,8 @@ fn go_test_collect_predicate_columns_from_execute() {
             Vec::new(),
         );
 
+        testkit.MustExec("drop table if exists t1", Vec::new());
+        testkit.MustExec("delete from mysql.column_stats_usage", Vec::new());
         testkit.MustExec("create table t1(a int, b int)", Vec::new());
         testkit.MustExec(
             "prepare stmt from 'select * from t1 where a > ?'",
