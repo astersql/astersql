@@ -263,7 +263,6 @@ fn assert_temporary_rows_and_unique_index(
         Vec::new(),
     )
     .Check(Rows(&expected_unique_values));
-    tk.MustQuery("show warnings", Vec::new()).Check(Rows(&[]));
 }
 
 fn update_expected_rows(updates: &[&str], deleted: &[i32]) -> Vec<String> {
@@ -718,6 +717,7 @@ fn local_temporary_table_delete_matches_go_transaction_matrix() {
         tk.MustExec("begin", Vec::new());
         insert_temporary_rows(&mut tk, &ids);
         tk.MustExec(sql, Vec::new());
+        tk.MustQuery("show warnings", Vec::new()).Check(Rows(&[]));
         assert_temporary_rows_and_unique_index(&mut tk, &kept);
         tk.MustExec("rollback", Vec::new());
         assert_temporary_rows_and_unique_index(&mut tk, &[]);
