@@ -153,8 +153,7 @@ fn test_lateral_hierarchy_parallel_apply() {
     );
 }
 
-fn run_parallel_apply_warning_case(cascades: &str) {
-    let mut testkit = new_testkit();
+fn run_parallel_apply_warning_case(testkit: &mut TestKit, cascades: &str) {
     testkit.MustExec(
         &format!("set tidb_enable_cascades_planner={cascades}"),
         Vec::new(),
@@ -203,8 +202,19 @@ fn run_parallel_apply_warning_case(cascades: &str) {
 
 #[test]
 fn test_parallel_apply_warnning() {
-    run_parallel_apply_warning_case("off");
-    run_parallel_apply_warning_case("on");
+    let mut testkit = new_testkit();
+    run_parallel_apply_warning_case(&mut testkit, "off");
+
+    // Go's RunTestUnderCascades gives each planner mode a fresh session. Reuse
+    // only the expensive mock store/domain, while dropping the first mode's
+    // schema objects and creating a new TestKit session for the second mode.
+    testkit.MustExec("drop table t, t1, t2, t3", Vec::new());
+    let store = testkit.Store();
+    drop(testkit);
+
+    let mut testkit = TestKit::new(store);
+    testkit.MustExec("use test", Vec::new());
+    run_parallel_apply_warning_case(&mut testkit, "on");
 }
 
 #[test]
