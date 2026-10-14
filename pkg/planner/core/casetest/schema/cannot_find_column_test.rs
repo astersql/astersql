@@ -35,7 +35,7 @@
 
 use astersql_parser::Parser;
 use astersql_parser::ast::{self, JoinType, ResultSetNode};
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::{Rows, TestKit};
 
 /// 将单条 SQL 解析为 AST 根节点；失败则 panic 并带上原文。
@@ -330,7 +330,7 @@ fn real_session_executes_the_join_column_resolution_regression() {
 #[test]
 fn real_session_executes_issue65892_view_join_under_both_planners() {
     for cascades in [false, true] {
-        let (store, _) = CreateMockStoreAndDomain();
+        let (store, _) = CreatePlannerTestStoreAndDomain();
         let mut testkit = TestKit::new(store);
         testkit.MustExec("use test", Vec::new());
         testkit.MustExec(
