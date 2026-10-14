@@ -144,6 +144,27 @@ fn upgraded_global(
     (value, runtime_value)
 }
 
+fn upgraded_tidb_value(version: i64, name: &str) -> Option<String> {
+    let (domain, session) = CreateBootstrapUpgradeTestSession();
+    set_upgrade_version(&session, version);
+    MustExec(
+        &session,
+        &format!("delete from mysql.tidb where variable_name='{name}'"),
+        &[],
+    );
+    drop(session);
+
+    let upgraded = BootstrapCanonicalDomain(domain).expect("upgrade forked baseline");
+    let mut rows = MustExecToRecodeSet(
+        &upgraded,
+        &format!("select variable_value from mysql.tidb where variable_name='{name}'"),
+        &[],
+    );
+    let value = rows.Next().expect("read upgraded mysql.tidb value");
+    rows.Close().expect("close upgraded mysql.tidb result");
+    value.map(|row| row[0].clone())
+}
+
 #[test]
 fn bootstrap_upgrade_fixture_forks_are_isolated() {
     let (first_domain, first) = CreateBootstrapUpgradeTestSession();
@@ -619,41 +640,14 @@ fn bootstrap_creates_ddl_notifier_table_at_current_ddl_version() {
 /// 才写入兼容 OOM action；已处于 59 的集群不得凭空新增该行。
 #[test]
 fn upgrade_59_writes_oom_compatibility_only_for_older_clusters() {
-    let (mut from_58, rebootstrap_from_58) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut from_58, 58);
-    from_58.MustExec(
-        "delete from mysql.tidb where variable_name='default_oom_action'",
-        Vec::new(),
-    );
-    drop(from_58);
-    let from_58 = rebootstrap_from_58();
-    assert_eq!(
-        from_58
-            .MustQuery(
-                "select variable_value from mysql.tidb where variable_name='default_oom_action'",
-                Vec::new(),
-            )
-            .Rows(),
-        vec![vec!["log".to_owned()]],
-    );
+    let from_58 = std::thread::spawn(|| upgraded_tidb_value(58, "default_oom_action"));
+    let from_59 = std::thread::spawn(|| upgraded_tidb_value(59, "default_oom_action"));
 
-    let (mut from_59, rebootstrap_from_59) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut from_59, 59);
-    from_59.MustExec(
-        "delete from mysql.tidb where variable_name='default_oom_action'",
-        Vec::new(),
+    assert_eq!(
+        from_58.join().expect("upgrade from version 58"),
+        Some("log".to_owned()),
     );
-    drop(from_59);
-    let from_59 = rebootstrap_from_59();
-    assert!(
-        from_59
-            .MustQuery(
-                "select variable_value from mysql.tidb where variable_name='default_oom_action'",
-                Vec::new(),
-            )
-            .Rows()
-            .is_empty(),
-    );
+    assert_eq!(from_59.join().expect("upgrade from version 59"), None);
 }
 
 /// 对应 Go `TestIssue20900_2`：从 52 升级不再写旧的 mysql.tidb 内存配额兼容行，
