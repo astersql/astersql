@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：对日志排名第 374、原始耗时 1.768 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,20 +93,26 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 基线证据和阶段耗时分解。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [ ] 保存 before 基线证据和阶段耗时分解（共享 `build-dir` 并发破坏阻塞，待回归）。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审、更新状态、提交并删除任务文件。
+- [x] 自审、更新状态并提交；因待回归保留任务文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.768s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-15 首次执行在编译预热后的执行预热阶段等待仓库共享 `target/debug/.cargo-build-lock`；同时有其他自动调度任务在该 `build-dir` 编译。为避免污染独占计时，主动中止；脚本退出码 `1`，报告只有表头，有效测试数 `0`，不作为性能证据。
+- 2026-10-15 第二次在其他高负载进程短暂结束后重试，编译预热失败：`petgraph 0.8.3` 报告 `target/debug/deps/libfixedbitset-96f596984efa2253.rmeta` 在编译途中不存在，Cargo 退出码 `101`，脚本退出码 `1`，有效测试数仍为 `0`。该路径位于 `.cargo/config.toml` 的仓库共享 `build-dir = "target"`，不是任务领取的 `CARGO_TARGET_DIR`；同时 task 36 已取得性能锁并重建同一共享目录，因此判定为与本任务修改无关的并发构建环境失败。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：按执行协议标记为 `已完成，待回归验证`，不修改 Rust 源码、不删除本文件。理由：已两次突破尝试，失败都发生在目标测试启动之前，且第二次有明确共享构建产物并发破坏证据；在自动并行调度持续运行时无法获得可靠的五次隔离计时。日期/作者：2026-10-15 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 实际 Cargo 槽位：`5`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`。两次均在持有 `target/rust-performance/perf-audit.lock` 时执行规定的 before 命令，性能锁已在每次失败后释放。
+- 精确命令：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-0374-before.tsv -- --locked --package astersql-session --test paging_rpc -E 'binary_id(=astersql-session::paging_rpc) & test(=global_budget_updates_preserve_all_rpc_pages_and_full_sql_results)'`。两次脚本退出码均为 `1`；有效测试数 `0`，失败/超时样本 `0/0`，未进入五次计时。
+- 代码改动：无；不适用 `cargo fmt --all`、after 和 `make lint`。自审确认未删减 512 行真实写入、9 次完整扫描、分页延续、全局变量/资源组更新和逐行断言，也未改动任何依赖或 Cargo manifest。
+- 回归条件：仓库共享 `build-dir` 无并发 Cargo 写入时，重跑完整 before；再根据五次数据决定无代码收口或进入剖析/after。当前正确性和性能均未本地验证，不声称达到 20% 改善。
