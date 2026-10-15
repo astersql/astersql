@@ -690,7 +690,25 @@ pub mod testkit {
         type Backend = astersql_testkit::mockstore::AnalyzeStatsStore;
         static STORES: OnceLock<Mutex<std::collections::HashMap<u64, std::sync::Weak<Backend>>>> =
             OnceLock::new();
-        let backend_store = {
+        let backend_store = if let Ok(path) = std::env::var("ASTERSQL_REALTIKV_TEST_PATH") {
+            push_local_event("testkit.backend:real-tikv");
+            // The add-index RealTiKV harness can opt into the same canonical SQL
+            // session over TiKV used by the transaction and session integration tests.
+            static REAL_STORES: OnceLock<Mutex<std::collections::HashMap<String, Arc<Backend>>>> =
+                OnceLock::new();
+            let mut stores = REAL_STORES.get_or_init(Default::default).lock().unwrap();
+            if let Some(existing) = stores.get(&path) {
+                Arc::clone(existing)
+            } else {
+                let backend = astersql_testkit::mockstore::CreateTiKVStoreAndDomain(&path)
+                    .unwrap_or_else(|error| {
+                        panic!("open RealTiKV add-index test store {path:?}: {error}")
+                    })
+                    .0;
+                stores.insert(path, Arc::clone(&backend));
+                backend
+            }
+        } else {
             let mut stores = STORES.get_or_init(Default::default).lock().unwrap();
             stores.retain(|_, store| store.strong_count() > 0);
             if let Some(existing) = stores.get(&store.id).and_then(std::sync::Weak::upgrade) {

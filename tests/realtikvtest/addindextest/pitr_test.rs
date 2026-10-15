@@ -111,6 +111,12 @@ fn assert_pitr_fixture_evidence(t: &TestCtx) {
     assert!(
         events
             .iter()
+            .any(|event| event == "testkit.backend:real-tikv"),
+        "PiTR add-index must execute against the real TiKV SQL backend"
+    );
+    assert!(
+        events
+            .iter()
             .any(|event| event.contains("tk.MustExec:create database addindex")),
         "addindex database fixture was not created"
     );
@@ -139,6 +145,10 @@ fn assert_pitr_fixture_evidence(t: &TestCtx) {
 // 这样调用方可以把注意力放在场景本身，而不是散落的底层桩对象拼装细节。
 
 fn run_pitr_case(workload: impl FnOnce(&testutils::SuiteContext)) {
+    assert!(
+        std::env::var_os("ASTERSQL_REALTIKV_TEST_PATH").is_some(),
+        "set ASTERSQL_REALTIKV_TEST_PATH to a real TiKV PD URL for PiTR tests"
+    );
     let _lock = serial_guard();
     reset_engine();
     let _reset = EngineReset;
