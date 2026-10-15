@@ -2346,7 +2346,7 @@ fn TestLockKeysInInsertIgnore() {
 }
 
 fn assert_insert_holds_parent_fk_lock(insert_sql: &str, disable_fair_locking: bool) {
-    let store = create_fk_store();
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
     let mut tk = new_fk_testkit(store.clone());
     tk.MustExec("set @@global.tidb_enable_foreign_key=1", Vec::new());
     tk.MustExec("set @@foreign_key_checks=1", Vec::new());
