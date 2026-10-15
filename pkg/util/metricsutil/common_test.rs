@@ -29,7 +29,7 @@ use astersql_metrics_common as metricscommon;
 use super::{
     KeyspaceMeta, MetricsUtilError, PdClient, PdClientFactory, PdErrorKind, RegisterMetricsForBR,
     SecurityOption, SetPdClientFactory, TlsConfig, cloneConstLabels, getKeyspaceMetaWithRetry,
-    registerMetrics, setKeyspaceIDConstLabel,
+    registerMetrics, registerMetricsForBRWithRetry, setKeyspaceIDConstLabel,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -217,7 +217,8 @@ fn test_register_metrics_for_br_passes_pd_options_retries_and_closes() {
     SetPdClientFactory(Some(factory.clone()));
     metricscommon::SetConstLabels(&[]);
 
-    RegisterMetricsForBR(
+    let mut sleeps = Vec::new();
+    registerMetricsForBRWithRetry(
         &["http://pd-1:2379".to_string(), "pd-2:2379".to_string()],
         &TlsConfig {
             ca_path: "ca.pem".to_string(),
@@ -225,6 +226,9 @@ fn test_register_metrics_for_br_passes_pd_options_retries_and_closes() {
             key_path: "client-key.pem".to_string(),
         },
         "analytics",
+        30,
+        Duration::from_millis(500),
+        |duration| sleeps.push(duration),
     )
     .expect("BR metrics registration");
 
@@ -248,6 +252,10 @@ fn test_register_metrics_for_br_passes_pd_options_retries_and_closes() {
     );
     assert!(state.closed.load(Ordering::Acquire));
     assert_eq!(metricscommon::GetConstLabels()["keyspace_id"], "42");
+    assert_eq!(
+        sleeps,
+        vec![Duration::from_millis(500), Duration::from_millis(1000)]
+    );
     metricscommon::SetConstLabels(&[]);
 }
 

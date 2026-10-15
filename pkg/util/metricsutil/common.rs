@@ -259,6 +259,27 @@ pub fn RegisterMetricsForBR(
     tls: &TlsConfig,
     keyspace_name: &str,
 ) -> Result<(), MetricsUtilError> {
+    registerMetricsForBRWithRetry(
+        pd_addrs,
+        tls,
+        keyspace_name,
+        defaultMaxRetries,
+        retryInterval,
+        std::thread::sleep,
+    )
+}
+
+pub(crate) fn registerMetricsForBRWithRetry<F>(
+    pd_addrs: &[String],
+    tls: &TlsConfig,
+    keyspace_name: &str,
+    max_retries: usize,
+    backoff: Duration,
+    sleep: F,
+) -> Result<(), MetricsUtilError>
+where
+    F: FnMut(Duration),
+{
     if keyspace_name.is_empty() {
         return registerMetrics();
     }
@@ -273,10 +294,12 @@ pub fn RegisterMetricsForBR(
     let factory = pdClientFactory();
     let client = factory.NewClient(componentName, pd_addrs, &security, pdTimeout, false)?;
     // 查到 Keyspace id 后写入常量标签再注册。
-    let result = getKeyspaceMeta(client.as_ref(), keyspace_name).and_then(|meta| {
-        setKeyspaceIDConstLabel(meta.id);
-        registerMetrics()
-    });
+    let result =
+        getKeyspaceMetaWithRetry(client.as_ref(), keyspace_name, max_retries, backoff, sleep)
+            .and_then(|meta| {
+                setKeyspaceIDConstLabel(meta.id);
+                registerMetrics()
+            });
     client.Close();
     result
 }
