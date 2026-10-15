@@ -936,6 +936,10 @@ fn canonical_benchmark_helpers_execute_real_session_sql() {
 
 #[test]
 fn benchmark_entrypoints_execute_canonical_paths() {
-    BenchmarkBasic(1);
-    BenchmarkPointGet(1);
+    std::thread::scope(|scope| {
+        let basic = scope.spawn(|| BenchmarkBasic(1));
+        let point_get = scope.spawn(|| BenchmarkPointGet(1));
+        basic.join().expect("BenchmarkBasic worker");
+        point_get.join().expect("BenchmarkPointGet worker");
+    });
 }
