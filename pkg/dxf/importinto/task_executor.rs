@@ -382,18 +382,21 @@ impl EncodeSortStepExecutor {
                 WorkerFactory: self.runtime.WorkerFactory.clone(),
             })
         };
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done, completed) = mpsc::sync_channel(1);
         let watcher = {
             let context = context.clone();
             let pool = pool.clone();
-            let done = done.clone();
             std::thread::spawn(move || {
-                while !done.load(Ordering::Acquire) {
-                    if context.is_cancelled() {
-                        pool.Cancel();
-                        break;
+                loop {
+                    match completed.recv_timeout(Duration::from_millis(10)) {
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if context.is_cancelled() {
+                                pool.Cancel();
+                                break;
+                            }
+                        }
                     }
-                    std::thread::sleep(Duration::from_millis(10));
                 }
             })
         };
@@ -410,7 +413,7 @@ impl EncodeSortStepExecutor {
             data_block,
             index_block,
         );
-        done.store(true, Ordering::Release);
+        let _ = done.send(());
         let _ = watcher.join();
         if let Err(error) = result {
             if let Some(importer) = self
