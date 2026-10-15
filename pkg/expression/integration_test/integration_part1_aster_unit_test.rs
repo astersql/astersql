@@ -360,7 +360,9 @@ fn TestVectorColumnInfo() {
 #[test]
 /// EXPLAIN brief 对向量常量使用科学计数并限制展示长度。
 fn TestVectorExplainTruncate() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t(c VECTOR)", Vec::new());
     tk.MustQuery(
         "EXPLAIN FORMAT='brief' SELECT
