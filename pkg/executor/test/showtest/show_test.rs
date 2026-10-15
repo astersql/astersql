@@ -53,6 +53,21 @@ fn new_show_testkit() -> SerialTestKit {
     }
 }
 
+/// Build the same real SQL/DDL fixture without unrelated statistics system tables.
+fn new_show_testkit_without_system_schemas() -> SerialTestKit {
+    let guard = SHOW_SQL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    SerialTestKit {
+        _guard: guard,
+        testkit: tk,
+    }
+}
+
 /// 校验 Go `ConstructResultOfShowCreateDatabase` 的 IF NOT EXISTS、字符集、
 /// 默认校对规则和 placement policy 输出。
 #[test]
@@ -545,7 +560,7 @@ fn show_create_table_strips_deprecated_integer_widths_and_reports_warnings() {
 /// 对应 Go `TestShowWarnings`：Warning/Error/Note 级别及计数生命周期。
 #[test]
 fn show_warnings_preserves_previous_statement_and_resets_counts() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     tk.MustExec(
         "create table if not exists show_warnings (a int)",
         Vec::new(),
