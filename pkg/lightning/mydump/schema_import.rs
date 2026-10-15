@@ -20,7 +20,31 @@
 use crate::*;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+static CREATE_TABLE_STMT_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)^\s*CREATE\s+TABLE\b").expect("valid CREATE TABLE matcher"));
+static DROP_STMT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*DROP\s+(?:TABLE|DATABASE)\b").expect("valid DROP statement matcher")
+});
+static CREATE_DATABASE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)\bCREATE\s+DATABASE(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:`(?:``|[^`])+`|[^\s;]+)")
+        .expect("valid CREATE DATABASE matcher")
+});
+static CREATE_TABLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)\bCREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:(?:`(?:``|[^`])+`|[^.`\s(]+)\s*\.\s*)?(?:`(?:``|[^`])+`|[^\s(]+)")
+        .expect("valid CREATE TABLE rewrite matcher")
+});
+static CREATE_VIEW_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)\bVIEW\s+(?:`(?:``|[^`])+`|[^.`\s(]+)(?:\s*\.\s*(?:`(?:``|[^`])+`|[^\s(]+))?")
+        .expect("valid CREATE VIEW matcher")
+});
+static VALID_SCHEMA_STATEMENT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)\b(?:CREATE|DROP|SET|ALTER|USE|GRANT|REVOKE|RENAME|TRUNCATE)\b|^\s*/\*!.*\*/\s*;?\s*$",
+    )
+    .expect("valid schema statement matcher")
+});
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// schema 语句类别：建库 / 建表 / 建视图。
 pub enum SchemaStmtType {
@@ -308,9 +332,7 @@ impl SchemaImporter {
 }
 
 fn isCreateTableStmt(statement: &str) -> bool {
-    Regex::new(r"(?is)^\s*CREATE\s+TABLE\b")
-        .expect("CREATE TABLE matcher is valid")
-        .is_match(statement)
+    CREATE_TABLE_STMT_PATTERN.is_match(statement)
 }
 /// 由库表名构造 TableName（不归一化大小写）。
 pub fn tableKey(db: &str, table: &str) -> TableName {
@@ -345,39 +367,25 @@ pub fn createIfNotExistsStmtWithMode(
     ignore_destructive_ddl: bool,
 ) -> Result<Vec<String>, MydumpError> {
     let statements = split_sql(sql)?;
-    let drop = Regex::new(r"(?i)^\s*DROP\s+(?:TABLE|DATABASE)\b").unwrap();
-    let create_database = Regex::new(
-        r"(?is)\bCREATE\s+DATABASE(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:`(?:``|[^`])+`|[^\s;]+)",
-    )
-    .unwrap();
-    let create_table = Regex::new(r"(?is)\bCREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:(?:`(?:``|[^`])+`|[^.`\s(]+)\s*\.\s*)?(?:`(?:``|[^`])+`|[^\s(]+)").unwrap();
-    let create_view = Regex::new(
-        r"(?is)\bVIEW\s+(?:`(?:``|[^`])+`|[^.`\s(]+)(?:\s*\.\s*(?:`(?:``|[^`])+`|[^\s(]+))?",
-    )
-    .unwrap();
-    let valid_statement = Regex::new(
-        r"(?is)\b(?:CREATE|DROP|SET|ALTER|USE|GRANT|REVOKE|RENAME|TRUNCATE)\b|^\s*/\*!.*\*/\s*;?\s*$",
-    )
-    .unwrap();
     let mut rewritten = Vec::with_capacity(statements.len());
     for mut statement in statements {
-        if !valid_statement.is_match(&statement) {
+        if !VALID_SCHEMA_STATEMENT_PATTERN.is_match(&statement) {
             return Err(MydumpError::Syntax(format!(
                 "invalid schema statement: {statement}"
             )));
         }
-        if ignore_destructive_ddl && drop.is_match(&statement) {
+        if ignore_destructive_ddl && DROP_STMT_PATTERN.is_match(&statement) {
             continue;
         }
-        if create_database.is_match(&statement) {
-            statement = create_database
+        if CREATE_DATABASE_PATTERN.is_match(&statement) {
+            statement = CREATE_DATABASE_PATTERN
                 .replace(
                     &statement,
                     format!("CREATE DATABASE IF NOT EXISTS `{}`", quote_ident(db)),
                 )
                 .into_owned();
-        } else if create_table.is_match(&statement) {
-            statement = create_table
+        } else if CREATE_TABLE_PATTERN.is_match(&statement) {
+            statement = CREATE_TABLE_PATTERN
                 .replace(
                     &statement,
                     format!(
@@ -389,9 +397,9 @@ pub fn createIfNotExistsStmtWithMode(
                 .into_owned();
             statement = normalizeCreateTableColumns(&statement)?;
         } else if statement.to_ascii_lowercase().contains("create")
-            && create_view.is_match(&statement)
+            && CREATE_VIEW_PATTERN.is_match(&statement)
         {
-            statement = create_view
+            statement = CREATE_VIEW_PATTERN
                 .replace(
                     &statement,
                     format!("VIEW `{}`.`{}`", quote_ident(db), quote_ident(table)),
