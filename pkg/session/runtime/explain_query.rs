@@ -1787,7 +1787,17 @@ impl ConcreteSession {
         }
 
         let fallback_cte = statement
-            .with_node(|node| first_cte_fallback(node.as_any().downcast_ref::<ast::SelectStmt>()?))
+            .with_node(|node| {
+                let select = node.as_any().downcast_ref::<ast::SelectStmt>()?;
+                // A top-level WITH is planned directly (and can be inlined), so
+                // keep its real physical operators. The fallback is only for a
+                // CTE retained inside an expanded derived table or view.
+                select
+                    .With
+                    .is_none()
+                    .then(|| first_cte_fallback(select))
+                    .flatten()
+            })
             .flatten();
         let plan_context = plan_context_with_params_and_explain(
             Arc::clone(&self.session_vars),
