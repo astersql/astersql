@@ -400,8 +400,10 @@ fn analyze_full_sampling_handles_virtual_and_prefix_indexes() {
 /// ANALYZE，并更新同一物理表的行数元数据。
 #[test]
 fn analyze_snapshot_modes_update_stats_metadata() {
+    let (store, _domain) = CreateMockStoreAndDomain();
     for enabled in [true, false] {
-        let mut tk = analyze_testkit();
+        let table_name = if enabled { "t_snapshot" } else { "t_latest" };
+        let mut tk = TestKit::new(store.clone());
         tk.MustExec("use test", Vec::new());
         tk.MustExec(
             &format!(
@@ -410,13 +412,24 @@ fn analyze_snapshot_modes_update_stats_metadata() {
             ),
             Vec::new(),
         );
-        tk.MustExec("create table t(a int, index index_a(a))", Vec::new());
-        tk.MustExec("insert into t values (1),(1),(1)", Vec::new());
-        tk.MustExec("analyze table t", Vec::new());
-        tk.MustExec("insert into t values (2),(2),(2)", Vec::new());
-        tk.MustExec("analyze table t", Vec::new());
+        tk.MustExec(
+            &format!("create table {table_name}(a int, index index_a(a))"),
+            Vec::new(),
+        );
+        tk.MustExec(
+            &format!("insert into {table_name} values (1),(1),(1)"),
+            Vec::new(),
+        );
+        tk.MustExec(&format!("analyze table {table_name}"), Vec::new());
+        tk.MustExec(
+            &format!("insert into {table_name} values (2),(2),(2)"),
+            Vec::new(),
+        );
+        tk.MustExec(&format!("analyze table {table_name}"), Vec::new());
         let context = tk.AnalyzeStatsContext().expect("ANALYZE stats context");
-        let stats = context.table("test", "t").expect("snapshot stats metadata");
+        let stats = context
+            .table("test", table_name)
+            .expect("snapshot stats metadata");
         assert!(stats.version > 0);
         assert_eq!(stats.row_count, 6);
     }
