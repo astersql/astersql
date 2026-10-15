@@ -891,7 +891,7 @@ fn test_partial_index_with_index_prune() {
 
 #[test]
 fn test_force_index_limit() {
-    run_under_cascades(|_, tk| {
+    run_under_cascades_in_parallel(|_, tk| {
         tk.MustExec("use test", Vec::new());
         tk.MustExec("CREATE TABLE tb (object_id bigint, a bigint, b bigint, c bigint, PRIMARY KEY(object_id), KEY ab(a,b))", Vec::new());
         assert_plan_rows(
