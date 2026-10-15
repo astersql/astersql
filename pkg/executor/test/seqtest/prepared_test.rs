@@ -469,8 +469,9 @@ fn test_issue21884() {
 #[test]
 fn test_prepared_delete() {
     let _serial = serial_sql_test();
+    let store = CreateMockStoreAndDomain().0;
     for enabled in [false, true] {
-        let mut tk = new_testkit();
+        let mut tk = NewTestKit(store.clone());
         set_plan_cache(&mut tk, enabled);
         tk.MustExec("use test", Vec::new());
         tk.MustExec("drop table if exists prepare_test", Vec::new());
