@@ -741,16 +741,15 @@ fn analyze_batch_save_failure_is_atomic_and_records_failed_jobs() {
     let table_id = context.table("test", "t1").unwrap().table_id;
     let current_before = context.physical_stats(table_id).unwrap();
     let history_before = context.history(table_id);
+    let killer = store.sql_killer();
 
-    let clean_store = CreateAnalyzeStatsStore();
-    let mut clean_testkit = TestKit::new(clean_store);
+    let mut clean_testkit = TestKit::new(store.clone());
     clean_testkit.MustExec("set global tidb_enable_historical_stats = 1", Vec::new());
     clean_testkit.MustExec("create table clean_t(a int)", Vec::new());
     clean_testkit.MustExec("insert into clean_t values (9)", Vec::new());
     let clean_context = clean_testkit.AnalyzeStatsContext().unwrap();
     let clean_table_id = clean_context.table("test", "clean_t").unwrap().table_id;
 
-    let killer = store.sql_killer();
     // 仅对目标会话注入保存失败，并发另一会话应成功。
     let save_error = astersql_session::runtime::EnableAnalyzeSaveErrorForTest(&killer);
     let target_worker = std::thread::spawn(move || testkit.Exec("analyze table t1", Vec::new()));
@@ -770,7 +769,7 @@ fn analyze_batch_save_failure_is_atomic_and_records_failed_jobs() {
     assert_eq!(context.history(table_id), history_before);
 
     let jobs = context.analyze_jobs();
-    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs.len(), 3);
     let failed = jobs
         .iter()
         .filter(|job| job.state == "failed")
@@ -784,9 +783,17 @@ fn analyze_batch_save_failure_is_atomic_and_records_failed_jobs() {
         Some("save analyze result to storage failed")
     );
     assert_eq!(clean_context.history(clean_table_id).len(), 1);
-    assert_eq!(clean_context.analyze_jobs().len(), 1);
-    assert_eq!(clean_context.analyze_jobs()[0].state, "finished");
-    let clean_usage = clean_context.column_usage();
+    let clean_jobs = jobs
+        .iter()
+        .filter(|job| job.table == "clean_t")
+        .collect::<Vec<_>>();
+    assert_eq!(clean_jobs.len(), 1);
+    assert_eq!(clean_jobs[0].state, "finished");
+    let clean_usage = clean_context
+        .column_usage()
+        .into_iter()
+        .filter(|usage| usage.table_id == clean_table_id)
+        .collect::<Vec<_>>();
     assert_eq!(clean_usage.len(), 1);
     assert_eq!(clean_usage[0].table_id, clean_table_id);
     assert!(clean_usage[0].last_analyzed_at.is_some());
