@@ -149,7 +149,7 @@ fn test_load_data_1() {
     let _serial = serial_guard();
     let suite = create_tidb_test_suite();
     assert_live_suite(&suite);
-    let mut executor = TestKitExecutor::new();
+    let mut executor = TestKitExecutor::new_without_stats_bootstrap();
     suite
         .test_server_client
         .run_test_load_data_with_column_list(&mut executor)
