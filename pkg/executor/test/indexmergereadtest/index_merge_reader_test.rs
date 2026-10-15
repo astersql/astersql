@@ -22,7 +22,8 @@
 use std::sync::Mutex;
 
 use astersql_testkit::mockstore::{
-    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest, CreateMockStoreAndDomain,
+    CreateMockStoreAndDomainWithoutSystemSchemasForTest,
 };
 use astersql_testkit::{Rows, TestKit};
 
@@ -370,7 +371,10 @@ fn index_merge_order_by_limit_above_preallocation_cap_returns_all_rows() {
 #[test]
 fn index_merge_embedded_limit_preserves_reference_row_count() {
     let _serial = serial_sql_test();
-    let mut tk = new_testkit();
+    // This case only needs mysql.analyze_options from the system schemas;
+    // retain the real Domain, KV, DDL, planner, executor, and ANALYZE paths
+    // without bootstrapping unrelated mysql/sys tables.
+    let mut tk = TestKit::new(CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest());
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table t_im_limit (a int, b int, c int, \
