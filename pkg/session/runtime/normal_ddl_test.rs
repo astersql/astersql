@@ -1403,7 +1403,9 @@ fn crossks_align_normal_ddl_table_mode_uses_shared_multi_schema_version() {
 fn crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue() {
     use astersql_domain::domain::{DdlService, StartMode};
     use astersql_owner::manager::Context;
-    let f = Fixture::new();
+    let _dispatch_interval =
+        super::normal_ddl_service::reduce_ddl_dispatch_loop_waiting_interval_for_test();
+    let f = Fixture::new_without_stats();
     let key = format!("/normal-handoff/{}", f.db);
     let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
     let pool2 = SystemSessionPool::new(f.domain.clone());
