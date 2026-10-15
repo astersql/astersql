@@ -49,7 +49,8 @@ fn binding(
 
 #[test]
 fn test_cross_db_binding_basic() {
-    let (store, _domain) = testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, _domain) =
+        testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut setup = testkit::NewTestKit(store.clone());
     setup.MustExec("use test", Vec::new());
     setup.MustExec(
@@ -64,7 +65,6 @@ fn test_cross_db_binding_basic() {
             Vec::new(),
         );
     }
-
     for scope in ["", "global "] {
         let mut tk = testkit::NewTestKit(store.clone());
         for index in ["a", "b", "c", "d", "e"] {
