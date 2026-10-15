@@ -1001,7 +1001,10 @@ fn TestForeignKeyOnDeleteParentTableCheck() {
 
 #[test]
 fn TestForeignKeyOnDeleteCascade() {
-    let mut tk = fk_testkit();
+    // This test creates every schema it needs, so avoid bootstrapping unrelated
+    // mysql statistics tables while retaining the real Domain, KV, DDL, and SQL paths.
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let mut tk = configure_fk_testkit(store);
     for case in FOREIGN_KEY_CASES {
         prepare_case_with_action(&mut tk, *case, "on delete cascade");
         tk.MustExec(
