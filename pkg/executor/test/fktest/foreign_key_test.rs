@@ -946,7 +946,10 @@ fn TestForeignKeyOnUpdateParentTableCheck() {
 
 #[test]
 fn TestForeignKeyOnDeleteParentTableCheck() {
-    let mut tk = fk_testkit();
+    // This test creates every schema it needs, so avoid bootstrapping unrelated
+    // mysql statistics tables while retaining the real Domain, KV, DDL, and SQL paths.
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let mut tk = configure_fk_testkit(store);
     for case in FOREIGN_KEY_CASES {
         prepare_case(&mut tk, *case);
         if !case.not_null {
