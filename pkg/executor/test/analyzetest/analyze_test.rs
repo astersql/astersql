@@ -22,7 +22,9 @@
 
 use astersql_session::testutil::TestSession;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest, CreateMockStoreAndDomain,
+};
 
 fn analyze_testkit() -> TestKit {
     let (store, _domain) = CreateMockStoreAndDomain();
@@ -107,7 +109,8 @@ fn analyze_partition_collects_real_stats_for_every_partition() {
 /// Go `TestExtractTopN`：列和索引 TopN 都要保留频次为 11 的值及十个条目。
 #[test]
 fn analyze_extracts_topn_for_columns_and_indexes() {
-    let mut tk = analyze_testkit();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let mut tk = TestKit::new(store);
     tk.MustExec(
         "create database if not exists test_extract_topn",
         Vec::new(),
