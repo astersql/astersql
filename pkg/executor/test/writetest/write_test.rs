@@ -793,7 +793,7 @@ fn TestPessimisticDeleteYourWrites() {
 /// 但这里走真实的双事务提交冲突路径，而不是只检查已提交行的重复键错误。
 #[test]
 fn TestLatch() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut first = NewTestKit(store.clone());
     let mut second = NewTestKit(store);
     first.MustExec("use test", Vec::new());
