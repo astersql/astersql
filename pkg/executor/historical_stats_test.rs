@@ -24,7 +24,9 @@
 use std::time::Duration;
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateAnalyzeStatsStore;
+use astersql_testkit::mockstore::{
+    CreateAnalyzeStatsStore, CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest,
+};
 
 /// 使用可记录 ANALYZE 统计的 mock store 创建 TestKit。
 fn historical_testkit() -> TestKit {
@@ -134,7 +136,7 @@ fn TestGCHistoryStatsAfterDropTable() {
 #[test]
 /// ALTER 改表后历史 dump 保持不变，物理统计反映当前 schema。
 fn TestAssertHistoricalStatsAfterAlterTable() {
-    let mut testkit = historical_testkit();
+    let mut testkit = TestKit::new(CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest());
     testkit.MustExec("set global tidb_enable_historical_stats = 1", Vec::new());
     testkit.MustExec(
         "create table t(a int, b varchar(10), c int, index idx(c))",
