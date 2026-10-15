@@ -21,11 +21,11 @@
 #![allow(non_snake_case)]
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateAnalyzeStatsStore;
+use astersql_testkit::mockstore::CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest;
 
 /// 构造带 AnalyzeStats mock store 的 TestKit。
 fn generated_column_testkit() -> TestKit {
-    TestKit::new(CreateAnalyzeStatsStore())
+    TestKit::new(CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest())
 }
 
 /// 断言 test 库下指定表的统计行数。
