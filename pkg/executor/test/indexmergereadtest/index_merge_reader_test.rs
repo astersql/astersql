@@ -21,7 +21,9 @@
 
 use std::sync::Mutex;
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{Rows, TestKit};
 
 static SQL_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -418,7 +420,7 @@ fn index_merge_embedded_limit_preserves_reference_row_count() {
 #[test]
 fn partition_index_merge_dynamic_and_static_pruning_match() {
     let _serial = serial_sql_test();
-    let mut tk = new_testkit();
+    let mut tk = TestKit::new(CreateMockStoreAndDomainWithoutSystemSchemasForTest().0);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table t_im_partition (a int primary key, b int, key(b)) \
