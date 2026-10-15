@@ -621,6 +621,7 @@ fn test_mpp_join_exchange_column_prune_fixture_tables() {
         Vec::new(),
     );
     tk.MustExec("create table tt (b1 int)", Vec::new());
+    let _persist_analyze_options = PersistAnalyzeOptionsGuard::disabled();
     tk.MustExec("analyze table t", Vec::new());
     tk.MustExec("analyze table tt", Vec::new());
 
