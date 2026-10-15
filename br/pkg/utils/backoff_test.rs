@@ -510,7 +510,9 @@ fn test_peer_download_retry_call_counts_match_context_error_identity() {
                     Ok(())
                 }
             }),
-            crate::backoff::NewPeerDownloadSSTBackoffStrategy(),
+            crate::backoff::NewPeerDownloadSSTBackoffStrategyWithOptions(vec![WithDelayTime(
+                Duration::ZERO,
+            )]),
         );
         assert_eq!(calls, if real_cancel { 1 } else { 2 });
         assert_eq!(result.is_err(), real_cancel);
