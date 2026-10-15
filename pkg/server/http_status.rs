@@ -2413,7 +2413,9 @@ fn serve_status_loop(
                     });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
+                // Keep shutdown polling cheap without adding a full scheduler
+                // tick to every newly arriving status request.
+                thread::sleep(Duration::from_millis(1));
             }
             Err(_) => break,
         }
