@@ -288,9 +288,13 @@ fn prepared_point_plans_do_not_hide_cross_session_writes() {
 /// LIMIT and ORDER BY parameter expressions.
 #[test]
 fn prepared_plan_cache_operators_match_unprepared_queries() {
-    use astersql_testkit::{NewTestKit, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only exercises user tables in `test`; keep the production SQL
+    // stack while avoiding unrelated mysql/sys bootstrap work.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("set tidb_enable_prepared_plan_cache = 1", Vec::new());
     tk.MustExec("use test", Vec::new());
