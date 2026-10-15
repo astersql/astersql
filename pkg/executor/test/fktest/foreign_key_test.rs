@@ -166,7 +166,7 @@ const FOREIGN_KEY_LOCK_CASES: &[&[&str]] = &[
 ];
 
 fn fk_testkit() -> TestKit {
-    let store = create_fk_store();
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
     configure_fk_testkit(store)
 }
 
@@ -774,7 +774,7 @@ fn TestForeignKeyConcurrentInsertChildTable() {
 fn TestForeignKeyOnUpdateChildTable() {
     // This test creates every schema it needs, so avoid bootstrapping unrelated
     // mysql statistics tables while retaining the real Domain, KV, DDL, and SQL paths.
-    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let store = create_fk_store();
     let mut tk = configure_fk_testkit(store);
     for case in FOREIGN_KEY_CASES {
         prepare_case(&mut tk, *case);
