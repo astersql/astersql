@@ -20,7 +20,10 @@
 
 #![allow(non_snake_case)]
 
-use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    CreatePlannerTestStoreAndDomain,
+};
 use astersql_testkit::{Rows, TestKit};
 use astersql_types::vector::{CheckVectorDimValid, ParseVectorFloat32};
 
@@ -310,7 +313,9 @@ fn TestVectorDefaultValue() {
 #[test]
 /// VECTOR 列在 SHOW CREATE/COLUMNS/INFORMATION_SCHEMA 中保留类型与维度。
 fn TestVectorColumnInfo() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t(embedding VECTOR)", Vec::new());
     tk.MustQuery("SHOW CREATE TABLE t", Vec::new())
         .Check(vec![vec![
