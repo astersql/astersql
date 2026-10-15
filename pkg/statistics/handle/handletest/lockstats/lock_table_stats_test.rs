@@ -248,11 +248,28 @@ fn historical_meta_failpoint_crosses_testkit_worker_thread() {
     drop(historical_meta_guard);
 }
 
+/// 创建历史 meta failpoint 测试所需的最小真实 Domain 与表。
+fn setup_historical_meta_failpoint_domain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>, TestKit) {
+    setup_common_tests();
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut testkit = TestKit::new(store.clone());
+    exec(&mut testkit, "use test");
+    exec(
+        &mut testkit,
+        "create table t(a int, b varchar(10), index idx_b (b))",
+    );
+    (store, domain, testkit)
+}
+
 /// 多个 Domain 各自启用历史 meta failpoint，互不串扰（按 Domain 作用域）。
 #[test]
 fn concurrent_historical_meta_failpoint_guards_are_domain_scoped() {
-    let (_first_store, first_domain, mut first, _) = setup_table();
-    let (_second_store, second_domain, mut second, _) = setup_table();
+    let first_setup = thread::spawn(setup_historical_meta_failpoint_domain);
+    let second_setup = thread::spawn(setup_historical_meta_failpoint_domain);
+    let (_first_store, first_domain, mut first) =
+        first_setup.join().expect("first failpoint domain setup");
+    let (_second_store, second_domain, mut second) =
+        second_setup.join().expect("second failpoint domain setup");
     exec(&mut first, "set @@tidb_enable_historical_stats = on");
     exec(&mut second, "set @@tidb_enable_historical_stats = on");
     exec(&mut first, "insert into t(a, b) values(1,'first')");
