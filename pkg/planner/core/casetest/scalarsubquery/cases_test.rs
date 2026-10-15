@@ -39,13 +39,13 @@ use astersql_parser::Parser;
 use astersql_parser::ast::{self, ExprKind, ExprNode};
 use astersql_sessionctx_vardef::TiDBOptExplainNoEvaledSubQuery;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::{ConvertRowsToStrings, LoadTestSuiteDataWithCascades, TestData};
 use std::path::Path;
 
 /// 创建带 mock store/domain 的 TestKit，供建表与会话变量设置。
 fn new_testkit() -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     TestKit::new(store)
 }
 
