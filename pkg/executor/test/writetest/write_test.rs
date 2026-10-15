@@ -29,11 +29,13 @@ use astersql_executor::load_data::{
     OnDuplicateKeyHandling, planInfo,
 };
 use astersql_session::runtime::{AddRecordWithoutAutoIDRebaseForTest, CreateDanglingIndexForTest};
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{NewTestKit, Rows, RowsWithSep};
 
 fn write_testkit() -> astersql_testkit::TestKit {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     NewTestKit(store)
 }
 
