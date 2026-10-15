@@ -778,7 +778,9 @@ fn TestVectorCompare() {
 #[test]
 /// VECTOR 与字符串的 CAST/CONVERT，以及不支持目标类型和固定维度错误。
 fn TestVectorConversion() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t1(val VECTOR)", Vec::new());
 
     for sql in [
