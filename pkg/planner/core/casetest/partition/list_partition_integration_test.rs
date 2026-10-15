@@ -88,6 +88,9 @@ pub fn test_list_partition_order_limit() {
         let condition = conditions[case_index];
         let control =
             format!("select * from tnormal {condition} order by {order_col} limit {limit_num}");
+        let mut control_result = tk.MustQuery(&control, Vec::new());
+        control_result.Sort();
+        let control_rows = control_result.Rows();
         for (mode, table) in [
             ("dynamic", "tlist"),
             ("static", "tlist"),
@@ -98,13 +101,11 @@ pub fn test_list_partition_order_limit() {
                 &format!("set @@tidb_partition_prune_mode = '{mode}'"),
                 Vec::new(),
             );
-            compare_sorted(
-                &tk,
-                &control,
-                &format!(
-                    "select * from {table} {condition} order by {order_col} limit {limit_num}"
-                ),
-            );
+            let candidate_sql =
+                format!("select * from {table} {condition} order by {order_col} limit {limit_num}");
+            let mut candidate = tk.MustQuery(&candidate_sql, Vec::new());
+            candidate.Sort();
+            assert_eq!(control_rows, candidate.Rows(), "{candidate_sql}",);
         }
     }
 }
