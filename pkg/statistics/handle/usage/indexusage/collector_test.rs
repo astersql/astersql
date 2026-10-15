@@ -116,9 +116,28 @@ fn test_update_index() {
 /// 并发测试中的单次操作：样本、目标索引、是否穿插 Report。
 #[derive(Clone)]
 struct TestOp {
-    info: Sample,
     idx: GlobalIndexID,
+    sequence: u32,
+    query_total: u16,
+    kv_req_total: u16,
+    row_access_total: u16,
+    percentage_access_bucket: u8,
     report: bool,
+}
+
+impl TestOp {
+    /// Rebuild the exact sample while keeping the 6.4M-operation fixture compact in memory.
+    fn sample(&self) -> Sample {
+        let mut percentage_access = [0; 7];
+        percentage_access[self.percentage_access_bucket as usize] = 1;
+        Sample {
+            LastUsedAt: UNIX_EPOCH + Duration::from_nanos(u64::from(self.sequence)),
+            QueryTotal: u64::from(self.query_total),
+            KvReqTotal: u64::from(self.kv_req_total),
+            RowAccessTotal: u64::from(self.row_access_total),
+            PercentageAccess: percentage_access,
+        }
+    }
 }
 
 /// 按固定种子生成可复现的随机索引使用操作。
@@ -181,8 +200,17 @@ impl TestOpGenerator {
             UNIX_EPOCH + Duration::from_nanos(sequence),
         );
         TestOp {
-            info,
             idx,
+            sequence: sequence as u32,
+            query_total: query_total as u16,
+            kv_req_total: kv_req_total as u16,
+            row_access_total: row_access as u16,
+            percentage_access_bucket: info
+                .PercentageAccess
+                .iter()
+                .position(|count| *count == 1)
+                .expect("new sample must increment exactly one bucket")
+                as u8,
             report: self.below(4) == 1,
         }
     }
@@ -197,16 +225,15 @@ fn test_flush_concurrent_index_collector() {
     const OP_PER_SESSION: usize = 100_000;
     const OP_COUNT: usize = SESSION_COUNT * OP_PER_SESSION;
 
-    let mut generator = TestOpGenerator::new(1);
-    let operations = (0..OP_COUNT)
-        .map(|op_id| generator.generate_test_op(op_id as u64 + 1))
-        .collect::<Vec<_>>();
-
     let expected = NewCollector();
     expected.StartWorker();
     let expected_session = expected.SpawnSessionCollector();
-    for op in &operations {
-        expected_session.Update(op.idx.TableID, op.idx.IndexID, op.info.clone());
+    let mut generator = TestOpGenerator::new(1);
+    let mut operations = Vec::with_capacity(OP_COUNT);
+    for op_id in 0..OP_COUNT {
+        let op = generator.generate_test_op(op_id as u64 + 1);
+        expected_session.Update(op.idx.TableID, op.idx.IndexID, op.sample());
+        operations.push(op);
     }
     expected_session.Flush();
 
@@ -218,7 +245,7 @@ fn test_flush_concurrent_index_collector() {
             scope.spawn(move || {
                 let session = actual.SpawnSessionCollector();
                 for op in local_operations {
-                    session.Update(op.idx.TableID, op.idx.IndexID, op.info.clone());
+                    session.Update(op.idx.TableID, op.idx.IndexID, op.sample());
                     if op.report {
                         session.Report();
                     }
@@ -270,7 +297,7 @@ fn benchmark_index_collector(iterations: usize, report_per_op: usize) -> Duratio
                 let Some(op) = operations.get(index) else {
                     break;
                 };
-                session.Update(op.idx.TableID, op.idx.IndexID, op.info.clone());
+                session.Update(op.idx.TableID, op.idx.IndexID, op.sample());
                 if local_counter % report_per_op == 0 {
                     session.Report();
                 }
