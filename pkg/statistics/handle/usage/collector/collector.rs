@@ -21,7 +21,9 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, select, select_biased};
+use crossbeam_channel::{
+    Receiver, Sender, TryRecvError, TrySendError, bounded, select, select_biased,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread::{self, JoinHandle};
@@ -233,6 +235,14 @@ impl<T> sessionCollector<T> {
 
     /// 同步发送的所有权保留形式；关闭或断连时归还未发送的数据。
     fn send_delta_sync_recover(&mut self, data: T) -> Result<(), T> {
+        let data = match self.high_priority_sender.try_send(data) {
+            Ok(()) => {
+                self.last_update = Instant::now();
+                return Ok(());
+            }
+            Err(TrySendError::Full(data) | TrySendError::Disconnected(data)) => data,
+        };
+
         select! {
             send(self.high_priority_sender, data) -> result => {
                 match result {
