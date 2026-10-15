@@ -25,7 +25,9 @@
 
 #![allow(non_snake_case)]
 
-use astersql_testkit::{NewTestKit, TestKit, mockstore::CreateMockStoreAndDomain};
+use astersql_testkit::{
+    NewTestKit, TestKit, mockstore::CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest,
+};
 
 /// 非分区表 `tbl_2` 建表 SQL（与 Go panic 用例 fixture 一致）。
 const CREATE_TBL_2_SINGLE: &str = "create table tbl_2 ( col_20 decimal default 84232 , col_21 tinyint not null , col_22 int default 80814394 , col_23 mediumint default -8036687 not null , col_24 smallint default 9185 not null , col_25 tinyint unsigned default 65 , col_26 char(115) default 'ZyfroRODMbNDRZnPNRW' not null , col_27 bigint not null , col_28 tinyint not null , col_29 char(130) default 'UMApsVgzHblmY' , primary key idx_14 ( col_28,col_22 ) , unique key idx_15 ( col_24,col_22 ) , key idx_16 ( col_21,col_20,col_24,col_25,col_27,col_28,col_26,col_29 ) , key idx_17 ( col_24,col_25 ) , unique key idx_18 ( col_25,col_23,col_29,col_27,col_26,col_22 ) , key idx_19 ( col_25,col_22,col_26,col_23 ) , unique key idx_20 ( col_22,col_24,col_28,col_29,col_26,col_20 ) , key idx_21 ( col_25,col_24,col_26,col_29,col_27,col_22,col_28 ) );";
@@ -59,7 +61,7 @@ fn partitioned_rows() -> Vec<&'static str> {
 
 /// 创建隔离的真实 mock store / TestKit，并执行 Go 用例共同的 `USE test`。
 fn new_testkit() -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = NewTestKit(store);
     testkit.MustExec("use test", Vec::new());
     testkit
