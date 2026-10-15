@@ -960,7 +960,8 @@ fn pg_introspection_namespace_session_state() {
 
 #[test]
 fn pg_introspection_names_live_tables() {
-    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, native) =
+        astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let service = PgService::start(

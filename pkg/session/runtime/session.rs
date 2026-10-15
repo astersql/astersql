@@ -2717,6 +2717,24 @@ pub fn CreateUnbootstrappedAnalyzeSessionForTest() -> SessionResult<(Arc<Domain>
     Ok((domain, session))
 }
 
+/// Builds an unbootstrapped transactional Domain with the canonical root grants.
+///
+/// This keeps real privilege checks enabled while allowing focused tests that
+/// create every schema they use to skip unrelated mysql/sys table bootstrap.
+pub fn CreateUnbootstrappedRootSessionForTest() -> SessionResult<(Arc<Domain>, ConcreteSession)> {
+    let (domain, session) = CreateUnbootstrappedAnalyzeSessionForTest()?;
+    let privilege_handle = runtime_privilege_handle(&domain);
+    let mut privileges = privilege_handle.Get();
+    let mut root = astersql_privilege_privileges::NewUserRecord("%", "root");
+    root.Privileges = astersql_privilege_privileges::computePrivMask(
+        astersql_privilege_privileges::ALL_GLOBAL_PRIVS,
+    ) | astersql_privilege_privileges::GrantPriv;
+    privileges.user.push(root);
+    privileges.SortUserTable();
+    privilege_handle.merge(privileges);
+    Ok((domain, session))
+}
+
 /// Builds the same concrete Domain/session pair used by the canonical runtime,
 /// backed by the real transactional mock KV storage rather than a SQL result map.
 /// 创建用于 ANALYZE 测试的 Domain 与 ConcreteSession。
