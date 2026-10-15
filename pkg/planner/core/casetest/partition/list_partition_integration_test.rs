@@ -122,6 +122,9 @@ pub fn test_list_partition_agg() {
     for aggregate in ["min", "max", "sum", "count"] {
         for _ in 0..2 {
             let control = format!("select a, {aggregate}(b) from tnormal group by a");
+            let mut control_result = tk.MustQuery(&control, Vec::new());
+            control_result.Sort();
+            let control_rows = control_result.Rows();
             for (mode, table) in [
                 ("dynamic", "tlist"),
                 ("static", "tlist"),
@@ -132,11 +135,10 @@ pub fn test_list_partition_agg() {
                     &format!("set @@tidb_partition_prune_mode = '{mode}'"),
                     Vec::new(),
                 );
-                compare_sorted(
-                    &tk,
-                    &control,
-                    &format!("select a, {aggregate}(b) from {table} group by a"),
-                );
+                let candidate_sql = format!("select a, {aggregate}(b) from {table} group by a");
+                let mut candidate = tk.MustQuery(&candidate_sql, Vec::new());
+                candidate.Sort();
+                assert_eq!(control_rows, candidate.Rows(), "{candidate_sql}",);
             }
         }
     }
