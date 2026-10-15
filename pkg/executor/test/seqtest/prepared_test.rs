@@ -561,8 +561,10 @@ fn test_prepare_dealloc() {
 #[test]
 fn test_prepared_issue8153() {
     let _serial = serial_sql_test();
+    // Match the Go test's shared store while retaining a fresh session per mode.
+    let store = CreateMockStoreAndDomain().0;
     for enabled in [false, true] {
-        let mut tk = new_testkit();
+        let mut tk = NewTestKit(store.clone());
         set_plan_cache(&mut tk, enabled);
         tk.MustExec("use test", Vec::new());
         tk.MustExec("drop table if exists t", Vec::new());
