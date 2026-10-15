@@ -32,8 +32,10 @@
 //! Mapping:
 //! - `init` / `TestMain` → [`test_main`]
 
+use std::time::Duration;
+
 use astersql_tests_realtikvtest_importintotest::harness::{
-    RunTestMain, TestMain, UpdateTiDBConfig, config, reset_engine, serial_guard,
+    RunTestMain, TestMain, UpdateTiDBConfig, config, reset_engine, serial_guard, set_mvcc_wait,
 };
 
 /// `TestMain`: UpdateTiDBConfig + RunTestMain (Go entry).
@@ -48,6 +50,9 @@ fn test_main() {
     let cfg = config::GetGlobalConfig();
     assert_eq!(cfg.Path, "127.0.0.1:2379");
 
+    // The Rust harness has no MVCCLevelDB process to close, so preserve the
+    // TestMain lifecycle without paying its production-only one-second wait.
+    set_mvcc_wait(Duration::ZERO);
     let mut m = TestMain::new(0);
     let code = RunTestMain(&mut m);
     assert_eq!(code, 0);
