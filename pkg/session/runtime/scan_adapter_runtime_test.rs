@@ -1953,17 +1953,21 @@ fn go_merge_197_setup_eligibility_live_session_boundary() {
 #[test]
 fn go_merge_20_187_195_197_production_ru_point_collects_evidence() {
     use astersql_infoschema::infoschema::{CiString, InfoSchema};
-    for version in [1, 2] {
-        let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
-        domain.set_ru_version(version);
-        session
-            .execute("create table ru_point (id int primary key)")
-            .unwrap();
-        session.execute("insert into ru_point values (1)").unwrap();
-        let table = domain
-            .info_schema()
-            .ModelTableInfoByName(&CiString::new("test"), &CiString::new("ru_point"))
-            .unwrap();
+    let (domain, first_session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    first_session
+        .execute("create table ru_point (id int primary key)")
+        .unwrap();
+    first_session
+        .execute("insert into ru_point values (1)")
+        .unwrap();
+    let table = domain
+        .info_schema()
+        .ModelTableInfoByName(&CiString::new("test"), &CiString::new("ru_point"))
+        .unwrap();
+    let second_session = crate::runtime::BootstrapCanonicalDomain(Arc::clone(&domain)).unwrap();
+
+    for (ru_version, session) in [(1, first_session), (2, second_session)] {
+        domain.set_ru_version(ru_version);
         let mut point = astersql_planner_core_operator_physicalop::PointGetPlan::New(
             session.AdapterPlanContext(),
         );
@@ -2023,8 +2027,8 @@ fn go_merge_20_187_195_197_production_ru_point_collects_evidence() {
         );
         stmt.RecordStatementRUFinalOutcome(true);
         result.Close().unwrap();
-        domain.close();
     }
+    domain.close();
 }
 
 fn canonical_rc_wait_session() -> (
