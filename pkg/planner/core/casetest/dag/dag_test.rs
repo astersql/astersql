@@ -38,7 +38,7 @@ use astersql_parser::ast;
 use astersql_planner_util_coretestsdk::mock::{mock_signed_table, mock_unsigned_table};
 use astersql_sessionctx_vardef::{TiDBOptLimitPushDownThreshold, TiDBWindowConcurrency};
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::{LoadTestSuiteDataWithCascades, TestData};
 use astersql_util_hint::{ExtractTableHintsFromStmtNode, RestoreTableOptimizerHint};
 use std::collections::HashSet;
@@ -179,7 +179,7 @@ fn plan_root_matches_go(best: &str, actual: &str) -> bool {
 
 /// 创建 mock store/domain 与 TestKit，供会话变量与 DDL/DML fixture 使用。
 fn new_testkit() -> (Arc<astersql_domain::Domain>, TestKit) {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
     (domain, TestKit::new(store))
 }
 
