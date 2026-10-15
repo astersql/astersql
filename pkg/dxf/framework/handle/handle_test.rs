@@ -481,7 +481,8 @@ impl Runtime for MockRuntime {
 #[test]
 fn test_handle() {
     let _lock = runtime_test_lock();
-    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, session) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
     let manager = session.ImportTaskManager().unwrap();
     storage::init();
     manager
