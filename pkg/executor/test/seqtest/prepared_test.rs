@@ -360,8 +360,9 @@ fn test_prepare_with_aggregation() {
 #[test]
 fn test_prepared_insert() {
     let _serial = serial_sql_test();
+    let (store, _domain) = CreateMockStoreAndDomain();
     for enabled in [false, true] {
-        let mut tk = new_testkit();
+        let mut tk = NewTestKit(store.clone());
         set_plan_cache(&mut tk, enabled);
         tk.MustExec("use test", Vec::new());
         tk.MustExec("drop table if exists prepare_test", Vec::new());
