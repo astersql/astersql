@@ -400,7 +400,9 @@ fn TestVectorExplainTruncate() {
 #[test]
 /// 常量 VECTOR 在普通、构造函数、TopN 与预处理计划中均截断 EXPLAIN 文本。
 fn TestVectorConstantExplain() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t(c VECTOR)", Vec::new());
     let projection = "vec_cosine_distance(test.t.c, [1,2,3,4,5,(6 more)...])->Column#4";
     for sql in [
