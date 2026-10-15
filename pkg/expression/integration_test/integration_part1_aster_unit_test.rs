@@ -611,7 +611,9 @@ fn TestFixedVector() {
 #[test]
 /// VECTOR DDL/DML、维度函数、排序和余弦距离均走真实 SQL 会话。
 fn TestVector() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
 
     tk.MustExec("CREATE TABLE t1 (v VECTOR)", Vec::new());
     for invalid in ["abc", "[1,2.1,null]", "[1,2.1,inf]", "[1,2.1,nan]"] {
