@@ -289,8 +289,10 @@ fn TestAnalyzeColumnsWithPrimaryKey() {
 #[test]
 /// 复合索引依赖的所有列都应参与分析，并同时生成列统计与索引统计。
 fn TestAnalyzeColumnsWithIndex() {
+    let (store, _) = CreateMockStoreAndDomain();
     for choice in [ColumnChoice::List, ColumnChoice::Predicate] {
-        let (mut testkit, store) = setup(
+        let mut testkit = setup_with_store(
+            Arc::clone(&store),
             "create table t (a int, b int, c int, d int, index idx_b_d(b, d))",
             "insert into t values (1,1,null,1), (2,1,9,1), (1,1,8,1), (2,2,7,2), \
              (1,3,7,3), (2,4,6,4), (1,4,6,5), (2,4,6,5), (1,5,6,5)",
