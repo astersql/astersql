@@ -1681,6 +1681,8 @@ fn explain_analyze_commit_failure_closes_terminal_and_preserves_rows() {
 /// EXPLAIN ANALYZE 报告 auto_id_allocator 的 alloc/rebase 计数（含无自增对照）。
 #[test]
 fn explain_analyze_dml2_reports_go_auto_id_allocator_matrix() {
+    let session = concrete_session();
+    let mut next_table_id = 902;
     let cases = [
         ("insert into t () values ()", "", 1, 0),
         ("insert into t (a) values (99000000000)", "", 0, 1),
@@ -1712,9 +1714,14 @@ fn explain_analyze_dml2_reports_go_auto_id_allocator_matrix() {
             if auto_random && sql.contains("on duplicate key") {
                 continue;
             }
-            let session = concrete_session();
             session
-                .RegisterDmlTable(auto_id_table_info(unsigned, auto_random, true))
+                .execute("drop table if exists t")
+                .expect("reset auto-ID table between Go matrix cases");
+            let mut table = auto_id_table_info(unsigned, auto_random, true);
+            table.ID = next_table_id;
+            next_table_id += 1;
+            session
+                .RegisterDmlTable(table)
                 .expect("register auto-ID TableInfo");
             if auto_random {
                 session
@@ -1741,9 +1748,14 @@ fn explain_analyze_dml2_reports_go_auto_id_allocator_matrix() {
 
     // 无自增主键时不应出现 auto_id_allocator 字段。
     for (sql, prepare, _, _) in cases {
-        let session = concrete_session();
         session
-            .RegisterDmlTable(auto_id_table_info(false, false, false))
+            .execute("drop table if exists t")
+            .expect("reset no-auto-ID table between Go matrix cases");
+        let mut table = auto_id_table_info(false, false, false);
+        table.ID = next_table_id;
+        next_table_id += 1;
+        session
+            .RegisterDmlTable(table)
             .expect("register table without auto ID");
         if !prepare.is_empty() {
             session.execute(prepare).expect("prepare no-auto-ID case");
