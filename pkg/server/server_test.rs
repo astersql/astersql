@@ -190,7 +190,8 @@ fn root_handshake_with_capability(stream: &mut TcpStream, extra_capability: u32)
 fn deprecate_eof_result_set_starts_rows_immediately_after_columns() {
     const CLIENT_DEPRECATE_EOF: u32 = 1 << 24;
 
-    let server = start_real_server();
+    // The protocol contract needs the real listener and Domain, but no system-schema bootstrap.
+    let server = start_real_server_without_bootstrap();
     let mysql_addr = server.listener_addr().expect("MySQL listener address");
     let mut stream = TcpStream::connect(mysql_addr).expect("connect real MySQL listener");
     stream
