@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use astersql_session_sessmgr::memory::{
     MemUsageTop1Tracker, ServerMemoryLimit, ServerMemoryLimitSessMinSize, Tracker,
@@ -294,6 +294,20 @@ impl Drop for ServerMemoryLimitWorker {
     }
 }
 
+/// Poll an asynchronously updated controller state without always paying the
+/// full Go-aligned wait budget. The timeout remains the original fixed sleep,
+/// so this only removes idle time after the expected state is already visible.
+fn wait_until(description: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !condition() {
+        assert!(
+            started.elapsed() < timeout,
+            "timed out after {timeout:?} waiting for {description}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// 对应 Go `TestGlobalMemoryControl` 中 Top1 tracker 被真正 kill 的核心链路：
 ///   1. 三个会话按 100/200/300 MB 顺序 `Consume`，每次都会更新真实
 ///      `MemUsageTop1Tracker`（`Tracker::Consume` 内部的 CAS 比较逻辑），全部在
@@ -343,8 +357,20 @@ fn global_memory_control_kills_top1_session_tracker() {
 
     let worker = ServerMemoryLimitWorker::start(manager.clone());
 
-    // 后台控制器每 100ms tick 一次；等待足够久确保至少命中一次超限检查。
-    std::thread::sleep(Duration::from_millis(500));
+    // 后台控制器每 100ms tick 一次。保留 Go 用例 500ms 的等待上界，
+    // 但 kill 信号已可见时立即继续，避免无条件空等剩余 tick。
+    wait_until(
+        "tracker3 to receive the first kill signal",
+        Duration::from_millis(500),
+        || {
+            tracker3
+                .Killer
+                .as_ref()
+                .expect("tracker3 killer")
+                .HandleSignal()
+                .is_err()
+        },
+    );
 
     assert!(
         tracker1
@@ -419,16 +445,31 @@ fn global_memory_control_kills_top1_session_tracker() {
 
     tracker3.Consume(-(300 << 20));
     manager.update_time(3, SystemTime::now());
-    std::thread::sleep(Duration::from_millis(150));
 
     // The controller must observe the changed statement timestamp, clear the
     // old kill state, and let tracker2 become the new Top1 tracker.
+    wait_until(
+        "tracker2 to become the next top1 tracker",
+        Duration::from_millis(150),
+        || MemUsageTop1Tracker.load(Ordering::SeqCst) == Arc::as_ptr(&tracker2) as *mut Tracker,
+    );
     assert_eq!(
         MemUsageTop1Tracker.load(Ordering::SeqCst),
         Arc::as_ptr(&tracker2) as *mut Tracker,
         "tracker2 must become the top1 tracker after tracker3 is released"
     );
-    std::thread::sleep(Duration::from_millis(500));
+    wait_until(
+        "tracker2 to receive the next kill signal",
+        Duration::from_millis(500),
+        || {
+            tracker2
+                .Killer
+                .as_ref()
+                .expect("tracker2 killer")
+                .HandleSignal()
+                .is_err()
+        },
+    );
     match tracker2
         .Killer
         .as_ref()
