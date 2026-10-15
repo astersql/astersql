@@ -44,7 +44,9 @@ impl Drop for GlobalArbitratorCleanup {
 }
 
 fn new_testkit() -> TestKit {
-    TestKit::new(astersql_testkit::mockstore::CreateMockStoreAndDomain().0)
+    TestKit::new(
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest().0,
+    )
 }
 
 #[test]
