@@ -508,6 +508,7 @@ fn test_mpp_join_fixture_tables_get_real_stats_after_analyze() {
 #[test]
 fn test_mpp_outer_join_build_side_fixture_tables() {
     let (domain, mut tk) = new_testkit();
+    let _persist_analyze_options = PersistAnalyzeOptionsGuard::disabled();
     tk.MustExec("create table a(id int, value int)", Vec::new());
     tk.MustExec("insert into a values(1,2),(2,3)", Vec::new());
     tk.MustExec("analyze table a all columns", Vec::new());
