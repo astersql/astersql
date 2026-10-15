@@ -144,14 +144,23 @@ fn new_testkit() -> (Arc<Domain>, TestKit) {
     (domain, TestKit::new(store))
 }
 
-fn prepare_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
-    struct PersistAnalyzeOptionsGuard(bool);
-    impl Drop for PersistAnalyzeOptionsGuard {
-        fn drop(&mut self) {
-            astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(self.0);
-        }
-    }
+struct PersistAnalyzeOptionsGuard(bool);
 
+impl PersistAnalyzeOptionsGuard {
+    fn disabled() -> Self {
+        let previous = astersql_sessionctx_vardef::PersistAnalyzeOptions.Load();
+        astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(false);
+        Self(previous)
+    }
+}
+
+impl Drop for PersistAnalyzeOptionsGuard {
+    fn drop(&mut self) {
+        astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(self.0);
+    }
+}
+
+fn prepare_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
     tk.MustExec("use test", Vec::new());
     tk.MustExec("create table d1_t(d1_k int, value int)", Vec::new());
     tk.MustExec("insert into d1_t values(1,2),(2,3)", Vec::new());
@@ -167,9 +176,7 @@ fn prepare_mpp_join_fixture(domain: &Domain, tk: &mut TestKit) {
     );
     tk.MustExec("create table fact_t(d1_k int, d2_k decimal(10,2), d3_k date, col1 int, col2 int, col3 int)", Vec::new());
     tk.MustExec("insert into fact_t values(1,10.11,date'2010-01-01',1,2,3),(1,10.11,date'2010-01-02',1,2,3),(1,10.12,date'2010-01-01',1,2,3),(1,10.12,date'2010-01-02',1,2,3),(2,10.11,date'2010-01-01',1,2,3),(2,10.11,date'2010-01-02',1,2,3),(2,10.12,date'2010-01-01',1,2,3),(2,10.12,date'2010-01-02',1,2,3)", Vec::new());
-    let _persist_analyze_options =
-        PersistAnalyzeOptionsGuard(astersql_sessionctx_vardef::PersistAnalyzeOptions.Load());
-    astersql_sessionctx_vardef::PersistAnalyzeOptions.Store(false);
+    let _persist_analyze_options = PersistAnalyzeOptionsGuard::disabled();
     tk.MustExec(
         "analyze table d1_t, d2_t, d3_t, fact_t all columns",
         Vec::new(),
@@ -468,6 +475,7 @@ fn stats_meta(domain: &Domain, table: &str) -> astersql_statistics_handle::Table
 #[test]
 fn test_mpp_join_fixture_tables_get_real_stats_after_analyze() {
     let (domain, mut tk) = new_testkit();
+    let _persist_analyze_options = PersistAnalyzeOptionsGuard::disabled();
     tk.MustExec("create table d1_t(d1_k int, value int)", Vec::new());
     tk.MustExec("insert into d1_t values(1,2),(2,3)", Vec::new());
     tk.MustExec("analyze table d1_t all columns", Vec::new());
