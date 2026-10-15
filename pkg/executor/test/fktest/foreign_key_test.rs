@@ -2193,7 +2193,8 @@ fn TestForeignKeyIssue39732() {
 
 #[test]
 fn TestForeignKeyOnReplaceIntoChildTable() {
-    let mut tk = fk_testkit();
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let mut tk = configure_fk_testkit(store);
     tk.MustExec("create table t_data (id int,a int,b int)", Vec::new());
     tk.MustExec("insert into t_data values (1,1,1),(2,2,2)", Vec::new());
     for case in FOREIGN_KEY_CASES {
