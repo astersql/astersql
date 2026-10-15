@@ -3091,11 +3091,14 @@ fn statement_ru_post_compile_cases(mode: u8) {
     drop(setup);
     for fault in 0..if mode != 0 { 5 } else { 3 } {
         let session = super::ConcreteSession::new(domain.clone());
-        let prepared = session
-            .PreparePlannedKVSelect(
-                "select id from ru_terminal order by id",
-                domain.info_schema(),
-            )
+        let prepared = (mode == 0)
+            .then(|| {
+                session.PreparePlannedKVSelect(
+                    "select id from ru_terminal order by id",
+                    domain.info_schema(),
+                )
+            })
+            .transpose()
             .unwrap();
         if mode == 2 || mode == 4 {
             session
@@ -3167,7 +3170,10 @@ fn statement_ru_post_compile_cases(mode: u8) {
                 })
             } else {
                 session
-                    .ExecutePreparedPlannedKVSelectThroughAdapter(prepared, &[])
+                    .ExecutePreparedPlannedKVSelectThroughAdapter(
+                        prepared.expect("prepared execution mode creates a KV plan"),
+                        &[],
+                    )
                     .map(|result| {
                         assert_eq!(
                             result
