@@ -563,8 +563,8 @@ fn test_column_charset_and_collate() {
         },
     ];
     assert_eq!(cases.len(), 6);
-    let mut tk = ddl_testkit();
-    tk.MustExec("drop database if exists col_charset_collate", Vec::new());
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create database col_charset_collate", Vec::new());
     tk.MustExec("use col_charset_collate", Vec::new());
     for (i, case) in cases.iter().enumerate() {
@@ -574,16 +574,19 @@ fn test_column_charset_and_collate() {
         );
         if case.error.is_empty() {
             tk.MustExec(&sql, Vec::new());
-            let expected = format!("{} {}", case.expected_charset, case.expected_collate);
-            tk.MustQuery(
-                &format!(
-                    "select character_set_name, collation_name from information_schema.columns \
-                     where table_schema='col_charset_collate' and table_name='t{i}' and \
-                     column_name='a'"
-                ),
-                Vec::new(),
-            )
-            .Check(Rows(&[&expected]));
+            let table = domain
+                .table_by_name("col_charset_collate", &format!("t{i}"))
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(
+                case.expected_charset,
+                table.Columns[0].GetCharset(),
+                "{sql}"
+            );
+            assert_eq!(
+                case.expected_collate,
+                table.Columns[0].GetCollate(),
+                "{sql}"
+            );
         } else {
             assert!(!tk.ExecToErr(&sql).message().is_empty(), "{sql}");
         }
