@@ -524,7 +524,8 @@ fn connection_events_log_success_and_quit_but_not_rejected_handshakes() {
     }
     let _restore = Restore(EnableConnectionEventLog.Load());
     EnableConnectionEventLog.Store(true);
-    let server = start_real_server();
+    // The connection-event contract needs the real listener and Domain, but no system-schema bootstrap.
+    let server = start_real_server_without_bootstrap();
     let logger = background_logger();
     let mut stream = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
     stream
