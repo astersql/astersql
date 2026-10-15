@@ -19,7 +19,7 @@
 // （preflush）在取消/注入错误下的语义、动态/静态分区剪枝模式下的刷盘目标，
 // 以及 SQL Killer 中断 pause failpoint 与并行 build worker 时不泄漏 active 计数。
 
-use crate::mockstore::CreateAnalyzeStatsStore;
+use crate::mockstore::{CreateAnalyzeStatsStore, CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest};
 use crate::{DbValue, TestKit};
 use astersql_session::testutil::TestSession;
 
@@ -199,7 +199,9 @@ fn canonical_preflush_targets_dynamic_global_and_static_partitions() {
 /// failpoint 暂停 ANALYZE 时发送 Kill：统计快照不变，失败 job 记入历史。
 #[test]
 fn sql_killer_interrupts_failpoint_paused_analyze() {
-    let store = CreateAnalyzeStatsStore();
+    // This case creates its own user schema and only needs the production
+    // analyze-options table from the system-schema bootstrap.
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = TestKit::new(store.clone());
     testkit.MustExec("set global tidb_enable_historical_stats = 1", Vec::new());
     testkit.MustExec("create table t(a int)", Vec::new());
