@@ -2317,8 +2317,7 @@ fn TestForeignKeyAndLockView() {
         tk2.MustExec("update t1 set id=2 where id=1", Vec::new());
         tk2.MustExec("commit", Vec::new());
     });
-    ready_rx.recv().expect("lock waiter ready");
-    thread::sleep(Duration::from_millis(200));
+    wait_for_lock_wait(&mut tk, ready_rx);
     let (_, digest) = NormalizeDigest("update t1 set id=2 where id=1");
     tk.MustQuery(
         "select current_sql_digest from information_schema.tidb_trx where state='LockWaiting' and db='test'",
