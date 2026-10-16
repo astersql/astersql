@@ -450,9 +450,13 @@ fn prepared_plan_cache_clustered_index_reuses_composite_key_plans() {
 /// 影响结果集的会话变量改变后，旧 prepared plan 不得被错误复用。
 #[test]
 fn prepared_plan_cache_replans_when_sql_select_limit_changes() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only uses its own user table, so avoid bootstrapping unrelated
+    // system schemas while preserving the real SQL, DDL, and plan-cache paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("set tidb_enable_prepared_plan_cache = 1", Vec::new());
     tk.MustExec("drop table if exists session_limit_pc", Vec::new());
