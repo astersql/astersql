@@ -42,7 +42,7 @@ use astersql_domain::Domain;
 use astersql_statistics_handle::{Bucket, ColumnStats, IndexStats, TableStats};
 use astersql_statistics_util::{JSONColumn, JSONTable};
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::testdata::LoadTestSuiteData;
 use base64::Engine as _;
 use protobuf::Message as _;
@@ -1251,7 +1251,8 @@ fn test_cbo_tiflash_cost_model_matches_go_suite_fixture() {
 /// TiFlash keeps a real scan filter when no Selection node renders that predicate.
 #[test]
 fn test_cbo_tiflash_scan_without_selection_keeps_filter_text() {
-    let (domain, mut tk) = new_testkit();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let mut tk = TestKit::new(store);
     tk.MustExec("set @@tidb_enable_cascades_planner = on", Vec::new());
     tk.MustExec("create table t (a int, b int, primary key(a))", Vec::new());
     tk.MustExec("insert into t values (1, 1), (2, 2)", Vec::new());
