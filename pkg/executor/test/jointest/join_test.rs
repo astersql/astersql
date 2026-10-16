@@ -107,7 +107,11 @@ fn execute_issue_11895_contract() {
 /// Go `TestIssue11896`: signed BIGINT and BIT compare by value without
 /// treating `-1` as unsigned `BIT(64)::MAX`.
 fn execute_issue_11896_contract() {
-    let mut tk = new_join_testkit();
+    // This regression only needs the canonical SQL engine. Avoid bootstrapping
+    // unrelated system schemas that none of its statements can observe.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create table t(c1 bigint)", Vec::new());
     tk.MustExec("create table t1(c1 bit(64))", Vec::new());
     tk.MustExec("insert into t value(1)", Vec::new());
