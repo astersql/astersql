@@ -2438,7 +2438,9 @@ where pronamespace = ?::oid
 
 #[test]
 fn pg_introspection_dependencies_live() {
-    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, native) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
+    native.execute("CREATE DATABASE test").unwrap();
     native
         .execute("CREATE SEQUENCE test.dependency_seq START WITH 7")
         .unwrap();
