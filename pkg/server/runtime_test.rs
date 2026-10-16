@@ -995,7 +995,23 @@ fn connection_lifecycle_logs_current_user_and_remote_address() {
     let _restore = Restore(EnableConnectionEventLog.Load());
     let (mut peer, socket) = tcp_pair();
     let remote = peer.local_addr().unwrap().to_string();
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let mut domain_config = astersql_domain::DomainConfig::default();
+    domain_config.schema_lease = Duration::ZERO;
+    domain_config.stats_lease = Duration::ZERO;
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .expect("create mock storage"),
+    )
+    .unwrap_or_else(|_| panic!("mock storage retained an unexpected owner"));
+    let domain = Arc::new(astersql_domain::Domain::new(
+        storage,
+        Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+        domain_config,
+    ));
+    domain.init().expect("initialize canonical domain");
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,
