@@ -447,7 +447,7 @@ fn show_create_table_strips_deprecated_integer_widths_and_reports_warnings() {
             }
         }
     }
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     let warning = vec![
         "Warning".to_owned(),
         "1681".to_owned(),
