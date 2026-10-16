@@ -385,10 +385,17 @@ fn test_top_sql_pub_sub() {
     reporter::RemoteTopSQLReporter::Start(&reporter);
     SetupTopProfilingForTest(reporter.clone());
 
-    let records: Vec<_> = REQUESTS
-        .iter()
-        .map(|request| mock_execute_sql(request.sql, request.plan))
-        .collect();
+    // Go runs one mock SQL workload per request in its own goroutine. Keep the
+    // full 400 ms workload for every case while preserving that concurrency.
+    let records: Vec<_> = std::thread::scope(|scope| {
+        REQUESTS
+            .iter()
+            .map(|request| scope.spawn(|| mock_execute_sql(request.sql, request.plan)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().expect("mock SQL worker should join"))
+            .collect()
+    });
     reporter.processCPUTimeData(1, records);
     reporter.takeDataAndSendToReportChan(1);
     wait_until(Duration::from_secs(5), || {
