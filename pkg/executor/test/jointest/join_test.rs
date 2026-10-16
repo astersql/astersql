@@ -638,7 +638,11 @@ fn assert_memory_error(error: astersql_testkit::TestError) {
 }
 
 fn execute_issue_18070_contract() {
-    let mut tk = new_join_testkit();
+    // This case only uses user tables, so avoid bootstrapping unrelated system schemas.
+    // Keep the real analyze store and domain to preserve the Go test's session behavior.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("set global tidb_mem_oom_action='CANCEL'", Vec::new());
     tk.MustExec("create table t1(a int, index(a))", Vec::new());
     tk.MustExec("create table t2(a int, index(a))", Vec::new());
