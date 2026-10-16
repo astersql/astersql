@@ -679,9 +679,14 @@ fn prepared_nondeterministic_function_is_recomputed() {
 /// `testPrepareProtocolWorkWithForeignKey`.
 #[test]
 fn prepared_dml_is_invalidated_when_foreign_key_metadata_changes() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only uses its own user tables, so avoid bootstrapping unrelated
+    // system schemas while preserving the real SQL, DDL, foreign-key, and
+    // protocol prepared-statement paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("set tidb_enable_prepared_plan_cache = 1", Vec::new());
     tk.MustExec("use test", Vec::new());
