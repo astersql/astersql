@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::key_set_shard::keySetShard;
+use crate::key_set_shard::{keySetCnt, keySetShard};
 
 /// Moka 同步缓存：键为表 ID，值为共享的统计表。
 type PrimaryCache = Cache<i64, Arc<Table>>;
@@ -84,7 +84,8 @@ struct SharedState {
     cost: AtomicI64,
     maxCost: AtomicI64,
     closed: AtomicBool,
-    admission: Mutex<()>,
+    admission: [Mutex<()>; keySetCnt],
+    weightedAdmission: Mutex<()>,
     frequencies: Mutex<HashMap<i64, u64>>,
     metrics: LFUMetrics,
 }
@@ -234,7 +235,8 @@ pub fn NewLFU(totalMemCost: i64) -> Result<LFU, LFUError> {
         cost: AtomicI64::new(0),
         maxCost: AtomicI64::new(maxCost),
         closed: AtomicBool::new(false),
-        admission: Mutex::new(()),
+        admission: std::array::from_fn(|_| Mutex::new(())),
+        weightedAdmission: Mutex::new(()),
         frequencies: Mutex::new(HashMap::new()),
         metrics: LFUMetrics::default(),
     });
@@ -283,9 +285,7 @@ impl LFU {
         // 先写入二级集合，保证读侧在主缓存准入完成前也能 Get 到
         self.state.resultKeySet.AddKeyValue(tblID, tbl.clone());
         self.state.addCost(cost);
-        let _admission = self
-            .state
-            .admission
+        let _admission = self.state.admission[(tblID % keySetCnt as i64) as usize]
             .lock()
             .expect("LFU admission lock poisoned");
         let cache = self.cache.read().expect("LFU primary cache lock poisoned");
@@ -313,36 +313,52 @@ impl LFU {
             let max_cost = self.state.maxCost.load(Ordering::Acquire) as u64;
             let mut weighted_size = cache.weighted_size();
             if weighted_size.saturating_add(cost as u64) > max_cost {
-                // Ristretto's weighted admission makes room when a cheaper
-                // candidate can replace a larger resident. Moka's TinyLFU
-                // compares frequency but otherwise retains the first entry on
-                // a tie, so perform the weighted tie-break explicitly.
-                // 为候选腾出空间：优先淘汰频率不高且权重更大的驻留项。
-                let mut victims = cache
-                    .iter()
-                    .map(|(key, table)| {
-                        (
-                            *key,
-                            table.clone(),
-                            u64::from(cacheWeight(&table)),
-                            self.state.frequency(*key),
-                        )
-                    })
-                    .filter(|(_, _, _, frequency)| *frequency <= candidate_frequency)
-                    .collect::<Vec<_>>();
-                victims.sort_unstable_by_key(|(_, _, weight, frequency)| {
-                    (*frequency, std::cmp::Reverse(*weight))
+                // Ristretto's weighted admission can choose between differently
+                // weighted candidates and residents. Moka's TinyLFU compares
+                // frequency but otherwise retains the first entry on a tie, so
+                // perform the cross-weight tie-break explicitly. Equal-weight
+                // admission remains inside Moka and needs no global serialization.
+                // 不同权重时显式协调准入；同权重交给 Moka，避免全局串行。
+                let needs_weighted_tie_break = cache.iter().any(|(key, table)| {
+                    u64::from(cacheWeight(&table)) != cost as u64
+                        && self.state.frequency(*key) <= candidate_frequency
                 });
-                for (key, victim, weight, _) in victims {
-                    if weighted_size.saturating_add(cost as u64) <= max_cost {
-                        break;
-                    }
-                    cache.invalidate(&key);
+                if needs_weighted_tie_break {
+                    let _weighted_admission = self
+                        .state
+                        .weightedAdmission
+                        .lock()
+                        .expect("LFU weighted admission lock poisoned");
                     cache.run_pending_tasks();
-                    self.state.retainEvictedShell(key, &victim);
-                    self.state.metrics.evictions.fetch_add(1, Ordering::Relaxed);
-                    incrementEvictCounter();
-                    weighted_size = weighted_size.saturating_sub(weight);
+                    weighted_size = cache.weighted_size();
+                    let mut victims = cache
+                        .iter()
+                        .map(|(key, table)| {
+                            (
+                                *key,
+                                table.clone(),
+                                u64::from(cacheWeight(&table)),
+                                self.state.frequency(*key),
+                            )
+                        })
+                        .filter(|(_, _, weight, frequency)| {
+                            *weight != cost as u64 && *frequency <= candidate_frequency
+                        })
+                        .collect::<Vec<_>>();
+                    victims.sort_unstable_by_key(|(_, _, weight, frequency)| {
+                        (*frequency, std::cmp::Reverse(*weight))
+                    });
+                    for (key, victim, weight, _) in victims {
+                        if weighted_size.saturating_add(cost as u64) <= max_cost {
+                            break;
+                        }
+                        cache.invalidate(&key);
+                        cache.run_pending_tasks();
+                        self.state.retainEvictedShell(key, &victim);
+                        self.state.metrics.evictions.fetch_add(1, Ordering::Relaxed);
+                        incrementEvictCounter();
+                        weighted_size = weighted_size.saturating_sub(weight);
+                    }
                 }
             }
         }
