@@ -189,7 +189,7 @@ fn TestGCOutdatedHistoryStats() {
 /// 动态裁剪下分区表 ANALYZE 同步写入全局与各分区历史。
 /// 分区：将大表按键切分为独立物理表，便于裁剪与并行。
 fn TestPartitionTableHistoricalStats() {
-    let mut testkit = historical_testkit();
+    let mut testkit = TestKit::new(CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest());
     testkit.MustExec("set global tidb_enable_historical_stats = 1", Vec::new());
     testkit.MustExec(
         "create table t(a int, b int, index idx(b)) partition by hash(a) partitions 2",
