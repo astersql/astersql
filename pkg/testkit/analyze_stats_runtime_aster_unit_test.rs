@@ -239,7 +239,9 @@ fn sql_killer_interrupts_failpoint_paused_analyze() {
 /// 并行 build 被 Kill 后 active_workers_after 归零，统计快照不被部分更新。
 #[test]
 fn sql_killer_cancels_parallel_build_workers_without_leaking_active_count() {
-    let store = CreateAnalyzeStatsStore();
+    // This case creates its own user schema and only needs the production
+    // analyze-options table from the system-schema bootstrap.
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = TestKit::new(store.clone());
     testkit.MustExec(
         "create table t(a int) partition by hash(a) partitions 4",
