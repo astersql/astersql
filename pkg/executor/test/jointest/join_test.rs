@@ -92,7 +92,11 @@ fn test_null_empty_aware_semijoin_executes_null_contract() {
 /// Go `TestIssue11895`: `BIT(64)` containing all one bits must compare equal
 /// to `BIGINT UNSIGNED::MAX` and preserve its hexadecimal representation.
 fn execute_issue_11895_contract() {
-    let mut tk = new_join_testkit();
+    // This regression only needs the canonical SQL engine. Avoid bootstrapping
+    // unrelated system schemas that none of its statements can observe.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create table t(c1 bigint unsigned)", Vec::new());
     tk.MustExec("create table t1(c1 bit(64))", Vec::new());
     tk.MustExec("insert into t value(18446744073709551615)", Vec::new());
