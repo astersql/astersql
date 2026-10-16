@@ -184,9 +184,13 @@ fn point_get_prepared_plan_reuses_parameters_and_invalidates_schema() {
 /// recreated.
 #[test]
 fn point_update_prepared_plan_reuses_current_parameters_and_schema() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only uses its own database, so avoid bootstrapping unrelated
+    // system schemas while keeping the real SQL, plan-cache, and DDL paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("drop database if exists pu_test", Vec::new());
     tk.MustExec("create database pu_test", Vec::new());
