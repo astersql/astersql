@@ -258,7 +258,11 @@ impl TaskRegisterImpl {
                 if ctx.is_cancelled() {
                     return;
                 }
-                match ch.recv_timeout(Duration::from_secs(1)) {
+                // `std::sync::mpsc` cannot select on the cancellation token like
+                // Go's channel select does. Poll at a short interval so Close
+                // observes cancellation promptly without changing keepalive
+                // reconstruction semantics.
+                match ch.recv_timeout(Duration::from_millis(50)) {
                     Ok(_) => last_update_time = Instant::now(),
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
