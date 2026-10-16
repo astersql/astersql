@@ -654,27 +654,35 @@ fn upgrade_59_writes_oom_compatibility_only_for_older_clusters() {
 /// 会话使用当前 1GiB 默认值。
 #[test]
 fn upgrade_from_52_uses_current_memory_quota_without_legacy_tidb_row() {
-    let (mut tk, rebootstrap) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut tk, 52);
-    tk.MustExec(
+    let (domain, session) = CreateBootstrapUpgradeTestSession();
+    set_upgrade_version(&session, 52);
+    MustExec(
+        &session,
         "delete from mysql.tidb where variable_name='default_memory_quota_query'",
-        Vec::new(),
+        &[],
     );
-    drop(tk);
-    let tk = rebootstrap();
+    drop(session);
+
+    let upgraded = BootstrapCanonicalDomain(domain).expect("upgrade forked baseline");
+    let mut rows = MustExecToRecodeSet(
+        &upgraded,
+        "select variable_value from mysql.tidb where variable_name='default_memory_quota_query'",
+        &[],
+    );
     assert!(
-        tk.MustQuery(
-            "select variable_value from mysql.tidb where variable_name='default_memory_quota_query'",
-            Vec::new(),
-        )
-        .Rows()
-        .is_empty(),
+        rows.Next()
+            .expect("read upgraded default memory quota row")
+            .is_none(),
     );
+    rows.Close().expect("close upgraded mysql.tidb result");
+
+    let mut rows = MustExecToRecodeSet(&upgraded, "select @@tidb_mem_quota_query", &[]);
     assert_eq!(
-        tk.MustQuery("select @@tidb_mem_quota_query", Vec::new())
-            .Rows(),
-        vec![vec!["1073741824".to_owned()]],
+        rows.Next().expect("read upgraded session memory quota"),
+        Some(vec!["1073741824".to_owned()]),
     );
+    assert_eq!(rows.Next().expect("finish memory quota result"), None);
+    rows.Close().expect("close upgraded memory quota result");
 }
 
 /// 对应 Go `TestUpgradeClusteredIndexDefaultValue`：旧 OFF 行被删除后，全局和会话
