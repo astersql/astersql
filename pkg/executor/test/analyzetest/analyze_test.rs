@@ -23,6 +23,7 @@
 use astersql_session::testutil::TestSession;
 use astersql_testkit::TestKit;
 use astersql_testkit::mockstore::{
+    CreateAnalyzeStatsStoreWithAnalyzeJobsForTest,
     CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest, CreateMockStoreAndDomain,
 };
 
@@ -1140,7 +1141,7 @@ fn wait_for_analyze_status(
 
 #[test]
 fn analyze_status_waits_for_delayed_publication() {
-    let mut tk = analyze_testkit();
+    let mut tk = TestKit::new(CreateAnalyzeStatsStoreWithAnalyzeJobsForTest());
     tk.MustExec("use test", Vec::new());
     tk.MustExec("create table t(a int)", Vec::new());
     tk.MustExec("insert into t values (1),(2)", Vec::new());

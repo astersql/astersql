@@ -34,7 +34,7 @@ use astersql_domain::domain::CrossKeyspaceCoordinator;
 use astersql_domain::{
     AutoAnalyzeExecutor, Domain, DomainConfig, InfoSchemaLoader, KvInfoSchemaLoader, SQLKiller,
 };
-use astersql_meta_metadef::{CreateAnalyzeOptionsTable, CreateUserTable};
+use astersql_meta_metadef::{CreateAnalyzeJobsTable, CreateAnalyzeOptionsTable, CreateUserTable};
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
     CreateUnbootstrappedAnalyzeSessionForTest, RegisterRuntimeTopology, RuntimeReplicaReadRequest,
@@ -1811,6 +1811,23 @@ impl AnalyzeStatsStore {
         Self::from_bootstrap(active_sessions, bootstrap)
     }
 
+    /// Build a real SQL store with the production analyze-job tables only.
+    fn new_with_analyze_jobs() -> Self {
+        let active_sessions = Arc::new(AtomicUsize::new(0));
+        let bootstrap =
+            AnalyzeSessionDatabase::bootstrap_without_system_schemas(Arc::clone(&active_sessions));
+        bootstrap
+            .execute("CREATE DATABASE IF NOT EXISTS mysql", &[])
+            .unwrap_or_else(|error| panic!("bootstrap mysql database for analyze test: {error}"));
+        bootstrap
+            .execute(CreateAnalyzeJobsTable, &[])
+            .unwrap_or_else(|error| panic!("bootstrap mysql.analyze_jobs for test: {error}"));
+        bootstrap
+            .execute(CreateAnalyzeOptionsTable, &[])
+            .unwrap_or_else(|error| panic!("bootstrap mysql.analyze_options for test: {error}"));
+        Self::from_bootstrap(active_sessions, bootstrap)
+    }
+
     /// Build the canonical mock store using the requested schema lease.
     fn new_with_schema_lease(schema_lease: Duration) -> Self {
         let active_sessions = Arc::new(AtomicUsize::new(0));
@@ -2056,6 +2073,14 @@ pub fn CreateAnalyzeStatsStore() -> Arc<AnalyzeStatsStore> {
 /// Create a canonical analyze store without unrelated system tables.
 pub fn CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest() -> Arc<AnalyzeStatsStore> {
     let store = Arc::new(AnalyzeStatsStore::new_with_analyze_options());
+    let domain = store.domain();
+    domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
+    store
+}
+
+/// Create a canonical analyze store with only the analyze-job system tables.
+pub fn CreateAnalyzeStatsStoreWithAnalyzeJobsForTest() -> Arc<AnalyzeStatsStore> {
+    let store = Arc::new(AnalyzeStatsStore::new_with_analyze_jobs());
     let domain = store.domain();
     domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
     store
