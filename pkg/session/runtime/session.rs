@@ -2623,7 +2623,7 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         ("system_tz", "CST", "System timezone"),
     ];
     let variables = if was_bootstrapped {
-        &bootstrap_variables[1..2]
+        &bootstrap_variables[1..3]
     } else {
         &bootstrap_variables[..]
     };
