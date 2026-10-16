@@ -68,7 +68,7 @@ fn text_row(body: &[u8]) -> Vec<Option<String>> {
 
 #[test]
 fn postgres_create_table_simple_query() {
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, _) = astersql_session::runtime::CreateUnbootstrappedRootSessionForTest().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,
