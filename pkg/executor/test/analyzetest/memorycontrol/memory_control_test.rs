@@ -441,7 +441,11 @@ fn TestMemQuotaAnalyze2() {
     let quota = "set global tidb_mem_quota_analyze=128;";
     assert!(quota.contains("128"));
 
-    let mut tk = new_testkit();
+    // This case only needs mysql.analyze_options from the system schemas.
+    // Keep that production table while avoiding unrelated bootstrap work.
+    let mut tk = TestKit::new(
+        astersql_testkit::mockstore::CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest(),
+    );
     tk.MustExec("use test", Vec::new());
     tk.MustExec(create, Vec::new());
     tk.MustExec(
@@ -449,7 +453,11 @@ fn TestMemQuotaAnalyze2() {
         Vec::new(),
     );
     tk.MustExec(quota, Vec::new());
-    tk.MustExecToErr("analyze table tbl_2;");
+    let error = tk.ExecToErr("analyze table tbl_2;");
+    assert!(
+        error.message().contains("memory quota exceeds"),
+        "unexpected analyze error: {error}"
+    );
 }
 
 /// 对应 Go `TestAnalyzeV2MemoryUsageMetricNeverNegative`。
