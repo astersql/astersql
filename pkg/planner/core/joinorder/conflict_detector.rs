@@ -234,6 +234,11 @@ impl ConflictDetector {
         if !left.vertexes.is_disjoint(&right.vertexes) {
             return Err("join nodes overlap".to_string());
         }
+        let union = left
+            .vertexes
+            .union(&right.vertexes)
+            .copied()
+            .collect::<BTreeSet<_>>();
         let mut applied_inner_edges = Vec::new();
         let mut applied_non_inner_edge = None;
         let mut swap = false;
@@ -242,13 +247,13 @@ impl ConflictDetector {
                 continue;
             }
             if edge.join_type == JoinType::Inner {
-                if edge_applicable(edge, left, right) {
+                if edge_applicable(edge, left, right, &union) {
                     applied_inner_edges.push(edge.clone());
                 }
                 continue;
             }
-            let forward = edge_applicable(edge, left, right);
-            let reverse = edge_applicable(edge, right, left);
+            let forward = edge_applicable(edge, left, right, &union);
+            let reverse = edge_applicable(edge, right, left, &union);
             if forward && reverse {
                 return Err(
                     "node1 and node2 cannot be connected by non-inner edges of different direction"
@@ -426,18 +431,12 @@ fn edge_tes(edge: &Edge) -> BTreeSet<usize> {
 }
 
 /// Check the TES, side orientation, and local conflict rules for a candidate.
-fn edge_applicable(edge: &Edge, left: &Node, right: &Node) -> bool {
-    let union = left
-        .vertexes
-        .union(&right.vertexes)
-        .copied()
-        .collect::<BTreeSet<_>>();
-
+fn edge_applicable(edge: &Edge, left: &Node, right: &Node, union: &BTreeSet<usize>) -> bool {
     // The common no-predicate edge is hot in the large-scale benchmark.  Its
     // TES is exactly both original sides, so avoid allocating a second set.
     if edge.conditions.is_empty() {
-        if !edge.left.is_subset(&union)
-            || !edge.right.is_subset(&union)
+        if !edge.left.is_subset(union)
+            || !edge.right.is_subset(union)
             || (edge.left.is_disjoint(&left.vertexes) && edge.right.is_disjoint(&left.vertexes))
             || (edge.left.is_disjoint(&right.vertexes) && edge.right.is_disjoint(&right.vertexes))
         {
@@ -451,10 +450,10 @@ fn edge_applicable(edge: &Edge, left: &Node, right: &Node) -> bool {
         return edge
             .rules
             .iter()
-            .all(|rule| rule.from.is_disjoint(&union) || rule.to.is_subset(&union));
+            .all(|rule| rule.from.is_disjoint(union) || rule.to.is_subset(union));
     }
     let tes = edge_tes(edge);
-    if !tes.is_subset(&union) || tes.is_disjoint(&left.vertexes) || tes.is_disjoint(&right.vertexes)
+    if !tes.is_subset(union) || tes.is_disjoint(&left.vertexes) || tes.is_disjoint(&right.vertexes)
     {
         return false;
     }
@@ -479,7 +478,7 @@ fn edge_applicable(edge: &Edge, left: &Node, right: &Node) -> bool {
     // the complete `to` set to be present in the candidate union.
     edge.rules
         .iter()
-        .all(|rule| rule.from.is_disjoint(&union) || rule.to.is_subset(&union))
+        .all(|rule| rule.from.is_disjoint(union) || rule.to.is_subset(union))
 }
 
 fn right_to_left_rule(child: &Edge) -> Rule {
