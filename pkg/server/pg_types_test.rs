@@ -221,17 +221,27 @@ fn unsigned_binary_and_unsupported_types() {
 
 #[test]
 fn missing_original_metadata_is_explicitly_unsupported() {
-    use crate::conn::{CancellationToken, SessionDriver};
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
-    let driver = ConcreteSessionDriver::new_for_test(domain, BootstrapAuthMode::InsecureRootOnly);
-    let context = driver.open_ctx(75002, 0, 45, "", None).unwrap();
-    let mut result = context
-        .execute_query("SELECT 1", false, &CancellationToken::new())
-        .unwrap()
-        .remove(0);
-    result.native_types.clear();
+    use crate::conn::{ColumnInfo, QueryResult, Value};
+    // A real query always supplies native metadata, so construct the invalid
+    // protocol boundary directly instead of bootstrapping a full SQL session.
+    let result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "1".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 1,
+            column_type: 8,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        rows: vec![vec![Value::Signed(1)]],
+        ..QueryResult::default()
+    };
     assert!(crate::pg_result::encode(&result, "SELECT").is_err());
-    context.close().unwrap();
 }
 
 #[test]
