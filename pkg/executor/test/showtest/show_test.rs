@@ -775,7 +775,8 @@ fn show_visibility_tracks_database_and_table_privileges() {
     use astersql_parser_auth::parser::auth::auth::UserIdentity;
     use astersql_testkit::TestKit;
 
-    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest();
     let mut root = TestKit::new(store.clone());
     root.MustExec("create database showdatabase", Vec::new());
     root.MustExec("create table showdatabase.t1 (id int)", Vec::new());

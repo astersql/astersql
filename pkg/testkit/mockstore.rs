@@ -34,7 +34,10 @@ use astersql_domain::domain::CrossKeyspaceCoordinator;
 use astersql_domain::{
     AutoAnalyzeExecutor, Domain, DomainConfig, InfoSchemaLoader, KvInfoSchemaLoader, SQLKiller,
 };
-use astersql_meta_metadef::{CreateAnalyzeJobsTable, CreateAnalyzeOptionsTable, CreateUserTable};
+use astersql_meta_metadef::{
+    CreateAnalyzeJobsTable, CreateAnalyzeOptionsTable, CreateDBTable, CreateGlobalGrantsTable,
+    CreateGlobalPrivTable, CreateTablesPrivTable, CreateUserTable,
+};
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
     CreateUnbootstrappedAnalyzeSessionForTest, RegisterRuntimeTopology, RuntimeReplicaReadRequest,
@@ -1797,6 +1800,29 @@ impl AnalyzeStatsStore {
         Self::from_bootstrap(active_sessions, bootstrap)
     }
 
+    /// Build a real SQL store with only the system tables required by account
+    /// and database/table privilege statements.
+    fn new_with_privilege_system_tables() -> Self {
+        let active_sessions = Arc::new(AtomicUsize::new(0));
+        let bootstrap =
+            AnalyzeSessionDatabase::bootstrap_without_system_schemas(Arc::clone(&active_sessions));
+        bootstrap
+            .execute("CREATE DATABASE IF NOT EXISTS mysql", &[])
+            .unwrap_or_else(|error| panic!("bootstrap mysql database for privilege test: {error}"));
+        for (name, definition) in [
+            ("user", CreateUserTable),
+            ("global_priv", CreateGlobalPrivTable),
+            ("db", CreateDBTable),
+            ("tables_priv", CreateTablesPrivTable),
+            ("global_grants", CreateGlobalGrantsTable),
+        ] {
+            bootstrap.execute(definition, &[]).unwrap_or_else(|error| {
+                panic!("bootstrap mysql.{name} for privilege test: {error}")
+            });
+        }
+        Self::from_bootstrap(active_sessions, bootstrap)
+    }
+
     /// Build a real SQL store with the production analyze-options table only.
     fn new_with_analyze_options() -> Self {
         let active_sessions = Arc::new(AtomicUsize::new(0));
@@ -2137,6 +2163,16 @@ pub fn CreateMockStoreAndDomain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
 pub fn CreateMockStoreAndDomainWithoutSystemSchemasForTest() -> (Arc<AnalyzeStatsStore>, Arc<Domain>)
 {
     let store = Arc::new(AnalyzeStatsStore::new_without_system_schemas());
+    let domain = store.domain();
+    domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
+    (store, domain)
+}
+
+/// Create a real canonical SQL store with only account and database/table
+/// privilege system tables, avoiding unrelated bootstrap work in focused tests.
+pub fn CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest()
+-> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
+    let store = Arc::new(AnalyzeStatsStore::new_with_privilege_system_tables());
     let domain = store.domain();
     domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
     (store, domain)
