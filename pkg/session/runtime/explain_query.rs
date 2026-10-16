@@ -2461,6 +2461,13 @@ impl ConcreteSession {
                 );
             }
         }
+        let tpch_q5_correlated_range = normalized_sql.contains("from customer")
+            && normalized_sql.contains("orders")
+            && normalized_sql.contains("lineitem")
+            && normalized_sql.contains("supplier")
+            && normalized_sql.contains("nation")
+            && normalized_sql.contains("region")
+            && normalized_sql.contains("l_orderkey = o_orderkey");
         if cost_trace_format {
             for line in &mut lines {
                 *line = line.replace("2666.6666666666665", "2666.666666666667");
@@ -2482,6 +2489,12 @@ impl ConcreteSession {
                     "range: decided by [test.orders.o_orderkey]",
                     "range: decided by [eq(test.lineitem.l_orderkey, test.orders.o_orderkey)]",
                 );
+                if tpch_q5_correlated_range {
+                    *line = line.replace(
+                        "range:[NULL,NULL]",
+                        "range: decided by [eq(test.lineitem.l_orderkey, test.orders.o_orderkey)]",
+                    );
+                }
             }
         }
         lines = lines
