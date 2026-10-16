@@ -1229,13 +1229,24 @@ fn analyze_job_status_records_completed_job() {
 /// Go `TestInsertAnalyzeJobWithLongInstance`：长实例字符串不影响状态读取。
 #[test]
 fn analyze_status_handles_long_instance_text() {
-    let mut tk = analyze_testkit();
-    tk.MustExec("use test", Vec::new());
-    tk.MustExec("create table t(a int)", Vec::new());
-    tk.MustExec("insert into t values (1)", Vec::new());
-    tk.MustExec("analyze table t", Vec::new());
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    let instance = "xxxtidb-tidb-0.xxxtidb-tidb-peer.xxxx-xx-1234-xxx-123456-1-321.xyz:4000";
+    let stats_handle = domain.stats_handle();
+    let mut stats_handle = stats_handle.lock().expect("statistics handle");
+    let mut jobs = stats_handle.analyze_jobs();
+    jobs.push(Default::default());
+    let job = jobs.last_mut().expect("inserted analyze job");
+    job.database = String::from("test");
+    job.table = String::from("t");
+    job.job_info = String::from("table all columns with 256 buckets, 100 topn, 1 samplerate");
+    job.instance = instance.to_owned();
+    job.process_id = Some(1);
+    stats_handle.record_analyze_jobs(jobs);
+    drop(stats_handle);
     let rows = tk.MustQuery("show analyze status", Vec::new()).Rows();
-    assert!(rows.iter().flatten().any(|value| !value.is_empty()));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][9], instance);
 }
 
 /// Go `TestShowAanalyzeStatusJobInfo`：作业描述包含列、bucket 与 topn 选项。
