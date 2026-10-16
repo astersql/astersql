@@ -343,7 +343,7 @@ fn show_config_variable_contains_runtime_configuration() {
 /// 对应 Go `TestShowVar`：按注册表检查 session/global 可见性与大小写 LIKE。
 #[test]
 fn show_variables_follow_registered_scopes_and_case_insensitive_like() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     let variables = astersql_sessionctx_variable::GetSysVars();
     let mut session_only = Vec::new();
     let mut session_visible_global = Vec::new();
