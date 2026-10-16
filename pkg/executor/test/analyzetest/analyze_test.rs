@@ -958,31 +958,58 @@ fn analyze_json_expression_index_completes() {
 /// 分区，且分区内 NDV 不被错误合并。
 #[test]
 fn analyze_many_partitions_preserves_physical_stats() {
-    let mut tk = analyze_testkit();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
+    let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table t(a int,b varchar(100),c int,index idx_c(c))\
          partition by range(a)(partition p100 values less than(100),\
          partition p200 values less than(200),partition p300 values less than(300),\
-         partition p400 values less than maxvalue)",
+         partition p400 values less than(400),partition p500 values less than(500),\
+         partition p600 values less than(600),partition p700 values less than(700),\
+         partition p800 values less than(800),partition p900 values less than(900),\
+         partition p1000 values less than maxvalue)",
         Vec::new(),
     );
-    let values = (0..400)
+    let values = (0..1000)
         .map(|i| format!("({i},'abc',{i})"))
         .collect::<Vec<_>>()
         .join(",");
     tk.MustExec(&format!("insert into t(a,b,c) values {values}"), Vec::new());
-    tk.MustExec("analyze table t all columns", Vec::new());
+    for column in ["a", "b", "c"] {
+        tk.MustExec(&format!("select * from t where {column} = '1'"), Vec::new());
+    }
+    domain
+        .dump_col_stats_usage_to_kv()
+        .expect("predicate column collection");
+    tk.MustExec("analyze table t", Vec::new());
     let context = tk.AnalyzeStatsContext().expect("ANALYZE stats context");
     let catalog = context.catalog();
     let (_, table) = catalog
         .get(&(String::from("test"), String::from("t")))
         .expect("many-partition table");
-    assert!(context.physical_stats(table.ID).unwrap().version > 0);
-    for definition in &table.GetPartitionInfo().unwrap().Definitions {
+    let global_stats = context.physical_stats(table.ID).expect("global stats");
+    assert!(global_stats.version > 0);
+    assert_eq!(global_stats.realtime_count, 1000);
+    assert_eq!(global_stats.columns.len(), 3);
+    assert_eq!(global_stats.indexes.len(), 1);
+    assert_eq!(global_stats.columns[&table.Columns[0].ID].ndv, 1000);
+    assert_eq!(global_stats.columns[&table.Columns[1].ID].ndv, 1);
+    assert_eq!(global_stats.columns[&table.Columns[2].ID].ndv, 1000);
+    assert_eq!(global_stats.indexes[&table.Indices[0].ID].ndv, 1000);
+
+    let definitions = &table.GetPartitionInfo().unwrap().Definitions;
+    assert_eq!(definitions.len(), 10);
+    for definition in definitions {
         let stats = context.physical_stats(definition.ID).unwrap();
         assert_eq!(stats.columns.len(), 3);
-        assert!(stats.realtime_count > 0);
+        assert_eq!(stats.indexes.len(), 1);
+        assert_eq!(stats.realtime_count, 100);
+        assert_eq!(stats.columns[&table.Columns[0].ID].ndv, 100);
+        assert_eq!(stats.columns[&table.Columns[1].ID].ndv, 1);
+        assert_eq!(stats.columns[&table.Columns[2].ID].ndv, 100);
+        assert_eq!(stats.indexes[&table.Indices[0].ID].ndv, 100);
     }
 }
 
