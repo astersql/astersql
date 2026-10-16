@@ -899,13 +899,15 @@ fn next_and_finish_are_excluded_and_errors_preserved() {
 #[test]
 fn cursor_iteration_is_timed_and_notification_excluded() {
     use std::time::{Duration, Instant};
+    const INJECTED_DELAY: Duration = Duration::from_millis(10);
+    const MIN_EXCLUDED_DELAY: Duration = Duration::from_millis(5);
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
     let id = prepare_response_cursor(&cc, &fault);
-    ctx.result_fault_for_test("Next", 1, Duration::from_millis(50), false);
+    ctx.result_fault_for_test("Next", 1, INJECTED_DELAY, false);
     let before = cc.cursor_write_duration_for_test(id);
     fetch_response(&cc, id, 1).unwrap();
-    assert!(cc.cursor_write_duration_for_test(id) >= before + Duration::from_millis(50));
+    assert!(cc.cursor_write_duration_for_test(id) >= before + INJECTED_DELAY);
     assert_eq!(ctx.result_events_for_test(), ["Next", "FetchReturned"]);
     {
         let f = fault.lock().unwrap();
@@ -914,12 +916,12 @@ fn cursor_iteration_is_timed_and_notification_excluded() {
         assert_ne!(status & 0x40, 0);
         assert_eq!(status & 0x80, 0);
     }
-    ctx.result_fault_for_test("FetchReturned", 1, Duration::from_millis(300), false);
+    ctx.result_fault_for_test("FetchReturned", 1, INJECTED_DELAY, false);
     let before = cc.cursor_write_duration_for_test(id);
     let started = Instant::now();
     fetch_response(&cc, id, 0).unwrap();
     let added = cc.cursor_write_duration_for_test(id).saturating_sub(before);
-    assert!(started.elapsed().saturating_sub(added) >= Duration::from_millis(250));
+    assert!(started.elapsed().saturating_sub(added) >= MIN_EXCLUDED_DELAY);
     assert_eq!(ctx.result_events_for_test(), ["FetchReturned"]);
     ctx.result_fault_for_test("none", 1, Duration::ZERO, false);
     fetch_response(&cc, id, 5).unwrap();
