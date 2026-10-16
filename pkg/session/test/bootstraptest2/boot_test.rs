@@ -188,10 +188,15 @@ fn upgrade_from_178_with_dist_task_injection(inject_sql: &str) {
 /// 对应 Go `TestTiDBUpgradeWithDistTaskEnable`：开关的两个值都不能让升级 fatal。
 #[test]
 fn upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values() {
-    for value in ["1", "0"] {
-        upgrade_from_178_with_dist_task_injection(&format!(
-            "set global tidb_enable_dist_task = {value}"
-        ));
+    let cases = ["1", "0"].map(|value| {
+        std::thread::spawn(move || {
+            upgrade_from_178_with_dist_task_injection(&format!(
+                "set global tidb_enable_dist_task = {value}"
+            ));
+        })
+    });
+    for case in cases {
+        case.join().expect("dist-task switch upgrade case");
     }
 }
 
