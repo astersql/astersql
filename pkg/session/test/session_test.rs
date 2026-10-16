@@ -1808,7 +1808,10 @@ fn parse_with_params_escape_contract_matches_go() {
         "missing arguments, need 2-th arg, but only got 1 args"
     );
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // ParseWithParams only needs a real session and SQL parser. Avoid bootstrapping
+    // unrelated mysql/sys tables while preserving the production-backed session path.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustQuery("SELECT 4", vec![]).Check(Rows(&["4"]));
     assert!(tk.Exec("SELECT", vec![]).is_err());
