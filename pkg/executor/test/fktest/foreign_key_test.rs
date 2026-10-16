@@ -731,7 +731,9 @@ fn TestForeignKeyOnInsertOnDuplicateParentTableCheck() {
 
 #[test]
 fn TestForeignKeyConcurrentInsertChildTable() {
-    let store = create_fk_store();
+    // This test creates every schema it needs, so avoid bootstrapping unrelated
+    // mysql system schemas while retaining the real Domain, KV, DDL, and SQL paths.
+    let store = CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
     let mut setup = new_fk_testkit(store.clone());
     setup.MustExec("set @@global.tidb_enable_foreign_key=1", Vec::new());
     setup.MustExec("set @@foreign_key_checks=1", Vec::new());
