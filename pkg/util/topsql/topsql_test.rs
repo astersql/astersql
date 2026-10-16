@@ -263,10 +263,15 @@ async fn test_top_sql_reporter() {
     reporter::RemoteTopSQLReporter::Start(&reporter);
     SetupTopProfilingForTest(reporter.clone());
 
-    let records: Vec<_> = REQUESTS
-        .iter()
-        .map(|request| mock_execute_sql(request.sql, request.plan))
-        .collect();
+    let records = std::thread::scope(|scope| {
+        REQUESTS
+            .iter()
+            .map(|request| scope.spawn(|| mock_execute_sql(request.sql, request.plan)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().expect("mock SQL worker should not panic"))
+            .collect()
+    });
     reporter.processCPUTimeData(1, records);
     reporter.takeDataAndSendToReportChan(1);
     server.WaitCollectCnt(0, 1, Duration::from_secs(5));
@@ -295,7 +300,6 @@ async fn test_top_sql_reporter() {
             assert_eq!(plan, request.plan);
         }
     }
-
     reporter.Close();
     target.Close();
     server.Stop();
