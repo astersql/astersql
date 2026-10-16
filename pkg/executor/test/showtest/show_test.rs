@@ -988,7 +988,7 @@ fn show_create_user_restores_authentication_and_account_options() {
 /// 字段值必须由真实元数据路径返回。
 #[test]
 fn show_full_columns_tables_and_collations_use_metadata_contract() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     tk.MustExec(
         "create table full_cols(c_int int, c_bool bool, c_char char(1) charset ascii collate ascii_bin, c_json json)",
         Vec::new(),
