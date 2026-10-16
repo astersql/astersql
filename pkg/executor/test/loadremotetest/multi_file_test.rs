@@ -23,7 +23,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use astersql_testkit::Rows;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::testkit::TestKit;
 
 struct GcsServer {
@@ -175,7 +177,7 @@ fn test_filename_asterisk() {
         ("/test-multi-load/db.tbl.003.tsv", b"5\ttest5\n6\ttest6"),
         ("/not-me/db.tbl.001.tsv", b"9\ttest9\n10\ttest10"),
     ]);
-    let mut tk = new_testkit();
+    let mut tk = TestKit::new(CreateMockStoreAndDomainWithoutSystemSchemasForTest().0);
     tk.MustExec("DROP DATABASE IF EXISTS multi_load", Vec::new());
     tk.MustExec("CREATE DATABASE multi_load", Vec::new());
     tk.MustExec(
