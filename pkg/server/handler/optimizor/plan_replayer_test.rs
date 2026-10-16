@@ -1411,8 +1411,8 @@ fn assert_real_dump_and_http_download_round_trip() {
         .expect("create ext storage");
     SetGlobalExtStorageForTest(Some(Arc::clone(&storage)));
 
-    let (_domain, session) =
-        astersql_session::runtime::CreateAnalyzeSession().expect("canonical session");
+    let (_domain, session) = astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest()
+        .expect("canonical unbootstrapped session");
     session
         .execute("create table plan_replayer_http (a int, b int)")
         .expect("create source table");
