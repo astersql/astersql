@@ -362,7 +362,7 @@ pub struct Table {
 /// 只读 BackupMeta：持有 Storage 与可选 Cipher，支持 v1/v2。
 pub struct MetaReader {
     storage: Arc<dyn Storage + Send + Sync>,
-    backupMeta: brpb::BackupMeta,
+    backupMeta: Arc<brpb::BackupMeta>,
     cipher: Option<CipherInfo>,
 }
 
@@ -375,7 +375,7 @@ pub fn NewMetaReader(
 ) -> MetaReader {
     MetaReader {
         storage,
-        backupMeta: backup_meta,
+        backupMeta: Arc::new(backup_meta),
         cipher,
     }
 }
@@ -469,7 +469,7 @@ impl MetaReader {
     /// Returns a clone of the embedded backup meta.
     /// 返回嵌入 BackupMeta 的克隆，供上层读取版本/集群信息。
     pub fn GetBasic(&self) -> brpb::BackupMeta {
-        self.backupMeta.clone()
+        self.backupMeta.as_ref().clone()
     }
 
     /// Reads schemas and optionally associated data files, invoking `callback` per table batch.
@@ -638,18 +638,18 @@ impl MetaReader {
             let mut table_map: HashMap<i64, Table> = HashMap::with_capacity(MaxBatchSize);
             let batch_done = receiveBatch(ctx, &err_rx, &ch_rx, MaxBatchSize, |mut table| {
                 if let Some(info) = table.Info.as_ref() {
-                    if let Some(file_map) = file_map.as_ref() {
-                        if let Some(files) = file_map.get(&info.ID) {
+                    if let Some(file_map) = file_map.as_mut() {
+                        if let Some(files) = file_map.remove(&info.ID) {
                             if !files.is_empty() {
-                                table.FilesOfPhysicals.insert(info.ID, files.clone());
+                                table.FilesOfPhysicals.insert(info.ID, files);
                             }
                         }
                         // 分区表：每个 partition definition.ID 单独挂文件列表。
                         if let Some(partition) = info.Partition.as_ref() {
                             for definition in &partition.Definitions {
-                                if let Some(files) = file_map.get(&definition.ID) {
+                                if let Some(files) = file_map.remove(&definition.ID) {
                                     if !files.is_empty() {
-                                        table.FilesOfPhysicals.insert(definition.ID, files.clone());
+                                        table.FilesOfPhysicals.insert(definition.ID, files);
                                     }
                                 }
                             }

@@ -353,8 +353,8 @@ fn build_benchmark_backupmeta(
     file_count_per_table: usize,
 ) -> BackupMeta {
     // 先攒齐全部 SST，再按表生成 Schema，保持 BackupMeta 字段顺序可读。
-    let mut mock_files = Vec::new();
-    let mut mock_schemas = Vec::new();
+    let mut mock_files = Vec::with_capacity(table_count * file_count_per_table);
+    let mut mock_schemas = Vec::with_capacity(table_count);
     // 表 id 从 1 递增，与 encode_row_key 一一对应。
     for i in 1..=table_count {
         let (mock_tbl, files) =
