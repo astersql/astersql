@@ -472,7 +472,9 @@ fn test_enforce_mpp_warning4_join_tables_and_hash_join_version() {
 /// 两阶段聚合下推用例的三表与 insert fixture。
 #[test]
 fn test_mpp_2phase_agg_push_down_fixture() {
-    let (domain, mut tk) = new_testkit();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let store: Arc<dyn Database> = store;
+    let mut tk = TestKit::new(store);
     tk.MustExec("create table c(c_id bigint)", Vec::new());
     tk.MustExec(
         "create table o(o_id bigint, c_id bigint not null)",
