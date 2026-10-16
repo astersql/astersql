@@ -1159,7 +1159,10 @@ fn test_rename_table_with_reload() {
 /// 跨库 rename 后删除源库并 full reload，单点 AutoID 仍从目标表水位继续分配。
 #[test]
 fn cross_database_rename_does_not_reuse_single_point_auto_id() {
-    let (mut tk, domain) = ddl_testkit_with_domain();
+    let (store, domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
+    tk.MustExec("use test", Vec::new());
     for db in ["rename1", "rename2"] {
         tk.MustExec(&format!("drop database if exists {db}"), Vec::new());
         tk.MustExec(&format!("create database {db}"), Vec::new());
