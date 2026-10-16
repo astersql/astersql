@@ -549,6 +549,12 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
         }
     }
     let (domain, _) = CreateAnalyzeSession().unwrap();
+    let mut scan_session = TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(&domain)));
+    scan_session.execute("SET @@time_zone='UTC'", &[]).unwrap();
+    let mut delete_session = TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(&domain)));
+    delete_session
+        .execute("SET @@time_zone='UTC'", &[])
+        .unwrap();
     for (case_index, (kind, frontier, values, updated)) in [
         (
             "TIMESTAMP",
@@ -589,28 +595,23 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
     .enumerate()
     {
         let table_name = format!("ttl_delete_boundary_{case_index}");
-        let session = ConcreteSession::new(Arc::clone(&domain));
-        session
-            .execute("SET @@global.time_zone='America/New_York'")
+        scan_session
+            .execute("SET @@global.time_zone='America/New_York'", &[])
             .unwrap();
-        session.execute("SET @@time_zone='UTC'").unwrap();
-        session.execute(&format!("CREATE TABLE {table_name} (id BIGINT PRIMARY KEY CLUSTERED, expire_at {kind} NOT NULL) TTL=expire_at + INTERVAL 1 HOUR")).unwrap();
-        for (i, value) in values.iter().enumerate() {
-            session
-                .execute(&format!(
-                    "INSERT INTO {table_name} VALUES ({}, '{value}')",
-                    i + 1
-                ))
-                .unwrap();
-        }
-        let table = temporal_table(&table_name, vec!["id".into()]);
-        let mut scan_session = TtlWorkerSqlSession::new(session);
+        scan_session.execute(&format!("CREATE TABLE {table_name} (id BIGINT PRIMARY KEY CLUSTERED, expire_at {kind} NOT NULL) TTL=expire_at + INTERVAL 1 HOUR"), &[]).unwrap();
+        let rows = values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| format!("({}, '{value}')", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        scan_session
+            .execute(&format!("INSERT INTO {table_name} VALUES {rows}"), &[])
+            .unwrap();
+        let mut table = temporal_table(&table_name, vec!["id".into()]);
+        table.table_id = case_index as i64 + 1;
+        table.physical_id = case_index as i64 + 1;
         let captured = scan_session.expiration_predicate(&table, frontier).unwrap();
-        let mut delete_session =
-            TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(&domain)));
-        delete_session
-            .execute("SET @@time_zone='UTC'", &[])
-            .unwrap();
         delete_session.use_expiration(&table, frontier, captured);
         scan_session
             .execute("SET @@global.time_zone='+08:00'", &[])
