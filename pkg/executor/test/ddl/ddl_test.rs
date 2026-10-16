@@ -1192,7 +1192,10 @@ fn test_rename_table() {
         "github.com/pingcap/tidb/pkg/meta/autoid/mockAutoIDChange",
         "return(true)",
     );
-    let mut tk = ddl_testkit();
+    let store =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest().0;
+    let mut tk = NewTestKit(store);
+    tk.MustExec("use test", Vec::new());
     for db in ["rename1", "rename2", "rename3"] {
         tk.MustExec(&format!("drop database if exists {db}"), Vec::new());
         tk.MustExec(&format!("create database {db}"), Vec::new());
