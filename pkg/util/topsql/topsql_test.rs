@@ -218,10 +218,15 @@ fn test_top_sql_cpu_profile() {
     let mut sql_cpu_collector = collector::NewSQLCPUCollector(mock.clone());
     sql_cpu_collector.Start();
 
-    let records: Vec<_> = REQUESTS
-        .iter()
-        .map(|request| mock_execute_sql(request.sql, request.plan))
-        .collect();
+    let records: Vec<_> = std::thread::scope(|scope| {
+        REQUESTS
+            .iter()
+            .map(|request| scope.spawn(|| mock_execute_sql(request.sql, request.plan)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|worker| worker.join().expect("mock SQL worker should join"))
+            .collect()
+    });
     // pprof-rs does not carry Go goroutine labels. Feed the sampled records at
     // the collector boundary while still exercising the real profiler and
     // SQLCPUCollector lifecycle.
