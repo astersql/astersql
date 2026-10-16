@@ -625,9 +625,11 @@ fn analyze_sampling_workers_publish_complete_stats() {
     tk.MustExec("set @@tidb_analyze_version = 2", Vec::new());
     tk.MustExec("set @@tidb_build_stats_concurrency = 4", Vec::new());
     tk.MustExec("create table t(a int, index idx(a))", Vec::new());
-    for i in 1..=12 {
-        tk.MustExec(&format!("insert into t values ({i})"), Vec::new());
-    }
+    tk.MustExec(
+        "insert into t values (1), (2), (3), (4), (5), (6), \
+         (7), (8), (9), (10), (11), (12)",
+        Vec::new(),
+    );
     tk.MustExec("analyze table t", Vec::new());
     let context = tk.AnalyzeStatsContext().expect("ANALYZE stats context");
     let stats = context.table("test", "t").expect("sampling metadata");
