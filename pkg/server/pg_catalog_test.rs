@@ -2000,7 +2000,9 @@ fn pg_introspection_columns_live() {
 
 #[test]
 fn pg_introspection_constraints_live() {
-    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, native) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
+    native.execute("CREATE DATABASE test").unwrap();
     native.execute("CREATE TABLE test.constraints_parent (a INT, b INT, label VARCHAR(20), PRIMARY KEY(a,b), UNIQUE KEY uq_label(label), KEY ix_b(b))").unwrap();
     native.execute("CREATE TABLE test.constraints_child (a INT, b INT, CONSTRAINT fk_parent FOREIGN KEY(a,b) REFERENCES test.constraints_parent(a,b) ON DELETE CASCADE ON UPDATE RESTRICT)").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
