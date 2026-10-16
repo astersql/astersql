@@ -471,8 +471,14 @@ fn test_ignore_lines_and_generated_columns_contract() {
 fn test_multi_value_index_and_user_variables_contract() {
     let server = GcsServer::start(&[
         ("/test-load/one.csv", b"i,s\n1,\"[1,2,3]\"\n2,\"[2,3,4]\""),
-        ("/test-load/cols-1.tsv", b"1,11,111\n2,22,222\n"),
-        ("/test-load/cols-2.tsv", b"3,33,333\n4,44,444\n"),
+        (
+            "/test-load/cols-1.tsv",
+            b"1,11,111\n2,22,222\n3,33,333\n4,44,444\n5,55,555\n",
+        ),
+        (
+            "/test-load/cols-2.tsv",
+            b"6,66,666\n7,77,777\n8,88,888\n9,99,999\n",
+        ),
     ]);
     let mut tk = new_testkit();
     tk.MustExec("DROP DATABASE IF EXISTS load_data", Vec::new());
@@ -493,5 +499,15 @@ fn test_multi_value_index_and_user_variables_contract() {
         "SELECT * FROM load_data.cols_and_vars ORDER BY a",
         Vec::new(),
     )
-    .Check(Rows(&["1 110 123", "2 220 123", "3 330 123", "4 440 123"]));
+    .Check(Rows(&[
+        "1 110 123",
+        "2 220 123",
+        "3 330 123",
+        "4 440 123",
+        "5 550 123",
+        "6 660 123",
+        "7 770 123",
+        "8 880 123",
+        "9 990 123",
+    ]));
 }
