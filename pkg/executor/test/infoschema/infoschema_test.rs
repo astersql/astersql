@@ -25,7 +25,9 @@ use astersql_infoschema::infoschema::{
 };
 use astersql_infoschema::{CiString, InfoSchema};
 use astersql_parser_auth::parser::auth::auth::UserIdentity;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{Rows, RowsWithSep, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use std::sync::{Arc, Mutex};
@@ -801,7 +803,7 @@ fn joined_system_table_query_contains_view_and_time_value_columns() {
 /// 不依赖底层表扫描。
 #[test]
 fn show_columns_from_subquery_view_returns_view_metadata() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
