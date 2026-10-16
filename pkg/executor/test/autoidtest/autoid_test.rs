@@ -591,7 +591,9 @@ fn TestFilterDifferentAllocators() {
     let _guard = crate::AUTOID_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (store, _) = CreateMockStoreAndDomain();
+    // This scenario only addresses user tables in `test`; skipping unrelated
+    // system-schema bootstrapping preserves the real Domain/TestKit SQL path.
+    let (store, _) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec("drop table if exists t", Vec::new());
