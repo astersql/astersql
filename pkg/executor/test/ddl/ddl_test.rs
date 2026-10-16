@@ -324,7 +324,10 @@ fn test_create_drop_database() {
 /// ALTER TABLE ADD COLUMN：默认值、以及对 view/sequence 的错误对象检查。
 #[test]
 fn test_alter_table_add_column() {
-    let mut tk = ddl_testkit();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("drop table if exists alter_test", Vec::new());
     tk.MustExec("create table alter_test (c1 int)", Vec::new());
     tk.MustExec("insert into alter_test values (1)", Vec::new());
