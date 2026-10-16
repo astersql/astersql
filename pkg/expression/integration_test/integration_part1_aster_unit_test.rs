@@ -492,7 +492,7 @@ fn TestVectorConstantExplain() {
 #[test]
 /// TiFlash HNSW VECTOR INDEX 的 ANN TopN 计划保持距离、维度截断与 limit。
 fn TestVectorIndexExplain() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec("DROP TABLE IF EXISTS t1", Vec::new());
