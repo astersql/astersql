@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use astersql_testkit::Rows;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::testkit::TestKit;
 
 struct GcsServer {
@@ -379,7 +381,10 @@ fn test_load_csv_and_transaction_contract() {
         ("/test-load-csv/newline.csv", b"i,s\n100,\"test100\"\n101,\"\\\"\"\n102,\"\xf0\x9f\x98\x84\xf0\x9f\x98\x84\"\n104,\"\"\n"),
         ("/test-load-csv/data.csv", b"100,test100\n101,hello\n102,world\n104,bye"),
     ]);
-    let mut tk = new_testkit();
+    // This test creates every schema it uses. Keep the canonical Domain, SQL,
+    // DDL, LOAD DATA, and transaction paths while skipping unrelated mysql/sys
+    // bootstrap tables.
+    let mut tk = TestKit::new(CreateMockStoreAndDomainWithoutSystemSchemasForTest().0);
     tk.MustExec("DROP DATABASE IF EXISTS load_csv", Vec::new());
     tk.MustExec("CREATE DATABASE load_csv", Vec::new());
     tk.MustExec("CREATE TABLE load_csv.t (i INT, s varchar(32))", Vec::new());
