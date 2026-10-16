@@ -228,7 +228,7 @@ fn show_create_placement_policy_executes_sql_contract() {
 /// 对应 Go `TestShowEscape`：反引号与 ANSI_QUOTES 模式必须分别正确转义。
 #[test]
 fn show_create_table_escapes_identifiers_for_sql_mode() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     tk.MustExec("drop table if exists `t``abl\"e`", Vec::new());
     tk.MustExec(
         "create table `t``abl\"e`(`c``olum\"n` int(11) primary key)",
