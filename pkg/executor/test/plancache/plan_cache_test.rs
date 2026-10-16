@@ -106,9 +106,13 @@ fn prepared_cte_remains_inline_after_unrelated_ddl() {
 /// 内部哈希函数，否则无法发现执行计划复用时参数或 schema 状态串用。
 #[test]
 fn point_get_prepared_plan_reuses_parameters_and_invalidates_schema() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only uses its own database, so avoid bootstrapping unrelated
+    // system schemas while keeping the real SQL, plan-cache, and DDL paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("drop database if exists ps_text", Vec::new());
     tk.MustExec("create database ps_text", Vec::new());
