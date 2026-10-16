@@ -923,7 +923,22 @@ fn TestVectorStringCompare() {
 #[test]
 /// VECTOR 的 GROUP BY、DISTINCT、MIN/MAX、HAVING 走真实 SQL。
 fn TestVectorAggregations() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("CREATE DATABASE IF NOT EXISTS mysql", Vec::new());
+    tk.MustExec(
+        "CREATE TABLE mysql.analyze_options(\
+         table_id BIGINT(64) NOT NULL,\
+         sample_num BIGINT(64) NOT NULL DEFAULT 0,\
+         sample_rate DOUBLE NOT NULL DEFAULT -1,\
+         buckets BIGINT(64) NOT NULL DEFAULT 0,\
+         topn BIGINT(64) NOT NULL DEFAULT -1,\
+         column_choice ENUM('DEFAULT','ALL','PREDICATE','LIST') NOT NULL DEFAULT 'DEFAULT',\
+         column_ids TEXT(19372),\
+         PRIMARY KEY(table_id) CLUSTERED)",
+        Vec::new(),
+    );
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t(val VECTOR)", Vec::new());
     tk.MustExec(
         "INSERT INTO t VALUES \
