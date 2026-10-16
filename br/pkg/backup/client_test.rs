@@ -39,7 +39,7 @@ use crate::client::{
 use crate::limit::NewResourceMemoryLimiter;
 use crate::store::{
     BackupRetryPolicy, BackupSender, ObserveStoreChangesAsync, ResponseAndStore,
-    SplitBackupReqRanges,
+    SplitBackupReqRanges, observe_store_changes_async_with_test_ticker,
 };
 use crate::stubs::backuppb::{
     self, BackupClient, BackupRequest, BackupResponse, BackupStream, File, KeyRange,
@@ -1612,49 +1612,36 @@ fn test_observe_store_changes_async() {
     // case #1: nothing happened
     // 第一个场景使用空变化窗口，验证观察器不会产生伪事件。
     let (ch_tx, ch_rx) = mpsc::channel();
-    ObserveStoreChangesAsync(ctx.clone(), ch_tx, s.pd.clone());
-    let start = Instant::now();
-    let mut got = false;
-    while start.elapsed() < Duration::from_secs(1) {
-        if ch_rx.try_recv().is_ok() {
-            got = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
+    let (tick_tx, ready_rx, cycle_done_rx) =
+        observe_store_changes_async_with_test_ticker(ctx.clone(), ch_tx, s.pd.clone());
+    ready_rx.recv().unwrap();
+    for _ in 0..10 {
+        tick_tx.send(()).unwrap();
+        cycle_done_rx.recv().unwrap();
+        assert!(
+            ch_rx.try_recv().is_err(),
+            "channel must not receive when stores unchanged"
+        );
     }
-    assert!(!got, "channel must not receive when stores unchanged");
 
     // 新增节点事件是后续调度刷新最重要的正向信号。
     // case #2: new store joined
     // 然后新增第三台 store，验证观察器可以捕捉到加入事件。
     s.pd.add_store(3, "127.0.0.1:20162");
-    let start = Instant::now();
-    let mut found = false;
-    while start.elapsed() < Duration::from_secs(2) {
-        if let Ok(res) = ch_rx.try_recv() {
-            if res.One == 3 {
-                found = true;
-                break;
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    assert!(found, "should observe new store 3");
+    tick_tx.send(()).unwrap();
+    let joined = ch_rx.recv().unwrap();
+    cycle_done_rx.recv().unwrap();
+    assert_eq!(joined.One, 3, "should observe new store 3");
 
     // 最后把第二台 store 标记成停止，应触发全量重试通知。
     s.pd.stop_store(2);
-    let start = Instant::now();
-    let mut disconnected = false;
-    while start.elapsed() < Duration::from_secs(2) {
-        if let Ok(res) = ch_rx.try_recv()
-            && res.All
-        {
-            disconnected = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    assert!(disconnected, "store disconnect must trigger an All retry");
+    tick_tx.send(()).unwrap();
+    let disconnected = ch_rx.recv().unwrap();
+    cycle_done_rx.recv().unwrap();
+    assert!(
+        disconnected.All,
+        "store disconnect must trigger an All retry"
+    );
 
     failpoint::set_backup_store_change_tick(false);
     cancel.cancel();

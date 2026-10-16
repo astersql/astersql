@@ -507,6 +507,22 @@ pub fn ObserveStoreChangesAsync(
     stateNotifier: Sender<BackupRetryPolicy>,
     pdCli: Arc<dyn PdClient>,
 ) {
+    observe_store_changes_async_with_wait(ctx, stateNotifier, pdCli, None, None, |_, interval| {
+        thread::sleep(interval);
+        true
+    });
+}
+
+fn observe_store_changes_async_with_wait<F>(
+    ctx: Context,
+    stateNotifier: Sender<BackupRetryPolicy>,
+    pdCli: Arc<dyn PdClient>,
+    ready: Option<Sender<()>>,
+    cycle_done: Option<Sender<()>>,
+    mut wait_for_tick: F,
+) where
+    F: FnMut(&Context, Duration) -> bool + Send + 'static,
+{
     thread::spawn(move || {
         let sendAll = Arc::new(AtomicBool::new(false));
         let newJoinStoresMap: Arc<Mutex<HashMap<u64, ()>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -545,9 +561,14 @@ pub fn ObserveStoreChangesAsync(
             // 测试加速：缩短拓扑轮询间隔。
             tickInterval = Duration::from_millis(100);
         }
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
 
         while !ctx.Done() {
-            thread::sleep(tickInterval);
+            if !wait_for_tick(&ctx, tickInterval) {
+                return;
+            }
             if ctx.Done() {
                 return;
             }
@@ -571,8 +592,37 @@ pub fn ObserveStoreChangesAsync(
                     );
                 }
             }
+            if let Some(cycle_done) = &cycle_done {
+                let _ = cycle_done.send(());
+            }
         }
     });
+}
+
+/// Starts the production observer with a deterministic ticker for unit tests.
+///
+/// Each sent tick represents one configured polling interval. The completion
+/// receiver fires only after the corresponding store-watch step and notification
+/// decisions have completed, so tests retain the Go timing window without
+/// spending wall-clock time.
+#[cfg(test)]
+pub(crate) fn observe_store_changes_async_with_test_ticker(
+    ctx: Context,
+    state_notifier: Sender<BackupRetryPolicy>,
+    pd_client: Arc<dyn PdClient>,
+) -> (Sender<()>, Receiver<()>, Receiver<()>) {
+    let (tick_tx, tick_rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (cycle_done_tx, cycle_done_rx) = mpsc::channel();
+    observe_store_changes_async_with_wait(
+        ctx,
+        state_notifier,
+        pd_client,
+        Some(ready_tx),
+        Some(cycle_done_tx),
+        move |_, _| tick_rx.recv().is_ok(),
+    );
+    (tick_tx, ready_rx, cycle_done_rx)
 }
 
 /// SplitBackupReqRanges mirrors Go `SplitBackupReqRanges`.
