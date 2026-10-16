@@ -612,7 +612,7 @@ fn show_warnings_preserves_previous_statement_and_resets_counts() {
 /// 信息必须在 SHOW CREATE TABLE 中完整恢复。
 #[test]
 fn show_create_table_restores_placement_for_tables_and_partitions() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     tk.MustExec(
         "create placement policy x followers=2 constraints='[+disk=ssd]'",
         Vec::new(),
