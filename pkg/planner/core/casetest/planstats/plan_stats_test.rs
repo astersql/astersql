@@ -626,10 +626,6 @@ fn run_plan_stats_sync_load_matrix(forced_failures: usize) -> usize {
         let mut results = session
             .execute(&format!("explain format = brief {sql}"))
             .expect("optimization must succeed even when sync loading uses pseudo fallback");
-        let mut rows = Vec::new();
-        while let Some(row) = results[0].next_row().unwrap() {
-            rows.push(row);
-        }
         // Match Go: only the statement's sync-load failure permits skipping.
         // A missing cache column without this flag must still fail assertions.
         let failed = session.WithSessionVars(|vars| {
@@ -643,7 +639,14 @@ fn run_plan_stats_sync_load_matrix(forced_failures: usize) -> usize {
                 false
             }
         });
-        if failed { None } else { Some(rows) }
+        if failed {
+            return None;
+        }
+        let mut rows = Vec::new();
+        while let Some(row) = results[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        Some(rows)
     };
 
     let cases = [
