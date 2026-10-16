@@ -3288,16 +3288,20 @@ fn bootstrap_reserved_versions_preserve_compatibility_variables() {
     if astersql_config_kerneltype::IsNextGen() {
         return;
     }
-    for (version, expected) in [(278, "0.8"), (280, "0.8"), (281, "0")] {
+    for (version, expected) in [(278, Some("0.8")), (280, Some("0.8")), (281, None)] {
         let f = Fixture::new();
         let mut sql = f.pool.acquire().unwrap();
         sql.query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
         sql.query("DELETE FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap();
         super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
-        // The historical value must be materialized before bootstrap's current
-        // sysvar default, while a cluster already at 281 keeps that default.
-        assert_eq!(sql.query("SELECT variable_value FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap(), vec![vec![expected.to_string()]]);
-        sql.query("UPDATE mysql.global_variables SET variable_value='0.6' WHERE variable_name='tidb_default_string_match_selectivity'").unwrap();
+        // Go upgradeToVer281 materializes the historical value only when
+        // upgrading from a version below 281. Starting at 281 leaves a missing
+        // persisted row absent so the runtime built-in default applies.
+        let expected = expected
+            .map(|value| vec![vec![value.to_string()]])
+            .unwrap_or_default();
+        assert_eq!(sql.query("SELECT variable_value FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap(), expected);
+        sql.query("INSERT INTO mysql.global_variables (variable_name, variable_value) VALUES ('tidb_default_string_match_selectivity', '0.6') ON DUPLICATE KEY UPDATE variable_value='0.6'").unwrap();
         sql.query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
         super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
         assert_eq!(sql.query("SELECT variable_value FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap(), vec![vec!["0.6".to_string()]]);
