@@ -1751,50 +1751,56 @@ fn canonical_history_http_preserves_failed_tasks() {
         },
     ));
     domain.init().unwrap();
-    let session = astersql_session::runtime::BootstrapCanonicalDomain(domain.clone()).unwrap();
-
-    let manager = session.ImportTaskManager().unwrap();
-    manager
-        .InitMeta((), "127.0.0.1:4000".into(), "background".into())
-        .unwrap();
-    let mut ids = Vec::new();
-    let mut tasks = Vec::new();
-    for (index, keyspace) in ["ks1", "ks2", "ks1", "ks3", "ks1"].iter().enumerate() {
-        let id = manager
-            .CreateTask(
-                (),
-                format!("history-key-{}", index + 1),
-                proto::ImportInto,
-                (*keyspace).into(),
-                8,
-                "".into(),
-                0,
-                proto::ExtraParams::default(),
-                b"test".to_vec(),
-            )
-            .unwrap();
-        let task = manager.GetTaskByID((), id).unwrap();
+    let ids = if astersql_config_kerneltype::IsNextGen() {
+        let session = astersql_session::runtime::BootstrapCanonicalDomain(domain.clone()).unwrap();
+        let manager = session.ImportTaskManager().unwrap();
         manager
-            .SwitchTaskStep((), task, proto::TaskStateRunning, proto::StepOne, vec![])
+            .InitMeta((), "127.0.0.1:4000".into(), "background".into())
             .unwrap();
-        if index == 4 {
-            manager
-                .FailTask(
+        let mut ids = Vec::new();
+        let mut tasks = Vec::new();
+        for (index, keyspace) in ["ks1", "ks2", "ks1", "ks3", "ks1"].iter().enumerate() {
+            let id = manager
+                .CreateTask(
                     (),
-                    id,
-                    proto::TaskStateRunning,
-                    storage::Error::pingcap("history task failed: secret", "DXF:History:Named", 0),
+                    format!("history-key-{}", index + 1),
+                    proto::ImportInto,
+                    (*keyspace).into(),
+                    8,
+                    "".into(),
+                    0,
+                    proto::ExtraParams::default(),
+                    b"test".to_vec(),
                 )
                 .unwrap();
-        } else {
-            manager.SucceedTask((), id).unwrap();
+            let task = manager.GetTaskByID((), id).unwrap();
+            manager
+                .SwitchTaskStep((), task, proto::TaskStateRunning, proto::StepOne, vec![])
+                .unwrap();
+            if index == 4 {
+                manager
+                    .FailTask(
+                        (),
+                        id,
+                        proto::TaskStateRunning,
+                        storage::Error::pingcap(
+                            "history task failed: secret",
+                            "DXF:History:Named",
+                            0,
+                        ),
+                    )
+                    .unwrap();
+            } else {
+                manager.SucceedTask((), id).unwrap();
+            }
+            tasks.push(manager.GetTaskByID((), id).unwrap());
+            ids.push(id);
         }
-        tasks.push(manager.GetTaskByID((), id).unwrap());
-        ids.push(id);
-    }
-    manager.TransferTasks2History((), tasks).unwrap();
-    drop(manager);
-    drop(session);
+        manager.TransferTasks2History((), tasks).unwrap();
+        Some(ids)
+    } else {
+        None
+    };
     let server = Server::new(
         ServerConfig {
             host: "127.0.0.1".into(),
@@ -1842,6 +1848,7 @@ fn canonical_history_http_preserves_failed_tasks() {
         assert!(request("GET", "?page_size=2").starts_with("HTTP/1.1 404"));
         return;
     }
+    let ids = ids.expect("NextGen history fixture must be initialized");
     for (method, query, message) in [
         ("POST", "", "only support GET method"),
         ("GET", "?page_size=0", "invalid page_size 0"),
