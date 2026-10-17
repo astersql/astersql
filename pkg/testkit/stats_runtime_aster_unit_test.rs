@@ -193,7 +193,7 @@ fn flush_stats_delta_is_atomic_and_records_shared_version_history() {
 /// 索引-only ANALYZE 与 NULL 索引桶行为对齐 Go。
 #[test]
 fn index_only_analyze_and_null_index_buckets_match_go() {
-    let store = CreateAnalyzeStatsStore();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = TestKit::new(store);
     testkit.MustExec(
         "create table idx_only(a int, b int, c int, index idx_b(b), index idx_c_a(c, a))",
