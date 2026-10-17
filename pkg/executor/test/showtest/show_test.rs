@@ -167,9 +167,9 @@ fn show_create_database_rejects_empty_name() {
 #[test]
 fn show_stats_extended_reports_feature_removed() {
     use astersql_testkit::TestKit;
-    use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+    use astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest;
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let tk = TestKit::new(store);
     let error = tk.QueryToErr("SHOW STATS_EXTENDED");
     assert_eq!(
