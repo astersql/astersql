@@ -3232,6 +3232,7 @@ dependencies = [
  "astersql-lightning-mydump",
  "astersql-lightning-verification",
  "astersql-meta-autoid",
+ "astersql-meta-metadef",
  "astersql-meta-model",
  "astersql-metrics",
  "astersql-objstore",

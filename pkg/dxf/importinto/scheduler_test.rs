@@ -1752,7 +1752,12 @@ pub(crate) fn real_pending_import_job_manager(
     std::sync::Arc<astersql_domain::Domain>,
     astersql_dxf_framework_storage::TaskManager,
 ) {
-    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, session) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
+    session.execute("CREATE DATABASE mysql").unwrap();
+    session
+        .execute(astersql_meta_metadef::CreateTiDBImportJobsTable)
+        .unwrap();
     let manager = session.ImportTaskManager().unwrap();
     manager.ExecuteSQLWithNewSession((),
         "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?)",

@@ -97,6 +97,7 @@ astersql-dxf-importinto-jobhistory = { path = "jobhistory" }
 "astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../framework/testutil" }
 "astersql-dxf-importinto-mock" = { package = "astersql-dxf-importinto-mock", path = "mock" }
 "astersql-keyspace" = { package = "astersql-keyspace", path = "../../keyspace" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
 "astersql-parser" = { package = "astersql-parser", path = "../../parser" }
 "astersql-planner-core" = { package = "astersql-planner-core", path = "../../planner/core" }
 "astersql-session" = { package = "astersql-session", path = "../../session" }
