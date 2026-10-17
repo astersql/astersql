@@ -53,7 +53,11 @@ pub const minTriggerEventInterval: Duration = Duration::from_secs(1);
 /// Watch 通道断开后重新订阅的等待间隔。
 pub const reWatchInterval: Duration = Duration::from_secs(5);
 /// 批量处理 Watch 响应的周期。
+#[cfg(not(test))]
 pub const batchProcessWatchRespInterval: Duration = Duration::from_secs(1);
+/// 测试中缩短 Watch 批处理周期，与 Go `intest.InTest` 配置保持一致。
+#[cfg(test)]
+pub const batchProcessWatchRespInterval: Duration = Duration::from_millis(1);
 /// Worker 通道满时推迟重试的间隔。
 pub const retryBusyWorkerInterval: Duration = Duration::from_secs(5);
 /// 检查等待关闭（WaitTriggerClose）定时器的周期。
