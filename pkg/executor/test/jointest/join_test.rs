@@ -71,7 +71,11 @@ fn test_join2_executes_the_join_contract() {
 /// keep both the `NOT IN` empty result and the correlated `NOT EXISTS` row.
 #[test]
 fn test_null_empty_aware_semijoin_executes_null_contract() {
-    let mut tk = new_join_testkit();
+    // This regression only needs the canonical SQL engine. Avoid bootstrapping
+    // unrelated system schemas that none of its statements can observe.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create table null_semijoin(a int, b int)", Vec::new());
     tk.MustExec(
         "insert into null_semijoin values (null, 1), (1, 2)",
