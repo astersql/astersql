@@ -437,26 +437,37 @@ fn bootstrap_masking_policy_table_schema_is_complete() {
 /// 对应 Go `TestANSISQLMode` 的关键回归：ANSI 模式下仍可读取 bootstrap 的时区变量。
 #[test]
 fn bootstrap_system_timezone_query_survives_ansi_sql_mode() {
-    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
-    let mut tk = NewTestKit(store.clone() as Arc<dyn Database>);
-    tk.MustExec(
+    let (domain, session) = CreateBootstrapUpgradeTestSession();
+    MustExec(
+        &session,
         "set @@global.sql_mode='NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION,ANSI'",
-        Vec::new(),
+        &[],
     );
-    tk.MustExec(
+    MustExec(
+        &session,
         "delete from mysql.tidb where variable_name='tidb_server_version'",
-        Vec::new(),
+        &[],
     );
-    drop(tk);
-    astersql_session::runtime::BootstrapCanonicalDomain(domain)
+    drop(session);
+
+    let upgraded = astersql_session::runtime::BootstrapCanonicalDomain(Arc::clone(&domain))
         .expect("ANSI global SQL mode must not prevent re-bootstrap");
-    let tk = NewTestKit(store as Arc<dyn Database>);
-    let rows = tk.MustQuery(
+    let mut rows = MustExecToRecodeSet(
+        &upgraded,
         "select variable_value from mysql.tidb where variable_name='system_tz'",
-        Vec::new(),
+        &[],
     );
-    assert_eq!(rows.Rows(), vec![vec!["CST".to_owned()]]);
-    assert!(tk.MustQuery("select @@global.sql_mode", Vec::new()).Rows()[0][0].contains("ANSI"),);
+    assert_eq!(
+        rows.Next().expect("read bootstrapped system timezone"),
+        Some(vec!["CST".to_owned()]),
+    );
+    rows.Close().expect("close system timezone result");
+
+    let mut sql_mode = MustExecToRecodeSet(&upgraded, "select @@global.sql_mode", &[]);
+    assert!(sql_mode.Next().expect("read global SQL mode").unwrap()[0].contains("ANSI"),);
+    sql_mode.Close().expect("close global SQL mode result");
+    drop(upgraded);
+    domain.close();
 }
 
 /// 对应 Go `TestStmtSummary`：statement summary 默认值必须写入持久全局变量表，
