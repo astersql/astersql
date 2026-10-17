@@ -748,7 +748,7 @@ fn TestDeferConstraintCheckForInsert() {
 /// Go TestPessimisticDeleteYourWrites：删除自己的写入后，另一会话可插入并提交。
 #[test]
 fn TestPessimisticDeleteYourWrites() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut session1 = NewTestKit(store.clone());
     let mut session2 = NewTestKit(store);
     session1.MustExec("use test", Vec::new());
