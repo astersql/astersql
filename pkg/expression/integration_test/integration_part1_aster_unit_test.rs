@@ -903,7 +903,11 @@ fn TestVectorControlFlow() {
 #[test]
 /// LIKE/ILIKE/STRCMP 对 VECTOR 使用规范文本表示。
 fn TestVectorStringCompare() {
-    let mut tk = new_testkit();
+    // This case only exercises a user table in `test`, so avoid bootstrapping
+    // unrelated system schemas while preserving the real Domain/KV/DDL/SQL paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t1(val VECTOR)", Vec::new());
     tk.MustExec("INSERT INTO t1 VALUES ('[1,2,3]'),('[4,5,6]')", Vec::new());
     tk.MustQuery("SELECT * FROM t1 WHERE val LIKE '%2%'", Vec::new())
