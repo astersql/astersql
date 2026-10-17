@@ -458,9 +458,9 @@ fn test_window_evicted_count_reset_on_rotate() {
     assert_eq!(summary.Len(), 2);
     assert_eq!(summary.EvictedCount(), 2);
 
-    wait_until(Duration::from_secs(4), || {
-        summary.Len() == 0 && summary.EvictedCount() == 0
-    });
+    summary.rotateForTest();
+    assert_eq!(summary.Len(), 0);
+    assert_eq!(summary.EvictedCount(), 0);
     for digest in ["digest5", "digest6", "digest7"] {
         summary.Add(&GenerateStmtExecInfo4Test(digest));
     }
