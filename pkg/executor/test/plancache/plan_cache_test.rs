@@ -626,9 +626,13 @@ fn prepared_plan_cache_binding_change_invalidates_previous_plan() {
 /// Go `testPreparedNullParam`。
 #[test]
 fn prepared_null_param_selects_table_dual() {
-    use astersql_testkit::{DbValue, NewTestKit, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        DbValue, NewTestKit, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only exercises a user-created table. Avoid bootstrapping unrelated
+    // system schemas while preserving the real SQL, DDL, and prepared-protocol paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
