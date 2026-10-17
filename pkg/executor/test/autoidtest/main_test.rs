@@ -42,7 +42,8 @@ fn TestMain() {
     assert!(config.experimental.allows_expression_index);
 
     // Rust 会话 worker 由 Drop join；验证 TestKit 退出后没有残留会话线程。
-    let (store, _) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, _) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     {
         let _tk = astersql_testkit::NewTestKit(store.clone());
         assert_eq!(store.active_session_count(), 1);
