@@ -145,7 +145,7 @@ fn columns_exclude_non_public_modify_column_artifacts() {
 /// INFORMATION_SCHEMA.STATISTICS 不得出现尚未 public 的索引。
 #[test]
 fn statistics_only_exposes_public_indexes() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store.clone());
     tk.MustExec("use test", Vec::new());
     tk.MustExec("create table public_index_t (a int, b int)", Vec::new());
