@@ -670,7 +670,8 @@ fn show_create_table_region_split_policies_round_trip() {
     let _guard = SHOW_SQL_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = astersql_testkit::TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec("drop table if exists t_split_src, t_split_dst", Vec::new());
