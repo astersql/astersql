@@ -1293,7 +1293,9 @@ fn TestVectorSearchExtractProj() {
 #[test]
 /// VECTOR 的 UNION/UNION ALL/INTERSECT/EXCEPT 走真实 SQL。
 fn TestVectorSetOperation() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t1(embedding VECTOR)", Vec::new());
     tk.MustExec("INSERT INTO t1 VALUES ('[1,2,3]'),('[4,5,6]')", Vec::new());
     tk.MustExec("CREATE TABLE t2(embedding VECTOR)", Vec::new());
