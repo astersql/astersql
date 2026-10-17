@@ -19,6 +19,7 @@
 
 use crate::runtime::{
     ConcreteProtocolState, ConcreteRecordSet, ConcreteSession, CreateAnalyzeSession,
+    CreateUnbootstrappedAnalyzeSessionForTest,
 };
 use crate::testutil::TestRecordSet;
 
@@ -71,7 +72,8 @@ fn assert_state(
 #[test]
 // 覆盖普通表与会话 KV 表上的 DML 数据、约束、原子性及协议状态兼容性。
 fn common_mysql_dml_preserves_rows_constraints_and_statement_state() {
-    let (_domain, session) = CreateAnalyzeSession().expect("canonical DML session");
+    let (_domain, session) =
+        CreateUnbootstrappedAnalyzeSessionForTest().expect("canonical DML session");
     execute(&session, "create database dml_compat");
     execute(&session, "use dml_compat");
     execute(
