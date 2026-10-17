@@ -24,7 +24,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::*;
 
@@ -66,22 +66,26 @@ fn go_merge_26_unavailable_context_rejects_allocation_in_both_modes() {
 #[test]
 fn go_merge_26_soft_risk_reaches_oom_without_running_pool() {
     let m = NewMemArbitrator(1_000);
+    let now = Instant::now();
     let stats = ArbitratorRuntimeStats {
         heap_alloc: 900,
         heap_inuse: 960,
         ..Default::default()
     };
-    m.HandleRuntimeStats(stats);
+    m.handle_runtime_stats_at(stats, now);
     assert!(m.AtMemRisk());
     assert!(!m.AtOOMRisk());
-    thread::sleep(Duration::from_millis(1_050));
-    m.HandleRuntimeStats(stats);
+    let after_grace_period = now + Duration::from_millis(1_050);
+    m.handle_runtime_stats_at(stats, after_grace_period);
     assert!(m.AtOOMRisk());
     assert_eq!(m.ExecMetrics().Risk.OOM, 1);
-    m.HandleRuntimeStats(ArbitratorRuntimeStats {
-        heap_inuse: 1_001,
-        ..stats
-    });
+    m.handle_runtime_stats_at(
+        ArbitratorRuntimeStats {
+            heap_inuse: 1_001,
+            ..stats
+        },
+        after_grace_period,
+    );
     assert_eq!(m.ExecMetrics().Risk.OOM, 1);
 }
 

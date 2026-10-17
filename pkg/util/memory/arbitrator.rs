@@ -1101,6 +1101,15 @@ impl MemArbitrator {
     }
 
     pub fn HandleRuntimeStats(&self, stats: ArbitratorRuntimeStats) {
+        self.handle_runtime_stats_at(stats, Instant::now());
+    }
+
+    /// Updates runtime memory statistics at a caller-supplied monotonic time.
+    ///
+    /// Production callers use [`Self::HandleRuntimeStats`]. Keeping the time
+    /// input explicit here lets tests mirror Go's `mockNow` without sleeping
+    /// through the soft-risk grace period.
+    pub(crate) fn handle_runtime_stats_at(&self, stats: ArbitratorRuntimeStats, now: Instant) {
         let mem_inuse = stats.heap_inuse.saturating_add(stats.mem_off_heap).max(0);
         self.heap_alloc
             .store(stats.heap_alloc.max(0), Ordering::Release);
@@ -1128,12 +1137,12 @@ impl MemArbitrator {
                 *since = None;
                 false
             } else if hard_oom_risk {
-                *since = Some(Instant::now());
+                *since = Some(now);
                 true
             } else if let Some(started) = *since {
-                started.elapsed() >= Duration::from_secs(1)
+                now.saturating_duration_since(started) >= Duration::from_secs(1)
             } else {
-                *since = Some(Instant::now());
+                *since = Some(now);
                 false
             }
         };
