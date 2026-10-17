@@ -940,11 +940,12 @@ fn cursor_iteration_is_timed_and_notification_excluded() {
 #[test]
 fn cursor_iterator_error_is_accounted() {
     use std::time::Duration;
+    const INJECTED_DELAY: Duration = Duration::from_millis(10);
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
     for (at, count) in [(1, 1), (2, 2)] {
         let id = prepare_response_cursor(&cc, &fault);
-        ctx.result_fault_for_test("Next", at, Duration::from_millis(50), true);
+        ctx.result_fault_for_test("Next", at, INJECTED_DELAY, true);
         let before = cc.cursor_write_duration_for_test(id);
         fault.lock().unwrap().packets.clear();
         assert_eq!(
@@ -953,7 +954,7 @@ fn cursor_iterator_error_is_accounted() {
                 "injected Next failure".into()
             ))
         );
-        assert!(cc.cursor_write_duration_for_test(id) >= before + Duration::from_millis(50));
+        assert!(cc.cursor_write_duration_for_test(id) >= before + INJECTED_DELAY);
         let mut expected = vec!["Next"; at];
         assert_eq!(ctx.result_events_for_test(), expected);
         let f = fault.lock().unwrap();
