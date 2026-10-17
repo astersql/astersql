@@ -383,7 +383,8 @@ fn cancel_is_scoped_and_consumed(version: u32, domain: Arc<astersql_domain::Doma
 
 #[test]
 fn startup_negotiation_and_secure_mode_reject() {
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, _) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
     for secure in [false, true] {
         let driver = Arc::new(ConcreteSessionDriver::new_for_test(
             domain.clone(),
