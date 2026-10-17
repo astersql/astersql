@@ -29,7 +29,8 @@ use astersql_session::testutil::TestSession;
 /// Domain 自动分析会 flush 并对达标表执行 ANALYZE。
 #[test]
 fn domain_auto_analyze_flushes_and_analyzes_an_eligible_table() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     let mut testkit = TestKit::new(store);
     testkit.MustExec("create table auto_analyze_t(a int)", Vec::new());
     let values = std::iter::repeat_n("(1)", 1_000)
