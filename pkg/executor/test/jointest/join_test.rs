@@ -39,7 +39,11 @@ fn new_join_testkit() -> TestKit {
 /// join result contract through the canonical SQL test harness.
 #[test]
 fn test_join2_executes_the_join_contract() {
-    let mut tk = new_join_testkit();
+    // This regression only needs user tables. Avoid bootstrapping unrelated
+    // system schemas that none of the join statements can observe.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create table join_contract_left(a int, b int)", Vec::new());
     tk.MustExec("create table join_contract_right(a int, b int)", Vec::new());
     tk.MustExec(
