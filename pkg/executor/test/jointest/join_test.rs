@@ -772,7 +772,11 @@ fn execute_issue_37932_contract() {
 }
 
 fn execute_issue_49033_contract() {
-    let mut tk = new_join_testkit();
+    // This regression only needs user tables and the canonical join engine.
+    // Avoid bootstrapping unrelated statistics and system schemas.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
     tk.MustExec("create table t(a int, index(a))", Vec::new());
     tk.MustExec("create table s(a int, index(a))", Vec::new());
     let values = (1..=128)
