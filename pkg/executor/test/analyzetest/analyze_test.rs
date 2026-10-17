@@ -216,7 +216,8 @@ fn analyze_index_only_rebuilds_buckets_after_drop_stats() {
 /// 伪造直方图/TopN 载荷。
 #[test]
 fn analyze_long_json_column_preserves_size_without_histogram_payload() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
