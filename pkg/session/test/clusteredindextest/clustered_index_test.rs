@@ -22,7 +22,9 @@ use astersql_sessionctx_vardef::{
     ClusteredIndexDefModeOff, ClusteredIndexDefModeOn, DefTiDBEnableClusteredIndex,
     TiDBEnableClusteredIndex, TiDBOptEnableClustered,
 };
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{DbValue, Rows, TestKit};
 
 /// 创建已强制开启聚簇索引的 `TestKit`，并校验相关系统变量默认值。
@@ -46,7 +48,7 @@ fn create_clustered_test_kit(
 // 重复写入后行数仍为 1（Go 用 SnapCacheSize==1 断言同一 key 只缓存一次）。
 #[test]
 fn clustered_insert_ignore_on_varchar_primary_key_keeps_single_row() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = create_clustered_test_kit(store);
     tk.MustExec("drop table if exists t", Vec::new());
     tk.MustExec(
