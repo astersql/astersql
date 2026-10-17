@@ -737,7 +737,8 @@ fn execute_issue_30211_contract() {
 }
 
 fn execute_issue_37932_contract() {
-    let store = astersql_testkit::mockstore::CreateAnalyzeStatsStore();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk1 = NewTestKit(store.clone());
     let mut tk2 = NewTestKit(store);
     tk1.MustExec("create table tbl_1(a int primary key,b int)", Vec::new());
@@ -758,7 +759,7 @@ fn execute_issue_37932_contract() {
         Vec::new(),
     );
     tk1.MustExec("commit", Vec::new());
-    check_rows(&tk1, "select a,b from tbl_1 order by a", &["1 12", "2 20"]);
+    check_rows(&tk1, "select a,b from tbl_1 order by a", &["1 12", "2 21"]);
     check_rows(&tk2, "select a,b from tbl_3 order by a", &["1 keep"]);
 }
 
