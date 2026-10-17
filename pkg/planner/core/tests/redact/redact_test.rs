@@ -483,7 +483,9 @@ fn test_redact_tiflash_window_frame_literals() {
 // predicate constants use the same Constant.ExplainInfo contract.
 #[test]
 fn test_list_partition_redaction_preserves_plan_identifiers() {
-    let (_domain, mut tk) = new_testkit();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
     tk.MustExec("create database redact_partition", Vec::new());
     tk.MustExec("use redact_partition", Vec::new());
     for (table, partition_key) in [("tlist", "(a)"), ("tcollist", "columns(a)")] {
