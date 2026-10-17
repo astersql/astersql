@@ -525,16 +525,33 @@ fn canonical_locked_unique_point_get_locks_index_and_record_and_rr_missing_index
 fn canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_partial_row() {
     use crate::testutil::TestSession;
     use astersql_infoschema::infoschema::{CiString, InfoSchema};
-    let (_domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
-    session
-        .Execute("create table wait_t (id int primary key, v int)")
+    let session = canonical_dml_session();
+    let row_key = astersql_tablecodec::EncodeRowKeyWithHandle(123, Box::new(kv::IntHandle(1)));
+    let row_value = astersql_tablecodec::EncodeRow(
+        Some(astersql_tablecodec::time::UTC),
+        vec![
+            astersql_types::datum::NewIntDatum(1),
+            astersql_types::datum::NewIntDatum(10),
+        ],
+        vec![1, 2],
+        Vec::new(),
+        None,
+        None,
+        astersql_tablecodec::rowcodec::Encoder::new(true),
+    )
+    .unwrap();
+    let mut seed = session
+        .domain
+        .storage()
+        .with_storage(|storage| storage.Begin(&[]))
         .unwrap();
-    session.Execute("insert into wait_t values (1,10)").unwrap();
+    seed.Set(kv::Key(row_key.0), row_value).unwrap();
+    seed.Commit(&kv::Context::default()).unwrap();
     session.Execute("begin pessimistic").unwrap();
     let domain = Arc::clone(&session.domain);
     let model = domain
         .info_schema()
-        .ModelTableInfoByName(&CiString::new("test"), &CiString::new("wait_t"))
+        .ModelTableInfoByName(&CiString::new("test"), &CiString::new("t"))
         .unwrap();
     let competitor = SessionBoundAdapterOwner::new(crate::runtime::ConcreteSession::new(domain));
     competitor.session.Execute("begin pessimistic").unwrap();
@@ -560,7 +577,7 @@ fn canonical_locked_point_get_respects_millisecond_wait_and_leaves_no_partial_ro
         .unwrap();
     let mut rows = point_lock_stmt(
         Arc::clone(&owner),
-        "select * from wait_t where id=1 for update wait 0.05",
+        "select * from t where a=1 for update wait 0.05",
         &model.Columns,
     )
     .Exec()
