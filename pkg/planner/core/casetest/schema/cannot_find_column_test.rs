@@ -393,7 +393,7 @@ fn real_session_executes_issue65892_view_join_under_both_planners() {
 
 #[test]
 fn real_session_executes_join_dml_outer_join_and_type_coercion() {
-    let (store, _) = CreateMockStoreAndDomain();
+    let (store, _) = CreatePlannerTestStoreAndDomain();
     let mut testkit = TestKit::new(store);
     testkit.MustExec("use test", Vec::new());
 
