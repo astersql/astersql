@@ -19,7 +19,10 @@
 // performance_schema、sys 等系统库即使没有运行时数据，也能提供稳定的列结构、
 // 约束关系和 MySQL/JDBC 约定的投影语义。
 
-use crate::runtime::{CONCRETE_NULL_VALUE, ConcreteRecordSet, CreateAnalyzeSession};
+use crate::runtime::{
+    CONCRETE_NULL_VALUE, ConcreteRecordSet, CreateAnalyzeSession,
+    CreateUnbootstrappedRootSessionForTest,
+};
 use crate::testutil::TestRecordSet;
 
 // 元数据查询预期只返回一个结果集；失败信息同时保留原 SQL，便于定位兼容性回归。
@@ -793,7 +796,7 @@ fn datagrip_native_introspection_supports_boolean_projection_and_positional_orde
 
 #[test]
 fn information_schema_table_ids_keep_pairs_when_schema_is_dropped() {
-    let (domain, session) = CreateAnalyzeSession().expect("metadata session");
+    let (domain, session) = CreateUnbootstrappedRootSessionForTest().expect("metadata session");
     for sql in [
         "create database metadata_drop",
         "create database metadata_keep",
