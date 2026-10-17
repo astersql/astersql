@@ -245,9 +245,13 @@ fn point_update_prepared_plan_reuses_current_parameters_and_schema() {
 /// `TestPointUpdatePreparedPlanWithCommitMode` 的事务冲突核心。
 #[test]
 fn prepared_point_plans_do_not_hide_cross_session_writes() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case creates its own database and only needs the real SQL, KV,
+    // transaction, and plan-cache paths; skip unrelated mysql/sys bootstrap.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut first = NewTestKit(store.clone());
     let mut second = NewTestKit(store);
     first.MustExec("drop database if exists commit_mode", Vec::new());
