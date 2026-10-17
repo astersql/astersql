@@ -1003,7 +1003,10 @@ fn test_set_ddl_error_count_limit() {
 /// DDL reorg（重组）最大写速：`tidb_ddl_reorg_max_write_speed` 数值与 RAM 字符串。
 #[test]
 fn test_set_ddl_reorg_max_write_speed() {
-    let mut tk = ddl_testkit();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = NewTestKit(store);
+    tk.MustExec("use test", Vec::new());
     let original = vardef::DDLReorgMaxWriteSpeed.Load();
     let values = [
         1_i64,
