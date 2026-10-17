@@ -263,7 +263,7 @@ fn test_multi_batch_with_ignore_lines() {
         ("/test-multi-load/multi-batch.001.tsv", first.as_bytes()),
         ("/test-multi-load/multi-batch.002.tsv", second.as_bytes()),
     ]);
-    let mut tk = new_testkit();
+    let mut tk = TestKit::new(CreateMockStoreAndDomainWithoutSystemSchemasForTest().0);
     tk.MustExec("DROP DATABASE IF EXISTS multi_load", Vec::new());
     tk.MustExec("CREATE DATABASE multi_load", Vec::new());
     tk.MustExec("CREATE TABLE multi_load.t2 (i INT)", Vec::new());
