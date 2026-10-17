@@ -749,7 +749,8 @@ fn analyze_partition_static_to_dynamic_rebuilds_global_stats() {
 /// 分区与全局元数据都保持可用。
 #[test]
 fn analyze_partition_under_dynamic_updates_target_partition() {
-    let mut tk = analyze_testkit();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "set @@session.tidb_partition_prune_mode = 'dynamic'",
