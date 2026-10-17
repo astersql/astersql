@@ -505,7 +505,9 @@ fn test_mpp_skewed_group_distinct_rewrite_fixture() {
 /// 单 DISTINCT 三阶段聚合：校验 e 列 collation。
 #[test]
 fn test_mpp_single_distinct_3_stage_collation_fixture() {
-    let (domain, mut tk) = new_testkit();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
+    let store: Arc<dyn Database> = store;
+    let mut tk = TestKit::new(store);
     tk.MustExec(
         "create table t(a int, b bigint not null, c bigint, d date, e varchar(20) collate utf8mb4_general_ci)",
         Vec::new(),
