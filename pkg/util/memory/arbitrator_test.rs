@@ -633,19 +633,16 @@ fn go_merge_24_soft_risk_waits_before_killing_sql() {
         false,
     );
     assert!(m.RestartEntryByContext(root, ctx));
-    m.HandleRuntimeStats(ArbitratorRuntimeStats {
+    let now = Instant::now();
+    let stats = ArbitratorRuntimeStats {
         heap_alloc: 960,
         heap_inuse: 960,
         ..Default::default()
-    });
+    };
+    m.handle_runtime_stats_at(stats, now);
     assert!(m.AtMemRisk());
     assert_eq!(helper.0.load(Ordering::SeqCst), 0);
-    thread::sleep(Duration::from_millis(1_010));
-    m.HandleRuntimeStats(ArbitratorRuntimeStats {
-        heap_alloc: 960,
-        heap_inuse: 960,
-        ..Default::default()
-    });
+    m.handle_runtime_stats_at(stats, now + Duration::from_millis(1_010));
     assert_eq!(helper.0.load(Ordering::SeqCst), 1);
 }
 
