@@ -229,7 +229,7 @@ fn test_last_insert_id() {
         ("/last-insert-id/db.tbl.001.tsv", b"1\ttest1\n2\ttest2"),
         ("/last-insert-id/db.tbl.002.tsv", b"3\ttest3\n4\ttest4"),
     ]);
-    let mut tk = new_testkit();
+    let mut tk = TestKit::new(CreateMockStoreAndDomainWithoutSystemSchemasForTest().0);
     tk.MustExec("DROP DATABASE IF EXISTS multi_load", Vec::new());
     tk.MustExec("CREATE DATABASE multi_load", Vec::new());
     tk.MustExec(
