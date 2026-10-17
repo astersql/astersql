@@ -1294,7 +1294,10 @@ use astersql_session::bootstrap::{
     doBootstrapSQLFile,
 };
 use astersql_sessionctx_variable::session::SessionVars;
-use astersql_testkit::{DbValue, NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+use astersql_testkit::{
+    DbValue, NewTestKit, Rows, mockstore::CreateMockStoreAndDomain,
+    mockstore::CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest,
+};
 use astersql_util_sqlescape::{EscapeSQL, MustEscapeSQL, SqlArg};
 
 #[derive(Default)]
@@ -1838,7 +1841,7 @@ fn result_field_metadata_matches_go_query_shape() {
 
 #[test]
 fn match_identity_specificity_matches_go() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest();
     let mut admin = NewTestKit(store.clone());
     admin.MustExec("use test", vec![]);
     admin.MustExec("create user 'useridentity'@'%'", vec![]);
