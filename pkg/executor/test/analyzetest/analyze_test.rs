@@ -673,7 +673,8 @@ fn analyze_collation_keys_build_stats_without_error() {
 /// 与每个物理分区的列统计，并保存请求的 bucket/topn 选项。
 #[test]
 fn analyze_partition_dynamic_mode_builds_global_and_partition_stats() {
-    let mut tk = analyze_testkit();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "set @@session.tidb_partition_prune_mode = 'dynamic'",
