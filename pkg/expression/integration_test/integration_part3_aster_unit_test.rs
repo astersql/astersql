@@ -455,7 +455,9 @@ fn TestIssue66661() {
 
 #[test]
 fn TestIssue43527() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "CREATE TABLE t (a DATETIME, b BIGINT, c DECIMAL(10, 2), d FLOAT)",
         Vec::new(),
