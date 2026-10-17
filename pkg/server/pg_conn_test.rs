@@ -76,7 +76,8 @@ fn startup_auth_roundtrip() {
 
 #[test]
 fn startup_protocol_30_roundtrip() {
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, _) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,
