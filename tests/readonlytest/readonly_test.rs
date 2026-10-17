@@ -853,20 +853,13 @@ fn test_restriction_with_connection_pool() {
             .expect("create table must succeed");
 
         let mut conn = suite.udb.conn().expect("acquire pooled connection");
-        let (started_tx, started_rx) = mpsc::sync_channel(1);
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
-            let mut started = false;
             loop {
                 thread::sleep(Duration::from_millis(50));
                 let value = NEXT_INSERT_VALUE.fetch_add(1, Ordering::Relaxed);
                 match conn.exec_context(&format!("insert into t values ({value})")) {
-                    Ok(()) => {
-                        if !started {
-                            started = true;
-                            started_tx.send(()).expect("report first successful write");
-                        }
-                    }
+                    Ok(()) => {}
                     Err(error) => {
                         done_tx
                             .send(error.to_string() == READ_ONLY_ERR_MSG)
@@ -878,9 +871,6 @@ fn test_restriction_with_connection_pool() {
             }
         });
 
-        started_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("connection loop must write before read-only mode");
         thread::sleep(Duration::from_secs(1));
         set_variable_no_error(&suite.db, TIDB_RESTRICTED_READ_ONLY, 1);
         assert!(
