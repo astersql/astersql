@@ -694,7 +694,7 @@ fn index_usage_table_lists_supported_indexes_and_filters() {
 /// 对应 Go `TestReferencedTableSchemaWithForeignKey`：引用库不能丢失。
 #[test]
 fn foreign_key_metadata_preserves_referenced_schema() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     tk.MustExec("create database infoschema_parent", Vec::new());
     tk.MustExec("create database infoschema_child", Vec::new());
