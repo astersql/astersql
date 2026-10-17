@@ -419,7 +419,7 @@ fn show_variables_follow_registered_scopes_and_case_insensitive_like() {
 /// 对应 Go `TestShowTableStatus`：固定列、分区注释和库名大小写均保持兼容。
 #[test]
 fn show_table_status_reports_stable_fields_and_partition_comment() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_testkit_without_system_schemas();
     tk.MustExec("drop table if exists t", Vec::new());
     tk.MustExec("create table t(a bigint)", Vec::new());
 
