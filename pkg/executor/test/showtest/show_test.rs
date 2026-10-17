@@ -181,7 +181,7 @@ fn show_stats_extended_reports_feature_removed() {
 /// 对应 Go `TestShowCreatePlacementPolicy`：覆盖创建、修改、删除和不存在错误。
 #[test]
 fn show_create_placement_policy_executes_sql_contract() {
-    let mut tk = new_show_testkit_without_system_schemas();
+    let mut tk = new_show_testkit();
     tk.MustExec(
         "CREATE PLACEMENT POLICY xyz PRIMARY_REGION='us-east-1' \
          REGIONS='us-east-1,us-east-2' FOLLOWERS=4",
