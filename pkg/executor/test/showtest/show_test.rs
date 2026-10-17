@@ -833,8 +833,14 @@ fn show_grants_enforces_target_privileges_and_authenticated_host() {
     use astersql_parser_auth::parser::auth::auth::UserIdentity;
     use astersql_testkit::TestKit;
 
-    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest();
     let mut root = TestKit::new(store.clone());
+    root.MustExec("create user 'root'@'%'", Vec::new());
+    root.MustExec(
+        "grant all privileges on *.* to 'root'@'%' with grant option",
+        Vec::new(),
+    );
     root.MustExec("create user show_grants", Vec::new());
     root.MustQuery("show grants for show_grants", Vec::new());
     let unprivileged = TestKit::new(store.clone());
