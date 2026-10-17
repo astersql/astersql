@@ -371,7 +371,8 @@ fn canonical_listener_starts_on_port_zero_and_preserves_cleanup_order() {
     let (storage, dom) =
         createStoreDDLOwnerMgrAndDomain("").expect("create registered storage and stub domain");
     let (canonical_domain, _) =
-        astersql_session::runtime::CreateAnalyzeSession().expect("initialize test Domain");
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest()
+            .expect("initialize unbootstrapped test Domain");
     let session_driver = Arc::new(ConcreteSessionDriver::from_initialized_domain(
         Arc::clone(&canonical_domain),
         BootstrapAuthMode::InsecureRootOnly,
