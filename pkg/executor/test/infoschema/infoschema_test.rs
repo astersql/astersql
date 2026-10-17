@@ -814,11 +814,15 @@ fn same_table_name_in_two_schemas_isolated_by_schema_and_id() {
 /// 的相关联子查询结果中，且重复读取结果稳定。
 #[test]
 fn joined_system_table_query_contains_view_and_time_value_columns() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
         "create table infoschema_time_value (at timestamp, value int)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "insert into infoschema_time_value values (null, 100)",
         Vec::new(),
     );
     tk.MustExec(
@@ -838,6 +842,28 @@ fn joined_system_table_query_contains_view_and_time_value_columns() {
         Vec::new(),
     )
     .Check(Rows(&["at", "value"]));
+
+    let grafana_metadata_query = "select t.table_name, \
+        (select c.column_name from information_schema.columns c \
+         where c.table_schema=t.table_schema and c.table_name=t.table_name \
+           and c.data_type in ('timestamp', 'datetime') \
+         order by c.ordinal_position limit 1) as time_column, \
+        (select c.column_name from information_schema.columns c \
+         where c.table_schema=t.table_schema and c.table_name=t.table_name \
+           and c.data_type in ('float', 'int', 'bigint') \
+         order by c.ordinal_position limit 1) as value_column \
+         from information_schema.tables t \
+         where t.table_schema=database() \
+           and exists (select 1 from information_schema.columns c \
+                       where c.table_schema=t.table_schema and c.table_name=t.table_name \
+                         and c.data_type in ('timestamp', 'datetime')) \
+           and exists (select 1 from information_schema.columns c \
+                       where c.table_schema=t.table_schema and c.table_name=t.table_name \
+                         and c.data_type in ('float', 'int', 'bigint')) \
+         limit 1";
+    for _ in 0..10 {
+        tk.MustQuery(grafana_metadata_query, Vec::new());
+    }
 }
 
 /// 对应 Go `TestShowColumnsWithSubQueryView`：SHOW COLUMNS 只读取视图元数据，

@@ -1187,6 +1187,12 @@ impl ConcreteSession {
                 Ok(Some(relational_hex_value(&Args[0], &value)))
             }
             ast::ExprKind::Function { FnName, Args, .. }
+                if FnName.L.eq_ignore_ascii_case("database") && Args.is_empty() =>
+            {
+                let database = self.current_database();
+                Ok((!database.is_empty()).then_some(database))
+            }
+            ast::ExprKind::Function { FnName, Args, .. }
                 if FnName.L.eq_ignore_ascii_case("any_value") && Args.len() == 1 =>
             {
                 let candidate = group_rows.and_then(|rows| rows.first()).unwrap_or(row);
@@ -1324,6 +1330,42 @@ impl ConcreteSession {
                     }
                 });
                 Ok(relational_boolean_value(compared))
+            }
+            ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("and") => {
+                let left = relational_truth(
+                    self.relational_query_expression_value(L, row, group_rows)?
+                        .as_deref(),
+                );
+                if left == Some(false) {
+                    return Ok(relational_boolean_value(Some(false)));
+                }
+                let right = relational_truth(
+                    self.relational_query_expression_value(R, row, group_rows)?
+                        .as_deref(),
+                );
+                Ok(relational_boolean_value(match (left, right) {
+                    (_, Some(false)) => Some(false),
+                    (Some(true), Some(true)) => Some(true),
+                    _ => None,
+                }))
+            }
+            ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("or") => {
+                let left = relational_truth(
+                    self.relational_query_expression_value(L, row, group_rows)?
+                        .as_deref(),
+                );
+                if left == Some(true) {
+                    return Ok(relational_boolean_value(Some(true)));
+                }
+                let right = relational_truth(
+                    self.relational_query_expression_value(R, row, group_rows)?
+                        .as_deref(),
+                );
+                Ok(relational_boolean_value(match (left, right) {
+                    (_, Some(true)) => Some(true),
+                    (Some(false), Some(false)) => Some(false),
+                    _ => None,
+                }))
             }
             ast::ExprKind::Binary { Op, L, R } => {
                 let left = self.relational_query_expression_value(L, row, group_rows)?;

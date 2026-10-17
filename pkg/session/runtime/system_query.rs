@@ -125,10 +125,14 @@ fn show_result_fields(
         .collect()
 }
 
-fn project_virtual_rows(
+fn project_virtual_rows_with_evaluator(
     statement: &ast::SelectStmt,
     available_columns: &[&str],
     mut rows: Vec<HashMap<String, Option<String>>>,
+    evaluate: &dyn Fn(
+        &ast::ExprNode,
+        &HashMap<String, Option<String>>,
+    ) -> SessionResult<Option<String>>,
 ) -> SessionResult<ConcreteRecordSet> {
     enum Projection {
         Column(String),
@@ -220,7 +224,18 @@ fn project_virtual_rows(
     };
 
     if let Some(predicate) = statement.Where.as_ref() {
-        rows.retain(|row| row_matches_simple_where(row, predicate));
+        if relational_expression_has_subquery(predicate) {
+            rows = rows
+                .into_iter()
+                .filter_map(|row| match evaluate(predicate, &row) {
+                    Ok(value) if relational_truth(value.as_deref()) == Some(true) => Some(Ok(row)),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<SessionResult<Vec<_>>>()?;
+        } else {
+            rows.retain(|row| row_matches_simple_where(row, predicate));
+        }
     }
     if !statement.OrderBy.is_empty() {
         let keys = statement
@@ -276,9 +291,7 @@ fn project_virtual_rows(
                                 ))
                             })
                         }
-                        OrderExpression::Expression(expression) => {
-                            super::relational_value::relational_expression_value(expression, &row)
-                        }
+                        OrderExpression::Expression(expression) => evaluate(expression, &row),
                     })
                     .collect::<SessionResult<Vec<_>>>()?;
                 Ok((row, values))
@@ -400,10 +413,8 @@ fn project_virtual_rows(
                             {
                                 value.clone()
                             } else {
-                                super::relational_value::relational_expression_value(
-                                    expression, &row,
-                                )?
-                                .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
+                                evaluate(expression, &row)?
+                                    .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned())
                             }
                         }
                     })
@@ -416,6 +427,16 @@ fn project_virtual_rows(
         projected,
         result_fields,
     ))
+}
+
+fn project_virtual_rows(
+    statement: &ast::SelectStmt,
+    available_columns: &[&str],
+    rows: Vec<HashMap<String, Option<String>>>,
+) -> SessionResult<ConcreteRecordSet> {
+    project_virtual_rows_with_evaluator(statement, available_columns, rows, &|expression, row| {
+        super::relational_value::relational_expression_value(expression, row)
+    })
 }
 
 fn injected_cluster_info_rows(payload: &str) -> Vec<HashMap<String, Option<String>>> {
@@ -2175,7 +2196,7 @@ impl ConcreteSession {
                     ])
                 })
                 .collect();
-            return Ok(Some(project_virtual_rows(
+            return Ok(Some(project_virtual_rows_with_evaluator(
                 statement,
                 &[
                     "TABLE_CATALOG",
@@ -2208,6 +2229,7 @@ impl ConcreteSession {
                     "TIDB_STORAGE_CLASS",
                 ],
                 rows,
+                &|expression, row| self.relational_query_expression_value(expression, row, None),
             )?));
         }
         if table_name.eq_ignore_ascii_case("views") {
@@ -2567,7 +2589,7 @@ impl ConcreteSession {
                     ]));
                 }
             }
-            return Ok(Some(project_virtual_rows(
+            return Ok(Some(project_virtual_rows_with_evaluator(
                 statement,
                 &[
                     "TABLE_CATALOG",
@@ -2594,6 +2616,7 @@ impl ConcreteSession {
                     "SRS_ID",
                 ],
                 rows,
+                &|expression, row| self.relational_query_expression_value(expression, row, None),
             )?));
         }
         let context = self.domain.stats_context();
