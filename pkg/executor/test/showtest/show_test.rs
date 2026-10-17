@@ -53,6 +53,20 @@ fn new_show_testkit() -> SerialTestKit {
     }
 }
 
+fn new_show_privilege_testkit() -> SerialTestKit {
+    let guard = SHOW_SQL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    SerialTestKit {
+        _guard: guard,
+        testkit: tk,
+    }
+}
+
 /// Build the same real SQL/DDL fixture without unrelated statistics system tables.
 fn new_show_testkit_without_system_schemas() -> SerialTestKit {
     let guard = SHOW_SQL_TEST_LOCK
@@ -948,7 +962,7 @@ fn show_grants_and_databases_include_active_default_roles() {
 /// 对应 Go `TestShowCreateUser`：认证插件、密码摘要、锁定与属性须恢复为 SQL。
 #[test]
 fn show_create_user_restores_authentication_and_account_options() {
-    let mut tk = new_show_testkit();
+    let mut tk = new_show_privilege_testkit();
     tk.MustExec(
         "create user 'test_show_create_user'@'%' identified by 'root'",
         Vec::new(),
