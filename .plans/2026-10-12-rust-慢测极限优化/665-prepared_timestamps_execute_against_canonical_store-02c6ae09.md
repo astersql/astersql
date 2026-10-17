@@ -26,6 +26,7 @@
 - 原始排名/耗时/状态：`1146` / `1.068s` / `PASS`；原日志已通过且达到本轮入选门槛。
 - Cargo package：`astersql-server-internal-testserverclient`；target：`astersql_server_internal_testserverclient`（`lib`）；features：原始 `make rust-test` 的默认 features，不启用额外 feature。
 - 完整测试名：`server_client_test::prepared_timestamps_execute_against_canonical_store`；binary id：`astersql-server-internal-testserverclient`。
+- 共享夹具：本测试由 `real_sql_scenario_test!` 宏生成；RustCodeGraph 可能没有独立函数节点。检查宏、`RealSqlExecutor::new` 与同组 660/665/733/816/820/851 的最新改动，精确测试是否存在以 nextest 选中结果为准。共享夹具改动后先重测本项，避免重复优化。
 - 初步分型：`initialization`。重点分解 Domain/TestKit/runtime 初始化、fixture/golden 解析、主体与 teardown；只复用不可变状态，复用可变会话或全局状态前必须证明 reset 完整。
 - 原始数字来自全 workspace 并发运行，只用于入选与排序；修改依据必须来自本任务五次预热隔离测量和剖析。
 

@@ -26,6 +26,7 @@
 - 原始排名/耗时/状态：`1391` / `1.014s` / `PASS`；原日志已通过且达到本轮入选门槛。
 - Cargo package：`astersql-br-pkg-checkpoint`；target：`astersql_br_pkg_checkpoint`（`lib`）；features：原始 `make rust-test` 的默认 features，不启用额外 feature。
 - 完整测试名：`checkpoint_test::test_checkpoint_runner_no_retry_on_storage`；binary id：`astersql-br-pkg-checkpoint`。
+- 共享夹具：814/825 共用 `test_checkpoint_runner_retry`，834/843 共用 `test_checkpoint_runner_no_retry`；storage/table 场景仍分别保留。先检查同组已提交的共享 helper 改动并重测本项，避免重复修改或弱化重试断言。
 - 初步分型：`fixed-wait`。先定位固定 sleep/backoff/ticker；改成事件、通知、可控时钟或带 deadline 的条件等待，同时保留超时和取消行为。
 - 原始数字来自全 workspace 并发运行，只用于入选与排序；修改依据必须来自本任务五次预热隔离测量和剖析。
 
