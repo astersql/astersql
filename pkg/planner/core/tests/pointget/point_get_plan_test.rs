@@ -26,7 +26,7 @@ use astersql_planner_core::{
     SessionVars,
 };
 use astersql_planner_core_metrics::planner_core_metrics::GetPlanCacheHitCounter;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_testkit::{Rows, TestKit};
 use astersql_types::metadata::{ParseEnumValue, mysql};
 use std::sync::Arc;
@@ -259,7 +259,7 @@ fn TestIssue20692() {
     let _guard = POINTGET_TEST_MUTEX
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store.clone());
     tk.MustExec("use test", Vec::new());
     tk.MustExec("drop table if exists t", Vec::new());
