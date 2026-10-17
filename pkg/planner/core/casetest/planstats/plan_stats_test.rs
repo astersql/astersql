@@ -21,7 +21,9 @@
 use astersql_domain::Domain;
 use astersql_planner_core_rule as rule;
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest, CreateMockStoreAndDomain,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
@@ -1112,7 +1114,10 @@ fn test_plan_stats_status_records_all_evicted_items() {
 #[test]
 fn test_stats_analyzed_during_ddl_nine_step_sequence() {
     setup_common();
-    let (store, domain) = CreateMockStoreAndDomain();
+    // Embedded DDL analyze only needs `mysql.analyze_options`; the remaining
+    // statistics system tables are unrelated to this planner regression.
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     let mut tk = TestKit::new(store);
     tk.MustExec("set session tidb_stats_update_during_ddl = 1", Vec::new());
     tk.MustExec(
