@@ -386,7 +386,9 @@ fn TestPreparePlanCacheOnCachedTable() {
 #[test]
 /// 非确定 RANDOM_BYTES 的 prepared plan 可缓存，但每次执行必须重新求值。
 fn TestIssue16205() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("USE test", Vec::new());
     tk.MustExec("SET tidb_enable_prepared_plan_cache=ON", Vec::new());
     tk.MustExec("PREPARE stmt FROM 'SELECT RANDOM_BYTES(3)'", Vec::new());
     let first = tk.MustQuery("EXECUTE stmt", Vec::new()).Rows();
