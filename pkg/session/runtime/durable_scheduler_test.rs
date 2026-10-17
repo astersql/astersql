@@ -301,8 +301,7 @@ fn crossks_align_durable_scheduler_owner_loss_cancel_and_error_roll_back_meta_an
 
 #[test]
 fn crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_admin_change() {
-    let (domain, _) = CreateAnalyzeSession().unwrap();
-    let pool = SystemSessionPool::new(domain.clone());
+    let (domain, pool) = durable_scheduler_domain();
     insert(&pool, 79003, JobState::Paused);
     insert(&pool, 79004, JobState::Cancelling);
     let owner = Arc::new(Lease::default());
