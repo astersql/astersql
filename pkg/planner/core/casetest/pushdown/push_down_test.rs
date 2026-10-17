@@ -180,7 +180,9 @@ fn test_go_integration_suite_fastscan_plan_goldens() {
 
 #[test]
 fn test_tiflash_fastscan_rejects_ordered_scan() {
-    let (domain, mut tk) = new_testkit();
+    let (store, domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
     tk.MustExec(
         "create table t(a int primary key, b varchar(20))",
         Vec::new(),
