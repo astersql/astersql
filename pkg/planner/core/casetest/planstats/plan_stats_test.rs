@@ -989,7 +989,8 @@ fn test_prepared_plan_cache_recovers_after_sync_timeout_fallback() {
     );
 
     setup_common();
-    let (store, domain) = CreateMockStoreAndDomain();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     let mut tk = TestKit::new(store);
     tk.MustExec(
         "set @@session.tidb_enable_prepared_plan_cache = 1",
