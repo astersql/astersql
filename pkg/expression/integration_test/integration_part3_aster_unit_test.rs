@@ -20,7 +20,9 @@
 
 #![allow(non_snake_case)]
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use astersql_testkit::{Rows, TestKit};
 use astersql_types::time::{
     BasicTimeContext, ExtractDatetimeNum, ExtractDurationNum, GetFsp, ParseDate, ParseDateFormat,
@@ -506,7 +508,9 @@ fn TestIssue44706() {
 #[test]
 /// NULLIF 结果与各 CAST 类型做 NULL-safe 比较时不产生误匹配（Issue 51842/56744）。
 fn TestIssue51842() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("DROP TABLE IF EXISTS t", Vec::new());
     tk.MustExec("CREATE TABLE t0(c0 DOUBLE)", Vec::new());
     tk.MustExec(
@@ -537,7 +541,6 @@ fn TestIssue51842() {
         )
         .Check(Vec::<Vec<&str>>::new());
     }
-
     tk.MustExec("DROP TABLE IF EXISTS lrr", Vec::new());
     tk.MustExec(
         "CREATE TABLE lrr(col1 TIME DEFAULT NULL,col2 TIME DEFAULT NULL)",
