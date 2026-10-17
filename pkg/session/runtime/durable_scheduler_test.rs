@@ -234,8 +234,7 @@ fn durable_scheduler_domain() -> (Arc<astersql_domain::Domain>, Arc<SystemSessio
 
 #[test]
 fn crossks_align_durable_scheduler_reloads_sql_job_after_restart() {
-    let (domain, _) = CreateAnalyzeSession().unwrap();
-    let pool = SystemSessionPool::new(domain.clone());
+    let (domain, pool) = durable_scheduler_domain();
     insert(&pool, 79001, JobState::Queueing);
     let original = read(&pool, 79001);
     let before = global_id(&domain);
