@@ -178,7 +178,8 @@ fn crossks_align_system_session_common_job_and_table_pool() {
 #[test]
 fn crossks_align_system_session_callbacks_and_metadata_error() {
     use astersql_session::runtime::system_session::SystemSessionCallbacks;
-    let (domain, _) = CreateAnalyzeSession().unwrap();
+    let (domain, _) =
+        astersql_session::runtime::CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
     let (events, received) = std::sync::mpsc::channel();
     let borrowed = events.clone();
     let returned = events.clone();
