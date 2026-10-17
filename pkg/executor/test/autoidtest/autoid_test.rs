@@ -722,7 +722,9 @@ fn TestIssue39528() {
     let _guard = crate::AUTOID_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (store, domain) = CreateMockStoreAndDomain();
+    // This scenario only exercises a user table in `test`; avoid bootstrapping
+    // unrelated system schemas while retaining the real Domain/TestKit SQL path.
+    let (store, domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
