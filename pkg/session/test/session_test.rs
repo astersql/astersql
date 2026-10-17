@@ -1691,7 +1691,10 @@ fn schema_checker_sql_matches_go_normal_and_partition_paths() {
 
 #[test]
 fn write_on_multiple_cached_tables_matches_go() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // The cached-table transaction only needs the test schema created below;
+    // bootstrapping unrelated mysql/sys tables obscures the exercised path.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", vec![]);
     tk.MustExec("drop table if exists ct1, ct2", vec![]);
