@@ -880,7 +880,7 @@ fn show_columns_from_subquery_view_returns_view_metadata() {
 /// 分区名条件不能退化成全表扫描后返回未过滤行。
 #[test]
 fn infoschema_conditions_filter_constraints_and_unpartitioned_tables() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     for database in ["infoschema_cond_db0", "infoschema_cond_db1"] {
         tk.MustExec(&format!("create database {database}"), Vec::new());
