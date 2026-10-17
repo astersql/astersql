@@ -316,10 +316,11 @@ fn test_stmt_summary() {
     assert_eq!(summary.Len(), 3);
     assert_eq!(summary.EvictedCount(), 2);
 
-    // 等待 rotateLoop 按 RefreshInterval 轮转并清空当前窗口。
-    wait_until(Duration::from_secs(4), || {
-        summary.Len() == 0 && summary.EvictedCount() == 0
-    });
+    // Match Go's direct rotate(timeNow()) test path without waiting for the
+    // background ticker; rotateForTest still exercises rotateWindow.
+    summary.rotateForTest();
+    assert_eq!(summary.Len(), 0);
+    assert_eq!(summary.EvictedCount(), 0);
     summary.Add(&GenerateStmtExecInfo4Test("digest6"));
     summary.Add(&GenerateStmtExecInfo4Test("digest7"));
     assert_eq!(summary.Len(), 2);
