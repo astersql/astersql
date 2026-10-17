@@ -402,9 +402,13 @@ fn prepared_plan_cache_operators_match_unprepared_queries() {
 /// 与等值 prepared plan 均须按当前参数返回结果，并在第二次执行时命中缓存。
 #[test]
 fn prepared_plan_cache_clustered_index_reuses_composite_key_plans() {
-    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+    use astersql_testkit::{
+        NewTestKit, Rows, mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+    };
 
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // This case only exercises a user-created table. Avoid bootstrapping unrelated
+    // system schemas while preserving the real SQL, DDL, and plan-cache paths.
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("set tidb_enable_prepared_plan_cache = 1", Vec::new());
     tk.MustExec("drop table if exists clustered_pc", Vec::new());
