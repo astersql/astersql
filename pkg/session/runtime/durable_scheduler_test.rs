@@ -339,8 +339,7 @@ fn crossks_align_durable_scheduler_preserves_pause_cancel_and_concurrent_admin_c
 
 #[test]
 fn crossks_align_durable_scheduler_recovers_committed_step_after_sync_interruption() {
-    let (domain, _) = CreateAnalyzeSession().unwrap();
-    let pool = SystemSessionPool::new(domain.clone());
+    let (domain, pool) = durable_scheduler_domain();
     insert(&pool, 79005, JobState::Queueing);
     let owner = Arc::new(Lease::default());
     let mut executor = TransactionStep::new(owner.clone());
