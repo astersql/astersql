@@ -38,7 +38,9 @@ fn new_testkit() -> TestKit {
 
 #[test]
 fn TestTimeBuiltin() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustQuery(
         "SELECT DATE('2019-09-12'), DATE('2019-09-12 12:12:09'), \
          DATE('2019-09-12 12:12:09.121212'), DATE('aa'), DATE(NULL)",
