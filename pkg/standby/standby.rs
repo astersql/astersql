@@ -428,6 +428,13 @@ impl LoadKeyspaceController {
         self.inner.last_active.load(Ordering::Acquire)
     }
 
+    /// Overrides the idle timestamp so watcher tests can cross the Go-aligned
+    /// whole-second boundary without waiting for wall-clock time to pass.
+    #[cfg(test)]
+    pub(crate) fn set_last_active_for_test(&self, last_active: i64) {
+        self.inner.last_active.store(last_active, Ordering::Release);
+    }
+
     /// 写入 `keyspace:message` 正常重启日志；本地 keyspace 为空则跳过。
     pub fn save_normal_restart_info(&self, message: &str) -> Result<(), String> {
         let keyspace = self

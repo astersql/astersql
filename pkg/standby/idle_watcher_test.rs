@@ -15,7 +15,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use astersql_parser_mysql::r#const::{ComSleep, Command2Str, ServerStatusInTrans};
 use astersql_server::server::{
@@ -32,7 +33,9 @@ impl ServerDriver for Driver {
     }
 }
 
-struct InTransactionSleepConnection;
+struct InTransactionSleepConnection {
+    process_info_observed: Arc<AtomicBool>,
+}
 
 impl ManagedConnection for InTransactionSleepConnection {
     fn id(&self) -> u64 {
@@ -44,6 +47,7 @@ impl ManagedConnection for InTransactionSleepConnection {
     }
 
     fn process_info(&self) -> Option<ProcessInfo> {
+        self.process_info_observed.store(true, Ordering::Release);
         Some(ProcessInfo {
             connection_id: self.id(),
             command: Command2Str
@@ -82,12 +86,15 @@ fn in_transaction_sleep_connection_prevents_idle_exit() {
     let exit = Arc::new(RecordingExitSignaler::default());
     let controller = LoadKeyspaceController::with_exit_signaler(None, exit.clone());
     let server = Server::new_test(ServerConfig::default(), Arc::new(Driver));
+    let process_info_observed = Arc::new(AtomicBool::new(false));
     server
-        .register_connection(Arc::new(InTransactionSleepConnection))
+        .register_connection(Arc::new(InTransactionSleepConnection {
+            process_info_observed: Arc::clone(&process_info_observed),
+        }))
         .expect("register connection");
 
     let watcher = start_idle_watcher(
-        controller,
+        controller.clone(),
         Arc::clone(&server),
         IdleWatcherConfig {
             max_idle: Duration::from_nanos(1),
@@ -97,9 +104,17 @@ fn in_transaction_sleep_connection_prevents_idle_exit() {
     )
     .expect("watcher enabled");
 
-    std::thread::sleep(Duration::from_millis(1_100));
+    controller.set_last_active_for_test(controller.last_active() - 1);
+    let observation_deadline = Instant::now() + Duration::from_secs(1);
+    while !process_info_observed.load(Ordering::Acquire) && Instant::now() < observation_deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     server.set_force_shutdown();
     watcher.join().expect("watcher thread");
 
+    assert!(
+        process_info_observed.load(Ordering::Acquire),
+        "idle watcher did not inspect the in-transaction connection"
+    );
     assert_eq!(exit.take(), None);
 }
