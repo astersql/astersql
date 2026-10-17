@@ -48,7 +48,9 @@ use astersql_sessionctx_vardef::{
     TiDBOptProjectionPushDown, TiFlashFastScan,
 };
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{
+    CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest, CreateMockStoreAndDomain,
+};
 use astersql_testkit::testdata::{LoadTestSuiteDataWithCascades, TestData};
 use std::path::Path;
 use std::sync::Arc;
@@ -56,6 +58,13 @@ use std::sync::Arc;
 /// 创建 mock store/domain 与 TestKit，供各下推用例共享。
 fn new_testkit() -> (Arc<astersql_domain::Domain>, TestKit) {
     let (store, domain) = CreateMockStoreAndDomain();
+    (domain, TestKit::new(store))
+}
+
+/// 创建仅含 ANALYZE 所需系统表的真实 mock store/domain，供聚焦用例使用。
+fn new_testkit_with_analyze_options() -> (Arc<astersql_domain::Domain>, TestKit) {
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     (domain, TestKit::new(store))
 }
 
@@ -227,7 +236,7 @@ fn test_go_integration_suite_projection_coprocessor_plan_goldens() {
 #[test]
 fn test_go_integration_suite_projection_plan_goldens() {
     let suite = load_integration_suite();
-    let (domain, mut tk) = new_testkit();
+    let (domain, mut tk) = new_testkit_with_analyze_options();
     tk.MustExec(
         "create table t (id int, value decimal(6,3), name char(128))",
         Vec::new(),
