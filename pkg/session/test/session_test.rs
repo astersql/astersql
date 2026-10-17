@@ -1713,7 +1713,10 @@ fn write_on_multiple_cached_tables_matches_go() {
 
 #[test]
 fn prepare_zero_matches_go() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    // Prepared timestamp conversion only needs a real session and the table
+    // created below; bootstrapping unrelated mysql/sys tables obscures the path.
+    let (store, _domain) =
+        astersql_testkit::mockstore::CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = NewTestKit(store);
     tk.MustExec("use test", vec![]);
     tk.MustExec("drop table if exists t", vec![]);
