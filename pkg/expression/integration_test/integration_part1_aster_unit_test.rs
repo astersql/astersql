@@ -1038,7 +1038,9 @@ fn TestVectorWindow() {
 #[test]
 /// VECTOR 列只能创建 VECTOR INDEX，普通列不能承载向量索引。
 fn TestVectorIndexSyntax() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustContainErrMsg(
         "CREATE TABLE t1(embedding VECTOR UNIQUE)",
         "only VECTOR INDEX can be added to vector column",
