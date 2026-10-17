@@ -41,7 +41,10 @@ impl Session for BlockingInitialHeartbeatSession {
 
 #[test]
 fn ticker_starts_before_the_initial_heartbeat_like_go() {
-    let interval = Duration::from_secs(1);
+    // The behavior under test only requires one tick to elapse while the initial
+    // heartbeat is blocked; a short injected interval preserves that ordering
+    // without making the test wait for the production-scale default.
+    let interval = Duration::from_millis(50);
     let (calls_tx, calls_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let session: Arc<Mutex<Box<dyn Session>>> =
@@ -63,7 +66,7 @@ fn ticker_starts_before_the_initial_heartbeat_like_go() {
     calls_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("initial heartbeat should start");
-    thread::sleep(interval + Duration::from_millis(50));
+    thread::sleep(interval + Duration::from_millis(10));
     release_tx.send(()).unwrap();
 
     calls_rx
