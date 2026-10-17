@@ -1227,6 +1227,8 @@ fn test_batch_point_get_plan_cache_mixed_in_list() {
     )
     .Sort()
     .Check(vec![vec!["200"], vec!["300"]]);
+    tk.MustQuery("select @@last_plan_from_cache", Vec::new())
+        .Check(vec![vec!["1"]]);
 }
 
 /// 对应 Go `TestPrepareCache` 的权限失效分支：权限相关 DDL 与 prepared
