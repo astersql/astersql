@@ -398,8 +398,7 @@ fn crossks_align_durable_scheduler_uses_normal_owner_manager_live_state() {
 
 #[test]
 fn crossks_align_durable_scheduler_conflicting_commit_rolls_back_metadata() {
-    let (domain, _) = CreateAnalyzeSession().unwrap();
-    let pool = SystemSessionPool::new(domain.clone());
+    let (domain, pool) = durable_scheduler_domain();
     insert(&pool, 79006, JobState::Queueing);
     let before = global_id(&domain);
     let owner = Arc::new(Lease::default());
