@@ -34,7 +34,7 @@ use astersql_parser_auth::parser::auth::auth::UserIdentity;
 use astersql_planner_core::CheckTypesCompatibility4PC;
 use astersql_testkit::TestKit;
 use astersql_testkit::db_driver::DbValue;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::{CreateMockStoreAndDomain, CreatePlannerTestStoreAndDomain};
 use astersql_types::metadata::FieldType;
 use astersql_types::metadata::mysql;
 
@@ -1039,7 +1039,7 @@ fn test_cache_hit_in_rc() {
 /// 悲观事务内保持结果一致并在第二次执行命中缓存。
 #[test]
 fn test_cache_hit_in_for_update_read() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("set tidb_enable_prepared_plan_cache=1", Vec::new());
     tk.MustExec("use test", Vec::new());
