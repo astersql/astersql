@@ -487,7 +487,9 @@ fn TestIssue43527() {
 #[test]
 /// 空聚合参与 ANY 子查询时保持三值逻辑，不错误返回源行。
 fn TestIssue44706() {
-    let mut tk = new_testkit();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("CREATE TABLE t0(c2 BIGINT)", Vec::new());
     tk.MustExec("INSERT INTO t0 VALUES (1)", Vec::new());
     tk.MustQuery("SELECT MIN(c2) FROM t0 WHERE FALSE", Vec::new())
