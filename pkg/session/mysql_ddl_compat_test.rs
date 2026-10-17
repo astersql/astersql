@@ -18,7 +18,10 @@
 // 测试通过真实会话连续执行建库、建表、变更、重命名、截断与删除，并交叉检查
 // `information_schema` 元数据和表中已有数据，确保目录状态与物理存储始终同步。
 
-use crate::runtime::{ConcreteRecordSet, ConcreteSession, CreateAnalyzeSession};
+use crate::runtime::{
+    ConcreteRecordSet, ConcreteSession, CreateAnalyzeSession,
+    CreateUnbootstrappedAnalyzeSessionForTest,
+};
 use crate::testutil::TestRecordSet;
 
 // 结果集按批次拉取；统一收集可让后续断言同时覆盖完整结果与读取错误。
@@ -85,7 +88,8 @@ fn vector_index_kind_is_persisted_for_create_and_alter() {
 
 #[test]
 fn common_mysql_ddl_round_trips_through_catalog_and_storage() {
-    let (_domain, session) = CreateAnalyzeSession().expect("canonical DDL session");
+    let (_domain, session) =
+        CreateUnbootstrappedAnalyzeSessionForTest().expect("unbootstrapped DDL session");
 
     // 数据库名不区分大小写，`IF NOT EXISTS` 也不得重复创建目录项。
     execute(&session, "create database ddl_compat");
