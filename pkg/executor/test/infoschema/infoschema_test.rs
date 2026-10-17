@@ -722,7 +722,7 @@ fn foreign_key_metadata_preserves_referenced_schema() {
 /// 对应 Go `TestSameTableNameInTwoSchemas`：相同表名按库与物理 ID 唯一定位。
 #[test]
 fn same_table_name_in_two_schemas_isolated_by_schema_and_id() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     for database in ["infoschema_same_db1", "infoschema_same_db2"] {
         tk.MustExec(&format!("create database {database}"), Vec::new());
@@ -751,6 +751,28 @@ fn same_table_name_in_two_schemas_isolated_by_schema_and_id() {
     tk.MustQuery(
         &format!(
             "select table_schema, table_name, tidb_table_id from information_schema.tables \
+             where tidb_table_id={id1}"
+        ),
+        Vec::new(),
+    )
+    .Check(RowsWithSep(
+        "|",
+        &[&format!("infoschema_same_db1|same_name|{id1}")],
+    ));
+    tk.MustQuery(
+        &format!(
+            "select table_schema, table_name, tidb_table_id from information_schema.tables \
+             where tidb_table_id={id2}"
+        ),
+        Vec::new(),
+    )
+    .Check(RowsWithSep(
+        "|",
+        &[&format!("infoschema_same_db2|same_name|{id2}")],
+    ));
+    tk.MustQuery(
+        &format!(
+            "select table_schema, table_name, tidb_table_id from information_schema.tables \
              where table_name='same_name' and tidb_table_id={id1}"
         ),
         Vec::new(),
@@ -762,7 +784,26 @@ fn same_table_name_in_two_schemas_isolated_by_schema_and_id() {
     tk.MustQuery(
         &format!(
             "select table_schema, table_name, tidb_table_id from information_schema.tables \
-             where table_schema='unknown' and tidb_table_id={id2}"
+             where table_schema='infoschema_same_db1' and tidb_table_id={id1}"
+        ),
+        Vec::new(),
+    )
+    .Check(RowsWithSep(
+        "|",
+        &[&format!("infoschema_same_db1|same_name|{id1}")],
+    ));
+    tk.MustQuery(
+        &format!(
+            "select table_schema, table_name, tidb_table_id from information_schema.tables \
+             where table_name='unknown' and tidb_table_id={id1}"
+        ),
+        Vec::new(),
+    )
+    .Check(Rows(&[]));
+    tk.MustQuery(
+        &format!(
+            "select table_schema, table_name, tidb_table_id from information_schema.tables \
+             where table_schema='unknown' and tidb_table_id={id1}"
         ),
         Vec::new(),
     )
