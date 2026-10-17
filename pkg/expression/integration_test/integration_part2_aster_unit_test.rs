@@ -1248,25 +1248,22 @@ fn TestCompareBuiltin() {
         "CREATE TABLE t(pk INT NOT NULL PRIMARY KEY AUTO_INCREMENT, i INT, j JSON)",
         Vec::new(),
     );
-    for (i, json) in [
-        (0, "NULL"),
-        (1, r#"'{"a":2}'"#),
-        (2, "'[1,2]'"),
-        (3, r#"'\"scalar string\"'"#),
-        (4, "'true'"),
-        (5, "'false'"),
-        (6, "'null'"),
-        (7, "'-1'"),
-        (8, "'32768'"),
-        (9, "'3.14'"),
-        (10, "'{}'"),
-        (11, "'[]'"),
-    ] {
-        tk.MustExec(
-            &format!("INSERT INTO t(i,j) VALUES({i},{json})"),
-            Vec::new(),
-        );
-    }
+    tk.MustExec(
+        r#"INSERT INTO t(i,j) VALUES
+           (0,NULL),
+           (1,'{"a":2}'),
+           (2,'[1,2]'),
+           (3,'\"scalar string\"'),
+           (4,'true'),
+           (5,'false'),
+           (6,'null'),
+           (7,'-1'),
+           (8,'32768'),
+           (9,'3.14'),
+           (10,'{}'),
+           (11,'[]')"#,
+        Vec::new(),
+    );
     tk.MustQuery(
         "SELECT i, j = j, j <=> NULL, j = NULL FROM t ORDER BY i",
         Vec::new(),
