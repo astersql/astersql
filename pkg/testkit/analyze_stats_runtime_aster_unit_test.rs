@@ -26,7 +26,7 @@ use astersql_session::testutil::TestSession;
 /// INSERT 后 modify_count 上升；ANALYZE 后与 SHOW STATS_META 一致且历史为空。
 #[test]
 fn analyze_and_show_stats_share_canonical_session_state() {
-    let store = CreateAnalyzeStatsStore();
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
     let mut testkit = TestKit::new(store.clone());
     testkit.MustExec("create table t(a int)", Vec::new());
     let context = testkit
