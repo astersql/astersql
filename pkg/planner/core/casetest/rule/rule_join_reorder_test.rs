@@ -67,27 +67,16 @@ fn run_fixture(tk: &TestKit, suite: &TestData, name: &str, cascades: bool) {
                     .get("Plan")
                     .unwrap_or_else(|| panic!("{name}[{index}] Plan"))
                     .as_array()
-                    .unwrap_or_else(|| panic!("{name}[{index}] Plan array"))
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .unwrap_or_else(|| panic!("{name}[{index}] Plan row"))
-                            .to_owned()
-                    })
-                    .collect::<Vec<_>>();
+                    .unwrap_or_else(|| panic!("{name}[{index}] Plan array"));
+                assert!(
+                    plan.iter().all(|row| row.as_str().is_some()),
+                    "{name}[{index}] Plan row"
+                );
                 let warnings = expected
                     .get("Warning")
                     .unwrap_or_else(|| panic!("{name}[{index}] Warning"))
                     .as_array()
-                    .map(|rows| {
-                        rows.iter()
-                            .map(|v| {
-                                v.as_str()
-                                    .unwrap_or_else(|| panic!("{name}[{index}] Warning row"))
-                                    .to_owned()
-                            })
-                            .collect::<Vec<_>>()
-                    })
+                    .map(Vec::as_slice)
                     .unwrap_or_default();
                 assert!(!plan.is_empty(), "{name}[{index}] recorded Plan is empty");
                 let mut case_tk = TestKit::new(store);
@@ -109,7 +98,9 @@ fn run_fixture(tk: &TestKit, suite: &TestData, name: &str, cascades: bool) {
                 // The Rust TestKit currently renders a compact plan rather than TiDB's
                 // complete golden text.  Still validate the Go warning fixture shape and
                 // execute SHOW WARNINGS for every case so neither contract is dormant.
-                assert!(warnings.iter().all(|warning| !warning.is_empty()));
+                assert!(warnings.iter().all(|warning| {
+                    warning.as_str().is_some_and(|warning| !warning.is_empty())
+                }));
                 let _ = case_tk.MustQuery("show warnings", Vec::new()).Rows();
             });
         }
@@ -139,8 +130,7 @@ fn standard_tables(tk: &mut TestKit, partitioned: bool) {
     }
 }
 
-fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
-    let suite = load_suite();
+fn run_join_reorder_scenario(suite: &TestData, cascades: bool, scenario: usize) {
     let mut tk = new_testkit(cascades);
     match scenario {
         0 => {
@@ -152,7 +142,7 @@ fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
                     Vec::new(),
                 );
             }
-            run_fixture(&tk, &suite, "TestOptEnableHashJoin", cascades);
+            run_fixture(&tk, suite, "TestOptEnableHashJoin", cascades);
         }
         1 => {
             standard_tables(&mut tk, true);
@@ -160,7 +150,7 @@ fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
             tk.MustExec("set @@tidb_enable_outer_join_reorder=true", Vec::new());
             run_fixture(
                 &tk,
-                &suite,
+                suite,
                 "TestJoinOrderHint4DynamicPartitionTable",
                 cascades,
             );
@@ -169,13 +159,13 @@ fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
             standard_tables(&mut tk, false);
             tk.MustExec("set @@tidb_allow_mpp=1", Vec::new());
             tk.MustExec("set @@tidb_enforce_mpp=1", Vec::new());
-            run_fixture(&tk, &suite, "TestJoinOrderHint4TiFlash", cascades);
+            run_fixture(&tk, suite, "TestJoinOrderHint4TiFlash", cascades);
         }
         3 => {
             standard_tables(&mut tk, false);
             tk.MustExec("set @@tidb_allow_mpp=0", Vec::new());
             tk.MustExec("set @@tidb_enforce_mpp=0", Vec::new());
-            run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeading", cascades);
+            run_fixture(&tk, suite, "TestJoinOrderHint4NestedLeading", cascades);
         }
         4 => {
             tk.MustExec("drop table if exists t1,t2,t3,t4", Vec::new());
@@ -189,7 +179,7 @@ fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
                 "create table t4(a int not null,b int not null,primary key(b))",
                 Vec::new(),
             );
-            run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeadingPK", cascades);
+            run_fixture(&tk, suite, "TestJoinOrderHint4NestedLeadingPK", cascades);
         }
         _ => unreachable!("unknown join reorder scenario"),
     }
@@ -197,10 +187,12 @@ fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
 
 #[test]
 fn join_reorder_go_fixture_cases() {
+    let suite = load_suite();
     std::thread::scope(|scope| {
         for cascades in [false, true] {
             for scenario in 0..5 {
-                scope.spawn(move || run_join_reorder_scenario(cascades, scenario));
+                let suite = &suite;
+                scope.spawn(move || run_join_reorder_scenario(suite, cascades, scenario));
             }
         }
     });
