@@ -41,23 +41,43 @@ impl StoreHelper for TestStoreHelper {
     }
 }
 
-// getBackendConfig 对应 Go 测试辅助函数：为每个测试创建独立 sorted-kv 临时目录。
-/// 为每个测试生成带唯一临时目录的 BackendConfig。
-pub fn getBackendConfig() -> BackendConfig {
+/// Like Go's t.TempDir, reclaim fixture storage even when a test panics.
+struct BackendDirectory(std::path::PathBuf);
+
+impl Drop for BackendDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Atomically reserve a directory, including across test processes and PID reuse.
+fn getBackendConfig() -> (BackendConfig, BackendDirectory) {
+    let directory = loop {
+        let path = std::env::temp_dir().join(format!(
+            "astersql-ingestctrl-{}-{}",
+            std::process::id(),
+            EngineId::new()
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break BackendDirectory(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!(
+                "cannot create backend directory {}: {error}",
+                path.display()
+            ),
+        }
+    };
     let mut config = BackendConfig::default();
-    config.local_store_dir = std::env::temp_dir()
-        .join(format!("astersql-ingestctrl-{}", EngineId::new()))
-        .to_string_lossy()
-        .into_owned();
+    config.local_store_dir = directory.0.to_string_lossy().into_owned();
     config.worker_concurrency = 8;
-    config
+    (config, directory)
 }
 
 // TestEngineManager 对应 Go 的同名测试：覆盖 open、close、reset、cleanup 和本地目录清空。
 /// 覆盖 open 分配 TSO、close、未知 ID 失败、reset、cleanup 与 codec 透传。
 #[test]
 pub fn TestEngineManager() {
-    let config = getBackendConfig();
+    let (config, _directory) = getBackendConfig();
     let path = config.local_store_dir.clone();
     let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
     let token = CancellationToken::default();
@@ -87,7 +107,7 @@ pub fn TestEngineManager() {
 /// 与 Go 的 LoadOrStore/open 语义一致：重复打开同一 ID 不新增引擎也不报错。
 #[test]
 pub fn open_engine_is_idempotent_for_an_existing_id() {
-    let config = getBackendConfig();
+    let (config, _directory) = getBackendConfig();
     let path = config.local_store_dir.clone();
     let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
     let token = CancellationToken::default();
@@ -105,7 +125,7 @@ pub fn open_engine_is_idempotent_for_an_existing_id() {
 /// Go 的 resetEngine 对未知本地/外部引擎记录告警后返回成功。
 #[test]
 pub fn reset_missing_engine_is_a_noop() {
-    let config = getBackendConfig();
+    let (config, _directory) = getBackendConfig();
     let path = config.local_store_dir.clone();
     let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
 
@@ -121,7 +141,7 @@ pub fn reset_missing_engine_is_a_noop() {
 /// 未注册外部引擎时 getExternalEngineKVStatistics 返回 None。
 #[test]
 pub fn TestGetExternalEngineKVStatistics() {
-    let config = getBackendConfig();
+    let (config, _directory) = getBackendConfig();
     let path = config.local_store_dir.clone();
     let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
     assert_eq!(None, manager.getExternalEngineKVStatistics(EngineId::new()));
@@ -133,7 +153,7 @@ pub fn TestGetExternalEngineKVStatistics() {
 /// 打开多个引擎后 cleanupAllLocalEngines 应清空 engineFileSizes。
 #[test]
 pub fn TestCleanupAllLocalEnginesLogsErrorOnly() {
-    let config = getBackendConfig();
+    let (config, _directory) = getBackendConfig();
     let path = config.local_store_dir.clone();
     let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
     let token = CancellationToken::default();
@@ -143,4 +163,82 @@ pub fn TestCleanupAllLocalEnginesLogsErrorOnly() {
     assert!(manager.engineFileSizes().is_empty());
     manager.close();
     assert!(!std::path::Path::new(&path).exists());
+}
+
+/// Independent test processes must not share or remove each other's backend directory.
+#[test]
+fn cross_process_engine_directories_are_isolated() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, Command, Stdio};
+
+    const CHILD_ENV: &str = "ASTERSQL_ENGINE_DIRECTORY_CHILD";
+    const PATH_PREFIX: &str = "ENGINE_DIRECTORY=";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let (config, _directory) = getBackendConfig();
+        let path = config.local_store_dir.clone();
+        let manager = newEngineManager(config, Arc::new(TestStoreHelper)).unwrap();
+        manager
+            .openEngine(&CancellationToken::default(), EngineId::new(), 96, 32)
+            .unwrap();
+        println!("{PATH_PREFIX}{path}");
+        std::io::stdout().flush().unwrap();
+        let mut release = String::new();
+        std::io::stdin().read_line(&mut release).unwrap();
+        manager.close();
+        assert!(!std::path::Path::new(&path).exists());
+        return;
+    }
+
+    // Reap children even if a setup assertion fails, so no backend outlives the test.
+    struct TestProcess(Child);
+    impl Drop for TestProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let spawn = || {
+        let mut process = TestProcess(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "engine_mgr_test::cross_process_engine_directories_are_isolated",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let path = BufReader::new(process.0.stdout.as_mut().unwrap())
+            .lines()
+            .map(|line| line.unwrap())
+            .find_map(|line| {
+                line.split_once(PATH_PREFIX)
+                    .map(|(_, path)| path.to_owned())
+            })
+            .expect("child must report its open backend directory");
+        (process, path)
+    };
+    let (mut first, first_path) = spawn();
+    let (mut second, second_path) = spawn();
+    first.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let first_status = first.0.wait().unwrap();
+    let second_survived = std::path::Path::new(&second_path).is_dir();
+    second.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+    let second_status = second.0.wait().unwrap();
+
+    assert!(first_status.success());
+    assert!(second_status.success());
+    assert_ne!(
+        first_path, second_path,
+        "processes must own distinct directories"
+    );
+    assert!(
+        second_survived,
+        "closing one manager removed the other's directory"
+    );
+    assert!(!std::path::Path::new(&first_path).exists());
+    assert!(!std::path::Path::new(&second_path).exists());
 }
