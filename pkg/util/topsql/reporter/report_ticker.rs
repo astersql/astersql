@@ -78,7 +78,6 @@ pub fn set_report_ticker_interval_seconds_for_test(
 }
 
 /// 测试辅助：使需要观测实际 tick 的单元测试可使用亚秒级间隔。
-#[cfg(test)]
 pub(crate) fn set_report_ticker_interval_for_test(
     interval: Duration,
 ) -> Box<dyn FnOnce() + Send + 'static> {
