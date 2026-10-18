@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：对日志排名第 1425、原始耗时 1.011 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -94,20 +94,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 基线证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审并更新状态；有实际变更时提交，只有任务文件变更时不提交；完成后删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 保存 before 基线证据和阶段耗时分解。
+- [x] 复核保持语义的最小优化；隔离基线已证明原日志主要是并发争用，未制造代码 diff。
+- [ ] 保存 after、测试数量与耗时证据；本轮被共享工作区的无关 Rust 编译错误阻断，需待回归。
+- [x] 自审并更新状态；本任务无生产、测试、配置或文档代码变更，不调用 `$git-commit`；按“已完成，待回归验证”规则保留本文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.011s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- RustCodeGraph 定位到精确测试只直接调用 `open_ctx`、两次 `prepare_statement` 和 `close`；`CreateAnalyzeSession` 会依次执行 `create_analyze_domain`、`BootstrapCanonicalDomain` 和 `domain.initialize_stats()`。因此 setup 是主要且真实的初始化边界，两次 prepare 是本测试不可删减的全部行为断言，teardown 只有一次 context close。
+- before 在性能锁下精确选中 1 个测试，5/5 成功：`0.547967, 0.567557, 0.568805, 0.601425, 0.547705s`；中位数 `0.567557s`，最大值 `0.601425s`。相比全 workspace 并发原日志 `1.011s`，中位数低 `43.86%`，最大值低 `40.51%`，证明原入选耗时主要来自并发争用，不存在可通过局部删减安全消除的 1.011 秒热点。
+- after 编译预热在 Cargo 槽位 8 上被无关并行修改阻断：`pkg/util/topsql/reporter/report_ticker.rs:77` 在非 test cfg 路径调用了只存在于 `#[cfg(test)]` 的 `set_report_ticker_interval_for_test`，`cargo test --no-run` 以 E0425 / 退出码 101 失败。`task-1425-after.tsv` 只有表头，不计作验收证据。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：不修改测试或生产代码。理由：隔离 before 相比原并发日志的中位数和最大值均改善超过 40%，而剩余路径是真实 Domain/bootstrap/stats 初始化和本测试必须保留的两种 parameter syntax prepare。共享 Domain/session 会破坏隔离与真实依赖，删减 prepare/close 会弱化行为断言，二者都不是合理优化。日期/作者：2026-10-18 / Codex。
+- 决策：状态记为“已完成，待回归验证”并保留任务文件。理由：before 正确性与停止优化证据已齐全，但 after 被不属于本任务的共享工作区 E0425 编译错误阻断，当前不能形成 5 个 after sample。日期/作者：2026-10-18 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 验证配置：无代码改动的 Ready 复核。before 命令退出码 0，使用槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`，报告为 `target/rust-performance/task-1425-before.tsv`，精确 1 测试 × 5 样本，失败/超时均为 0。
+- after 使用槽位 8，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`；精确性能命令在 warmup 阶段因无关 E0425 退出 1（内部 Cargo 退出 101），有效测试数 0，未产生 after 耗时。所有本任务领取的 Cargo/性能锁已清理，编译缓存保留。
+- 未验证：after 5 次数据与 before/after 改善比例；因无 Rust 代码变更，`cargo fmt --all` 和 `make lint` 不适用，且在共享工作区编译破坏期间不执行。
+- diff 自审：本任务只更新本记录，未改动 case、断言、真实依赖、timeout、Rust 源码、Cargo manifest 或 `plan.md`；共享工作区其他修改均未触碰。
+- 回归动作：待 `pkg/util/topsql/reporter/report_ticker.rs` 的无关 E0425 修复后，按原命令重跑 after；若 5/5 通过，根据新验收规则将状态改为“已完成”并删除本任务文件。

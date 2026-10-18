@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：对日志排名第 1435、原始耗时 1.009 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,20 +93,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 基线证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
+- [x] 阅读上下文，用 RustCodeGraph 核对精确测试、调用边和 Go `TestShowClusterConfig` 意图；取得 Cargo 槽位 6 与性能锁。
+- [ ] 保存 before 基线证据和阶段耗时分解：预热编译被无关仓库回归阻断，尚未执行测试。
+- [ ] 完成保持语义的最小优化：因无基线和剖析证据，未制造源码 diff。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审并更新状态；有实际变更时提交，只有任务文件变更时不提交；完成后删除任务文件。
+- [x] 自审本任务未修改源码、测试、配置或文档；按无关修改阻断验证的规则保留任务文件待回归，不调用 `$git-commit`。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.009s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-18 回归阻断：严格 before 命令在 warmup 编译期间于 `pkg/util/topsql/reporter/report_ticker.rs:77` 失败，`set_report_ticker_interval_seconds_for_test` 在非 `cfg(test)` 依赖构建中调用了仅在 `#[cfg(test)]` 下存在的 `set_report_ticker_interval_for_test`，`cargo test --no-run` 退出 101。该文件属于其他任务并已由提交 `20f560c46b` (`perf(topsql): remove fixed ticker wait`) 引入；本任务未回滚或修改它。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：将状态记为 `已完成，待回归` 并保留任务文件。理由：失败发生在目标测试启动前，是已提交的无关依赖编译回归；当前无法获取正确性、before/after 或剖析证据，不能按性能通过删除任务。日期/作者：2026-10-18 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 验证 profile：Ready 意图（交付复核），但精确性能验证在预热编译中被无关回归阻断；无本任务代码变更，因此 `cargo fmt --all` 和 `make lint` 不适用。
+- Cargo 资源：槽位 `6`；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；性能锁在命令前获取、失败后释放，槽位缓存保留。
+- 实际命令：`./tools/check/rust-test-performance.sh --max-seconds 300 --runs 5 --output target/rust-performance/task-1435-before.tsv -- --locked --package astersql-executor-test-showtest --lib -E 'binary_id(=astersql-executor-test-showtest) & test(=show_test::show_cluster_config_has_filterable_four_column_contract)'`；退出码 `1`（内层 Cargo 退出 `101`）。
+- 证据：`target/rust-performance/task-1435-before.tsv` 仅含表头；有效测试数 `0`，sample `0/5`，因编译阻断而不是测试失败或性能超时。after 未运行，不存在改善比例。
+- 行为自审：RustCodeGraph 和 Go 对照确认现有 Rust 测试保留了标准四列、3 条配置、等值过滤、LIKE 过滤及错误传播断言；本次没有减少 case、断言、数据规模或真实路径，也没有修改任何 Rust 源码。
+- 待回归：先修复或替代提交 `20f560c46b` 中 `report_ticker.rs` 的非测试构建可见性错误，再在同一槽位/性能锁协议下重跑 before，根据五次数据决定无代码收口或继续剖析。

@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：对日志排名第 1437、原始耗时 1.009 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,20 +93,29 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
 - [ ] 保存 before 基线证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审并更新状态；有实际变更时提交，只有任务文件变更时不提交；完成后删除任务文件。
+- [x] 自审并更新状态；因无关的共享工作区编译错误保留任务文件，供后续回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.009s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-18 复核：RustCodeGraph 显示精确测试仅影响自身，直接调用 `new_mock_store_and_domain`、`physical_stats`、`table_id` 及真实统计锁/自动分析路径；与 Go `TestStatsLockUnlockForAutoAnalyze` 的核心用例规模和断言意图一致。
+- 2026-10-18 外部阻塞：共享工作区中已存在、非本任务的 `pkg/util/topsql/reporter/report_ticker.rs` 未提交修改，将 `set_report_ticker_interval_for_test` 置于 `#[cfg(test)]` 下，但非测试构建的 `set_report_ticker_interval_seconds_for_test` 仍无条件调用它，导致 `astersql-util-topsql-reporter` 报 `E0425`。该源文件观察 60 秒未继续变化，随后在另一已预热槽位复试仍同样失败。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：不修改其他并行任务正在编辑的 TopSQL reporter 文件，也不用零测试或编译成功替代性能验收。根据本任务授权的无关回归失败例外，标记为“已完成，待回归”并保留文件。日期/作者：2026-10-18 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 验证状态：已完成，待回归。本任务源码、测试、配置均未修改；不删除本文件，不调用 `$git-commit`。
+- Cargo 预热：槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；因该目录的 Cargo 进程锁持续 30 秒未释放而主动中断，退出码 130，占用记录已清理。
+- Cargo 预热：槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；精确 `cargo nextest run --profile perf-audit --no-run --locked --package astersql-statistics-handle-updatetest --lib -E 'binary_id(=astersql-statistics-handle-updatetest) & test(=update_test::go_test_stats_lock_unlock_for_auto_analyze)'` 退出码 0。
+- before 尝试 1：持有性能锁，槽位 8，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`；任务文件指定的 `rust-test-performance.sh` 命令退出码 1，在 compilation warmup 阶段因无关 TopSQL reporter `E0425` 失败。
+- before 尝试 2：持有性能锁，槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；同一命令退出码 1，同一 `E0425` 失败。两次均在测试执行前停止，`target/rust-performance/task-1437-before.tsv` 仅有表头，有效测试数 0，不作为性能证据。
+- 未验证：before/after 各五次、阶段耗时分解、20% 改善判定、`cargo fmt --all` 与 `make lint`。由于本任务没有代码变更，fmt/lint 本来不适用；回归时需在无关编译错误消失后重新执行 before，再决定是否需要优化。
+- 风险：未获得该测试的隔离性能和正确性新证据，因此不对当前性能下结论；保留任务文件是为了明确追踪该待回归风险。

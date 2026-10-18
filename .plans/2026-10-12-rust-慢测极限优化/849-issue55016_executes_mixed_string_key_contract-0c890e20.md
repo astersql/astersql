@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：对日志排名第 1434、原始耗时 1.010 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,20 +93,23 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
+- [x] 阅读上下文并取得 Cargo 槽位与性能锁。
 - [ ] 保存 before 基线证据和阶段耗时分解。
 - [ ] 完成保持语义的最小优化。
 - [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审并更新状态；有实际变更时提交，只有任务文件变更时不提交；完成后删除任务文件。
+- [x] 自审并更新状态；因无关并行修改阻断规定验证，保留任务文件供回归。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.010s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-18：RustCodeGraph 确认可执行用例只调用 `hash_join_session` / `execute_sql` / `query_sql`，共享 helper 的影响面仅是同文件 7 个真实 SQL 回归。Go `TestIssue55016` 与 Rust 可执行契约都保留建表、单行 fixture、legacy/optimized 两轮查询和 `count(*) = 0` 断言。
+- 2026-10-18：槽位 5 的精确 `cargo nextest ... --no-run` 预编译曾成功（退出码 0）；随后并行任务未提交的 `pkg/util/topsql/reporter/report_ticker.rs` 将非 `cfg(test)` 函数调用到 `#[cfg(test)] set_report_ticker_interval_for_test`，导致规定 before 脚本在编译预热阶段以 E0425 失败，没有产生有效 sample。多轮等待后该无关工作区修改仍未收敛；本任务不回滚、修改或提交它。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：按任务授权将状态记为 `已完成，待回归`并保留本文件。理由：规定的正确性和五次性能采样唯一被无关并行源码的 E0425 编译错误阻断；既不能绕过脚本，也不能擅自修改其他任务的工作区内容。日期/作者：2026-10-18 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- 2026-10-18 交付状态：`已完成，待回归`。本任务未修改产品代码或测试，因此没有 fmt/lint/after，也不调用 `$git-commit`。实际 Cargo 槽位为 5，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`。成功命令（退出码 0）：`cargo nextest run --profile perf-audit --no-run --locked --package astersql-executor-test-jointest-hashjoin --lib -E 'binary_id(=astersql-executor-test-jointest-hashjoin) & test(=hash_join_test::issue55016_executes_mixed_string_key_contract)'`。失败命令（退出码 1）：规定的 `rust-test-performance.sh ... task-1434-before.tsv ...`；失败发生在 compilation warmup，有效测试数/5 次 sample 为 `0/0`，失败/超时样本为 `0/0`。回归时应先确认 `report_ticker.rs` 已恢复可编译，再用同一槽位规则和性能锁重跑 before；只有取得 1×5 成功 sample 后才可决定无代码收口或继续剖析。

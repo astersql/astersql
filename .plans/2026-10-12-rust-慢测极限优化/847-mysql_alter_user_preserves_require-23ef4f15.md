@@ -4,7 +4,7 @@
 
 显式依赖：无
 
-状态：未开始
+状态：已完成，待回归
 
 目的：对日志排名第 1426、原始耗时 1.011 秒的测试做证据驱动优化；保持全部原始行为与 Go 对齐规模，取得明显性能提升或证明已无合理继续优化空间。
 
@@ -93,20 +93,27 @@
 
 ## 进度
 
-- [ ] 阅读上下文并取得 Cargo 槽位与性能锁。
-- [ ] 保存 before 基线证据和阶段耗时分解。
-- [ ] 完成保持语义的最小优化。
-- [ ] 保存 after、测试数量与耗时证据；有代码修改时同时保存 fmt、lint 证据。
-- [ ] 自审并更新状态；有实际变更时提交，只有任务文件变更时不提交；完成后删除任务文件。
+- [x] 阅读上下文并取得 Cargo 槽位 1 与性能锁。
+- [x] 保存 before 基线证据，并用 RustCodeGraph 分解初始化调用链。
+- [x] 确认无可保持语义的局部优化：不裁剪 canonical bootstrap、stats 初始化、SQL case 或断言，因此不制造代码 diff。
+- [ ] 回归 after：已尝试，但被与本任务无关的 `pkg/util/topsql/reporter/report_ticker.rs` 未完成修改阻断（`E0425`）；待该工作区修复后按原命令回归。
+- [x] 自审完成；无代码、测试、配置或普通文档变更，不调用 `$git-commit`；按“已完成，待回归验证”规则保留本文件。
 
 ## 意外发现
 
 - 初始事实：全量并发日志记录 `1.011s` / `PASS`；隔离基线尚未运行，不把该数字当作稳定性能结论。
+- 2026-10-18 隔离 before 五次均精确选中 1 个测试且成功：`0.497131s`、`0.749136s`、`0.617852s`、`0.646759s`、`0.471547s`；中位数 `0.617852s`，最大值 `0.749136s`。相比全量并发原始 `1.011s`，分别低 `38.89%` 和 `25.90%`，证明原排名耗时主要含共享争用噪声。
+- RustCodeGraph 调用链显示 `CreateAnalyzeSession` 依次执行 `create_analyze_domain`、`BootstrapCanonicalDomain` 和 `domain.initialize_stats()`；其中 canonical bootstrap 创建真实系统表、全局变量和权限缓存。这是本测试验证 `mysql.user`、`mysql.global_priv` 与 `SHOW CREATE USER` 持久化一致性的必要下界，不能用不等价 mock 或跨测试可变 Domain 复用消除。
+- 临时阶段计时插桩未留下 diff；其编译被已存的无关工作区改动阻断：`set_report_ticker_interval_seconds_for_test` 在非 test 构建中调用了受 `#[cfg(test)]` 限制的 `set_report_ticker_interval_for_test`，`cargo nextest` 报 `E0425`。本任务未修改或回滚该外部文件。
 
 ## 决策日志
 
 - 决策：使用五次预热隔离 before/after 的中位数与最大值比较；默认二者均改善至少 20% 即为明显提升，无法继续优化时以剖析和下界证据完成，不设 0.5 秒绝对线。理由：原日志存在并发争用，且不同测试具有不可等同的真实协议与时序下界。日期/作者：2026-10-14 / 计划更新者。
+- 决策：不对已在目标之外且正处于未完成状态的 reporter 改动做临时回滚或修复；将本任务标为“已完成，待回归验证”并保留文件。理由：已有 5 次正确性和隔离性能证据，且无安全局部优化点；after 的缺失仅由无关的共享源码编译错误造成。日期/作者：2026-10-18 / Codex。
 
 ## 结果回顾
 
-- 尚未执行；完成或阻塞时记录最终耗时、正确性、改动范围、剩余风险和可复用经验。
+- Ready 性能复核的 before 命令退出码 0，产生 `target/rust-performance/task-1426-before.tsv`，共 `1 测试 × 5 次`，失败 0、超时 0；实际使用 Cargo 槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。
+- 未修改 Rust 源码，因此 `cargo fmt --all` 和 `make lint` 不适用。after 及临时 profiling 的构建尝试退出码 101，唯一诊断为与本任务无关的 `pkg/util/topsql/reporter/report_ticker.rs:77` `E0425`。
+- 自审：目标 Rust 测试文件最终无 diff；未删减 SQL case、断言、真实 canonical Domain 或 Go 对齐规模，未改动 Cargo manifest、本地依赖覆盖或 PingCAP license。
+- 待回归：共享工作区恢复可编译后，按任务原 after 命令运行 5 次，核对每次精确 1 个测试、失败/超时为 0；因无代码修改，after 用于复核噪声范围，不预期人为制造 20% 差异。
