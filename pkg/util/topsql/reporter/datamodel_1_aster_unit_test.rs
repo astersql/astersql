@@ -336,6 +336,13 @@ fn subscription_parsing_send_order_channel_full_and_ticker_match_go() {
     let restore = crate::report_ticker::set_report_ticker_interval_seconds_for_test(1);
     let ticker = crate::report_ticker::new_report_ticker();
     assert_eq!(ticker.interval(), Duration::from_secs(1));
-    assert!(ticker.recv_timeout(Duration::from_millis(1200)).is_ok());
+    drop(ticker);
+    restore();
+
+    let restore =
+        crate::report_ticker::set_report_ticker_interval_for_test(Duration::from_millis(10));
+    let ticker = crate::report_ticker::new_report_ticker();
+    assert_eq!(ticker.interval(), Duration::from_millis(10));
+    assert!(ticker.recv_timeout(Duration::from_millis(200)).is_ok());
     restore();
 }

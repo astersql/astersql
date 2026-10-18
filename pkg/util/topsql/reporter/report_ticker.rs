@@ -74,6 +74,14 @@ pub fn set_report_ticker_interval_seconds_for_test(
     } else {
         DEFAULT_REPORT_TICKER_INTERVAL
     };
+    set_report_ticker_interval_for_test(interval)
+}
+
+/// 测试辅助：使需要观测实际 tick 的单元测试可使用亚秒级间隔。
+#[cfg(test)]
+pub(crate) fn set_report_ticker_interval_for_test(
+    interval: Duration,
+) -> Box<dyn FnOnce() + Send + 'static> {
     // 替换全局间隔并捕获旧值，供还原闭包写回。
     let previous = {
         let mut current = REPORT_TICKER_INTERVAL
