@@ -812,7 +812,7 @@ impl GCWorker {
     /// 执行一轮完整 GC：解析锁 → delete-range → redo → 广播安全点。
     pub(crate) fn runGCJob(&self, safe_point: u64, concurrency: gcConcurrency) -> GCResult {
         self.runtime.RecordEvent("run_job");
-        if !self.cancel.Wait(txnSafePointSyncWaitTime) {
+        if !self.cancel.Wait(self.runtime.TxnSafePointSyncWaitTime()) {
             return Err(GCError::new("gc worker cancelled before resolving locks"));
         }
         // 阶段 1：解析 safe_point 之前残留的未决锁。

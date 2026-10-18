@@ -884,6 +884,8 @@ fn TestResolveLocksNearTxnSafePoint() {
 #[allow(non_snake_case)]
 fn TestRunGCJob() {
     let (worker, runtime) = worker_fixture();
+    // Match the Go regression test, which sets txnSafePointSyncWaitTime to zero.
+    runtime.update(|state| state.txn_safe_point_sync_wait_time = Duration::ZERO);
     worker
         .runGCJob(
             100,
@@ -910,6 +912,8 @@ fn TestSetServiceSafePoint() {
 #[allow(non_snake_case)]
 fn TestRunGCJobAPI() {
     let runtime = FakeRuntime::new();
+    // Match the Go regression test, which sets txnSafePointSyncWaitTime to zero.
+    runtime.update(|state| state.txn_safe_point_sync_wait_time = Duration::ZERO);
     let state = runtime.state.clone();
     super::gc_worker::RunGCJob(Arc::new(runtime), 100, "api", 1).unwrap();
     assert!(
