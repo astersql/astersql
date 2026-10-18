@@ -15,7 +15,9 @@
 
 // [`CreateMockDB`] / [`MockDB`] 集成测试：Query、Exec、Prepare 与 TestKit 交叉校验。
 
-use crate::mockstore::CreateMockStoreAndDomain;
+use crate::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithoutSystemSchemasForTest,
+};
 use crate::{CreateMockDB, Rows, TestKit};
 
 /// 建表灌数后验证 Scan 两行、Exec 影响行数、Prepare QueryRow 与 Close。
@@ -77,7 +79,7 @@ fn TestMockDB() {
 
 #[test]
 fn mock_stmt_query_row_is_first_row_and_reports_empty_result() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store.clone());
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
