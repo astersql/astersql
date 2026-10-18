@@ -74,6 +74,46 @@ fn prepared_partition_point_get_and_batch_point_get_rebuild_safely() {
     assert_cache(&mut tk, "1");
 }
 
+/// SQL NULL stays distinct from the text "NULL" across typed cached lookups.
+#[test]
+fn prepared_partition_null_remains_typed_on_cache_hits() {
+    let mut tk = new_testkit();
+    tk.MustExec(
+        "create table null_partition (a int primary key, b varchar(255), c varchar(255)) partition by range (a) (partition p_neg values less than (0), partition p_pos values less than (10))",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "insert into null_partition values (-1,NULL,'NULL'),(1,'NULL',NULL)",
+        Vec::new(),
+    );
+    tk.MustQuery(
+        "select a, b is null, c is null from null_partition order by a",
+        Vec::new(),
+    )
+    .Check(Rows(&["-1 1 0", "1 0 1"]));
+    tk.MustExec(
+        "prepare null_point from 'select a,b,c from null_partition where a=?'",
+        Vec::new(),
+    );
+    tk.MustExec("set @a=-1", Vec::new());
+    for expected_cache in ["0", "1"] {
+        tk.MustQuery("execute null_point using @a", Vec::new())
+            .Check(Rows(&["-1 <nil> NULL"]));
+        assert_cache(&mut tk, expected_cache);
+    }
+    tk.MustExec(
+        "prepare null_batch from 'select a,b,c from null_partition where a in (?,?)'",
+        Vec::new(),
+    );
+    tk.MustExec("set @b=1", Vec::new());
+    for expected_cache in ["0", "1"] {
+        tk.MustQuery("execute null_batch using @a,@b", Vec::new())
+            .Sort()
+            .Check(Rows(&["-1 <nil> NULL", "1 NULL <nil>"]));
+        assert_cache(&mut tk, expected_cache);
+    }
+}
+
 /// 对齐 Go `runPreparedPlanCachePartitionIndex`：参数切换到其他分区仍复用安全计划。
 #[test]
 fn prepared_partition_index_cache_crosses_partitions() {

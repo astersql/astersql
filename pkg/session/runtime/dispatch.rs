@@ -3615,7 +3615,9 @@ impl ConcreteSession {
                 row.0
                     .into_iter()
                     .map(|value| match value {
-                        astersql_executor_sortexec::SortValue::Null => "NULL".to_owned(),
+                        astersql_executor_sortexec::SortValue::Null => {
+                            CONCRETE_NULL_VALUE.to_owned()
+                        }
                         astersql_executor_sortexec::SortValue::Int(value) => value.to_string(),
                         astersql_executor_sortexec::SortValue::UInt(value) => value.to_string(),
                         astersql_executor_sortexec::SortValue::Float(value) => value.to_string(),
