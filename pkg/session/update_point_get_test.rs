@@ -537,3 +537,107 @@ fn common_handle_candidate_filter_is_used_by_aggregate_and_inner_join_sources() 
         vec![vec!["one".to_owned()], vec!["three".to_owned()]]
     );
 }
+
+#[test]
+fn composite_integer_tuple_update_uses_distinct_point_ranges() {
+    let session = concrete_session();
+    session.execute("create table tuple_orders (id bigint, district bigint, amount bigint, primary key(id,district), unique key uk_amount(amount))").unwrap();
+    session
+        .execute("insert into tuple_orders values (1,1,10),(1,2,20),(2,1,30)")
+        .unwrap();
+    execute_without_full_scan(
+        &session,
+        "update tuple_orders set amount=amount+1 where (district,id) in ((2,1),(1,2),(2,1),(9,9))",
+    )
+    .expect("complete tuple keys must use distinct bounded UPDATE ranges");
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 2);
+    let read = || {
+        let mut sets = session
+            .execute("select id,district,amount from tuple_orders order by id,district")
+            .unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    };
+    let expected = vec![
+        vec!["1", "1", "10"],
+        vec!["1", "2", "21"],
+        vec!["2", "1", "31"],
+    ];
+    assert_eq!(read(), expected);
+    execute_without_full_scan(
+        &session,
+        "update tuple_orders set amount=amount where (id,district) in ((1,2),(1,2))",
+    )
+    .unwrap();
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 0);
+    let duplicate = execute_without_full_scan(
+        &session,
+        "update tuple_orders set amount=10 where (id,district) in ((1,2),(9,9))",
+    )
+    .unwrap_err();
+    assert!(duplicate.to_string().contains("[kv:1062]"), "{duplicate}");
+    assert_eq!(read(), expected);
+    session.execute("begin").unwrap();
+    execute_without_full_scan(
+        &session,
+        "update tuple_orders set id=3 where (id,district) in ((1,2),(9,9))",
+    )
+    .unwrap();
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 1);
+    session.execute("rollback").unwrap();
+    assert_eq!(read(), expected);
+    let guard = astersql_testkit_testfailpoint::enable(FULL_SCAN_FAILPOINT, "return(true)");
+    let partial = session
+        .execute("update tuple_orders set amount=amount+1 where (id,amount) in ((1,21))")
+        .err()
+        .expect("partial/non-key tuple retains scan fallback");
+    assert!(
+        partial
+            .to_string()
+            .contains("UPDATE reached a full relational table scan"),
+        "{partial}"
+    );
+    drop(guard);
+
+    // Tuple candidates must be read again from latest after locking, while
+    // preserving local writes and the transaction's lock lifetime.
+    session.execute("begin").unwrap();
+    assert_eq!(read(), expected);
+    let other = ConcreteSession::new(Arc::clone(session.domain()));
+    other
+        .execute("update tuple_orders set amount=40 where id=1 and district=2")
+        .unwrap();
+    execute_without_full_scan(
+        &session,
+        "update tuple_orders set amount=amount+1 where (district,id) in ((2,1),(2,1))",
+    )
+    .unwrap();
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 1);
+    assert_eq!(
+        read(),
+        vec![
+            vec!["1", "1", "10"],
+            vec!["1", "2", "41"],
+            vec!["2", "1", "31"]
+        ]
+    );
+    other.execute("begin").unwrap();
+    let locked = other
+        .execute("select amount from tuple_orders where id=1 and district=2 for update nowait")
+        .err()
+        .expect("tuple UPDATE retains its record lock");
+    assert!(locked.to_string().contains("NOWAIT"), "{locked}");
+    other.execute("rollback").unwrap();
+    session.execute("rollback").unwrap();
+    assert_eq!(
+        read(),
+        vec![
+            vec!["1", "1", "10"],
+            vec!["1", "2", "40"],
+            vec!["2", "1", "31"]
+        ]
+    );
+}

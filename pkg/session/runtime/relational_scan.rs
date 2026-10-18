@@ -1133,6 +1133,40 @@ pub(super) struct RelationalHandleFilter {
 }
 
 impl RelationalHandleFilter {
+    /// Complete alternatives identify physical records. Sort and deduplicate
+    /// them so repeated/reordered IN tuples retain table-scan order and each
+    /// record is locked, updated and counted once.
+    pub(super) fn point_ranges(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Option<Vec<RelationalRowScanRange>> {
+        let columns = table
+            .Columns
+            .iter()
+            .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
+            .count();
+        if columns == 0 {
+            return None;
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for terms in &self.alternatives {
+            let mut handle = Vec::new();
+            for offset in 0..columns {
+                let (_, value) = terms.iter().find(|(position, _)| *position == offset)?;
+                handle.extend_from_slice(value);
+            }
+            keys.insert(astersql_tablecodec::EncodeRowKey(table.ID, &handle).0);
+        }
+        Some(
+            keys.into_iter()
+                .map(|key| {
+                    let key = kv::Key(key);
+                    (key.clone(), key.PrefixNext(), false)
+                })
+                .collect(),
+        )
+    }
+
     fn matches(&self, handle: &dyn astersql_tablecodec::kv::Handle) -> bool {
         if handle.IsInt() {
             return true;
