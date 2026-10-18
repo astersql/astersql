@@ -273,8 +273,15 @@ fn combined_merge_issue24349_sql_buckets() {
 
 #[test]
 fn combined_merge_global_index_exact_topn_estimates() {
-    let (_domain, session) = CreateAnalyzeSession().unwrap();
-    session.execute("use test").unwrap();
+    let (_domain, session) = CreateUnbootstrappedAnalyzeSessionForTest().unwrap();
+    for sql in [
+        "create database mysql",
+        astersql_meta_metadef::CreateAnalyzeOptionsTable,
+        "create database test",
+        "use test",
+    ] {
+        session.execute(sql).unwrap();
+    }
     session
         .execute("set tidb_partition_prune_mode='dynamic'")
         .unwrap();
