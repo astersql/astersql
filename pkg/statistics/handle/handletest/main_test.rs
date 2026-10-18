@@ -22,7 +22,10 @@
 use std::sync::{Arc, Once, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use astersql_domain::Domain;
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomain,
+    CreateMockStoreAndDomainWithStatsSystemTablesForTest,
+};
 use astersql_testkit::{Database, TestKit};
 use astersql_testkit_testsetup::SetupForCommonTest;
 
@@ -67,6 +70,24 @@ pub(crate) fn new_store_and_domain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>, Te
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     ))
+}
+
+/// Focused harness for tests that only need the statistics system tables.
+pub(crate) fn new_stats_store_and_domain()
+-> (Arc<AnalyzeStatsStore>, Arc<Domain>, TestKit, TestGuard) {
+    setup_common_tests();
+    let exclusion = Exclusion::Shared(
+        FAILPOINT_EXCLUSION
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let (store, domain) = CreateMockStoreAndDomainWithStatsSystemTablesForTest();
+    let guard = TestGuard {
+        database: store.clone(),
+        _exclusion: exclusion,
+    };
+    let testkit = TestKit::new(store.clone());
+    (store, domain, testkit, guard)
 }
 
 /// Harness for tests that enable a process-wide failpoint: it blocks every

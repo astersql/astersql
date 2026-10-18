@@ -34,7 +34,9 @@ use astersql_statistics_handle_util::duration_to_ts;
 use astersql_testkit::TestKit;
 use astersql_types::datum::NewIntDatum;
 
-use crate::main_test::{new_exclusive_store_and_domain, new_store_and_domain};
+use crate::main_test::{
+    new_exclusive_store_and_domain, new_stats_store_and_domain, new_store_and_domain,
+};
 
 /// 按库名 `test` + 表名从 Domain InfoSchema 取表元数据。
 fn table_meta(domain: &Domain, name: &str) -> Arc<TableInfo> {
@@ -540,7 +542,7 @@ fn go_test_merge_global_top_n() {
 /// 静态分区裁剪模式不产生 global 统计；切到动态后仍无 global。
 #[test]
 fn go_test_static_partition_prune_mode() {
-    let (_store, _domain, mut testkit, _guard) = new_store_and_domain();
+    let (_store, _domain, mut testkit, _guard) = new_stats_store_and_domain();
     testkit.MustExec("set @@tidb_partition_prune_mode='static'", Vec::new());
     testkit.MustExec("use test", Vec::new());
     testkit.MustExec(
