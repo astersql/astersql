@@ -112,9 +112,9 @@ fn TestWaitGroupWrapperCheck() {
 
     assert!(wg.check());
 
-    // 放行任务并短暂等待，确认 check 变为 false。
+    // 放行任务并精确等待其注销，确认 check 变为 false。
     quit_tx.send(()).unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    wg.Wait();
     assert!(!wg.check());
 }
 
