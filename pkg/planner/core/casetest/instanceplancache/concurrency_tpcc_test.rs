@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! 使用真实会话并发执行简化的 TPC-C 事务片段，验证实例级计划缓存。
+//! 使用真实会话并发执行 Go TPC-C 事务片段，验证实例级计划缓存。
 //!
 //! 每个业务步骤同时保存直接 SQL 与预处理 SQL 两种执行形式；查询会比较两条路径的
-//! 结果，写入则在多个工作线程之间分片，以便聚焦计划缓存的并发访问。
+//! 结果。查询及事务边界广播给十个会话，全部写入保持在一个会话内。
 
 use std::sync::Arc;
 use std::thread;
@@ -87,23 +87,25 @@ pub fn genNewOrder() -> Vec<TpccStep> {
     ]
 }
 
-/// 生成精简的支付事务：更新仓库累计金额并读取更新后的值。
+/// 生成 Go 支付事务片段，保留独立仓库与客户参数。
 pub fn genPayment() -> Vec<TpccStep> {
-    let (y, w, d, cd, c, b, p) = (
-        r_int(),
-        r_int(),
-        r_int(),
-        r_int(),
-        r_int(),
-        r_int(),
-        r_int(),
+    gen_payment(r_int)
+}
+
+fn gen_payment(mut random: impl FnMut() -> i32) -> Vec<TpccStep> {
+    // Match Go's draw order, including an independent customer warehouse.
+    let (y, w, d, cw, cd, last, c, b, p, data) = (
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
+        random(),
     );
-    // Keep this compact plan-cache workload local to one warehouse. Independent
-    // random warehouses made about 90% of payments remote and connected all ten
-    // workers through a tiny set of pessimistic locks.
-    let cw = w;
-    let last = r_str();
-    let data = r_str();
     vec![
         step("begin", "", "", ""),
         step(
@@ -182,10 +184,11 @@ pub fn genPayment() -> Vec<TpccStep> {
     ]
 }
 
-/// 生成精简的订单状态事务：读取地区的下一个订单号。
+/// 生成 Go 订单状态事务片段，比较客户与订单查询结果。
 pub fn genOrderStatus() -> Vec<TpccStep> {
-    let (w, d, c) = (r_int(), r_int(), r_int());
+    let (w, d) = (r_int(), r_int());
     let last = r_str();
+    let c = r_int();
     vec![
         step("begin", "", "", ""),
         step(
@@ -224,7 +227,7 @@ pub fn genOrderStatus() -> Vec<TpccStep> {
     ]
 }
 
-/// 生成精简的配送事务：更新仓库累计金额。
+/// 生成 Go 配送事务片段，保留锁定读、删除和更新。
 pub fn genDelivery() -> Vec<TpccStep> {
     let (w, d, o1, o2, carrier, balance, c) = (
         r_int(),
@@ -283,17 +286,19 @@ pub fn genDelivery() -> Vec<TpccStep> {
     ]
 }
 
-// 创建并填充十组互不重叠的仓库、地区数据，然后开启实例级计划缓存。
+// 复用 Go 的六表与完整初始数据形状，并启用实例级计划缓存。
 fn prepareTPCC(tk: &mut TestKit) {
-    const TABLES: [&str; 5] = [
-        "create table warehouse(w_id int primary key,w_name varchar(10),w_street_1 varchar(20),w_street_2 varchar(20),w_city varchar(20),w_state char(2),w_zip char(9),w_tax decimal(4,4),w_ytd decimal(12,2))",
-        "create table district(d_id int,d_w_id int,d_name varchar(10),d_street_1 varchar(20),d_street_2 varchar(20),d_city varchar(20),d_state char(2),d_zip char(9),d_tax decimal(4,4),d_ytd decimal(12,2),d_next_o_id int,primary key(d_w_id,d_id))",
-        "create table customer(c_id int,c_d_id int,c_w_id int,c_first varchar(16),c_middle char(2),c_last varchar(16),c_street_1 varchar(20),c_street_2 varchar(20),c_city varchar(20),c_state char(2),c_zip char(9),c_phone char(16),c_since datetime,c_credit char(2),c_credit_lim decimal(12,2),c_discount decimal(4,4),c_balance decimal(12,2),c_ytd_payment decimal(12,2),c_payment_cnt int,c_delivery_cnt int,c_data varchar(500),primary key(c_w_id,c_d_id,c_id),index idx_customer(c_w_id,c_d_id,c_last,c_first))",
-        "create table orders(o_id int,o_d_id int,o_w_id int,o_c_id int,o_entry_d timestamp,o_carrier_id int,o_ol_cnt int,o_all_local int,primary key(o_w_id,o_d_id,o_id))",
-        "create table new_order(no_o_id int,no_d_id int,no_w_id int,primary key(no_w_id,no_d_id,no_o_id))",
+    const TABLES: [&str; 6] = [
+        r#"CREATE TABLE IF NOT EXISTS warehouse ( w_id INT NOT NULL, w_name VARCHAR(10), w_street_1 VARCHAR(20), w_street_2 VARCHAR(20), w_city VARCHAR(20), w_state CHAR(2), w_zip CHAR(9), w_tax DECIMAL(4, 4), w_ytd DECIMAL(12, 2), PRIMARY KEY (w_id) /*T![clustered_index] CLUSTERED */)"#,
+        r#"CREATE TABLE IF NOT EXISTS district ( d_id INT NOT NULL, d_w_id INT NOT NULL, d_name VARCHAR(10), d_street_1 VARCHAR(20), d_street_2 VARCHAR(20), d_city VARCHAR(20), d_state CHAR(2), d_zip CHAR(9), d_tax DECIMAL(4, 4), d_ytd DECIMAL(12, 2), d_next_o_id INT, PRIMARY KEY (d_w_id, d_id) /*T![clustered_index] CLUSTERED */)"#,
+        r#"CREATE TABLE IF NOT EXISTS customer ( c_id INT NOT NULL, c_d_id INT NOT NULL, c_w_id INT NOT NULL, c_first VARCHAR(16), c_middle CHAR(2), c_last VARCHAR(16), c_street_1 VARCHAR(20), c_street_2 VARCHAR(20), c_city VARCHAR(20), c_state CHAR(2), c_zip CHAR(9), c_phone CHAR(16), c_since DATETIME, c_credit CHAR(2), c_credit_lim DECIMAL(12, 2), c_discount DECIMAL(4,4), c_balance DECIMAL(12,2), c_ytd_payment DECIMAL(12,2), c_payment_cnt INT, c_delivery_cnt INT, c_data VARCHAR(500), PRIMARY KEY(c_w_id, c_d_id, c_id) /*T![clustered_index] CLUSTERED */, INDEX idx_customer (c_w_id, c_d_id, c_last, c_first))"#,
+        r#"CREATE TABLE IF NOT EXISTS stock ( s_i_id INT NOT NULL, s_w_id INT NOT NULL, s_quantity INT, s_dist_01 CHAR(24), s_dist_02 CHAR(24), s_dist_03 CHAR(24), s_dist_04 CHAR(24), s_dist_05 CHAR(24), s_dist_06 CHAR(24), s_dist_07 CHAR(24), s_dist_08 CHAR(24), s_dist_09 CHAR(24), s_dist_10 CHAR(24), s_ytd INT, s_order_cnt INT, s_remote_cnt INT, s_data VARCHAR(50), PRIMARY KEY(s_w_id, s_i_id) /*T![clustered_index] CLUSTERED */)"#,
+        r#"CREATE TABLE IF NOT EXISTS orders ( o_id INT NOT NULL, o_d_id INT NOT NULL, o_w_id INT NOT NULL, o_c_id INT, o_entry_d TIMESTAMP, o_carrier_id INT, o_ol_cnt INT, o_all_local INT, PRIMARY KEY(o_w_id, o_d_id, o_id))"#,
+        r#"CREATE TABLE IF NOT EXISTS new_order ( no_o_id INT NOT NULL, no_d_id INT NOT NULL, no_w_id INT NOT NULL, PRIMARY KEY(no_w_id, no_d_id, no_o_id) /*T![clustered_index] CLUSTERED */)"#,
     ];
     exec(tk, "create database normal");
     exec(tk, "create database prepared");
+    exec(tk, "set global tidb_enable_instance_plan_cache=1");
     for db in ["normal", "prepared"] {
         exec(tk, &format!("use {db}"));
         for ddl in TABLES {
@@ -302,18 +307,55 @@ fn prepareTPCC(tk: &mut TestKit) {
     }
     exec(tk, "use normal");
     let mut warehouses = Vec::with_capacity(10);
+    let mut stock = Vec::with_capacity(500);
     let mut districts = Vec::with_capacity(100);
     for w in 1..=10 {
-        warehouses.push(format!("({w},'1','1','1','1','1','1',0.1,{})", r_int()));
+        warehouses.push(format!(
+            "({w},{},{},{},{},{},{},0.1,{})",
+            r_str(),
+            r_str(),
+            r_str(),
+            r_str(),
+            r_str(),
+            r_str(),
+            r_int()
+        ));
+        for item in 1..=50 {
+            stock.push(format!(
+                "({item},{w},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                r_int(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_int(),
+                r_int(),
+                r_int(),
+                r_str()
+            ));
+        }
         for d in 1..=10 {
             districts.push(format!(
-                "({d},{w},'1','1','1','1','1','1',0.1,{},{})",
+                "({d},{w},{},{},{},{},{},{},0.1,{},{})",
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
+                r_str(),
                 r_int(),
                 r_int()
             ));
         }
     }
     insert_rows(tk, "insert into warehouse values", &warehouses);
+    insert_rows(tk, "insert into stock values", &stock);
     insert_rows(tk, "insert into district values", &districts);
     let mut customers = Vec::with_capacity(1500);
     let mut orders = Vec::with_capacity(1500);
@@ -322,11 +364,19 @@ fn prepareTPCC(tk: &mut TestKit) {
         for d in 1..=10 {
             for c in 1..=15 {
                 customers.push(format!(
-                    "({c},{d},{w},'1','1','1','1','1','1','1','1','1','2010-01-01','1',1,0.1,1,1,1,1,'1')"
+                    "({c},{d},{w},{},{},{},{},{},{},{},{},{},'2010-01-01',{},{},0.1,{},{},{},{},{})",
+                    r_str(), r_str(), r_str(), r_str(), r_str(), r_str(), r_str(), r_str(), r_str(),
+                    r_str(), r_int(), r_int(), r_int(), r_int(), r_int(), r_str()
                 ));
             }
             for o in 1..=15 {
-                orders.push(format!("({o},{d},{w},{},'2010-01-01',1,1,1)", r_int()));
+                orders.push(format!(
+                    "({o},{d},{w},{},'2010-01-01',{},{},{})",
+                    r_int(),
+                    r_int(),
+                    r_int(),
+                    r_int()
+                ));
             }
             for no in 1..=8 {
                 new_orders.push(format!("({},{d},{w})", 2100 + no));
@@ -336,7 +386,14 @@ fn prepareTPCC(tk: &mut TestKit) {
     insert_rows(tk, "insert into customer values", &customers);
     insert_rows(tk, "insert into orders values", &orders);
     insert_rows(tk, "insert into new_order values", &new_orders);
-    for table in ["customer", "warehouse", "district", "orders", "new_order"] {
+    for table in [
+        "customer",
+        "warehouse",
+        "district",
+        "orders",
+        "new_order",
+        "stock",
+    ] {
         exec(
             tk,
             &format!("insert into prepared.{table} select * from normal.{table}"),
@@ -345,26 +402,27 @@ fn prepareTPCC(tk: &mut TestKit) {
 }
 
 // 在单个真实会话所有者请求中执行分配给 worker 的完整 SQL 序列。
-fn run_steps_batch(mut tk: TestKit, steps: &[TpccStep]) {
-    exec(&mut tk, "use normal");
-    exec(&mut tk, "set tidb_txn_mode = 'optimistic'");
+fn run_steps_batch(tk: &mut TestKit, steps: &[TpccStep]) {
+    exec(tk, "use normal");
     let mut sql = String::new();
     let mut queries = Vec::new();
     for item in steps {
         let normal = &item.normal;
-        if normal == "begin" || normal == "commit" {
+        if matches!(
+            normal.to_ascii_lowercase().as_str(),
+            "begin" | "commit" | "rollback"
+        ) {
             push_batch_statement(&mut sql, normal);
-        } else if normal.to_ascii_lowercase().starts_with("select") {
-            push_batch_statement(&mut sql, normal);
-            push_batch_statement(&mut sql, &item.prepared);
-            push_batch_statement(&mut sql, &item.set);
-            push_batch_statement(&mut sql, &item.exec);
-            queries.push(item);
         } else {
+            push_batch_statement(&mut sql, "use normal");
             push_batch_statement(&mut sql, normal);
+            push_batch_statement(&mut sql, "use prepared");
             push_batch_statement(&mut sql, &item.prepared);
             push_batch_statement(&mut sql, &item.set);
             push_batch_statement(&mut sql, &item.exec);
+            if normal.to_ascii_lowercase().starts_with("select") {
+                queries.push(item);
+            }
         }
     }
 
@@ -391,46 +449,43 @@ fn push_batch_statement(batch: &mut String, statement: &str) {
     batch.push(';');
 }
 
-/// Distribute complete transactions instead of broadcasting the same locking
-/// reads to every session. A transaction must stay on one session so its
-/// `FOR UPDATE` locks and writes share the same begin/commit boundary.
-fn partition_transactions(steps: &[TpccStep], worker_count: usize) -> Vec<Vec<TpccStep>> {
+/// Go testWithWorkers broadcasts reads and transaction boundaries to every
+/// session, while all writes stay on a single randomly selected session.
+/// Classify case-insensitively so Go's uppercase TPC-C SQL is actually executed.
+fn distribute_tpcc_steps(steps: &[TpccStep], worker_count: usize) -> Vec<Vec<TpccStep>> {
     assert!(
         worker_count > 0,
         "TPC-C workload requires at least one worker"
     );
+    let writer = rand::intn(worker_count as i32) as usize;
     let mut workers = vec![Vec::new(); worker_count];
-    let mut transaction = Vec::new();
-
-    for step in steps {
-        if step.normal.eq_ignore_ascii_case("begin") {
-            assert!(transaction.is_empty(), "nested TPC-C transaction");
+    let mut in_transaction = false;
+    for item in steps {
+        let sql = item.normal.to_ascii_lowercase();
+        match sql.as_str() {
+            "begin" => {
+                assert!(!in_transaction, "nested TPC-C transaction");
+                in_transaction = true;
+            }
+            "commit" | "rollback" => {
+                assert!(in_transaction, "TPC-C transaction end without begin");
+                in_transaction = false;
+            }
+            _ => assert!(in_transaction, "TPC-C statement escaped its transaction"),
         }
-        transaction.push(step.clone());
-        if step.normal.eq_ignore_ascii_case("commit") {
-            let worker = transaction_affinity(&transaction) % worker_count;
-            workers[worker].append(&mut transaction);
+        if ["insert", "update", "delete"]
+            .iter()
+            .any(|verb| sql.starts_with(verb))
+        {
+            workers[writer].push(item.clone());
+        } else {
+            for worker in &mut workers {
+                worker.push(item.clone());
+            }
         }
     }
-    assert!(transaction.is_empty(), "unterminated TPC-C transaction");
+    assert!(!in_transaction, "unterminated TPC-C transaction");
     workers
-}
-
-fn transaction_affinity(transaction: &[TpccStep]) -> usize {
-    transaction
-        .iter()
-        .find_map(|step| {
-            ["w_id = ", "w_id="].into_iter().find_map(|marker| {
-                let suffix = step.normal.split_once(marker)?.1;
-                let digits = suffix
-                    .trim_start()
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>();
-                (!digits.is_empty()).then(|| digits.parse::<usize>().ok())?
-            })
-        })
-        .expect("TPC-C transaction must identify its warehouse")
 }
 
 #[cfg(test)]
@@ -451,11 +506,14 @@ pub fn TestInstancePlanCacheConcurrencyTPCC() {
             _ => genDelivery(),
         });
     }
-    let worker_steps = partition_transactions(&steps, 10);
+    let worker_steps = distribute_tpcc_steps(&steps, 10);
     thread::scope(|scope| {
         for steps in worker_steps {
             let store = Arc::clone(&harness.store);
-            scope.spawn(move || run_steps_batch(TestKit::new(store), &steps));
+            scope.spawn(move || {
+                let mut tk = TestKit::new(store);
+                run_steps_batch(&mut tk, &steps);
+            });
         }
     });
 }
