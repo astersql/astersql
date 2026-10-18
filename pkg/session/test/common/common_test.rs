@@ -140,7 +140,7 @@ fn affected_rows_reflect_matched_and_unchanged_updates() {
 /// 对应 Go `TestLastMessage` 的 INSERT 分支，直接从真实 session 读取 OK packet 消息。
 #[test]
 fn last_message_matches_go_for_single_and_multi_row_insert() {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
     let mut tk = TestKit::new(store);
     tk.MustExec("create table t(id varchar(8) primary key)", Vec::new());
 
