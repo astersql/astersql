@@ -40,7 +40,10 @@ fn setup_common() {
 /// 创建 mock store/Domain，建表 `t` 并插入 3 行，返回 `(domain, testkit, table_id)`。
 fn setup_single_table() -> (Arc<Domain>, TestKit, i64) {
     setup_common();
-    let (store, domain) = CreateMockStoreAndDomain();
+    // These focused stats tests only read `mysql.analyze_options`; bootstrapping
+    // every unrelated system table adds substantial setup work without coverage.
+    let store = CreateAnalyzeStatsStoreWithAnalyzeOptionsForTest();
+    let domain = store.domain();
     let mut tk = TestKit::new(store);
     tk.MustExec(
         "create table t(a int, b int, c int, d int, primary key(a), key idx(b))",
