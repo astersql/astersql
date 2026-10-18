@@ -145,7 +145,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Serialize tests that share process-global failpoint state (Go package tests are not parallel).
 /// 串行化 failpoint 相关测试；进入时清理残留。
@@ -1119,7 +1119,30 @@ fn test_checkpoint_runner_no_retry(snapshot: &dyn SnapshotMetaManager) {
     AppendRangesForRestore(&ctx, &runner, &NewCheckpointRangeKeyItem(2, "456".into())).unwrap();
     runner.FlushChecksum(&ctx, 1, 1, 1, 1).unwrap();
     runner.FlushChecksum(&ctx, 2, 2, 2, 2).unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let mut flushed_ranges = HashSet::new();
+        let ranges_ready = snapshot
+            .LoadCheckpointData(&ctx, &mut |table_id, value| {
+                flushed_ranges.insert((table_id, value.RangeKey));
+                Ok(())
+            })
+            .is_ok()
+            && flushed_ranges.contains(&(1, "123".to_owned()))
+            && flushed_ranges.contains(&(2, "456".to_owned()));
+        let checksums_ready = snapshot
+            .LoadCheckpointChecksum(&ctx)
+            .map(|(items, _)| items.contains_key(&1) && items.contains_key(&2))
+            .unwrap_or(false);
+        if ranges_ready && checksums_ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "checkpoint runner did not flush data and checksums within one second"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     runner.WaitForFinish(&ctx, true);
 
     let mut record_set: HashMap<String, i32> = HashMap::new();
