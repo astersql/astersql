@@ -220,7 +220,7 @@ fn test_explain_for() {
     let _serial = serial_guard();
     let suite = create_tidb_test_suite();
     assert_live_suite(&suite);
-    let mut executor = TestKitExecutor::new();
+    let mut executor = TestKitExecutor::new_without_stats_bootstrap();
     suite
         .test_server_client
         .run_test_explain_for_conn(&mut executor)
