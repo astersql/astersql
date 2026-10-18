@@ -219,3 +219,113 @@ fn primary_key_update_avoids_full_scan_and_preserves_unique_index_semantics() {
     );
     assert_order(&session, "1", "ORD-1", "unrelated");
 }
+
+#[test]
+fn composite_integer_primary_key_update_avoids_full_scan() {
+    let session = concrete_session();
+    let mut table = orders_table_info();
+    table.PKIsHandle = false;
+    table.IsCommonHandle = true;
+    table.Columns[1].FieldType = table.Columns[0].FieldType.clone();
+    table.Indices[0].Name = astersql_parser_ast::NewCIStr("uk_note");
+    table.Indices[0].Columns[0].Name = astersql_parser_ast::NewCIStr("note");
+    table.Indices[0].Columns[0].Offset = 2;
+    session
+        .RegisterDmlTable(table)
+        .expect("register common handle table");
+    session
+        .execute("insert into orders values (1,1,'one'),(1,2,'two'),(2,1,'three')")
+        .expect("seed composite keys");
+    execute_without_full_scan(
+        &session,
+        "update orders set note='changed' where (order_no=2 and 1=id)",
+    )
+    .expect("composite key UPDATE must avoid scanning unrelated rows");
+    let assert_rows = || {
+        let mut rows = session
+            .ReadDmlRows("orders")
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row["id"].clone(),
+                    row["order_no"].clone(),
+                    row["note"].clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        let expected = [
+            ("1", "1", "one"),
+            ("1", "2", "changed"),
+            ("2", "1", "three"),
+        ]
+        .map(|(id, order, note)| {
+            (
+                Some(id.to_owned()),
+                Some(order.to_owned()),
+                Some(note.to_owned()),
+            )
+        });
+        assert_eq!(rows, expected);
+    };
+    assert_rows();
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 1);
+    execute_without_full_scan(
+        &session,
+        "update orders set note='changed' where id=1 and order_no=2",
+    )
+    .expect("unchanged composite row");
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 0);
+    execute_without_full_scan(
+        &session,
+        "update orders set note='missing' where id=9 and order_no=2",
+    )
+    .expect("missing composite row");
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 0);
+    let duplicate = execute_without_full_scan(
+        &session,
+        "update orders set note='three' where id=1 and order_no=2",
+    )
+    .unwrap_err();
+    assert!(duplicate.to_string().contains("[kv:1062]"), "{duplicate}");
+    let duplicate = execute_without_full_scan(
+        &session,
+        "update orders set order_no=1 where id=1 and order_no=2",
+    )
+    .unwrap_err();
+    assert!(duplicate.to_string().contains("[kv:1062]"), "{duplicate}");
+    session.execute("begin").unwrap();
+    execute_without_full_scan(
+        &session,
+        "update orders set note='inside' where id=1 and order_no=2",
+    )
+    .unwrap();
+    session.execute("rollback").unwrap();
+    assert_rows();
+    execute_without_full_scan(
+        &session,
+        "update orders set note='residual' where id=1 and order_no=2 and note='absent'",
+    )
+    .expect("retain residual filtering inside a point range");
+    assert_eq!(session.LastDmlReport().unwrap().AffectedRows, 0);
+    assert_rows();
+    let disjunction = execute_without_full_scan(
+        &session,
+        "update orders set note='disjunction' where id=1 or order_no=2",
+    )
+    .unwrap_err();
+    assert!(
+        disjunction
+            .to_string()
+            .contains("UPDATE reached a full relational table scan")
+    );
+    let fallback =
+        execute_without_full_scan(&session, "update orders set note='partial' where id=1")
+            .unwrap_err();
+    assert!(
+        fallback
+            .to_string()
+            .contains("UPDATE reached a full relational table scan")
+    );
+}

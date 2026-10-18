@@ -3317,6 +3317,68 @@ impl ConcreteSession {
         Ok((copied_rows, deleted_rows))
     }
 
+    /// Reuse the bounded UPDATE path for a complete integer common handle.
+    /// Keep the original predicate as a residual filter, including any extra
+    /// conditions; unsupported keys and partial equalities retain the scan.
+    fn common_handle_update_ranges(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        predicate: &ast::ExprNode,
+    ) -> Option<Vec<RelationalRowScanRange>> {
+        fn equality_value(predicate: &ast::ExprNode, name: &str) -> Option<String> {
+            match &predicate.Kind {
+                ast::ExprKind::Parentheses(inner) => equality_value(inner, name),
+                ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("and") => {
+                    equality_value(L, name).or_else(|| equality_value(R, name))
+                }
+                ast::ExprKind::Binary { Op, L, R } if Op == "=" || Op == "==" => {
+                    match (&L.Kind, &R.Kind) {
+                        (ast::ExprKind::Column(column), _) if column.Name.L == name => {
+                            literal(R).ok()
+                        }
+                        (_, ast::ExprKind::Column(column)) if column.Name.L == name => {
+                            literal(L).ok()
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        if !table.IsCommonHandle || table.GetPartitionInfo().is_some() {
+            return None;
+        }
+        let mut row = HashMap::new();
+        for column in table
+            .Columns
+            .iter()
+            .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
+        {
+            use astersql_parser_mysql::r#type::{
+                TypeInt24, TypeLong, TypeLonglong, TypeShort, TypeTiny,
+            };
+            if !matches!(
+                column.GetType(),
+                TypeTiny | TypeShort | TypeInt24 | TypeLong | TypeLonglong
+            ) {
+                return None;
+            }
+            let value = equality_value(predicate, &column.Name.L)?;
+            let value = if astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag()) {
+                value.parse::<u64>().ok()?.to_string()
+            } else {
+                value.parse::<i64>().ok()?.to_string()
+            };
+            row.insert(column.Name.L.clone(), Some(value));
+        }
+        if row.is_empty() {
+            return None;
+        }
+        let handle = relational_row_handle(table, &row, self.dml_type_flags()).ok()?;
+        let key = kv::Key(astersql_tablecodec::EncodeRowKeyWithHandle(table.ID, handle).0);
+        Some(vec![(key.clone(), key.PrefixNext(), false)])
+    }
+
     /// 执行关系型 UPDATE 计划。
     pub(super) fn execute_relational_update(
         &self,
@@ -3367,9 +3429,10 @@ impl ConcreteSession {
             )
         };
         let primary_key_ranges = if plan.Order.is_empty() && plan.Limit.is_none() {
-            plan.Predicate
-                .as_ref()
-                .and_then(|predicate| relational_primary_key_scan_ranges(&table, predicate, None))
+            plan.Predicate.as_ref().and_then(|predicate| {
+                relational_primary_key_scan_ranges(&table, predicate, None)
+                    .or_else(|| self.common_handle_update_ranges(&table, predicate))
+            })
         } else {
             None
         };
