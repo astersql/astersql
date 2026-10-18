@@ -34,6 +34,10 @@ pub mod rand {
 
     static STATE: AtomicU64 = AtomicU64::new(0x9e3779b97f4a7c15);
 
+    pub fn state() -> u64 {
+        STATE.load(Ordering::Relaxed)
+    }
+
     pub(super) fn bounded(value: u64, upper: u64) -> u64 {
         ((value as u128 * upper as u128) >> u64::BITS) as u64
     }

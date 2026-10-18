@@ -23,7 +23,6 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use astersql_testkit::TestKit;
-use astersql_testkit::db_driver::DbValue;
 
 use super::support::{Harness, exec, query, rand, rows};
 
@@ -271,38 +270,12 @@ pub fn prepareTables(n: usize) -> Vec<String> {
 #[derive(Debug, Clone)]
 /// 一组可相互对照的直接查询与预处理语句执行步骤。
 pub struct TestCase {
-    /// 通过 binary protocol 创建预处理语句的 SQL。
+    /// 创建 SQL 预处理语句的查询模板。
     pub prepared_sql: String,
     /// 将参数直接代入模板后的查询，用于取得预期结果。
     pub sel_stmts: Vec<String>,
-    /// 与直接查询一一对应的 binary protocol 参数。
-    pub arguments: Vec<Vec<DbValue>>,
-}
-
-fn db_value(sql_literal: &str) -> DbValue {
-    if sql_literal.eq_ignore_ascii_case("null") {
-        DbValue::Null
-    } else if sql_literal.starts_with('\'') && sql_literal.ends_with('\'') {
-        DbValue::String(sql_literal[1..sql_literal.len() - 1].to_owned())
-    } else if sql_literal.contains('.') {
-        DbValue::F64(
-            sql_literal
-                .parse()
-                .unwrap_or_else(|error| panic!("parse float literal {sql_literal}: {error}")),
-        )
-    } else if sql_literal.starts_with('-') {
-        DbValue::I64(
-            sql_literal
-                .parse()
-                .unwrap_or_else(|error| panic!("parse signed literal {sql_literal}: {error}")),
-        )
-    } else {
-        DbValue::U64(
-            sql_literal
-                .parse()
-                .unwrap_or_else(|error| panic!("parse unsigned literal {sql_literal}: {error}")),
-        )
-    }
+    /// 与直接查询一一对应的 SQL 字面量，保留 decimal scale 等类型信息。
+    pub arguments: Vec<Vec<String>>,
 }
 
 /// 根据查询模板生成预处理语句，以及 `n` 组直接查询和参数化执行步骤。
@@ -328,8 +301,7 @@ pub fn prepareStmts(query_template: &str, n_tables: usize, n: usize) -> TestCase
             direct = direct.replacen('?', &value.to_string(), 1);
         }
         case.sel_stmts.push(direct);
-        case.arguments
-            .push(values.iter().map(|value| db_value(value)).collect());
+        case.arguments.push(values);
     }
     case
 }
@@ -431,34 +403,71 @@ pub fn randomFilter(table: &str, n_cols: usize) -> String {
 
 fn run_case(mut tk: TestKit, case: TestCase) {
     exec(&mut tk, "use test");
-    let expected = case
-        .sel_stmts
-        .iter()
-        .map(|direct| query(&tk, direct).Sort().Rows())
-        .collect::<Vec<_>>();
     let session = tk.Session();
-    let (statement_id, _) = session
-        .PrepareStmt(&case.prepared_sql)
-        .expect("prepare instance plan cache query");
-    let repeated_arguments = case
-        .arguments
-        .iter()
-        .flat_map(|arguments| std::iter::repeat_n(arguments.clone(), 3))
-        .collect::<Vec<_>>();
-    let actual = session
-        .QueryPreparedStmtBatch(statement_id, &repeated_arguments)
-        .expect("execute instance plan cache query batch");
-    session
-        .DropPreparedStmt(statement_id)
-        .expect("drop instance plan cache query");
-    assert_eq!(actual.len(), expected.len() * 3);
-    for (expected, executions) in expected.iter().zip(actual.chunks_exact(3)) {
-        for rows in executions {
-            let mut actual = rows.string_rows();
-            actual.sort();
-            assert_eq!(&actual, expected);
+    // Match Go's SQL PREPARE/SET/EXECUTE path: converting decimal literals to
+    // binary F64 changes their string value in predicates such as LIKE.
+    exec(
+        &mut tk,
+        &format!(
+            "prepare stmt from '{}'",
+            case.prepared_sql.replace('\'', "''")
+        ),
+    );
+    let mut statements = String::new();
+    for (direct, arguments) in case.sel_stmts.iter().zip(&case.arguments) {
+        statements.push_str(direct);
+        statements.push_str(";set ");
+        statements.push_str(
+            &arguments
+                .iter()
+                .enumerate()
+                .map(|(i, value)| format!("@p{i}={value}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        let variables = (0..arguments.len())
+            .map(|i| format!("@p{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for _ in 0..3 {
+            statements.push_str(&format!(";execute stmt using {variables}"));
+        }
+        statements.push(';');
+    }
+    if !statements.is_empty() {
+        let results = session
+            .QueryStatementBatch(&statements)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "execute prepared={} args={:?} rng_state={:#x}: {error}",
+                    case.prepared_sql,
+                    case.arguments,
+                    rand::state()
+                )
+            });
+        assert_eq!(results.len(), case.sel_stmts.len() * 4);
+        for (input, executions) in results.chunks_exact(4).enumerate() {
+            let mut expected = executions[0].string_rows();
+            expected.sort();
+            for (repeat, result) in executions[1..].iter().enumerate() {
+                let mut actual = result.string_rows();
+                actual.sort();
+                assert_eq!(
+                    actual,
+                    expected,
+                    "prepared={} direct={} args={:?} input={} repeat={} rng_state={:#x} cache_after_batch={:?}",
+                    case.prepared_sql,
+                    case.sel_stmts[input],
+                    case.arguments[input],
+                    input,
+                    repeat,
+                    rand::state(),
+                    query(&tk, "select @@last_plan_from_cache").Rows()
+                );
+            }
         }
     }
+    exec(&mut tk, "deallocate prepare stmt");
 }
 
 #[test]
@@ -476,14 +485,35 @@ pub fn TestInstancePlanCache() {
         .into_iter()
         .map(|pattern| prepareStmts(&pattern, 10, 5))
         .collect::<Vec<_>>();
+    let barrier = std::sync::Barrier::new(5);
+    let failed = std::sync::atomic::AtomicBool::new(false);
     thread::scope(|scope| {
         // 每个工作线程创建独立会话，但共享同一存储实例和同一批测试用例。
         for _ in 0..5 {
             let store = Arc::clone(&harness.store);
             let cases = cases.clone();
+            let barrier = &barrier;
+            let failed = &failed;
             scope.spawn(move || {
+                // Go keeps one session per worker and waits for every worker
+                // before broadcasting the next case. Preserve both boundaries.
+                let tk = TestKit::new(store);
                 for case in cases {
-                    run_case(TestKit::new(store.clone()), case);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_case(tk.clone(), case);
+                    }));
+                    if result.is_err() {
+                        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    // Even a failing worker reaches the barrier, so peers can
+                    // leave it instead of hanging while scope propagates panic.
+                    barrier.wait();
+                    if let Err(error) = result {
+                        std::panic::resume_unwind(error);
+                    }
+                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
                 }
             });
         }
@@ -515,4 +545,61 @@ fn generated_workload_matches_go_suite_shape() {
     assert!(tables[0].contains("index idx1"));
     assert!(tables[0].contains("index idx2"));
     assert_eq!(tables[1].matches("),(").count() + 1, 100);
+}
+
+#[test]
+fn prepared_direct_results_match_for_captured_case() {
+    let mut harness = Harness::new();
+    exec(
+        &mut harness.tk,
+        "set global tidb_enable_instance_plan_cache=1",
+    );
+    exec(
+        &mut harness.tk,
+        "create table captured(c2 int primary key, c3 double)",
+    );
+    exec(
+        &mut harness.tk,
+        "insert into captured values (-2147483646, 0)",
+    );
+    let mut case = TestCase {
+        prepared_sql: "select * from captured where c2 between ? and ? or c3 like ?".to_owned(),
+        sel_stmts: vec!["select * from captured where c2 between 9223372036854775807 and null or c3 like -0.000000000".to_owned()],
+        arguments: vec![vec!["9223372036854775807".to_owned(), "null".to_owned(), "-0.000000000".to_owned()]],
+    };
+    case.sel_stmts.push(
+        "select * from captured where c2 between 9223372036854775807 and null or c3 like 0"
+            .to_owned(),
+    );
+    case.arguments.push(vec![
+        "9223372036854775807".to_owned(),
+        "null".to_owned(),
+        "0".to_owned(),
+    ]);
+    query(&harness.tk, &case.sel_stmts[0]).Check(Vec::<Vec<String>>::new());
+    query(&harness.tk, &case.sel_stmts[1]).Check(rows(&["-2147483646 0".to_owned()]));
+    for _ in 0..2 {
+        run_case(harness.session(), case.clone());
+    }
+    // The captured NULL argument is deliberately uncacheable. Separately prove
+    // a cacheable input takes the first/repeated/cross-session cache paths.
+    for connection in 0..2 {
+        let mut tk = harness.session();
+        exec(&mut tk, "use test");
+        exec(
+            &mut tk,
+            "prepare hit_probe from 'select c3 from captured where c2=?'",
+        );
+        exec(&mut tk, "set @probe=-2147483646");
+        for execution in 0..3 {
+            query(&tk, "execute hit_probe using @probe").Check(rows(&["0".to_owned()]));
+            let expected_hit = if connection == 0 && execution == 0 {
+                "0"
+            } else {
+                "1"
+            };
+            query(&tk, "select @@last_plan_from_cache").Check(rows(&[expected_hit.to_owned()]));
+        }
+        exec(&mut tk, "deallocate prepare hit_probe");
+    }
 }

@@ -979,6 +979,29 @@ impl ConcreteSession {
         )
     }
 
+    /// Resolve one table without copying unrelated virtual and persistent tables.
+    /// Snapshot reads retain the same catalog selection and overlay precedence.
+    pub(super) fn metadata_table(
+        &self,
+        database: &str,
+        table: &str,
+    ) -> SessionResult<Option<astersql_meta_model::TableInfo>> {
+        let key = (database.to_ascii_lowercase(), table.to_ascii_lowercase());
+        let historical = {
+            let state = self.state.borrow();
+            state.snapshot_read_ts.is_some_and(|ts| ts != 0)
+                || state.snapshot_catalog_version.is_some()
+        };
+        if historical {
+            return Ok(self.metadata_catalog()?.remove(&key));
+        }
+        let persistent = self.domain.stats_context().catalog_table(&key.0, &key.1);
+        // Initialize/validate the virtual registry just as metadata_catalog does,
+        // even when a persistent table wins on this name.
+        let virtual_catalog = virtual_system_catalog()?;
+        Ok(persistent.or_else(|| virtual_catalog.get(&key).cloned()))
+    }
+
     /// Merge persistent Domain metadata with the production virtual registries.
     ///
     /// Persistent mysql/sys objects win on duplicate names; virtual schemas are

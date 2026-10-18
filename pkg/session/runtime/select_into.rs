@@ -152,20 +152,23 @@ impl ConcreteSession {
         } else {
             source.Source.Schema.L.clone()
         };
-        let secondary_index = self.metadata_catalog().ok().and_then(|catalog| {
-            catalog
-                .get(&(database, source.Source.Name.L.clone()))
-                .and_then(|table| {
-                    table.Indices.iter().find(|index| {
+        let secondary_index = self
+            .metadata_table(&database, &source.Source.Name.L)
+            .ok()
+            .flatten()
+            .and_then(|table| {
+                table
+                    .Indices
+                    .iter()
+                    .find(|index| {
                         !index.Unique
                             && index
                                 .Columns
                                 .first()
                                 .is_some_and(|column| column.Name.L == equality.0)
                     })
-                })
-                .cloned()
-        });
+                    .cloned()
+            });
         let rows = if let Some(index) = secondary_index {
             let table = &source.Source.Name.O;
             let index_name = &index.Name.O;

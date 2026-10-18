@@ -711,20 +711,31 @@ impl ConcreteSession {
             && let (ast::ExprKind::Column(left_expression), ast::ExprKind::Column(right_expression)) =
                 (&L.Kind, &R.Kind)
         {
-            let direct = left.rows.first().is_some_and(|row| {
-                self.relational_query_column_value(left_expression, row)
-                    .is_ok()
-            }) && right.rows.first().is_some_and(|row| {
-                self.relational_query_column_value(right_expression, row)
-                    .is_ok()
-            });
-            let reverse = left.rows.first().is_some_and(|row| {
-                self.relational_query_column_value(right_expression, row)
-                    .is_ok()
-            }) && right.rows.first().is_some_and(|row| {
-                self.relational_query_column_value(left_expression, row)
-                    .is_ok()
-            });
+            // A qualified column must belong to this input. Falling back to
+            // its unqualified name can reverse the coercion/type decision.
+            let resolves = |row: &HashMap<String, Option<String>>, column: &ast::ColumnName| {
+                if column.Table.L.is_empty() {
+                    self.relational_query_column_value(column, row).is_ok()
+                } else {
+                    row.contains_key(&format!("{}.{}", column.Table.L, column.Name.L))
+                }
+            };
+            let direct = left
+                .rows
+                .first()
+                .is_some_and(|row| resolves(row, left_expression))
+                && right
+                    .rows
+                    .first()
+                    .is_some_and(|row| resolves(row, right_expression));
+            let reverse = left
+                .rows
+                .first()
+                .is_some_and(|row| resolves(row, right_expression))
+                && right
+                    .rows
+                    .first()
+                    .is_some_and(|row| resolves(row, left_expression));
             let hash_key_types_match =
                 left.rows
                     .first()
@@ -741,22 +752,75 @@ impl ConcreteSession {
                                 right_row,
                             )
                     });
-            if (direct || reverse) && hash_key_types_match {
-                let (left_key, right_key) = if direct {
-                    (left_expression, right_expression)
-                } else {
-                    (right_expression, left_expression)
+            let (left_key, right_key) = if direct {
+                (left_expression, right_expression)
+            } else {
+                (right_expression, left_expression)
+            };
+            // Mixed string/numeric equality uses the same DOUBLE conversion
+            // as relational_expression_compare. Hash only finite scalar keys;
+            // the vector-aware and non-finite cases retain the old fallback.
+            let mixed_numeric_keys = (direct || reverse)
+                && !hash_key_types_match
+                && !left_key.Table.L.is_empty()
+                && !right_key.Table.L.is_empty()
+                && [
+                    (
+                        &left.rows,
+                        left_key,
+                        if direct { L.as_ref() } else { R.as_ref() },
+                    ),
+                    (
+                        &right.rows,
+                        right_key,
+                        if direct { R.as_ref() } else { L.as_ref() },
+                    ),
+                ]
+                .into_iter()
+                .all(|(rows, key, expression)| {
+                    let string_kind = rows.first().is_some_and(|row| {
+                        super::query::relational_expression_is_string(expression, row)
+                    });
+                    rows.iter().all(|row| {
+                        super::query::relational_expression_is_string(expression, row)
+                            == string_kind
+                            && self
+                                .relational_query_column_value(key, row)
+                                .is_ok_and(|value| {
+                                    value.is_none_or(|value| {
+                                        !value.trim_start().starts_with('[')
+                                            && relational_numeric_prefix(&value)
+                                                .unwrap_or(0.0)
+                                                .is_finite()
+                                    })
+                                })
+                    })
+                });
+            if (direct || reverse) && (hash_key_types_match || mixed_numeric_keys) {
+                #[derive(Hash, PartialEq, Eq)]
+                enum JoinKey {
+                    Text(String),
+                    Numeric(u64),
+                }
+                let key = |value: String| {
+                    if mixed_numeric_keys {
+                        let number = relational_numeric_prefix(&value).unwrap_or(0.0);
+                        // SQL equality identifies positive and negative zero.
+                        JoinKey::Numeric(if number == 0.0 { 0 } else { number.to_bits() })
+                    } else {
+                        JoinKey::Text(value)
+                    }
                 };
-                let mut right_by_key: HashMap<String, Vec<usize>> = HashMap::new();
+                let mut right_by_key: HashMap<JoinKey, Vec<usize>> = HashMap::new();
                 for (index, row) in right.rows.iter().enumerate() {
                     if let Some(value) = self.relational_query_column_value(right_key, row)? {
-                        right_by_key.entry(value).or_default().push(index);
+                        right_by_key.entry(key(value)).or_default().push(index);
                     }
                 }
                 for left_row in &left.rows {
                     let mut matched = false;
                     if let Some(value) = self.relational_query_column_value(left_key, left_row)?
-                        && let Some(candidates) = right_by_key.get(&value)
+                        && let Some(candidates) = right_by_key.get(&key(value))
                     {
                         for right_index in candidates {
                             let right_row = &right.rows[*right_index];

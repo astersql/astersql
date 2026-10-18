@@ -1496,8 +1496,7 @@ pub(super) fn named_prepared_partial_index_cacheable(
         source.Source.Schema.L.clone()
     };
     let table_name = source.Source.Name.L.clone();
-    let catalog = session.metadata_catalog()?;
-    let Some(table) = catalog.get(&(database, table_name)) else {
+    let Some(table) = session.metadata_table(&database, &table_name)? else {
         return Ok(true);
     };
     for index in &table.Indices {
@@ -1563,8 +1562,7 @@ pub(super) fn negative_unsigned_equality_parameter(
     } else {
         source.Source.Schema.L.clone()
     };
-    let catalog = session.metadata_catalog()?;
-    let Some(table) = catalog.get(&(database, source.Source.Name.L.clone())) else {
+    let Some(table) = session.metadata_table(&database, &source.Source.Name.L)? else {
         return Ok(false);
     };
     Ok(table.Columns.iter().any(|column| {

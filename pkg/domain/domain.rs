@@ -1359,6 +1359,19 @@ impl DomainStatsContext {
             .clone()
     }
 
+    /// Read one current catalog entry without copying unrelated table metadata.
+    pub fn catalog_table(
+        &self,
+        database: &str,
+        table: &str,
+    ) -> Option<astersql_meta_model::TableInfo> {
+        self.catalog
+            .read()
+            .expect("domain stats catalog lock poisoned")
+            .get(&(database.to_lowercase(), table.to_lowercase()))
+            .map(|(_, table)| table.clone())
+    }
+
     /// Return whether any table in the current catalog references `database.table`.
     pub fn has_referred_foreign_keys(&self, database: &str, table: &str) -> bool {
         let database = database.to_lowercase();

@@ -114,6 +114,8 @@ pub mod system_session;
 use session::RuntimeForeignKeyDeleteCascade;
 #[cfg(test)]
 mod inference_test;
+#[cfg(test)]
+mod metadata_table_test;
 mod source;
 mod statistics;
 pub(crate) mod system_query;
