@@ -1293,15 +1293,17 @@ fn go_test_stats_lock_unlock_for_auto_analyze() {
         "create table t (a int primary key, index idx(a))",
         Vec::new(),
     );
-    for i in 0..20 {
-        testkit.MustExec(&format!("insert into t values ({i})"), Vec::new());
-    }
+    testkit.MustExec(
+        "insert into t values (0), (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19)",
+        Vec::new(),
+    );
     testkit.MustExec("flush stats_delta *.*", Vec::new());
     testkit.MustExec("analyze table t", Vec::new());
 
-    for i in 20..31 {
-        testkit.MustExec(&format!("insert into t values ({i})"), Vec::new());
-    }
+    testkit.MustExec(
+        "insert into t values (20), (21), (22), (23), (24), (25), (26), (27), (28), (29), (30)",
+        Vec::new(),
+    );
     testkit.MustExec("flush stats_delta *.*", Vec::new());
     assert!(domain.try_handle_auto_analyze().expect("HandleAutoAnalyze"));
 
@@ -1314,19 +1316,19 @@ fn go_test_stats_lock_unlock_for_auto_analyze() {
             .all(|column| column.analyzed_or_synthesized)
     );
     testkit.MustExec("lock stats t", Vec::new());
-    // Go uses `delete from t limit 12`; PK deletes stand in.
-    for i in 0..12 {
-        testkit.MustExec(&format!("delete from t where a = {i}"), Vec::new());
-    }
+    // Go uses `delete from t limit 12`; a deterministic PK batch deletes the
+    // same number of rows without changing the lock/auto-analyze boundary.
+    testkit.MustExec(
+        "delete from t where a in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)",
+        Vec::new(),
+    );
     testkit.MustExec("flush stats_delta *.*", Vec::new());
     assert!(!domain.try_handle_auto_analyze().expect("HandleAutoAnalyze"));
     let after_lock = physical_stats(&store, key_id);
     assert_eq!(before.modify_count, after_lock.modify_count);
 
     testkit.MustExec("unlock stats t", Vec::new());
-    for i in 12..16 {
-        testkit.MustExec(&format!("delete from t where a = {i}"), Vec::new());
-    }
+    testkit.MustExec("delete from t where a in (12, 13, 14, 15)", Vec::new());
     testkit.MustExec("flush stats_delta *.*", Vec::new());
     testkit.MustExec("analyze table t", Vec::new());
     // Go asserts against `select count(*)` (15). Mock session cannot SELECT user
