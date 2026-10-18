@@ -2683,6 +2683,37 @@ impl ConcreteSession {
         let primary_key_access_ranges = statement.Where.as_ref().and_then(|predicate| {
             relational_primary_key_scan_ranges(&table, predicate, primary_key_order)
         });
+        // The same complete-key candidates must bound SELECT even without a
+        // pushed LIMIT. Keep them separate from LIMIT safety: a common handle
+        // can still have residual predicates to evaluate after reading the row.
+        let candidate_ranges = (right_table.is_none() && statement_read_ts.is_none())
+            .then(|| {
+                primary_key_access_ranges.clone().or_else(|| {
+                    statement.Where.as_ref().and_then(|predicate| {
+                        self.integer_common_handle_point_ranges(&table, predicate)
+                    })
+                })
+            })
+            .flatten();
+        // Only unambiguous single-table key conditions may be evaluated before
+        // a join. Locking joins retain the existing full-row path.
+        let handle_filter = (statement_read_ts.is_none()
+            && right_table.as_ref().is_none_or(|right| {
+                !has_lock
+                    && table.Columns.iter().all(|left| {
+                        !right
+                            .Columns
+                            .iter()
+                            .any(|column| column.Name.L == left.Name.L)
+                    })
+            }))
+        .then(|| {
+            statement.Where.as_ref().and_then(|predicate| {
+                relational_handle_filter(&table, predicate, &source.AsName.L, self.dml_type_flags())
+            })
+        })
+        .flatten();
+        let handle_ranges = relational_row_scan_ranges(&table, None);
         let secondary_index_access = primary_key_access_ranges
             .is_none()
             .then(|| self.relational_secondary_index_access(&table, statement))
@@ -2846,7 +2877,17 @@ impl ConcreteSession {
         let mut rows = if let Some(rows) = ann_rows {
             rows
         } else if read_committed {
-            self.scan_latest_with_transaction_overlay(&table)?
+            if let Some(ranges) = candidate_ranges.as_deref() {
+                self.scan_latest_with_transaction_overlay_ranges(&table, ranges)?
+            } else if let Some(filter) = handle_filter.as_ref() {
+                self.scan_latest_with_transaction_overlay_ranges_with_handle_filter(
+                    &table,
+                    &handle_ranges,
+                    Some(filter),
+                )?
+            } else {
+                self.scan_latest_with_transaction_overlay(&table)?
+            }
         } else if let Some(window) = scan_window {
             if let Some(access) = secondary_index_access.as_ref() {
                 self.scan_registered_table_at_with_index_window(
@@ -2885,7 +2926,20 @@ impl ConcreteSession {
                 },
                 access,
             )?
+        } else if let Some(ranges) = candidate_ranges.as_deref() {
+            self.scan_registered_table_ranges(&table, ranges)?
+        } else if let Some(filter) = handle_filter.as_ref() {
+            self.scan_registered_table_ranges_with_handle_filter(
+                &table,
+                &handle_ranges,
+                Some(filter),
+            )?
         } else {
+            if astersql_testkit_testfailpoint::eval_bool("session/selectFullTableScan") {
+                return Err(SessionError::new(
+                    "injected failure: SELECT reached a full relational table scan",
+                ));
+            }
             self.scan_registered_table_at_with_limit(&table, statement_read_ts, scan_limit)?
         };
         if !source.Source.PartitionNames.is_empty()
@@ -3010,7 +3064,26 @@ impl ConcreteSession {
                 && self.state.borrow().transaction.is_some()
                 && !self.state.borrow().transaction_explicit_optimistic;
             if should_lock {
-                rows = self.scan_latest_with_transaction_overlay(&table)?;
+                let scan_latest_candidates = || {
+                    if let Some(ranges) = candidate_ranges.as_deref() {
+                        self.scan_latest_with_transaction_overlay_ranges(&table, ranges)
+                    } else if let Some(filter) = handle_filter.as_ref() {
+                        self.scan_latest_with_transaction_overlay_ranges_with_handle_filter(
+                            &table,
+                            &handle_ranges,
+                            Some(filter),
+                        )
+                    } else {
+                        if astersql_testkit_testfailpoint::eval_bool("session/selectFullTableScan")
+                        {
+                            return Err(SessionError::new(
+                                "injected failure: SELECT reached a full relational table scan",
+                            ));
+                        }
+                        self.scan_latest_with_transaction_overlay(&table)
+                    }
+                };
+                rows = scan_latest_candidates()?;
                 if let Some(right_table) = right_table.as_ref() {
                     let right_rows = self.scan_latest_with_transaction_overlay(right_table)?;
                     rows =
@@ -3063,7 +3136,7 @@ impl ConcreteSession {
                 self.acquire_row_locks(keys, no_wait, wait_seconds, true)?;
                 // Re-scan after locking to preserve both the newest committed
                 // rows and this transaction's local insert/update/delete set.
-                rows = self.scan_latest_with_transaction_overlay(&table)?;
+                rows = scan_latest_candidates()?;
                 if let Some(right_table) = right_table.as_ref() {
                     let right_rows = self.scan_latest_with_transaction_overlay(right_table)?;
                     rows =

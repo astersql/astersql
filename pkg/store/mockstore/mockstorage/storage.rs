@@ -256,6 +256,8 @@ struct KVStoreInner {
     wall_clock_tso: bool,
     closed: AtomicBool,
     close_count: AtomicUsize,
+    #[cfg(test)]
+    scan_keys_visited: AtomicUsize,
     pd_client: Arc<dyn PdClient>,
     begin_failure: Mutex<Option<String>>,
     copr_failure: Mutex<Option<String>>,
@@ -281,6 +283,8 @@ impl KVStore {
                 wall_clock_tso,
                 closed: AtomicBool::new(false),
                 close_count: AtomicUsize::new(0),
+                #[cfg(test)]
+                scan_keys_visited: AtomicUsize::new(0),
                 pd_client,
                 begin_failure: Mutex::new(None),
                 copr_failure: Mutex::new(None),
@@ -540,6 +544,11 @@ impl KVStore {
             .and_then(|entry| entry.value.clone().map(|value| (value, entry.commit_ts)))
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_scan_keys_visited(&self) -> usize {
+        self.inner.scan_keys_visited.swap(0, Ordering::Relaxed)
+    }
+
     /// 在版本上按 [lower, upper) 扫描可见键值，可选逆序。
     pub(crate) fn scan_at(
         &self,
@@ -548,12 +557,24 @@ impl KVStore {
         upper_bound: Option<&[u8]>,
         reverse: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        // Seek into the requested interval rather than walking unrelated tables
+        // for every point/range read. Keep the old empty-interval behavior.
+        if lower_bound
+            .zip(upper_bound)
+            .is_some_and(|(lower, upper)| lower >= upper)
+        {
+            return Vec::new();
+        }
         let data = self.inner.data.read().expect("kv data lock poisoned");
+        let bounds = (
+            lower_bound.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+            upper_bound.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+        );
         let mut entries = data
-            .iter()
-            .filter(|(key, _)| {
-                lower_bound.is_none_or(|lower| key.as_slice() >= lower)
-                    && upper_bound.is_none_or(|upper| key.as_slice() < upper)
+            .range::<[u8], _>(bounds)
+            .inspect(|_| {
+                #[cfg(test)]
+                self.inner.scan_keys_visited.fetch_add(1, Ordering::Relaxed);
             })
             .filter_map(|(key, versions)| {
                 versions

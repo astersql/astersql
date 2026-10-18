@@ -329,3 +329,211 @@ fn composite_integer_primary_key_update_avoids_full_scan() {
             .contains("UPDATE reached a full relational table scan")
     );
 }
+
+#[test]
+fn composite_integer_primary_key_select_preserves_visibility_and_locks_without_full_scan() {
+    let session = concrete_session();
+    let mut table = orders_table_info();
+    table.PKIsHandle = false;
+    table.IsCommonHandle = true;
+    table.Columns[1].FieldType = table.Columns[0].FieldType.clone();
+    table.Indices.clear();
+    session.RegisterDmlTable(table).unwrap();
+    session
+        .execute("insert into orders values (1,1,'one'),(1,2,'target'),(2,1,'unrelated')")
+        .unwrap();
+    let guard =
+        astersql_testkit_testfailpoint::enable("session/selectFullTableScan", "return(true)");
+    let read = |sql: &str| {
+        let mut sets = session
+            .execute(sql)
+            .expect("bounded SELECT must avoid full scan");
+        let set = &mut sets[0];
+        let mut rows = Vec::new();
+        while let Some(row) = set.next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    };
+    assert_eq!(
+        read("select note from orders where id=1 and order_no=2"),
+        vec![vec!["target".to_owned()]]
+    );
+    session.execute("begin").unwrap();
+    session
+        .execute("update orders set note='unrelated-local' where id=2 and order_no=1")
+        .unwrap();
+    let other = ConcreteSession::new(Arc::clone(session.domain()));
+    other
+        .execute("update orders set note='committed' where id=1 and order_no=2")
+        .unwrap();
+    assert_eq!(
+        read("select note from orders where id=1 and order_no=2 for update"),
+        vec![vec!["committed".to_owned()]]
+    );
+    other.execute("begin").unwrap();
+    let locked = other
+        .execute("select note from orders where id=1 and order_no=2 for update nowait")
+        .err()
+        .expect("point read must retain its row lock");
+    assert!(locked.to_string().contains("NOWAIT"), "{locked}");
+    other.execute("rollback").unwrap();
+    session
+        .execute("update orders set note='local' where id=1 and order_no=2")
+        .unwrap();
+    assert_eq!(
+        read("select note from orders where id=1 and order_no=2 for update"),
+        vec![vec!["local".to_owned()]]
+    );
+    assert!(read("select note from orders where id=8 and order_no=9 for update").is_empty());
+    session.execute("rollback").unwrap();
+    assert_eq!(
+        read("select note from orders where id=1 and order_no=2"),
+        vec![vec!["committed".to_owned()]]
+    );
+    let fallback = session
+        .execute("select note from orders where note='committed'")
+        .err()
+        .expect("non-key predicate retains scan fallback");
+    assert!(
+        fallback
+            .to_string()
+            .contains("SELECT reached a full relational table scan"),
+        "{fallback}"
+    );
+    drop(guard);
+}
+
+#[test]
+fn common_handle_select_filters_keys_before_materializing_rows_and_keeps_overlay() {
+    let session = concrete_session();
+    let mut table = orders_table_info();
+    table.PKIsHandle = false;
+    table.IsCommonHandle = true;
+    table.Columns[1].FieldType = table.Columns[0].FieldType.clone();
+    table.Indices.clear();
+    session.RegisterDmlTable(table).unwrap();
+    session
+        .execute("insert into orders values (1,1,'one'),(1,2,'two'),(2,1,'three'),(3,3,'outside')")
+        .unwrap();
+    let guard =
+        astersql_testkit_testfailpoint::enable("session/selectFullTableScan", "return(true)");
+    let read = |sql: &str| {
+        let mut sets = session
+            .execute(sql)
+            .expect("key predicates must avoid full row materialization");
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    };
+    assert_eq!(
+        read("select note from orders where order_no=1 order by id"),
+        vec![vec!["one".to_owned()], vec!["three".to_owned()]]
+    );
+    assert_eq!(
+        read("select note from orders where (order_no,id) in ((2,1),(1,2),(2,1)) order by id"),
+        vec![vec!["two".to_owned()], vec!["three".to_owned()]]
+    );
+    assert_eq!(
+        read("select note from orders where order_no=1 and note='three' limit 1"),
+        vec![vec!["three".to_owned()]]
+    );
+    session.execute("begin").unwrap();
+    session
+        .execute("update orders set note='local' where id=1 and order_no=1")
+        .unwrap();
+    session
+        .execute("delete from orders where id=2 and order_no=1")
+        .unwrap();
+    session
+        .execute("insert into orders values(4,1,'inserted')")
+        .unwrap();
+    let peer = ConcreteSession::new(Arc::clone(session.domain()));
+    peer.execute("insert into orders values(5,1,'committed')")
+        .unwrap();
+    assert_eq!(
+        read("select note from orders where order_no=1 order by id for update"),
+        vec![
+            vec!["local".to_owned()],
+            vec!["inserted".to_owned()],
+            vec!["committed".to_owned()]
+        ]
+    );
+    session.execute("rollback").unwrap();
+    assert_eq!(
+        read("select note from orders where order_no=1 order by id"),
+        vec![
+            vec!["one".to_owned()],
+            vec!["three".to_owned()],
+            vec!["committed".to_owned()]
+        ]
+    );
+    let fallback = session
+        .execute("select note from orders where note='one'")
+        .err()
+        .expect("non-key predicate keeps its scan path");
+    assert!(
+        fallback
+            .to_string()
+            .contains("SELECT reached a full relational table scan")
+    );
+    drop(guard);
+}
+
+#[test]
+fn common_handle_candidate_filter_is_used_by_aggregate_and_inner_join_sources() {
+    let session = concrete_session();
+    let mut table = orders_table_info();
+    table.PKIsHandle = false;
+    table.IsCommonHandle = true;
+    table.Columns[1].FieldType = table.Columns[0].FieldType.clone();
+    table.Indices.clear();
+    session.RegisterDmlTable(table).unwrap();
+    let mut warehouse = orders_table_info();
+    warehouse.ID = 9303;
+    warehouse.Name = astersql_parser_ast::NewCIStr("warehouse");
+    warehouse.Columns.truncate(1);
+    warehouse.Columns[0].Name = astersql_parser_ast::NewCIStr("w_id");
+    warehouse.Indices.clear();
+    session.RegisterDmlTable(warehouse).unwrap();
+    session
+        .execute("insert into orders values(1,1,'one'),(1,2,'two'),(2,1,'three')")
+        .unwrap();
+    session.execute("insert into warehouse values(1)").unwrap();
+    let guard =
+        astersql_testkit_testfailpoint::enable("session/selectFullTableScan", "return(true)");
+    let read = |sql: &str| {
+        let mut sets = session
+            .execute(sql)
+            .expect("aggregate/join must use key candidates before row decoding");
+        let mut rows = Vec::new();
+        while let Some(row) = sets[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        rows
+    };
+    assert_eq!(
+        read("select count(id) from orders where order_no=1"),
+        vec![vec!["2".to_owned()]]
+    );
+    assert_eq!(
+        read("select o.note from orders o, warehouse w where o.order_no=1 and o.id=2 and w.w_id=1"),
+        vec![vec!["three".to_owned()]]
+    );
+    drop(guard);
+    assert_eq!(
+        read(
+            "select o.note,w.w_id from orders o left join warehouse w on o.id=w.w_id where o.order_no=1 order by o.id"
+        ),
+        vec![
+            vec!["one".to_owned(), "1".to_owned()],
+            vec!["three".to_owned(), "<nil>".to_owned()]
+        ]
+    );
+    assert_eq!(
+        read("select a.note from orders a,orders b where a.order_no=1 and b.id=2 order by a.id"),
+        vec![vec!["one".to_owned()], vec!["three".to_owned()]]
+    );
+}

@@ -3320,7 +3320,7 @@ impl ConcreteSession {
     /// Reuse the bounded UPDATE path for a complete integer common handle.
     /// Keep the original predicate as a residual filter, including any extra
     /// conditions; unsupported keys and partial equalities retain the scan.
-    fn common_handle_update_ranges(
+    pub(super) fn integer_common_handle_point_ranges(
         &self,
         table: &astersql_meta_model::TableInfo,
         predicate: &ast::ExprNode,
@@ -3431,7 +3431,7 @@ impl ConcreteSession {
         let primary_key_ranges = if plan.Order.is_empty() && plan.Limit.is_none() {
             plan.Predicate.as_ref().and_then(|predicate| {
                 relational_primary_key_scan_ranges(&table, predicate, None)
-                    .or_else(|| self.common_handle_update_ranges(&table, predicate))
+                    .or_else(|| self.integer_common_handle_point_ranges(&table, predicate))
             })
         } else {
             None

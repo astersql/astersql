@@ -1125,6 +1125,150 @@ pub(super) fn decode_relational_row_value(
     Ok((handle.IsInt().then(|| handle.IntValue()).unwrap_or(0), row))
 }
 
+/// Necessary integer-primary-key conditions evaluated on the physical handle.
+/// Non-key predicates remain above the scan, so transaction overlay merging can
+/// never lose a row whose non-key values changed in the transaction.
+pub(super) struct RelationalHandleFilter {
+    alternatives: Vec<Vec<(usize, Vec<u8>)>>,
+}
+
+impl RelationalHandleFilter {
+    fn matches(&self, handle: &dyn astersql_tablecodec::kv::Handle) -> bool {
+        if handle.IsInt() {
+            return true;
+        }
+        self.alternatives.iter().any(|terms| {
+            terms.iter().all(|(offset, value)| {
+                *offset >= handle.NumCols() || handle.EncodedCol(*offset) == *value
+            })
+        })
+    }
+}
+
+pub(super) fn relational_handle_filter(
+    table: &astersql_meta_model::TableInfo,
+    predicate: &ast::ExprNode,
+    alias: &str,
+    flags: astersql_types::Flags,
+) -> Option<RelationalHandleFilter> {
+    if !table.IsCommonHandle || table.GetPartitionInfo().is_some() {
+        return None;
+    }
+    let primary = table
+        .Columns
+        .iter()
+        .filter(|column| astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag()))
+        .collect::<Vec<_>>();
+    let encode = |column: &ast::ColumnName, value: &ast::ExprNode| {
+        if !column.Schema.L.is_empty()
+            || (!column.Table.L.is_empty()
+                && column.Table.L != table.Name.L
+                && column.Table.L != alias)
+        {
+            return None;
+        }
+        let offset = primary
+            .iter()
+            .position(|info| info.Name.L == column.Name.L)?;
+        let info = primary[offset];
+        use astersql_parser_mysql::r#type::{
+            TypeInt24, TypeLong, TypeLonglong, TypeShort, TypeTiny,
+        };
+        if !matches!(
+            info.GetType(),
+            TypeTiny | TypeShort | TypeInt24 | TypeLong | TypeLonglong
+        ) {
+            return None;
+        }
+        let text = literal(value).ok()?;
+        let text = if astersql_parser_mysql::r#type::HasUnsignedFlag(info.GetFlag()) {
+            text.parse::<u64>().ok()?.to_string()
+        } else {
+            text.parse::<i64>().ok()?.to_string()
+        };
+        let datum = runtime_value_to_datum(Some(&text), info, flags).ok()?;
+        let encoded = astersql_tablecodec::codec::EncodeKey(
+            astersql_tablecodec::time::UTC,
+            Vec::new(),
+            vec![datum],
+        )
+        .ok()?;
+        Some((offset, encoded))
+    };
+    if let ast::ExprKind::Parentheses(inner) = &predicate.Kind {
+        return relational_handle_filter(table, inner, alias, flags);
+    }
+    let alternatives = if let ast::ExprKind::InList {
+        Expr, List, Not, ..
+    } = &predicate.Kind
+    {
+        if *Not {
+            return None;
+        }
+        let ast::ExprKind::Row(columns) = &Expr.Kind else {
+            return None;
+        };
+        if columns.is_empty() {
+            return None;
+        }
+        List.iter()
+            .map(|item| {
+                let ast::ExprKind::Row(values) = &item.Kind else {
+                    return None;
+                };
+                if values.len() != columns.len() {
+                    return None;
+                }
+                columns
+                    .iter()
+                    .zip(values)
+                    .map(|(column, value)| {
+                        let ast::ExprKind::Column(column) = &column.Kind else {
+                            return None;
+                        };
+                        encode(column, value)
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+            .collect::<Option<Vec<_>>>()?
+    } else {
+        fn equalities<'a>(
+            expr: &'a ast::ExprNode,
+            terms: &mut Vec<(&'a ast::ColumnName, &'a ast::ExprNode)>,
+        ) {
+            match &expr.Kind {
+                ast::ExprKind::Parentheses(inner) => equalities(inner, terms),
+                ast::ExprKind::Binary { Op, L, R } if Op.eq_ignore_ascii_case("and") => {
+                    equalities(L, terms);
+                    equalities(R, terms);
+                }
+                ast::ExprKind::Binary { Op, L, R } if Op == "=" || Op == "==" => {
+                    match (&L.Kind, &R.Kind) {
+                        (ast::ExprKind::Column(column), _) => terms.push((column, R)),
+                        (_, ast::ExprKind::Column(column)) => terms.push((column, L)),
+                        _ => (),
+                    }
+                }
+                _ => (),
+            }
+        }
+        let mut terms = Vec::new();
+        equalities(predicate, &mut terms);
+        let terms = terms
+            .into_iter()
+            .filter(|(column, _)| primary.iter().any(|info| info.Name.L == column.Name.L))
+            // A column-to-column conjunct is not a constant key condition;
+            // other conjuncts can still provide necessary key restrictions.
+            .filter_map(|(column, value)| encode(column, value))
+            .collect::<Vec<_>>();
+        if terms.is_empty() {
+            return None;
+        }
+        vec![terms]
+    };
+    Some(RelationalHandleFilter { alternatives })
+}
+
 pub(super) fn consume_relational_row_iterator(
     iterator: &mut dyn kv::Iterator,
     table: &astersql_meta_model::TableInfo,
@@ -1132,8 +1276,9 @@ pub(super) fn consume_relational_row_iterator(
     remaining_offset: &mut usize,
     count: usize,
     rows: &mut Vec<RelationalRow>,
+    handle_filter: Option<&RelationalHandleFilter>,
 ) -> SessionResult<()> {
-    while iterator.Valid() && *remaining_offset != 0 {
+    while handle_filter.is_none() && iterator.Valid() && *remaining_offset != 0 {
         iterator
             .Next()
             .map_err(|error| session_error("advance relational OFFSET", error))?;
@@ -1144,12 +1289,18 @@ pub(super) fn consume_relational_row_iterator(
         let (_, handle) =
             astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(key.0.clone()))
                 .map_err(|error| session_error("decode relational record key", error))?;
-        rows.push(decode_relational_row_value(
-            table,
-            fields,
-            handle.as_ref(),
-            &iterator.Value(),
-        )?);
+        if handle_filter.is_none_or(|filter| filter.matches(handle.as_ref())) {
+            if *remaining_offset != 0 {
+                *remaining_offset -= 1;
+            } else {
+                rows.push(decode_relational_row_value(
+                    table,
+                    fields,
+                    handle.as_ref(),
+                    &iterator.Value(),
+                )?);
+            }
+        }
         iterator
             .Next()
             .map_err(|error| session_error("advance relational rows", error))?;
@@ -1609,6 +1760,17 @@ pub(super) fn scan_relational_row_ranges(
     offset: usize,
     count: usize,
 ) -> SessionResult<Vec<RelationalRow>> {
+    scan_relational_row_ranges_with_handle_filter(retriever, table, ranges, offset, count, None)
+}
+
+pub(super) fn scan_relational_row_ranges_with_handle_filter(
+    retriever: &dyn kv::Retriever,
+    table: &astersql_meta_model::TableInfo,
+    ranges: &[RelationalRowScanRange],
+    offset: usize,
+    count: usize,
+    handle_filter: Option<&RelationalHandleFilter>,
+) -> SessionResult<Vec<RelationalRow>> {
     let fields: HashMap<i64, Box<astersql_tablecodec::types::FieldType>> = table
         .Columns
         .iter()
@@ -1633,6 +1795,7 @@ pub(super) fn scan_relational_row_ranges(
             &mut remaining_offset,
             count,
             &mut rows,
+            handle_filter,
         );
         iterator.Close();
         result?;
@@ -1954,6 +2117,15 @@ impl ConcreteSession {
         table: &astersql_meta_model::TableInfo,
         ranges: &[RelationalRowScanRange],
     ) -> SessionResult<Vec<RelationalRow>> {
+        self.scan_registered_table_ranges_with_handle_filter(table, ranges, None)
+    }
+
+    pub(super) fn scan_registered_table_ranges_with_handle_filter(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        ranges: &[RelationalRowScanRange],
+        handle_filter: Option<&RelationalHandleFilter>,
+    ) -> SessionResult<Vec<RelationalRow>> {
         let state = self.state.borrow();
         if let Some(read_ts) = state
             .transaction_stale_read_ts
@@ -1966,7 +2138,14 @@ impl ConcreteSession {
         {
             return self.domain.storage().with_storage(|store| {
                 let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
-                scan_relational_row_ranges(snapshot.as_ref(), table, ranges, 0, usize::MAX)
+                scan_relational_row_ranges_with_handle_filter(
+                    snapshot.as_ref(),
+                    table,
+                    ranges,
+                    0,
+                    usize::MAX,
+                    handle_filter,
+                )
             });
         }
         if state.transaction.is_some()
@@ -1975,17 +2154,35 @@ impl ConcreteSession {
                 .eq_ignore_ascii_case("READ-COMMITTED")
         {
             drop(state);
-            return self.scan_latest_with_transaction_overlay_ranges(table, ranges);
+            return self.scan_latest_with_transaction_overlay_ranges_with_handle_filter(
+                table,
+                ranges,
+                handle_filter,
+            );
         }
         if let Some(transaction) = state.transaction.as_ref() {
-            scan_relational_row_ranges(transaction.as_ref(), table, ranges, 0, usize::MAX)
+            scan_relational_row_ranges_with_handle_filter(
+                transaction.as_ref(),
+                table,
+                ranges,
+                0,
+                usize::MAX,
+                handle_filter,
+            )
         } else {
             self.domain.storage().with_storage(|store| {
                 let version = store
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?;
                 let snapshot = self.cached_table_snapshot(store, table, version);
-                scan_relational_row_ranges(snapshot.as_ref(), table, ranges, 0, usize::MAX)
+                scan_relational_row_ranges_with_handle_filter(
+                    snapshot.as_ref(),
+                    table,
+                    ranges,
+                    0,
+                    usize::MAX,
+                    handle_filter,
+                )
             })
         }
     }
@@ -2801,6 +2998,15 @@ impl ConcreteSession {
         table: &astersql_meta_model::TableInfo,
         ranges: &[RelationalRowScanRange],
     ) -> SessionResult<Vec<RelationalRow>> {
+        self.scan_latest_with_transaction_overlay_ranges_with_handle_filter(table, ranges, None)
+    }
+
+    pub(super) fn scan_latest_with_transaction_overlay_ranges_with_handle_filter(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        ranges: &[RelationalRowScanRange],
+        handle_filter: Option<&RelationalHandleFilter>,
+    ) -> SessionResult<Vec<RelationalRow>> {
         let flags = self.dml_type_flags();
         let row_map = |rows: Vec<RelationalRow>| {
             rows.into_iter()
@@ -2813,31 +3019,48 @@ impl ConcreteSession {
         let mut latest = self.domain.storage().with_storage(|store| {
             let version = self.latest_relational_version(store)?;
             let snapshot = self.cached_table_snapshot(store, table, version);
-            row_map(scan_relational_row_ranges(
+            row_map(scan_relational_row_ranges_with_handle_filter(
                 snapshot.as_ref(),
                 table,
                 ranges,
                 0,
                 usize::MAX,
+                handle_filter,
             )?)
         })?;
         let state = self.state.borrow();
         let Some(transaction) = state.transaction.as_ref() else {
             return Ok(latest.into_values().collect());
         };
-        let base = row_map(scan_relational_row_ranges(
+        // A read-only transaction (or writes outside these record ranges) has
+        // no overlay delta here. Re-materializing both the start snapshot and
+        // its union view cannot change the freshly read committed rows.
+        let buffer = transaction.GetMemBuffer();
+        let has_local_rows = buffer.Len() != 0
+            && ranges.iter().any(|(lower, upper, _)| {
+                let mut iterator = buffer.SnapshotIter(lower.clone(), Some(upper.clone()));
+                let present = iterator.Valid();
+                iterator.Close();
+                present
+            });
+        if !has_local_rows {
+            return Ok(latest.into_values().collect());
+        }
+        let base = row_map(scan_relational_row_ranges_with_handle_filter(
             transaction.GetSnapshot(),
             table,
             ranges,
             0,
             usize::MAX,
+            handle_filter,
         )?)?;
-        let visible = row_map(scan_relational_row_ranges(
+        let visible = row_map(scan_relational_row_ranges_with_handle_filter(
             transaction.as_ref(),
             table,
             ranges,
             0,
             usize::MAX,
+            handle_filter,
         )?)?;
         for key in base.keys() {
             if !visible.contains_key(key) {

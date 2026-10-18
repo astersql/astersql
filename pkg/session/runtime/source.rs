@@ -418,6 +418,15 @@ impl ConcreteSession {
         source: &ast::TableSource,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        self.execute_insert_select_table_source_with_outer_and_key_filter(source, outer, None)
+    }
+
+    fn execute_insert_select_table_source_with_outer_and_key_filter(
+        &self,
+        source: &ast::TableSource,
+        outer: Option<&HashMap<String, Option<String>>>,
+        predicate: Option<&ast::ExprNode>,
+    ) -> SessionResult<InsertSelectRows> {
         if let Some(query) = source.QuerySource.as_ref() {
             let result = query
                 .with_node(|node| self.execute_insert_select_node_with_outer(node, outer))
@@ -528,11 +537,28 @@ impl ConcreteSession {
         // Use the common scan entry so repeatable-read transactions stay on
         // their start snapshot. It selects the latest+overlay path itself only
         // for READ COMMITTED, matching the ordinary relational SELECT path.
-        let rows = self
-            .scan_registered_table(&table)?
-            .into_iter()
-            .map(|(_, row)| row)
-            .collect::<Vec<_>>();
+        let filter = predicate.and_then(|predicate| {
+            relational_handle_filter(&table, predicate, &source.AsName.L, self.dml_type_flags())
+        });
+        let rows = if let Some(filter) = filter.as_ref() {
+            self.scan_registered_table_ranges_with_handle_filter(
+                &table,
+                &relational_row_scan_ranges(&table, None),
+                Some(filter),
+            )?
+        } else {
+            if table.IsCommonHandle
+                && astersql_testkit_testfailpoint::eval_bool("session/selectFullTableScan")
+            {
+                return Err(SessionError::new(
+                    "injected failure: SELECT reached a full relational table scan",
+                ));
+            }
+            self.scan_registered_table(&table)?
+        }
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect::<Vec<_>>();
         let qualifier = if source.AsName.L.is_empty() {
             source.Source.Name.L.as_str()
         } else {
@@ -1053,9 +1079,20 @@ impl ConcreteSession {
         source: &ast::ResultSetNode,
         visitor: &mut dyn FnMut(HashMap<String, Option<String>>) -> SessionResult<()>,
     ) -> SessionResult<Vec<String>> {
+        self.visit_insert_select_source_with_key_filter(source, visitor, None)
+    }
+
+    fn visit_insert_select_source_with_key_filter(
+        &self,
+        source: &ast::ResultSetNode,
+        visitor: &mut dyn FnMut(HashMap<String, Option<String>>) -> SessionResult<()>,
+        predicate: Option<&ast::ExprNode>,
+    ) -> SessionResult<Vec<String>> {
         match source {
             ast::ResultSetNode::TableSource(source) => {
-                let result = self.execute_insert_select_table_source(source)?;
+                let result = self.execute_insert_select_table_source_with_outer_and_key_filter(
+                    source, None, predicate,
+                )?;
                 let columns = result.columns;
                 for row in result.rows {
                     visitor(row)?;
@@ -1072,9 +1109,16 @@ impl ConcreteSession {
                     SessionError::new("streaming INSERT SELECT join has no left source")
                 })?;
                 let Some(right_source) = join.Right.as_deref() else {
-                    return self.visit_insert_select_source(left, visitor);
+                    return self
+                        .visit_insert_select_source_with_key_filter(left, visitor, predicate);
                 };
-                let right = self.execute_insert_select_source(right_source)?;
+                let right = if let ast::ResultSetNode::TableSource(source) = right_source {
+                    self.execute_insert_select_table_source_with_outer_and_key_filter(
+                        source, None, predicate,
+                    )?
+                } else {
+                    self.execute_insert_select_source(right_source)?
+                };
                 let mut joined_visitor = |left_row: HashMap<String, Option<String>>| {
                     for right_row in &right.rows {
                         let joined =
@@ -1091,7 +1135,11 @@ impl ConcreteSession {
                     }
                     Ok(())
                 };
-                let mut columns = self.visit_insert_select_source(left, &mut joined_visitor)?;
+                let mut columns = self.visit_insert_select_source_with_key_filter(
+                    left,
+                    &mut joined_visitor,
+                    predicate,
+                )?;
                 columns.extend(right.columns);
                 Ok(columns)
             }
@@ -1600,6 +1648,75 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
         outer: Option<&HashMap<String, Option<String>>>,
     ) -> SessionResult<InsertSelectRows> {
+        // Only pass necessary WHERE key conditions through plain sources.
+        // Correlated/derived/outer joins and ambiguous unqualified columns keep
+        // their existing evaluation boundary.
+        let scan_key_predicate = select.Where.as_ref().filter(|_| {
+            if outer.is_some()
+                || select.With.is_some()
+                || !self.cte_scopes.borrow().is_empty()
+                || select.lock_info.as_ref().is_some_and(|info| {
+                    info.LockType != ast::SelectLockType::None
+                        || info.lock_type != ast::SelectLockType::None
+                })
+            {
+                return false;
+            }
+            let Some(from) = select.From.as_ref() else {
+                return false;
+            };
+            let join = &from.TableRefs;
+            if join.Tp != ast::JoinType::CrossJoin || join.NaturalJoin || !join.Using.is_empty() {
+                return false;
+            }
+            let mut names = HashSet::new();
+            for node in [join.Left.as_deref(), join.Right.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                // Comma joins wrap their left table in a unary Join node.
+                // Unwrap only those identity nodes; nested binary joins retain
+                // the old path rather than changing their predicate scope.
+                let mut node = node;
+                while let ast::ResultSetNode::Join(wrapper) = node {
+                    if wrapper.Right.is_some()
+                        || wrapper.Tp != ast::JoinType::CrossJoin
+                        || wrapper.NaturalJoin
+                        || !wrapper.Using.is_empty()
+                    {
+                        return false;
+                    }
+                    let Some(left) = wrapper.Left.as_deref() else {
+                        return false;
+                    };
+                    node = left;
+                }
+                let ast::ResultSetNode::TableSource(source) = node else {
+                    return false;
+                };
+                if source.QuerySource.is_some() || source.AsOf.is_some() {
+                    return false;
+                }
+                let database = if source.Source.Schema.L.is_empty() {
+                    self.current_database()
+                } else {
+                    source.Source.Schema.L.clone()
+                };
+                let Some((_, table)) = self.mdl_stats_table(&database, &source.Source.Name.L)
+                else {
+                    return false;
+                };
+                if table.View.is_some()
+                    || table
+                        .Columns
+                        .iter()
+                        .any(|column| !names.insert(column.Name.L.clone()))
+                {
+                    return false;
+                }
+            }
+            true
+        });
         let projects_row_checksum = select
             .Fields
             .Fields
@@ -1758,13 +1875,24 @@ impl ConcreteSession {
                 rows.push(output);
                 Ok(())
             };
-            self.visit_insert_select_source(
+            self.visit_insert_select_source_with_key_filter(
                 &ast::ResultSetNode::Join(Box::new(from.TableRefs.clone())),
                 &mut visitor,
+                scan_key_predicate,
             )?;
             return Ok(InsertSelectRows { columns, rows });
         }
-        let mut source = if let Some(from) = select.From.as_ref() {
+        let mut source = if let (Some(predicate), Some(from)) =
+            (scan_key_predicate, select.From.as_ref())
+            && from.TableRefs.Right.is_none()
+            && let Some(ast::ResultSetNode::TableSource(source)) = from.TableRefs.Left.as_deref()
+        {
+            self.execute_insert_select_table_source_with_outer_and_key_filter(
+                source,
+                outer,
+                Some(predicate),
+            )?
+        } else if let Some(from) = select.From.as_ref() {
             // Go pushes a conjunctive column equality from WHERE into a comma
             // join and uses it as a hash key.  Keep the original WHERE below as
             // the semantic check, but expose the most selective-looking (last)

@@ -417,3 +417,51 @@ fn test_canonical_transaction_delete_enforces_total_size_limit() {
         b"second-value"
     );
 }
+
+#[test]
+fn bounded_mvcc_scan_visits_only_requested_keys_and_keeps_versions() {
+    let store = KVStore::NewMemory();
+    let pairs = (0..1000)
+        .map(|i| (format!("k{i:04}").into_bytes(), b"old".to_vec()))
+        .collect();
+    store.ingest_sst(10, pairs).unwrap();
+    store
+        .ingest_sst(20, vec![(b"k0501".to_vec(), b"new".to_vec())])
+        .unwrap();
+    store.take_scan_keys_visited();
+    let expected = vec![
+        (b"k0500".to_vec(), b"old".to_vec()),
+        (b"k0501".to_vec(), b"old".to_vec()),
+        (b"k0502".to_vec(), b"old".to_vec()),
+    ];
+    assert_eq!(
+        store.scan_at(10, Some(b"k0500"), Some(b"k0503"), false),
+        expected
+    );
+    assert_eq!(
+        store.take_scan_keys_visited(),
+        3,
+        "a bounded cursor must not visit unrelated keys"
+    );
+    let mut latest = expected;
+    latest[1].1 = b"new".to_vec();
+    latest.reverse();
+    assert_eq!(
+        store.scan_at(20, Some(b"k0500"), Some(b"k0503"), true),
+        latest
+    );
+    assert_eq!(store.take_scan_keys_visited(), 3);
+    assert!(
+        store
+            .scan_at(20, Some(b"k0503"), Some(b"k0500"), false)
+            .is_empty()
+    );
+    assert!(
+        store
+            .scan_at(20, Some(b"k0500"), Some(b"k0500"), false)
+            .is_empty()
+    );
+    assert_eq!(store.scan_at(0, None, None, false).len(), 0);
+    assert_eq!(store.scan_at(20, Some(b"k0999"), None, false).len(), 1);
+    assert_eq!(store.scan_at(20, None, Some(b"k0001"), false).len(), 1);
+}
