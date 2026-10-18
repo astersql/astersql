@@ -182,8 +182,10 @@ pub(super) fn relational_expression_is_string(
         }
         ast::ExprKind::Function { FnName, Args, .. } => match FnName.L.as_str() {
             // Keep the result kinds in sync with the Go builtin signatures.
-            "concat" | "elt" | "hex" | "json_type" | "lcase" | "lower" | "lpad" | "mid"
-            | "repeat" | "space" | "substr" | "substring" | "ucase" | "unhex" | "upper" => true,
+            "database" | "concat" | "elt" | "hex" | "json_type" | "lcase" | "lower" | "lpad"
+            | "mid" | "repeat" | "space" | "substr" | "substring" | "ucase" | "unhex" | "upper" => {
+                true
+            }
             "coalesce" | "greatest" | "ifnull" | "least" => Args
                 .iter()
                 .any(|arg| relational_expression_is_string(arg, row)),

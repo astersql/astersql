@@ -223,6 +223,37 @@ fn project_virtual_rows_with_evaluator(
             })
     };
 
+    // Subqueries shadow unqualified metadata names. Preserve both the outer
+    // alias and string types so catalog names are compared as strings.
+    let has_subquery = statement
+        .Where
+        .as_ref()
+        .is_some_and(relational_expression_has_subquery)
+        || statement
+            .Fields
+            .Fields
+            .iter()
+            .filter_map(|field| field.Expr.as_ref())
+            .any(relational_expression_has_subquery);
+    if has_subquery && let Some((_, table_alias, table)) = source_identity.as_ref() {
+        for row in &mut rows {
+            for column in &table.Columns {
+                let name = &column.Name.L;
+                let qualified = format!("{}.{}", table_alias.L, name);
+                if let Some(value) = row.get(name).cloned() {
+                    row.insert(qualified.clone(), value);
+                    if column.FieldType.EvalType() == astersql_parser_types::eval_type::ETString {
+                        row.insert(relational_string_column_marker(name), Some("1".to_owned()));
+                        row.insert(
+                            relational_string_column_marker(&qualified),
+                            Some("1".to_owned()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(predicate) = statement.Where.as_ref() {
         if relational_expression_has_subquery(predicate) {
             rows = rows
@@ -334,7 +365,10 @@ fn project_virtual_rows_with_evaluator(
     {
         return Ok(ConcreteRecordSet::new(
             vec!["count(*)".to_owned()],
-            vec![vec![rows.len().to_string()]],
+            super::query::execute_relational_limit(
+                vec![vec![rows.len().to_string()]],
+                super::query::relational_limit_window(statement)?,
+            )?,
         ));
     }
     let mut headers = Vec::new();
@@ -392,6 +426,10 @@ fn project_virtual_rows_with_evaluator(
             }
         }
     }
+    let rows = super::query::execute_relational_limit(
+        rows,
+        super::query::relational_limit_window(statement)?,
+    )?;
     let projected = rows
         .into_iter()
         .map(|row| -> SessionResult<Vec<String>> {
@@ -2500,9 +2538,60 @@ impl ConcreteSession {
         }
         if table_name.eq_ignore_ascii_case("columns") {
             let mut rows = Vec::new();
-            for ((database, _), table) in metadata_catalog {
+            for ((database, _), mut table) in metadata_catalog {
+                // Like Go dataForColumnsInTable, infer view output types from
+                // its definition instead of exposing stored placeholder types.
+                if let Some(view) = table.View.as_ref() {
+                    let fields = (|| -> SessionResult<Vec<ConcreteResultField>> {
+                        let mut statements = parse(&view.SelectStmt)?;
+                        let create = statements
+                            .pop()
+                            .ok_or_else(|| SessionError::new("stored view SQL is empty"))?
+                            .into_any()
+                            .downcast::<ast::CreateViewStmt>()
+                            .map_err(|_| SessionError::new("stored view SQL is not CREATE VIEW"))?;
+                        let mut select = create
+                            .Select
+                            .into_any()
+                            .downcast::<ast::SelectStmt>()
+                            .map_err(|_| {
+                                SessionError::new("stored view definition is not SELECT")
+                            })?;
+                        Self::qualify_explain_select_tables(&mut select, &database, &self.domain)?;
+                        let fields =
+                            self.relational_query_node_result_fields(select.as_ref(), &[])?;
+                        if fields.len() != table.Columns.len() {
+                            return Err(SessionError::new(
+                                "view metadata column count does not match definition",
+                            ));
+                        }
+                        Ok(fields)
+                    })();
+                    let fields = match fields {
+                        Ok(fields) => fields,
+                        Err(error) => {
+                            self.state
+                                .borrow_mut()
+                                .current_warnings
+                                .push(SessionWarning::warning(format!(
+                                    "Cannot read columns for view `{database}`.`{}`: {error}",
+                                    table.Name.O
+                                )));
+                            continue;
+                        }
+                    };
+                    for (column, field) in table.Columns.iter_mut().zip(fields) {
+                        column.FieldType = field.column.FieldType;
+                    }
+                }
                 for (position, column) in table.Columns.iter().enumerate() {
                     let (type_name, jdbc_type) = information_schema_column_type(column);
+                    let data_type =
+                        if column.GetType() == astersql_parser_mysql::r#type::TypeVarString {
+                            astersql_parser_mysql::r#type::TypeVarchar
+                        } else {
+                            column.GetType()
+                        };
                     let not_null = astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag());
                     let primary = astersql_parser_mysql::r#type::HasPriKeyFlag(column.GetFlag());
                     let auto_increment =
@@ -2534,7 +2623,13 @@ impl ConcreteSession {
                             "is_nullable".to_owned(),
                             Some(if not_null { "NO" } else { "YES" }.to_owned()),
                         ),
-                        ("data_type".to_owned(), Some(type_name.to_ascii_lowercase())),
+                        (
+                            "data_type".to_owned(),
+                            Some(astersql_types::metadata::TypeToStr(
+                                data_type,
+                                column.GetCharset(),
+                            )),
+                        ),
                         (
                             "character_maximum_length".to_owned(),
                             character_length.clone(),

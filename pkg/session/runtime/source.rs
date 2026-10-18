@@ -1727,13 +1727,23 @@ impl ConcreteSession {
                 rows: vec![HashMap::new()],
             }
         };
+        // The inner source shadows the same ambiguity keys for every row.
+        // Build these once rather than formatting them for each outer binding
+        // in every materialized INFORMATION_SCHEMA row.
+        let shadowed_outer_ambiguities = if outer.is_some() {
+            source
+                .columns
+                .iter()
+                .filter(|column| !column.contains('.'))
+                .map(|column| relational_ambiguous_column_marker(column))
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
         if let Some(outer) = outer {
             for row in &mut source.rows {
                 for (key, value) in outer {
-                    let outer_ambiguity_is_shadowed = source.columns.iter().any(|column| {
-                        !column.contains('.') && key == &relational_ambiguous_column_marker(column)
-                    });
-                    if outer_ambiguity_is_shadowed {
+                    if shadowed_outer_ambiguities.contains(key) {
                         continue;
                     }
                     row.entry(key.clone()).or_insert_with(|| value.clone());
@@ -1940,10 +1950,7 @@ impl ConcreteSession {
             let mut representative = group.first().cloned().unwrap_or_default();
             if let Some(outer) = outer {
                 for (key, value) in outer {
-                    let outer_ambiguity_is_shadowed = source.columns.iter().any(|column| {
-                        !column.contains('.') && key == &relational_ambiguous_column_marker(column)
-                    });
-                    if outer_ambiguity_is_shadowed {
+                    if shadowed_outer_ambiguities.contains(key) {
                         continue;
                     }
                     representative

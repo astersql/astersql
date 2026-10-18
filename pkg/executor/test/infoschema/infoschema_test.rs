@@ -861,8 +861,18 @@ fn joined_system_table_query_contains_view_and_time_value_columns() {
                        where c.table_schema=t.table_schema and c.table_name=t.table_name \
                          and c.data_type in ('float', 'int', 'bigint')) \
          limit 1";
-    for _ in 0..10 {
-        tk.MustQuery(grafana_metadata_query, Vec::new());
+    for round in 0..10 {
+        let started = std::time::Instant::now();
+        let rows = tk.MustQuery(grafana_metadata_query, Vec::new()).Rows();
+        eprintln!("metadata round {round}: {:?}", started.elapsed());
+        assert_eq!(rows.len(), 1, "metadata round {round}: {rows:?}");
+        assert_eq!(rows[0].len(), 3);
+        assert!(matches!(
+            rows[0][0].as_str(),
+            "infoschema_time_value" | "infoschema_time_view"
+        ));
+        assert_eq!(rows[0][1], "at");
+        assert_eq!(rows[0][2], "value");
     }
 }
 
@@ -1093,4 +1103,93 @@ fn analyze_status_matches_show_analyze_status_after_analyze() {
             .collect::<Vec<_>>();
         assert_eq!(direct_values, shown_values);
     }
+}
+
+/// Keep outer aliases when metadata scalar subqueries shadow unqualified names.
+#[test]
+fn correlated_metadata_columns_respect_outer_alias_and_limit_offset() {
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table metadata_a (first_time timestamp, second_time datetime, amount int)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table metadata_b (event_time datetime, total bigint)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create view metadata_c as select event_time, total, 'caption' as label from metadata_b",
+        Vec::new(),
+    );
+    let query = "select t.table_name, \
+        (select c.column_name from information_schema.columns c \
+         where c.table_schema=t.table_schema and c.table_name=t.table_name \
+           and c.data_type in ('timestamp','datetime') order by c.ordinal_position limit 1) \
+        from information_schema.tables t where t.table_schema='test' \
+        order by t.table_name limit 1 offset 1";
+    tk.MustQuery(query, Vec::new())
+        .Check(Rows(&["metadata_b event_time"]));
+    tk.MustQuery(&query.replace("offset 1", "offset 2"), Vec::new())
+        .Check(Rows(&["metadata_c event_time"]));
+    tk.MustQuery(
+        "select count(*) from information_schema.tables where table_schema='test' limit 1",
+        Vec::new(),
+    )
+    .Check(Rows(&["3"]));
+    tk.MustQuery(
+        "select count(*) from information_schema.tables where table_schema='test' limit 1 offset 1",
+        Vec::new(),
+    )
+    .Check(Rows(&[]));
+    tk.MustQuery(
+        "select column_name, data_type from information_schema.columns \
+         where table_schema='test' and table_name='metadata_a' order by ordinal_position",
+        Vec::new(),
+    )
+    .Check(Rows(&[
+        "first_time timestamp",
+        "second_time datetime",
+        "amount int",
+    ]));
+    tk.MustQuery(
+        "select column_name, data_type from information_schema.columns \
+         where table_schema='test' and table_name='metadata_c' order by ordinal_position",
+        Vec::new(),
+    )
+    .Check(Rows(&[
+        "event_time datetime",
+        "total bigint",
+        "label varchar",
+    ]));
+    tk.MustQuery(
+        "select table_name from information_schema.tables where table_schema='test' limit 0",
+        Vec::new(),
+    )
+    .Check(Rows(&[]));
+}
+
+/// Go records an invalid view warning and continues enumerating valid tables.
+#[test]
+fn invalid_view_does_not_abort_columns_enumeration() {
+    let (store, _domain) = CreateMockStoreAndDomainWithoutSystemSchemasForTest();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table metadata_survivor (id int)", Vec::new());
+    tk.MustExec("create table metadata_removed (ts timestamp)", Vec::new());
+    tk.MustExec(
+        "create view metadata_invalid as select * from metadata_removed",
+        Vec::new(),
+    );
+    tk.MustExec("drop table metadata_removed", Vec::new());
+    tk.MustQuery("select table_name, column_name from information_schema.columns where table_schema='test' order by table_name, ordinal_position", Vec::new())
+        .Check(Rows(&["metadata_survivor id"]));
+    let warnings = tk.MustQuery("show warnings", Vec::new()).Rows();
+    assert!(
+        warnings
+            .iter()
+            .any(|row| row[0] == "Warning" && row[2].contains("metadata_invalid")),
+        "{warnings:?}"
+    );
 }
