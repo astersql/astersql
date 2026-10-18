@@ -190,3 +190,119 @@ fn typed_index_reader_builder_executes_nested_limit_without_extra_scan() {
     assert_eq!(output.NumRows(), 0);
     assert_eq!(retriever.IterCalls(), calls);
 }
+
+#[test]
+fn typed_index_time_preserves_type_precision_and_null() {
+    use astersql_parser_mysql::r#type::{TypeDate, TypeDatetime, TypeTimestamp};
+    use astersql_types::datum::{Datum, KindMysqlTime, NewTimeDatum};
+    use astersql_types::time::{ParseTime, StrictContext};
+
+    for common_handle in [false, true] {
+        for (tp, fsp, text) in [
+            (TypeDate, 0, "2000-01-02"),
+            (TypeDatetime, 6, "2000-01-01 00:10:00.123456"),
+            (TypeTimestamp, 3, "2000-01-01 00:10:00.120"),
+        ] {
+            let time = ParseTime(&StrictContext, text, tp, fsp).unwrap();
+            let mut field = astersql_parser_types::NewFieldType(tp);
+            field.SetDecimal(fsp as isize);
+            let column = astersql_meta_model::ColumnInfo {
+                ID: 1,
+                Name: NewCIStr("a"),
+                FieldType: field.clone(),
+                ..Default::default()
+            };
+            let retriever = Arc::new(MemoryRetriever::default());
+            let suffix = astersql_util_codec::EncodeKey(
+                astersql_tablecodec::time::UTC,
+                Vec::new(),
+                vec![NewTimeDatum(time)],
+            )
+            .unwrap();
+            let (key, start) = if common_handle {
+                let handle = astersql_kv::NewCommonHandle(suffix).unwrap();
+                (
+                    astersql_tablecodec::EncodeRowKeyWithHandle(98, Box::new(handle)),
+                    astersql_tablecodec::GenTableRecordPrefix(98),
+                )
+            } else {
+                let mut suffix = suffix;
+                suffix.push(astersql_util_codec::IntHandleFlag);
+                suffix = astersql_util_codec::EncodeInt(suffix, 1);
+                (
+                    astersql_tablecodec::EncodeIndexSeekKey(98, 8, Some(suffix)),
+                    astersql_tablecodec::EncodeIndexSeekKey(98, 8, None),
+                )
+            };
+            retriever.Put(astersql_kv::Key(key.0), vec![astersql_util_codec::NilFlag]);
+            let mut reader = TypedIndexReader::new_with_common_handle_primary(
+                retriever,
+                98,
+                vec![1],
+                vec![column],
+                common_handle,
+                false,
+                vec![KeyRange {
+                    end: start.PrefixNext(),
+                    start: astersql_kv::Key(start.0),
+                }],
+                1,
+                1,
+            );
+            reader.Open().unwrap();
+            let mut output = reader.NewChunk();
+            reader.Next(&mut output).unwrap();
+            assert_eq!(output.NumRows(), 1);
+            let actual = output.GetRow(0).GetDatum(0, &field);
+            assert_eq!(actual.Kind(), KindMysqlTime);
+            assert_eq!(actual.GetMysqlTime().Type(), tp);
+            assert_eq!(actual.GetMysqlTime().Fsp(), fsp);
+            assert_eq!(
+                actual.GetMysqlTime().Compare(time),
+                0,
+                "common_handle={common_handle}"
+            );
+            assert_eq!(actual.GetMysqlTime().String(), text);
+            reader.Next(&mut output).unwrap();
+            assert_eq!(output.NumRows(), 0);
+            reader.Close().unwrap();
+        }
+    }
+    // NULL in a secondary time index must stay NULL, not become a zero date.
+    let retriever = Arc::new(MemoryRetriever::default());
+    let mut suffix = astersql_util_codec::EncodeKey(
+        astersql_tablecodec::time::UTC,
+        Vec::new(),
+        vec![Datum::default()],
+    )
+    .unwrap();
+    suffix.push(astersql_util_codec::IntHandleFlag);
+    suffix = astersql_util_codec::EncodeInt(suffix, 1);
+    let key = astersql_tablecodec::EncodeIndexSeekKey(99, 8, Some(suffix));
+    retriever.Put(astersql_kv::Key(key.0), vec![0]);
+    let start = astersql_tablecodec::EncodeIndexSeekKey(99, 8, None);
+    let field = astersql_parser_types::NewFieldType(TypeDatetime);
+    let mut reader = TypedIndexReader::new(
+        retriever,
+        99,
+        vec![1],
+        vec![astersql_meta_model::ColumnInfo {
+            ID: 1,
+            FieldType: field.clone(),
+            ..Default::default()
+        }],
+        false,
+        vec![KeyRange {
+            end: start.PrefixNext(),
+            start: astersql_kv::Key(start.0),
+        }],
+        1,
+        1,
+    );
+    reader.Open().unwrap();
+    let mut output = reader.NewChunk();
+    reader.Next(&mut output).unwrap();
+    assert_eq!(output.NumRows(), 1);
+    assert!(output.GetRow(0).GetDatum(0, &field).IsNull());
+    reader.Close().unwrap();
+}

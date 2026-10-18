@@ -140,19 +140,30 @@ impl TypedIndexReader {
                 column_types,
                 Some(astersql_tablecodec::time::UTC),
             )?;
-            for (id, bytes) in self.index_column_ids.iter().copied().zip(encoded) {
-                let (_, datum) = astersql_util_codec::DecodeOne(&bytes)?;
-                datums.insert(id, datum);
-            }
+            let mut encoded = self
+                .index_column_ids
+                .iter()
+                .copied()
+                .zip(encoded)
+                .collect::<HashMap<_, _>>();
             for (offset, column) in self.output_columns.iter().enumerate() {
-                output.AppendDatum(offset, &datums.remove(&column.ID).unwrap_or_default());
+                let datum = if let Some(bytes) = encoded.remove(&column.ID) {
+                    astersql_tablecodec::DecodeColumnValue(
+                        bytes,
+                        Box::new(column.FieldType.clone()),
+                        Some(astersql_tablecodec::time::UTC),
+                    )?
+                } else {
+                    datums.remove(&column.ID).unwrap_or_default()
+                };
+                output.AppendDatum(offset, &datum);
             }
             if self.output_columns.is_empty() {
                 output.SetNumVirtualRows(output.NumRows() + 1);
             }
             return Ok(key.0);
         }
-        let (encoded, _) = astersql_tablecodec::CutIndexKey(
+        let (mut encoded, _) = astersql_tablecodec::CutIndexKey(
             astersql_tablecodec::kv::Key(key.0.clone()),
             self.index_column_ids.clone(),
         )?;
@@ -167,14 +178,15 @@ impl TypedIndexReader {
             };
         let record_key =
             astersql_tablecodec::EncodeRowKeyWithHandle(record_table_id, record_handle);
-        let mut datums = HashMap::new();
-        for (id, bytes) in encoded {
-            let (_, datum) = astersql_util_codec::DecodeOne(&bytes)?;
-            datums.insert(id, datum);
-        }
         for (offset, column) in self.output_columns.iter().enumerate() {
-            let datum = if let Some(datum) = datums.remove(&column.ID) {
-                datum
+            let datum = if let Some(bytes) = encoded.remove(&column.ID) {
+                // Index keys contain storage datums (for example packed time
+                // uints), so restore the SQL type before writing the chunk.
+                astersql_tablecodec::DecodeColumnValue(
+                    bytes,
+                    Box::new(column.FieldType.clone()),
+                    Some(astersql_tablecodec::time::UTC),
+                )?
             } else if HasPriKeyFlag(column.GetFlag()) && handle.IsInt() {
                 astersql_types::datum::NewIntDatum(handle.IntValue())
             } else {

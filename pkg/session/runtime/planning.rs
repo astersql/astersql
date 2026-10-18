@@ -2216,7 +2216,7 @@ impl ConcreteSession {
                         .iter()
                         .enumerate()
                         .map(|(column, field_type)| {
-                            astersql_executor::physical_plan_runtime::datum_to_sort_value(
+                            astersql_executor::physical_plan_runtime::datum_to_result_value(
                                 row.GetDatum(column, field_type),
                             )
                             .map_err(|error| session_error("convert prepared result", error))

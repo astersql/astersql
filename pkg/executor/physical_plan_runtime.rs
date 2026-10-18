@@ -202,6 +202,18 @@ pub fn datum_to_sort_value(
     })
 }
 
+/// Convert final result cells for the text-only record set consumer.
+/// Like Go Datum.ToString, format time using its SQL type and FSP only after
+/// execution has finished. SQL evaluation must continue to use typed Datums.
+pub fn datum_to_result_value(
+    datum: astersql_types::datum::Datum,
+) -> PhysicalRuntimeResult<SortValue> {
+    if datum.Kind() == astersql_types::datum::KindMysqlTime {
+        return Ok(SortValue::Bytes(datum.GetMysqlTime().String().into_bytes()));
+    }
+    datum_to_sort_value(datum)
+}
+
 impl PhysicalTableSource for KVRetrieverTableSource<'_> {
     fn Scan(&self, scan: &PhysicalTableScan) -> PhysicalRuntimeResult<Vec<Row>> {
         let mut rows = Vec::new();

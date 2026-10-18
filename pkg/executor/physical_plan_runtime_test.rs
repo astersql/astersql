@@ -858,3 +858,60 @@ fn scalar_count_extrema_uses_typed_kernel_for_nulls_and_duplicates() {
         }
     }
 }
+
+#[test]
+fn datum_mysql_time_converts_without_loss() {
+    use crate::physical_plan_runtime::datum_to_result_value;
+    use astersql_parser_mysql::r#type as mysql;
+    use astersql_types::datum::{Datum, KindMysqlTime, NewTimeDatum};
+    use astersql_types::time::{ParseTime, StrictContext};
+
+    for (tp, fsp, text) in [
+        (mysql::TypeDate, 0, "2000-01-02"),
+        (mysql::TypeDatetime, 0, "2000-01-01 00:10:00"),
+        (mysql::TypeDatetime, 3, "2000-01-01 00:10:00.120"),
+        (mysql::TypeDatetime, 6, "2000-01-01 00:10:00.123456"),
+        (mysql::TypeTimestamp, 6, "2000-01-01 00:10:00.000001"),
+    ] {
+        let time = ParseTime(&StrictContext, text, tp, fsp).unwrap();
+        let datum = NewTimeDatum(time);
+        assert_eq!(datum.Kind(), KindMysqlTime);
+        assert_eq!(datum.GetMysqlTime().Type(), tp);
+        assert_eq!(datum.GetMysqlTime().Fsp(), fsp);
+        let value = datum_to_result_value(datum).expect("convert typed time result");
+        let SortValue::Bytes(bytes) = value else {
+            panic!("expected final result text")
+        };
+        let actual = String::from_utf8(bytes).unwrap();
+        assert_eq!(actual, text);
+        // Re-read with the result field's type/FSP, as GetDatum does: check
+        // temporal value and precision rather than only text equality.
+        let restored = ParseTime(&StrictContext, &actual, tp, fsp).unwrap();
+        assert_eq!(restored.Type(), time.Type());
+        assert_eq!(restored.Fsp(), time.Fsp());
+        assert_eq!(restored.Compare(time), 0);
+    }
+    let earlier = ParseTime(
+        &StrictContext,
+        "2000-01-01 00:10:00.123456",
+        mysql::TypeDatetime,
+        6,
+    )
+    .unwrap();
+    let later = ParseTime(
+        &StrictContext,
+        "2000-01-01 00:10:00.123457",
+        mysql::TypeDatetime,
+        6,
+    )
+    .unwrap();
+    assert!(earlier.Compare(later) < 0);
+    assert!(
+        datum_to_result_value(NewTimeDatum(earlier)).unwrap()
+            < datum_to_result_value(NewTimeDatum(later)).unwrap()
+    );
+    assert_eq!(
+        datum_to_result_value(Datum::default()).unwrap(),
+        SortValue::Null
+    );
+}
