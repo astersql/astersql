@@ -430,8 +430,80 @@ fn canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153() {
 
 #[test]
 fn ttl_import_precheck_error_is_encoded_as_8173() {
-    use std::io::Read;
-    let (connection, mut peer) = change_user_connection_with_packet_limit(1024);
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    struct ErrorPacketDomain;
+
+    impl ConnectionDomain for ErrorPacketDomain {
+        fn next_connection_id(&self) -> u64 {
+            1
+        }
+
+        fn release_connection_id(&self, _: u64) {}
+    }
+
+    struct ErrorPacketServer(Arc<ErrorPacketDomain>);
+
+    impl ConnectionServer for ErrorPacketServer {
+        fn register_connection(&self, _: Arc<ClientConn>) -> ConnResult<()> {
+            Ok(())
+        }
+
+        fn unregister_connection(&self, _: u64) {}
+
+        fn connection_count(&self) -> usize {
+            0
+        }
+
+        fn config(&self) -> ServerConfig {
+            ServerConfig {
+                capability: CLIENT_PROTOCOL_41,
+                default_collation: 45,
+                server_version: "test".into(),
+                default_auth_plugin: AUTH_NATIVE_PASSWORD.into(),
+                require_secure_transport: false,
+                init_connect: String::new(),
+                max_connections: 1,
+            }
+        }
+
+        fn driver(&self) -> Arc<dyn SessionDriver> {
+            unreachable!("error packet encoding does not open a session")
+        }
+
+        fn domain(&self) -> Arc<dyn ConnectionDomain> {
+            self.0.clone()
+        }
+
+        fn is_shutdown(&self) -> bool {
+            false
+        }
+
+        fn is_healthy(&self) -> bool {
+            true
+        }
+
+        fn connection_active(&self, _: u64) {}
+
+        fn connection_closed(&self, _: u64, _: &str) {}
+    }
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (socket, _) = listener.accept().unwrap();
+    let connection = newClientConn(
+        Arc::new(ErrorPacketServer(Arc::new(ErrorPacketDomain))),
+        Box::new(crate::runtime::TcpPacketIo::new(socket, 1024).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let response = handshake_response_packet(CLIENT_PROTOCOL_41, &[], 0);
+    peer.write_all(&[response.len() as u8, 0, 0, 0]).unwrap();
+    peer.write_all(&response).unwrap();
+    connection
+        .readOptionalSSLRequestAndHandshakeResponse()
+        .unwrap();
     peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
     let message = "[executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO";
