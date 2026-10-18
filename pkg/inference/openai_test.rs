@@ -513,17 +513,50 @@ fn openai_protocol_zero_values_and_byte_arrays_follow_go_json() {
 
 #[test]
 fn openai_cancellation_aborts_inflight_http_request() {
-    use std::sync::{Arc, atomic::Ordering};
-    let (url, server) = http_fixture(
-        200,
-        r#"{"data":[{"index":0,"embedding":"AACAPw=="}]}"#.into(),
-        std::time::Duration::from_secs(1),
-    );
+    use std::sync::{Arc, atomic::Ordering, mpsc};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_received_tx, request_received_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        let body_start = loop {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let header = String::from_utf8_lossy(&request[..body_start]).to_ascii_lowercase();
+        let content_length = header
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        while request.len() < body_start + content_length {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+        }
+        request_received_tx.send(()).unwrap();
+        assert_eq!(stream.read(&mut buffer).unwrap(), 0);
+    });
+    let url = format!("http://{address}/v1");
     let provider = OpenAIEmbedder::new(|| "key".into(), move || url.clone());
     let cancel = Arc::new(AtomicBool::new(false));
     let trigger = cancel.clone();
     let timer = thread::spawn(move || {
-        thread::sleep(std::time::Duration::from_millis(50));
+        request_received_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         trigger.store(true, Ordering::Release);
     });
     let begin = std::time::Instant::now();
@@ -532,6 +565,7 @@ fn openai_cancellation_aborts_inflight_http_request() {
         .unwrap_err();
     let elapsed = begin.elapsed();
     timer.join().unwrap();
+    drop(provider);
     server.join().unwrap();
     assert!(error.contains("canceled"));
     assert!(
