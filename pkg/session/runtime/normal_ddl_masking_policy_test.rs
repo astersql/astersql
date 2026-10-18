@@ -2015,6 +2015,56 @@ fn masking_policy_sql_modify_dist_reorg_backfills_all_partitions() {
 }
 
 #[test]
+fn forked_ddl_fixture_keeps_masking_policy_catalog_visible() {
+    for initialize_stats in [false, true] {
+        for _ in 0..2 {
+            let f = if initialize_stats {
+                Fixture::new()
+            } else {
+                Fixture::new_without_stats()
+            };
+            let table = f
+                .domain
+                .table_by_name("mysql", "tidb_masking_policy")
+                .expect("bootstrapped policy catalog must be visible without statistics");
+            let mysql = f
+                .domain
+                .info_schema()
+                .AllSchemas()
+                .into_iter()
+                .find(|schema| schema.name.lower == "mysql")
+                .unwrap();
+            assert_eq!(
+                f.reader()
+                    .get_table(mysql.id, table.ID)
+                    .unwrap()
+                    .unwrap()
+                    .ID,
+                table.ID
+            );
+            assert!(
+                f.pool
+                    .acquire()
+                    .unwrap()
+                    .query("SELECT policy_id FROM mysql.tidb_masking_policy")
+                    .unwrap()
+                    .is_empty(),
+                "forks must not inherit another fixture's policy rows"
+            );
+            seed_policy(&f, 9606);
+            assert_eq!(
+                f.pool
+                    .acquire()
+                    .unwrap()
+                    .query("SELECT policy_id FROM mysql.tidb_masking_policy")
+                    .unwrap(),
+                vec![vec!["9606".to_owned()]]
+            );
+        }
+    }
+}
+
+#[test]
 fn masking_policy_sql_modify_dist_reorg_pauses_and_resumes() {
     modify_dist_reorg(false, true, false, false, false, false);
 }

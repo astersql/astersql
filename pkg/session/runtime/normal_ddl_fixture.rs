@@ -1,6 +1,6 @@
 // Copyright 2026 AsterSQL.
 
-use super::{BootstrapCanonicalDomain, ConcreteSession, system_session::SystemSessionPool};
+use super::{BootstrapCanonicalDomain, system_session::SystemSessionPool};
 use astersql_meta_model::group_3::{Job, JobState};
 use std::{
     sync::{Arc, OnceLock},
@@ -61,11 +61,9 @@ impl Fixture {
     }
 
     fn new_with_stats(initialize_stats: bool) -> Self {
-        let kv = if initialize_stats {
-            bootstrap_store().ForkForTest()
-        } else {
-            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO()
-        };
+        // Statistics initialization is optional; durable system catalogs are
+        // still required by DDL workers and must be isolated for every fixture.
+        let kv = bootstrap_store().ForkForTest();
         let storage = Arc::try_unwrap(
             astersql_store_mockstore_mockstorage::NewMockStorage(kv.clone(), None).unwrap(),
         )
@@ -82,18 +80,6 @@ impl Fixture {
         domain.init().unwrap();
         if initialize_stats {
             domain.initialize_stats().unwrap();
-        } else {
-            // The focused service regression only exercises durable DDL queue
-            // tables. Avoid installing every bootstrap table in its timed path.
-            let session = ConcreteSession::new(domain.clone());
-            for database in ["mysql", "sys", "test"] {
-                session
-                    .execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))
-                    .unwrap();
-            }
-            session
-                .execute(astersql_meta_metadef::CreateTiDBDDLJobTable)
-                .unwrap();
         }
         domain.set_global_system_variable("tidb_cdc_write_source", "9");
         let pool = SystemSessionPool::new(domain.clone());
