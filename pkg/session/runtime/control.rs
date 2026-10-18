@@ -1139,6 +1139,14 @@ impl ConcreteSession {
                 if let Some(checker) = schema_checker.clone() {
                     transaction.SetOption(kv::SchemaChecker, Some(Box::new(checker)));
                 }
+                let _cache_leases = self.cached_table_write_leases(
+                    transaction.as_mut(),
+                    transaction_write_keys.iter().map(|key| {
+                        astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(
+                            key.key.clone(),
+                        ))
+                    }),
+                )?;
                 if was_stale && transaction_write_keys.is_empty() {
                     transaction.Rollback().map_err(|error| {
                         session_error("close read-only stale transaction", error)
@@ -1294,6 +1302,14 @@ impl ConcreteSession {
                         if let Some(checker) = schema_checker {
                             retry.SetOption(kv::SchemaChecker, Some(Box::new(checker)));
                         }
+                        let _retry_cache_leases = self.cached_table_write_leases(
+                            retry.as_mut(),
+                            transaction_write_keys.iter().map(|key| {
+                                astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(
+                                    key.key.clone(),
+                                ))
+                            }),
+                        )?;
                         retry.Commit(&kv::Context::default()).map_err(|error| {
                             session_error("commit restricted transaction retry", error)
                         })?;

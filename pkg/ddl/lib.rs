@@ -290,6 +290,7 @@ pub mod persistent_actions;
 pub mod persistent_alter_materialized_view_attributes;
 pub mod persistent_alter_materialized_view_log_purge;
 pub mod persistent_alter_materialized_view_refresh;
+mod persistent_table_cache;
 
 pub mod persistent_create_materialized_view_log;
 pub mod persistent_create_materialized_view_shadow;

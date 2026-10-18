@@ -921,6 +921,10 @@ impl ConcreteSession {
                 self.release_all_row_locks();
                 return Err(runtime_read_only_mode_error());
             }
+            let _cache_leases = self.cached_table_write_leases(
+                transaction.as_mut(),
+                related_table_ids.iter().copied(),
+            )?;
             let commit_started = std::time::Instant::now();
             if let Err(error) = transaction.Commit(&kv::Context::default()) {
                 drop(state);

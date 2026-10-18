@@ -339,7 +339,18 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                     .GetClient()
                     .IsRequestTypeSupported(astersql_kv::ReqTypeDAG, astersql_kv::ReqSubTypeBasic)
             });
+            let mut cached_scans = Vec::new();
+            super::typed_adapter_bridge::collect_table_scans(
+                physical.plan.as_plan(),
+                &mut cached_scans,
+            );
+            let uses_table_cache = cached_scans.iter().any(|scan| {
+                scan.Table.as_ref().is_some_and(|table| {
+                    table.TableCacheStatusType == astersql_meta_model::TableCacheStatusEnable
+                })
+            });
             if supports_coprocessor
+                && !uses_table_cache
                 && physical.plan.is_prepared()
                 && physical.leaf_ranges.len() <= 1
             {
@@ -1976,7 +1987,6 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             mpp.AllocatedMPPGatherID.store(0, Ordering::Release);
             vars.StmtCtx.SetStaleness(false);
             vars.StmtCtx.IsTiFlash.store(false, Ordering::Release);
-            vars.StmtCtx.ResetReadFromTableCache();
             vars.ResetDurationParse();
         });
         {

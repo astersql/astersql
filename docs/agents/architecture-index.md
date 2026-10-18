@@ -33,6 +33,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 - `pkg/session/`
 - `pkg/sessionctx/`
 - `pkg/sessionctx/variable/`
+- Cached-table KV buffers and lease coordination: `pkg/session/runtime/table_cache.rs`; statement-marker regressions: `pkg/session/cached_table_runtime_test.rs`.
 - `pkg/server/`
 - Typical changes: session lifecycle, statement context behavior, protocol-level behavior.
 
@@ -41,6 +42,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 - `pkg/infoschema/`
 - `pkg/meta/`
 - `pkg/meta/autoid/`
+- Cached-table enable/disable owner state transitions: `pkg/ddl/persistent_table_cache.rs`.
 - Typical changes: schema evolution, metadata persistence, ID generation.
 
 ### Storage and distributed execution

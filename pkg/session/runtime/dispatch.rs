@@ -1482,6 +1482,9 @@ impl ConcreteSession {
         statement: &dyn ast::Node,
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
+        // Keep the completed statement's marker observable until the next SQL
+        // statement starts, as Go's ResetContextOfStmt does.
+        self.session_vars.BeginTableCacheStatement();
         struct StatementMDL<'a>(&'a ConcreteSession, bool);
         impl Drop for StatementMDL<'_> {
             fn drop(&mut self) {

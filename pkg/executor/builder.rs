@@ -237,6 +237,12 @@ fn find_typed_table_scan(
     {
         return Some(scan);
     }
+    if let Some(reader) =
+        plan.as_any()
+            .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalTableReader>()
+    {
+        return reader.GetTablePlan().and_then(find_typed_table_scan);
+    }
     let children = plan.children();
     (children.len() == 1)
         .then(|| find_typed_table_scan(children[0]))
@@ -682,6 +688,41 @@ fn build_typed_physical_plan(
             child,
             limit.Offset,
             limit.Count,
+        )));
+    }
+    if let Some(union) = plan
+        .as_any()
+        .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalUnionScan>()
+    {
+        let children = plan.children();
+        if children.len() != 1 {
+            return Err(BuildError::new("PhysicalUnionScan requires one child"));
+        }
+        if !find_typed_table_scan(children[0])
+            .and_then(|scan| scan.Table.as_ref())
+            .is_some_and(|table| {
+                table.TableCacheStatusType == astersql_meta_model::TableCacheStatusEnable
+            })
+        {
+            return Err(BuildError::new(
+                "typed UnionScan requires the session cached-table read view",
+            ));
+        }
+        // The session supplies the complete snapshot/cache KV view. Dirty
+        // transactions use its relational UnionScan path rather than this
+        // read-only typed adapter; conditions still apply to cached rows.
+        let child = build_typed_physical_plan(
+            children[0],
+            bindings,
+            binding_index,
+            initial_capacity,
+            maximum_chunk_size,
+            locking,
+        )?;
+        return Ok(Box::new(crate::typed_selection::TypedSelection::new(
+            child,
+            union.Conditions.clone(),
+            plan.s_ctx().clone(),
         )));
     }
     if let Some(selection) = plan.as_any().downcast_ref::<PhysicalSelection>() {

@@ -28,6 +28,8 @@ pub struct OwnedKVSnapshotSource {
     domain: Arc<astersql_domain::Domain>,
     version: kv::Version,
     read_stats: Option<Arc<astersql_store_driver::ReadStats>>,
+    cache_variables: Option<Arc<astersql_sessionctx_variable::session::SessionVars>>,
+    cache_buffer: std::sync::OnceLock<Option<Arc<astersql_table_tables::cache::MemBuffer>>>,
 }
 
 /// The original statement keeps the canonical, thread-local session alive.
@@ -1021,6 +1023,35 @@ impl SessionBoundAdapterOwner {
 }
 
 impl OwnedKVSnapshotSource {
+    fn with_table_cache(
+        mut self,
+        variables: Arc<astersql_sessionctx_variable::session::SessionVars>,
+    ) -> Self {
+        self.cache_variables = Some(variables);
+        self
+    }
+    fn table_cache(&self, key: &[u8]) -> Option<super::table_cache::BufferSource> {
+        let variables = self.cache_variables.as_ref()?;
+        let buffer = self
+            .cache_buffer
+            .get_or_init(|| {
+                let id =
+                    astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(key.to_vec()));
+                let context = &variables.StmtCtx;
+                super::table_cache::read(
+                    &self.domain,
+                    id,
+                    self.version.Ver,
+                    !context.InInsertStmt
+                        && !context.InUpdateStmt
+                        && !context.InDeleteStmt
+                        && !context.InExplainStmt,
+                )
+            })
+            .as_ref()?;
+        variables.MarkReadFromTableCache();
+        Some(super::table_cache::BufferSource(buffer.clone()))
+    }
     pub(super) fn with_read_stats(
         mut self,
         stats: Option<Arc<astersql_store_driver::ReadStats>>,
@@ -1034,6 +1065,8 @@ impl OwnedKVSnapshotSource {
             domain,
             version,
             read_stats: None,
+            cache_variables: None,
+            cache_buffer: std::sync::OnceLock::new(),
         }
     }
 }
@@ -1045,6 +1078,9 @@ impl kv::Getter for OwnedKVSnapshotSource {
         key: kv::Key,
         options: &[kv::GetOption],
     ) -> Result<kv::ValueEntry, astersql_errors::SharedError> {
+        if let Some(cache) = self.table_cache(&key.0) {
+            return kv::Getter::Get(&cache, context, key, options);
+        }
         self.domain.storage().with_storage(|storage| {
             let mut snapshot = storage.GetSnapshot(self.version);
             if let Some(stats) = &self.read_stats {
@@ -1061,6 +1097,9 @@ impl kv::Retriever for OwnedKVSnapshotSource {
         start: kv::Key,
         end: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, astersql_errors::SharedError> {
+        if let Some(cache) = self.table_cache(&start.0) {
+            return kv::Retriever::Iter(&cache, start, end);
+        }
         self.domain
             .storage()
             .with_storage(|storage| storage.GetSnapshot(self.version).Iter(start, end))
@@ -1071,6 +1110,11 @@ impl kv::Retriever for OwnedKVSnapshotSource {
         start: Option<kv::Key>,
         end: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, astersql_errors::SharedError> {
+        if let Some(key) = end.as_ref().or(start.as_ref())
+            && let Some(cache) = self.table_cache(&key.0)
+        {
+            return kv::Retriever::IterReverse(&cache, start, end);
+        }
         self.domain
             .storage()
             .with_storage(|storage| storage.GetSnapshot(self.version).IterReverse(start, end))
@@ -1090,10 +1134,10 @@ impl ConcreteSession {
         initial_capacity: usize,
         maximum_chunk_size: usize,
     ) -> Result<ExecutorBox, astersql_executor::builder::BuildError> {
-        let source = Arc::new(OwnedKVSnapshotSource::new(
-            Arc::clone(&self.domain),
-            version,
-        ));
+        let source = Arc::new(
+            OwnedKVSnapshotSource::new(Arc::clone(&self.domain), version)
+                .with_table_cache(Arc::clone(&self.session_vars)),
+        );
         BuildTypedPhysicalPlan(scan, source, ranges, initial_capacity, maximum_chunk_size)
     }
 
@@ -1105,10 +1149,10 @@ impl ConcreteSession {
         initial_capacity: usize,
         maximum_chunk_size: usize,
     ) -> Result<ExecutorBox, astersql_executor::builder::BuildError> {
-        let source = Arc::new(OwnedKVSnapshotSource::new(
-            Arc::clone(&self.domain),
-            version,
-        ));
+        let source = Arc::new(
+            OwnedKVSnapshotSource::new(Arc::clone(&self.domain), version)
+                .with_table_cache(Arc::clone(&self.session_vars)),
+        );
         BuildTypedPhysicalPlan(plan, source, ranges, initial_capacity, maximum_chunk_size)
     }
 
@@ -1124,10 +1168,10 @@ impl ConcreteSession {
             .iter()
             .map(|(table_id, ranges)| TypedScanBinding {
                 table_id: *table_id,
-                retriever: Arc::new(OwnedKVSnapshotSource::new(
-                    Arc::clone(&self.domain),
-                    version,
-                )),
+                retriever: Arc::new(
+                    OwnedKVSnapshotSource::new(Arc::clone(&self.domain), version)
+                        .with_table_cache(Arc::clone(&self.session_vars)),
+                ),
                 ranges: ranges.clone(),
             })
             .collect();
@@ -1163,10 +1207,10 @@ impl ConcreteSession {
         initial_capacity: usize,
         maximum_chunk_size: usize,
     ) -> ExecutorBox {
-        let source = Arc::new(OwnedKVSnapshotSource::new(
-            Arc::clone(&self.domain),
-            version,
-        ));
+        let source = Arc::new(
+            OwnedKVSnapshotSource::new(Arc::clone(&self.domain), version)
+                .with_table_cache(Arc::clone(&self.session_vars)),
+        );
         Box::new(TypedKVScan::new(
             source,
             table_id,

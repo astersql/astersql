@@ -2706,6 +2706,42 @@ fn create_analyze_domain() -> SessionResult<Arc<Domain>> {
     Ok(domain)
 }
 
+/// Install the existing serving DDL owner/schema runtime for focused mock-KV
+/// tests which exercise persistent actions. The normal server installs it at
+/// startup; lightweight TestKit sessions opt in when such an action is needed.
+pub fn EnableMockDDLForTest(domain: &Arc<Domain>) -> SessionResult<()> {
+    static START: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _start = START
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if domain
+        .ddl()
+        .is_some_and(|ddl| ddl.supports_persistent_actions())
+    {
+        return Ok(());
+    }
+    BootstrapCanonicalDomain(domain.clone())?;
+    let cancellation = astersql_owner::Context::new();
+    let id = format!("mock-cache-ddl-{:p}", Arc::as_ptr(domain));
+    let owner = astersql_owner::NewMockManager(
+        cancellation.clone(),
+        id.clone(),
+        None,
+        format!("/mock-cache-ddl/{id}"),
+    );
+    super::session_factory::install_serving_ddl_runtime(
+        domain,
+        owner,
+        Arc::new(tokio::runtime::Runtime::new().map_err(|e| session_error("mock DDL runtime", e))?),
+        cancellation,
+        Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default()),
+        &id,
+        Duration::from_millis(50),
+    )
+    .map_err(|e| session_error("mock persistent DDL", e))
+}
+
 /// Builds a real transactional Domain/session without server system-schema bootstrap.
 ///
 /// Tests that create every schema they use can exercise the canonical SQL, DDL,

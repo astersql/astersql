@@ -606,6 +606,11 @@ fn execute_concrete_session(
     sql: &str,
     arguments: &[DbValue],
 ) -> TestResult<SessionReply> {
+    let ddl = sql.trim().trim_end_matches(';').to_ascii_lowercase();
+    if ddl.starts_with("alter table ") && (ddl.ends_with(" cache") || ddl.ends_with(" nocache")) {
+        astersql_session::runtime::EnableMockDDLForTest(session.domain())
+            .map_err(|error| TestError::new(error.to_string()))?;
+    }
     let record_sets = if arguments.is_empty() {
         session.Execute(sql)
     } else {

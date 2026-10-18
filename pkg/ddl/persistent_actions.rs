@@ -42,6 +42,8 @@ pub fn handler_available(action: u8) -> bool {
             | 32
             | 39
             | 55
+            | 57
+            | 59
             | 74
             | 75
             | 76
@@ -125,6 +127,7 @@ fn step_metadata(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Resul
         17 | 39 => modify_table_metadata(txn, job),
         26 => modify_schema_charset(txn, job),
         55 => modify_schema_placement(txn, job),
+        57 | 59 => crate::persistent_table_cache::step(txn, job),
         75 => crate::table_mode::on_persistent_alter_table_mode(txn, job),
         76 => refresh_meta(txn, job),
         action => Err(format!(

@@ -74,3 +74,70 @@ fn canonical_typed_selection_filters_rows_and_excludes_discarded_record_locks() 
     assert_eq!(output.NumRows(), 0);
     executor.Close().expect("close selection child");
 }
+
+#[test]
+fn typed_cached_union_scan_filters_the_real_buffer_and_preserves_record_keys() {
+    use astersql_planner_core_operator_physicalop::PhysicalUnionScan;
+    let retriever = Arc::new(MemoryRetriever::default());
+    for handle in 1..=3 {
+        let (key, value) = encode_row(93, handle, handle * 10, "cached");
+        retriever.Put(key, value);
+    }
+    let ctx = context();
+    let mut scan = PhysicalTableScan::New(ctx.clone());
+    scan.Table = Some(astersql_meta_model::TableInfo {
+        ID: 93,
+        Name: NewCIStr("cached"),
+        TableCacheStatusType: astersql_meta_model::TableCacheStatusEnable,
+        ..Default::default()
+    });
+    scan.Columns = vec![ColumnInfo {
+        ID: 1,
+        Name: NewCIStr("a"),
+        FieldType: astersql_parser_types::NewFieldType(TypeLonglong),
+        ..Default::default()
+    }];
+    let column = astersql_expression::Column::new(
+        *astersql_expression::types::NewFieldType(TypeLonglong),
+        1,
+        1,
+        0,
+    );
+    let condition = astersql_expression::NewFunction(
+        ctx.GetExprCtx(),
+        astersql_parser_ast::GT,
+        *astersql_expression::types::NewFieldType(astersql_expression::mysql::TypeTiny),
+        vec![
+            Box::new(column.clone()),
+            Box::new(astersql_expression::NewInt64Const(20)),
+        ],
+    )
+    .unwrap();
+    let mut union = PhysicalUnionScan::New(ctx);
+    union.HandleCols = astersql_planner_util::NewIntHandleCols(column);
+    union.Conditions = vec![condition];
+    union.set_children(vec![Box::new(scan)]);
+    let start = astersql_kv::Key(astersql_tablecodec::GenTableRecordPrefix(93).0);
+    let end = start.PrefixNext();
+    let mut executor = crate::builder::BuildTypedPhysicalPlan(
+        &union,
+        retriever.clone(),
+        vec![KeyRange { start, end }],
+        1,
+        1,
+    )
+    .unwrap();
+    executor.Open().unwrap();
+    assert_eq!(retriever.IterCalls(), 0);
+    let mut output = executor.NewChunk();
+    executor.Next(&mut output).unwrap();
+    assert_eq!(output.NumRows(), 1);
+    assert_eq!(output.GetRow(0).GetInt64(0), 30);
+    assert_eq!(
+        executor.TakeLockKeys(),
+        vec![encode_row(93, 3, 30, "cached").0.0]
+    );
+    executor.Next(&mut output).unwrap();
+    assert_eq!(output.NumRows(), 0);
+    executor.Close().unwrap();
+}

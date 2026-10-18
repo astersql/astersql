@@ -1965,7 +1965,7 @@ impl ConcreteSession {
             })
         {
             return self.domain.storage().with_storage(|store| {
-                let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
+                let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
                 scan_relational_row_ranges(snapshot.as_ref(), table, ranges, 0, usize::MAX)
             });
         }
@@ -1984,7 +1984,7 @@ impl ConcreteSession {
                 let version = store
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?;
-                let snapshot = store.GetSnapshot(version);
+                let snapshot = self.cached_table_snapshot(store, table, version);
                 scan_relational_row_ranges(snapshot.as_ref(), table, ranges, 0, usize::MAX)
             })
         }
@@ -2206,7 +2206,7 @@ impl ConcreteSession {
                 })? {
                     return Ok(rows);
                 }
-                let snapshot = store.GetSnapshot(version);
+                let snapshot = self.cached_table_snapshot(store, table, version);
                 scan_relational_rows_with_limit(snapshot.as_ref(), table, row_limit)
             })?;
             if let Some(row_limit) = row_limit {
@@ -2224,7 +2224,7 @@ impl ConcreteSession {
             })
         {
             return self.domain.storage().with_storage(|store| {
-                let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
+                let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
                 scan_relational_rows_with_limit(snapshot.as_ref(), table, row_limit)
             });
         }
@@ -2247,7 +2247,7 @@ impl ConcreteSession {
                 let version = store
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?;
-                let snapshot = store.GetSnapshot(version);
+                let snapshot = self.cached_table_snapshot(store, table, version);
                 scan_relational_rows_with_limit(snapshot.as_ref(), table, row_limit)
             })
         }
@@ -2269,7 +2269,7 @@ impl ConcreteSession {
     ) -> SessionResult<Vec<RelationalRow>> {
         if let Some(read_ts) = read_ts {
             return self.domain.storage().with_storage(|store| {
-                let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
+                let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
                 scan_relational_rows_with_limit(snapshot.as_ref(), table, row_limit)
             });
         }
@@ -2312,7 +2312,7 @@ impl ConcreteSession {
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?,
             };
-            let mut snapshot = store.GetSnapshot(version);
+            let mut snapshot = self.cached_table_snapshot(store, table, version);
             let mut remaining_offset = window.offset;
             let mut start_key = None;
             if access_ranges.is_none()
@@ -2394,7 +2394,7 @@ impl ConcreteSession {
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?,
             };
-            let mut snapshot = store.GetSnapshot(version);
+            let mut snapshot = self.cached_table_snapshot(store, table, version);
             let requested = window.offset.saturating_add(window.count);
             snapshot.SetOption(
                 kv::ScanBatchSize,
@@ -2661,7 +2661,7 @@ impl ConcreteSession {
                 })? {
                     return Ok(count);
                 }
-                let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
+                let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
                 count_relational_rows(snapshot.as_ref(), table)
             });
         }
@@ -2689,7 +2689,7 @@ impl ConcreteSession {
                 })? {
                     return Ok(count);
                 }
-                let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
+                let snapshot = self.cached_table_snapshot(store, table, kv::NewVersion(read_ts));
                 count_relational_rows(snapshot.as_ref(), table)
             });
         }
@@ -2721,7 +2721,7 @@ impl ConcreteSession {
                 })? {
                     return Ok(count);
                 }
-                let snapshot = store.GetSnapshot(version);
+                let snapshot = self.cached_table_snapshot(store, table, version);
                 count_relational_rows(snapshot.as_ref(), table)
             })
         }
@@ -2773,7 +2773,7 @@ impl ConcreteSession {
         };
         let mut latest = self.domain.storage().with_storage(|store| {
             let version = self.latest_relational_version(store)?;
-            let snapshot = store.GetSnapshot(version);
+            let snapshot = self.cached_table_snapshot(store, table, version);
             row_map(scan_relational_rows(snapshot.as_ref(), table)?)
         })?;
         let state = self.state.borrow();
@@ -2812,7 +2812,7 @@ impl ConcreteSession {
         };
         let mut latest = self.domain.storage().with_storage(|store| {
             let version = self.latest_relational_version(store)?;
-            let snapshot = store.GetSnapshot(version);
+            let snapshot = self.cached_table_snapshot(store, table, version);
             row_map(scan_relational_row_ranges(
                 snapshot.as_ref(),
                 table,

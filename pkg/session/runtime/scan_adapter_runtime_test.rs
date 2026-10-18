@@ -1740,7 +1740,7 @@ fn beginning_next_transaction_clears_prior_fair_locking_usage_flags() {
 }
 
 #[test]
-fn finish_execute_stmt_reports_tiflash_and_table_cache_flags_then_clears_shared_state() {
+fn finish_execute_stmt_reports_flags_and_preserves_table_cache_until_next_statement() {
     use astersql_executor::adapter::PlanKind;
     use std::sync::atomic::Ordering;
     let session = canonical_dml_session();
@@ -1764,6 +1764,10 @@ fn finish_execute_stmt_reports_tiflash_and_table_cache_flags_then_clears_shared_
     );
     owner.session.WithSessionVars(|vars| {
         assert!(!vars.StmtCtx.IsTiFlash.load(Ordering::Acquire));
+        assert!(vars.StmtCtx.IsReadFromTableCache());
+    });
+    owner.session.execute("SELECT 1").unwrap();
+    owner.session.WithSessionVars(|vars| {
         assert!(!vars.StmtCtx.IsReadFromTableCache());
     });
 }

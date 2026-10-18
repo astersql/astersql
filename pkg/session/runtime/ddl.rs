@@ -3954,9 +3954,88 @@ impl ConcreteSession {
                     return Ok(());
                 }
                 ast::AlterTableType::Cache | ast::AlterTableType::NoCache => {
-                    // The mock runtime has no asynchronous cache population.
-                    // Accept the DDL; prepared-plan reuse remains observable
-                    // through @@last_plan_from_cache.
+                    let enabling = matches!(spec.Tp, ast::AlterTableType::Cache);
+                    let table = self
+                        .domain
+                        .table_by_name(database, &statement.Table.Name.L)
+                        .map_err(|e| session_error("ALTER TABLE CACHE metadata", e))?;
+                    let target = if enabling {
+                        astersql_meta_model::TableCacheStatusEnable
+                    } else {
+                        astersql_meta_model::TableCacheStatusDisable
+                    };
+                    if table.TableCacheStatusType == target {
+                        continue;
+                    }
+                    if enabling {
+                        if astersql_meta_metadef::IsMemOrSysDB(database) {
+                            return Err(SessionError::new(
+                                "ALTER TABLE CACHE is unsupported for system tables",
+                            ));
+                        }
+                        if table.TempTableType != astersql_meta_model::TempTableNone
+                            || table.Partition.is_some()
+                        {
+                            return Err(SessionError::new(
+                                "cached tables do not support temporary tables or partitions",
+                            ));
+                        }
+                        let version = self
+                            .domain
+                            .storage()
+                            .with_storage(|s| s.CurrentVersion("global"))
+                            .map_err(|e| session_error("cached table size snapshot", e))?;
+                        let snapshot = self
+                            .domain
+                            .storage()
+                            .with_storage(|s| s.GetSnapshot(version));
+                        let prefix = astersql_tablecodec::GenTablePrefix(table.ID);
+                        let mut iter = snapshot
+                            .Iter(
+                                kv::Key(prefix.0.clone()),
+                                Some(kv::Key(prefix.PrefixNext().0)),
+                            )
+                            .map_err(|e| session_error("cached table size scan", e))?;
+                        let size = (|| -> SessionResult<usize> {
+                            let mut size = 0;
+                            while iter.Valid() {
+                                size += iter.Key().0.len() + iter.Value().len();
+                                if size
+                                    > astersql_table_tables::cache::CACHED_TABLE_SIZE_LIMIT as usize
+                                {
+                                    break;
+                                }
+                                iter.Next()
+                                    .map_err(|e| session_error("cached table size scan", e))?;
+                            }
+                            Ok(size)
+                        })();
+                        iter.Close();
+                        if size? > astersql_table_tables::cache::CACHED_TABLE_SIZE_LIMIT as usize {
+                            return Err(SessionError::new("cached table too large"));
+                        }
+                        let session =
+                            super::system_session::SystemSessionPool::new(self.domain.clone())
+                                .acquire()
+                                .map_err(SessionError::new)?;
+                        session
+                            .query(astersql_meta_metadef::CreateTableCacheMetaTable)
+                            .map_err(SessionError::new)?;
+                        session
+                            .query(format!(
+                                "REPLACE INTO mysql.table_cache_meta VALUES ({}, 'NONE', 0, 0)",
+                                table.ID
+                            ))
+                            .map_err(SessionError::new)?;
+                    }
+                    // Keep schema transitions, version diffs, recovery and the
+                    // follower barrier on the normal persistent DDL owner path.
+                    self.submit_normal_action(
+                        database,
+                        &statement.Table.Name.L,
+                        if enabling { 57 } else { 59 },
+                        serde_json::json!({}),
+                    )?;
                 }
                 _ => {
                     return Err(SessionError::new(

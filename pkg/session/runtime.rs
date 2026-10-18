@@ -60,6 +60,7 @@ mod import_compression;
 mod import_file;
 mod import_query;
 mod import_sst;
+mod table_cache;
 pub use import_sst::NewImportLocalBackend;
 mod load_data;
 mod mlog;
@@ -181,7 +182,7 @@ pub use session::{
     ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet, ConcreteResultField,
     ConcreteSession, ConcreteTestRuntime, CreateAnalyzeSession, CreateDanglingIndexForTest,
     CreateUnbootstrappedAnalyzeSessionForTest, CreateUnbootstrappedRootSessionForTest,
-    RuntimeDomain, SplitSQLStatements,
+    EnableMockDDLForTest, RuntimeDomain, SplitSQLStatements,
 };
 use session::{NamedPreparedStatement, SessionState, SessionWarning, build_bootstrap_view_table};
 pub use statistics::{

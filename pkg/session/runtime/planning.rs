@@ -2015,7 +2015,7 @@ impl ConcreteSession {
             });
             let plan_context: astersql_planner_core_base::ContextRef = concrete_context;
             let statement = ast::NodeRef::new(statement);
-            let (table_id, reads_table_cache) = statement
+            let table_id = statement
                 .with_node(|statement| {
                     let select = statement.as_any().downcast_ref::<ast::SelectStmt>()?;
                     let from = select.From.as_ref()?;
@@ -2036,21 +2036,12 @@ impl ConcreteSession {
                             ),
                         )
                         .ok()
-                        .map(|table| {
-                            (
-                                table.ID,
-                                table.TableCacheStatusType
-                                    != astersql_meta_model::TableCacheStatusDisable,
-                            )
-                        })
+                        .map(|table| table.ID)
                 })
                 .flatten()
                 .ok_or_else(|| {
                     SessionError::new("planned SELECT table is absent from infoschema")
                 })?;
-            if reads_table_cache {
-                self.session_vars.MarkReadFromTableCache();
-            }
             let (row_count, stats_version) = estimated_table_stats(self.domain.as_ref(), table_id);
             let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
                 .withDataSourceProvider(Arc::new(SessionKVDataSourceProvider {
@@ -2344,7 +2335,7 @@ impl ConcreteSession {
         }
 
         let planning_schema = self.transaction_mdl_schema(Arc::clone(&prepared.InfoSchema));
-        let (table_id, reads_table_cache) = prepared
+        let table_id = prepared
             .Ast
             .with_node(|statement| {
                 let select = statement.as_any().downcast_ref::<ast::SelectStmt>()?;
@@ -2366,19 +2357,10 @@ impl ConcreteSession {
                         ),
                     )
                     .ok()
-                    .map(|table| {
-                        (
-                            table.ID,
-                            table.TableCacheStatusType
-                                != astersql_meta_model::TableCacheStatusDisable,
-                        )
-                    })
+                    .map(|table| table.ID)
             })
             .flatten()
             .ok_or_else(|| SessionError::new("prepared SELECT table is absent from infoschema"))?;
-        if reads_table_cache {
-            self.session_vars.MarkReadFromTableCache();
-        }
 
         let isolation = self.session_vars.GetIsolationReadEngines();
         let key_context = astersql_planner_core::PlanCacheKeyContext {
