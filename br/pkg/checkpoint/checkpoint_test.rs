@@ -1023,7 +1023,10 @@ fn test_checkpoint_runner_retry(snapshot: &dyn SnapshotMetaManager) {
     AppendRangesForRestore(&ctx, &runner, &NewCheckpointRangeKeyItem(2, "456".into())).unwrap();
     runner.FlushChecksum(&ctx, 1, 1, 1, 1).unwrap();
     let _ = runner.FlushChecksum(&ctx, 2, 2, 2, 2);
-    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        failpoint::wait_failed_after_checkpoint_flushes(Duration::from_secs(1)),
+        "checkpoint flush did not reach the injected post-write failure"
+    );
     failpoint::Disable("github.com/pingcap/tidb/br/pkg/checkpoint/failed-after-checkpoint-flushes")
         .unwrap();
     AppendRangesForRestore(&ctx, &runner, &NewCheckpointRangeKeyItem(3, "789".into())).unwrap();

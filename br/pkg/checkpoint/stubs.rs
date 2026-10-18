@@ -575,6 +575,10 @@ pub mod duration_ns {
 /// Go `pingcap/failpoint` stand-ins used by checkpoint flush retry tests.
 pub mod failpoint {
     use std::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(test)]
+    use std::sync::{Condvar, Mutex, OnceLock};
+    #[cfg(test)]
+    use std::time::{Duration, Instant};
 
     use super::{Error, Result};
 
@@ -584,10 +588,20 @@ pub mod failpoint {
 
     static FAILED_AFTER_FLUSHES: AtomicBool = AtomicBool::new(false);
 
+    #[cfg(test)]
+    fn failed_after_flushes_observed() -> &'static (Mutex<usize>, Condvar) {
+        static OBSERVED: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
+        OBSERVED.get_or_init(|| (Mutex::new(0), Condvar::new()))
+    }
+
     /// 打开命名 failpoint；表达式忽略。
     pub fn Enable(name: &str, _expr: &str) -> Result<()> {
         match name {
             FAILED_AFTER_CHECKPOINT_FLUSHES => {
+                #[cfg(test)]
+                {
+                    *failed_after_flushes_observed().0.lock().unwrap() = 0;
+                }
                 FAILED_AFTER_FLUSHES.store(true, Ordering::SeqCst);
                 Ok(())
             }
@@ -608,6 +622,33 @@ pub mod failpoint {
 
     /// 查询刷盘后失败注入是否开启。
     pub fn failed_after_checkpoint_flushes() -> bool {
-        FAILED_AFTER_FLUSHES.load(Ordering::SeqCst)
+        let enabled = FAILED_AFTER_FLUSHES.load(Ordering::SeqCst);
+        #[cfg(test)]
+        if enabled {
+            let (observed, ready) = failed_after_flushes_observed();
+            *observed.lock().unwrap() += 1;
+            ready.notify_all();
+        }
+        enabled
+    }
+
+    /// Wait until the flush path has actually evaluated the enabled failpoint.
+    #[cfg(test)]
+    pub fn wait_failed_after_checkpoint_flushes(timeout: Duration) -> bool {
+        let (observed, ready) = failed_after_flushes_observed();
+        let deadline = Instant::now() + timeout;
+        let mut observed = observed.lock().unwrap();
+        while *observed == 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, wait) = ready.wait_timeout(observed, deadline - now).unwrap();
+            observed = next;
+            if wait.timed_out() && *observed == 0 {
+                return false;
+            }
+        }
+        true
     }
 }
