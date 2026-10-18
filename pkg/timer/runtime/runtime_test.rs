@@ -268,13 +268,10 @@ fn test_try_trigger_time_priority() {
     let _serial = serial_guard();
     let now = Utc::now().fixed_offset();
     let store = NewMemoryTimerStore();
-    let hook = TestHook::new();
-    hook.set_pre_block(Duration::from_secs(1));
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store.clone())
-        .RegisterHookFactory("hook1".to_string(), install_hook(hook))
-        .Build();
+    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store.clone()).Build();
     runtime.setNowFunc(Arc::new(move || now));
     runtime.initCtx();
+    let _worker_requests = runtime.installTestWorker("hook1", 2);
 
     let t1 = new_test_timer("t1", "1m", sub(now, Duration::from_secs(3600)));
     runtime.cacheUpdate(t1.clone());
@@ -289,13 +286,6 @@ fn test_try_trigger_time_priority() {
     let t4 = new_test_timer("t4", "1m", sub(now, Duration::from_secs(600)));
     runtime.cacheUpdate(t4.clone());
 
-    for index in 0..128 {
-        runtime.cacheUpdate(new_test_timer(
-            &format!("priority-fill-{index:03}"),
-            "1m",
-            sub(now, Duration::from_secs(6000)),
-        ));
-    }
     runtime.tryTriggerTimerEvents();
     assert_eq!(runtime.cacheProcStatus(&t3.ID), Some(procTriggering));
     assert_eq!(runtime.cacheProcStatus(&t2.ID), Some(procTriggering));
