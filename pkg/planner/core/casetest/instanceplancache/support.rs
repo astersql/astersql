@@ -22,7 +22,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreatePlannerTestStoreAndDomain};
+use astersql_testkit::mockstore::{
+    AnalyzeStatsStore, CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest,
+    CreatePlannerTestStoreAndDomain,
+};
 
 /// Small thread-safe deterministic equivalent of the Go test's rand.Intn.
 /// 为并发用例提供可复现的伪随机序列，避免依赖线程局部随机源造成结果漂移。
@@ -82,20 +85,29 @@ impl Harness {
     /// Domain bootstrap 是进程级 fixture；各用例仍通过重建数据库获得与独立 store
     /// 相同的 schema/data 隔离，派生会话则继续共享同一实例级计划缓存。
     pub fn new() -> Self {
-        Self::new_with_databases(TEST_DATABASES)
+        Self::new_with_databases(TEST_DATABASES, false)
     }
 
     /// 为仅访问 `test` schema 的热路径重建相关数据库，避免清理无关套件 fixture。
     pub fn new_for_test_database() -> Self {
-        Self::new_with_databases(&["test"])
+        Self::new_with_databases(&["test"], false)
     }
 
-    fn new_with_databases(databases: &[&str]) -> Self {
+    /// Account tests need the existing real privilege catalog and isolated users.
+    pub fn new_with_privileges() -> Self {
+        Self::new_with_databases(&["test"], true)
+    }
+
+    fn new_with_databases(databases: &[&str], with_privileges: bool) -> Self {
         let test_guard = TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let store = Arc::clone(SHARED_STORE.get_or_init(|| CreatePlannerTestStoreAndDomain().0));
+        let store = if with_privileges {
+            CreateMockStoreAndDomainWithPrivilegeSystemTablesForTest().0
+        } else {
+            Arc::clone(SHARED_STORE.get_or_init(|| CreatePlannerTestStoreAndDomain().0))
+        };
         let tk = TestKit::new(store.clone());
         let mut harness = Self {
             store,

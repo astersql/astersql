@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -298,14 +298,48 @@ pub fn TestInstancePlanCacheSchemaChange() {
     check_cache(&harness.tk, "1");
 }
 
+/// Match the Go fixture without adding data or changing the prepared SQL.
+fn privilege_harness() -> Harness {
+    let mut harness = Harness::new_with_privileges();
+    exec(
+        &mut harness.tk,
+        "set global tidb_enable_instance_plan_cache=1",
+    );
+    exec(&mut harness.tk, "create table t (a int, primary key(a))");
+    harness
+}
+
+fn authenticated_session(
+    harness: &Harness,
+    username: &str,
+    hostname: &str,
+) -> astersql_testkit::TestKit {
+    let tk = harness.session();
+    tk.Session()
+        .AuthenticateUserForTest(&astersql_parser_auth::parser::auth::auth::UserIdentity {
+            username: username.to_owned(),
+            hostname: hostname.to_owned(),
+            ..Default::default()
+        })
+        .expect("authenticate existing account");
+    tk
+}
+
 #[test]
 pub fn TestInstancePlanCachePrivilegeChanges() {
-    let mut harness = basic_harness();
+    let mut harness = privilege_harness();
     exec(&mut harness.tk, "create user 'u1'");
     exec(&mut harness.tk, "grant select on test.t to 'u1'");
-    // 撤销新建用户的权限后，基础会话自身的查询仍应保持可用。
+    let mut u1 = authenticated_session(&harness, "u1", "%");
+    exec(&mut u1, "prepare st from 'select a from test.t where a<1'");
+    query(&u1, "execute st").Check(Vec::<Vec<&str>>::new());
+    query(&u1, "execute st").Check(Vec::<Vec<&str>>::new());
+    check_cache(&u1, "1");
     exec(&mut harness.tk, "revoke select on test.t from 'u1'");
-    query(&harness.tk, "select count(*) from t");
+    u1.MustExecToErr("execute st");
+    exec(&mut harness.tk, "grant select on test.t to 'u1'");
+    query(&u1, "execute st").Check(Vec::<Vec<&str>>::new());
+    check_cache(&u1, "1");
 }
 
 #[test]
@@ -338,12 +372,30 @@ pub fn TestInstancePlanCacheDifferentCharset() {
 
 #[test]
 pub fn TestInstancePlanCacheDifferentUsers() {
-    let mut harness = basic_harness();
-    exec(&mut harness.tk, "create user 'u1'");
-    exec(&mut harness.tk, "grant select on test.t to 'u1'");
-    exec(&mut harness.tk, "create user 'u2'");
-    exec(&mut harness.tk, "grant select on test.t to 'u2'");
-    query(&harness.tk, "select * from t where a=1");
+    let mut harness = privilege_harness();
+    for account in ["'u1'", "'u1'@'localhost'", "'u2'"] {
+        exec(&mut harness.tk, &format!("create user {account}"));
+        exec(
+            &mut harness.tk,
+            &format!("grant select on test.t to {account}"),
+        );
+    }
+    let mut u1 = authenticated_session(&harness, "u1", "%");
+    let mut u1_local = authenticated_session(&harness, "u1", "localhost");
+    let mut u2 = authenticated_session(&harness, "u2", "%");
+    let mut u1_dup = authenticated_session(&harness, "u1", "%");
+    for (tk, first_hit) in [
+        (&mut u1, "0"),
+        (&mut u1_local, "0"),
+        (&mut u2, "0"),
+        (&mut u1_dup, "1"),
+    ] {
+        exec(tk, "prepare st from 'select a from test.t where a=1'");
+        query(tk, "execute st").Check(Vec::<Vec<&str>>::new());
+        check_cache(tk, first_hit);
+        query(tk, "execute st").Check(Vec::<Vec<&str>>::new());
+        check_cache(tk, "1");
+    }
 }
 
 #[test]

@@ -3432,7 +3432,7 @@ impl ConcreteSession {
         select: &ast::SelectStmt,
         arguments: &[String],
         catalog_version: u64,
-    ) -> SessionResult<Option<ConcreteRecordSet>> {
+    ) -> SessionResult<Option<(ConcreteRecordSet, bool)>> {
         let state = self.state.borrow();
         if state.transaction.is_some()
             || state.transaction_stale_read_ts.is_some()
@@ -3626,7 +3626,10 @@ impl ConcreteSession {
                     .collect()
             })
             .collect();
-        Ok(Some(ConcreteRecordSet::new(columns, rows)))
+        Ok(Some((
+            ConcreteRecordSet::new(columns, rows),
+            executed.FromPlanCache,
+        )))
     }
 
     /// Go `EXECUTE stmt USING @v`: binds the user variables into the parameter
@@ -3839,8 +3842,7 @@ impl ConcreteSession {
                     "skip plan-cache: plan rebuild failed, Fix33031 fix-control set and partitioned table in cached Point Get plan".to_owned(),
                 ));
         }
-        let from_plan_cache = plan_cache
-            && planned
+        let cache_allowed = plan_cache
             && skip_reason.is_none()
             && partial_index_cacheable
             && partition_cacheable
@@ -3848,9 +3850,7 @@ impl ConcreteSession {
             && !has_null_parameter
             && !negative_equality_parameter
             && !parameter_shape_changed;
-        if from_plan_cache {
-            GetPlanCacheHitCounter(false).inc();
-        }
+        let mut from_plan_cache = cache_allowed && planned;
         {
             let mut state = self.state.borrow_mut();
             state.skip_predicate_collection = from_plan_cache;
@@ -3872,8 +3872,18 @@ impl ConcreteSession {
         let mut record_set = None;
         let mut execution = Ok(());
         match typed_execution {
-            Ok(result) => record_set = result,
+            Ok(Some((result, instance_hit))) => {
+                if astersql_sessionctx_vardef::EnableInstancePlanCache.Load() {
+                    // Preserve the physical cache lookup across the named EXECUTE wrapper.
+                    from_plan_cache = cache_allowed && instance_hit;
+                }
+                record_set = Some(result);
+            }
+            Ok(None) => {}
             Err(error) => execution = Err(error),
+        }
+        if from_plan_cache {
+            GetPlanCacheHitCounter(false).inc();
         }
         if record_set.is_some() {
             self.record_statement_metric(parsed.as_ref());

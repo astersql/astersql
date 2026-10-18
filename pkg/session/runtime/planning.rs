@@ -2364,6 +2364,9 @@ impl ConcreteSession {
 
         let isolation = self.session_vars.GetIsolationReadEngines();
         let key_context = astersql_planner_core::PlanCacheKeyContext {
+            // Go keys plans by the matched account, including its host pattern.
+            user_name: self.login_user.clone().unwrap_or_default(),
+            host_name: self.authenticated_host.clone().unwrap_or_default(),
             current_database,
             latest_schema_version: if self.mdl_tables.borrow().is_empty() {
                 prepared.InfoSchema.SchemaMetaVersion()
