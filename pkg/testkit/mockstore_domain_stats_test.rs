@@ -191,7 +191,7 @@ fn analyze_session_workers_join_on_explicit_close_and_drop() {
 /// 受限统计查询结果与普通会话查询共享同一行集。
 #[test]
 fn restricted_stats_rows_are_shared_by_normal_sessions() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreateMockStoreAndDomainWithStatsSystemTablesForTest();
     let mut writer = TestKit::new(store.clone());
     let reader = TestKit::new(store);
     writer.MustExec("create table shared_stats(a int)", Vec::new());
