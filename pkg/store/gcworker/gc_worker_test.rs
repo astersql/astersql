@@ -152,6 +152,7 @@ struct FakeState {
     raft_v2: bool,
     starter_mode: bool,
     in_test: bool,
+    txn_safe_point_sync_wait_time: Duration,
     unified_gc: bool,
     null_keyspace: bool,
 }
@@ -189,6 +190,7 @@ impl Default for FakeState {
             raft_v2: false,
             starter_mode: false,
             in_test: true,
+            txn_safe_point_sync_wait_time: super::gc_worker::txnSafePointSyncWaitTime,
             unified_gc: false,
             null_keyspace: false,
         }
@@ -299,6 +301,9 @@ impl GCWorkerRuntime for FakeRuntime {
     }
     fn InTest(&self) -> bool {
         self.state.lock().unwrap().in_test
+    }
+    fn TxnSafePointSyncWaitTime(&self) -> Duration {
+        self.state.lock().unwrap().txn_safe_point_sync_wait_time
     }
     fn CreateSession(&self) -> GCResult<Box<dyn GCSession>> {
         let mut state = self.state.lock().unwrap();
@@ -921,6 +926,8 @@ fn TestRunGCJobAPI() {
 #[allow(non_snake_case)]
 fn TestRunDistGCJobAPI() {
     let runtime = FakeRuntime::new();
+    // Match the Go regression test, which sets txnSafePointSyncWaitTime to zero.
+    runtime.update(|state| state.txn_safe_point_sync_wait_time = Duration::ZERO);
     let state = runtime.state.clone();
     super::gc_worker::RunDistributedGCJob(Arc::new(runtime), 100, "distributed", 1).unwrap();
     assert!(

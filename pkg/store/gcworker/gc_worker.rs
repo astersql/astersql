@@ -284,6 +284,10 @@ pub trait GCWorkerRuntime: Send + Sync + 'static {
     fn IsStarterMode(&self) -> bool;
     /// 是否处于测试环境。
     fn InTest(&self) -> bool;
+    /// 事务安全点同步后的等待时间；测试运行时可按 Go 用例注入零等待。
+    fn TxnSafePointSyncWaitTime(&self) -> Duration {
+        txnSafePointSyncWaitTime
+    }
     /// 创建访问系统表的会话。
     fn CreateSession(&self) -> GCResult<Box<dyn GCSession>>;
     /// 注册 GC 相关统计指标。
@@ -1310,7 +1314,10 @@ pub fn RunDistributedGCJob(
     let mut worker = NewGCWorker(runtime)?;
     worker.uuid = identifier.to_owned();
     let new_safe_point = worker.advanceTxnSafePoint(safe_point)?;
-    if !worker.cancel.Wait(txnSafePointSyncWaitTime) {
+    if !worker
+        .cancel
+        .Wait(worker.runtime.TxnSafePointSyncWaitTime())
+    {
         return Err(GCError::new("distributed GC cancelled"));
     }
     worker.resolveLocks(new_safe_point, concurrency)?;
