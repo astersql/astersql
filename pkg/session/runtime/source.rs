@@ -17,6 +17,64 @@
 
 use super::*;
 
+/// Prefetch exact integer operands so rejected pairs need no joined-row allocation.
+/// Ambiguous sources and non-integer types retain the general expression evaluator.
+fn integer_join_operands<'a>(
+    join: &'a ast::Join,
+    left: &InsertSelectRows,
+    right: &InsertSelectRows,
+) -> Option<(&'a str, Vec<Option<i128>>, Vec<Option<i128>>)> {
+    if join.NaturalJoin || !join.Using.is_empty() {
+        return None;
+    }
+    let ast::ExprKind::Binary { Op, L, R } = &join.On.as_ref()?.Kind else {
+        return None;
+    };
+    if !matches!(Op.as_str(), ">" | ">=" | "<" | "<=") {
+        return None;
+    }
+    let (ast::ExprKind::Column(l), ast::ExprKind::Column(r)) = (&L.Kind, &R.Kind) else {
+        return None;
+    };
+    if l.Table.L.is_empty() || r.Table.L.is_empty() || l.Table.L == r.Table.L {
+        return None;
+    }
+    let l_key = format!("{}.{}", l.Table.L, l.Name.L);
+    let r_key = format!("{}.{}", r.Table.L, r.Name.L);
+    let operands = |rows: &InsertSelectRows, key: &str, other: &str, expression: &ast::ExprNode| {
+        rows.rows
+            .iter()
+            .map(|row| {
+                if row.contains_key(other)
+                    || super::query::relational_expression_is_string(expression, row)
+                {
+                    return None;
+                }
+                match row.get(key)? {
+                    Some(value) => value.parse::<i128>().ok().map(Some),
+                    None => Some(None),
+                }
+            })
+            .collect::<Option<Vec<Option<i128>>>>()
+    };
+    if let (Some(left), Some(right)) = (
+        operands(left, &l_key, &r_key, L),
+        operands(right, &r_key, &l_key, R),
+    ) {
+        return Some((Op.as_str(), left, right));
+    }
+    let left = operands(left, &r_key, &l_key, R)?;
+    let right = operands(right, &l_key, &r_key, L)?;
+    let reversed = match Op.as_str() {
+        ">" => "<",
+        ">=" => "<=",
+        "<" => ">",
+        "<=" => ">=",
+        _ => unreachable!(),
+    };
+    Some((reversed, left, right))
+}
+
 fn trigger_recoverable_cte_failpoint(name: &str) -> SessionResult<()> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         astersql_testkit_testfailpoint::inject(name);
@@ -878,9 +936,28 @@ impl ConcreteSession {
                 return Ok(InsertSelectRows { columns, rows });
             }
         }
-        for left_row in &left.rows {
+        let integer_operands = outer
+            .is_none()
+            .then(|| integer_join_operands(join, &left, &right))
+            .flatten();
+        for (left_index, left_row) in left.rows.iter().enumerate() {
             let mut matched = false;
             for (right_index, right_row) in right.rows.iter().enumerate() {
+                if let Some((operator, left, right)) = &integer_operands {
+                    let keep =
+                        left[left_index]
+                            .zip(right[right_index])
+                            .is_some_and(|(left, right)| match *operator {
+                                ">" => left > right,
+                                ">=" => left >= right,
+                                "<" => left < right,
+                                "<=" => left <= right,
+                                _ => unreachable!("integer join operator checked"),
+                            });
+                    if !keep {
+                        continue;
+                    }
+                }
                 let joined =
                     self.merge_insert_select_rows(left_row.clone(), right_row, &join_columns);
                 let keep = self.insert_select_join_matches(
