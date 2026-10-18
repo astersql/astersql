@@ -1172,6 +1172,8 @@ impl astersql_extworkload::Manager for Gcv2Manager {
 #[test]
 fn gc_job_notifies_controller_after_success() {
     let (worker, runtime) = worker_fixture();
+    // Match the Go GC job tests, which set txnSafePointSyncWaitTime to zero.
+    runtime.update(|state| state.txn_safe_point_sync_wait_time = Duration::ZERO);
     let calls = Arc::new(Mutex::new(Vec::new()));
     runtime.update(|state| {
         state.external_manager = Some(Arc::new(Mutex::new(Box::new(Gcv2Manager {
