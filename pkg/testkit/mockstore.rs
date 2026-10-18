@@ -36,7 +36,8 @@ use astersql_domain::{
 };
 use astersql_meta_metadef::{
     CreateAnalyzeJobsTable, CreateAnalyzeOptionsTable, CreateDBTable, CreateGlobalGrantsTable,
-    CreateGlobalPrivTable, CreateTablesPrivTable, CreateUserTable,
+    CreateGlobalPrivTable, CreateStatsBucketsTable, CreateStatsHistogramsTable,
+    CreateStatsMetaTable, CreateTablesPrivTable, CreateUserTable,
 };
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, ConcretePreparedArgument, ConcreteSession, CreateAnalyzeSession,
@@ -1800,6 +1801,25 @@ impl AnalyzeStatsStore {
         Self::from_bootstrap(active_sessions, bootstrap)
     }
 
+    /// Build a real SQL store with only the statistics system tables.
+    fn new_with_stats_system_tables() -> Self {
+        let active_sessions = Arc::new(AtomicUsize::new(0));
+        let bootstrap =
+            AnalyzeSessionDatabase::bootstrap_without_system_schemas(Arc::clone(&active_sessions));
+        bootstrap.ensure_go_stats_system_tables();
+        for (name, definition) in [
+            ("stats_meta", CreateStatsMetaTable),
+            ("stats_histograms", CreateStatsHistogramsTable),
+            ("stats_buckets", CreateStatsBucketsTable),
+            ("analyze_options", CreateAnalyzeOptionsTable),
+        ] {
+            bootstrap.execute(definition, &[]).unwrap_or_else(|error| {
+                panic!("bootstrap mysql.{name} for statistics test: {error}")
+            });
+        }
+        Self::from_bootstrap(active_sessions, bootstrap)
+    }
+
     /// Build a real SQL store with only the system tables required by account
     /// and database/table privilege statements.
     fn new_with_privilege_system_tables() -> Self {
@@ -2163,6 +2183,15 @@ pub fn CreateMockStoreAndDomain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
 pub fn CreateMockStoreAndDomainWithoutSystemSchemasForTest() -> (Arc<AnalyzeStatsStore>, Arc<Domain>)
 {
     let store = Arc::new(AnalyzeStatsStore::new_without_system_schemas());
+    let domain = store.domain();
+    domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
+    (store, domain)
+}
+
+/// Create a real canonical SQL store with only the statistics system tables.
+pub fn CreateMockStoreAndDomainWithStatsSystemTablesForTest()
+-> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
+    let store = Arc::new(AnalyzeStatsStore::new_with_stats_system_tables());
     let domain = store.domain();
     domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
     (store, domain)

@@ -18,7 +18,9 @@
 // 覆盖 ANALYZE/FLUSH、会话隔离、stats lock/unlock 事务性、
 // 批量 flush 失败重试、GC、历史保留与受限查询投影一致性等。
 
-use crate::mockstore::CreateMockStoreAndDomain;
+use crate::mockstore::{
+    CreateMockStoreAndDomain, CreateMockStoreAndDomainWithStatsSystemTablesForTest,
+};
 use crate::{Database, DbValue, TestKit};
 use astersql_domain::domain::{DomainStatsBackend, Handle, KvStatsStore, StatsKvStorage};
 use astersql_sessionctx_vardef as vardef;
@@ -224,7 +226,7 @@ fn restricted_stats_rows_are_shared_by_normal_sessions() {
 /// unlock 失败时 meta 与 locked 行一并回滚。
 #[test]
 fn unlock_failure_rolls_back_meta_and_locked_row_together() {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreateMockStoreAndDomainWithStatsSystemTablesForTest();
     let mut testkit = TestKit::new(store);
     testkit.MustExec("create table rollback_stats(a int)", Vec::new());
     testkit.MustExec("analyze table rollback_stats", Vec::new());
