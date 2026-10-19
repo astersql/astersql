@@ -18,6 +18,7 @@
 //! 本模块生成测试表、预处理语句及其等价的直接查询，并通过多个真实会话并发执行，
 //! 验证缓存计划在跨会话复用和重复执行时始终返回一致结果。
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,12 +27,19 @@ use astersql_testkit::TestKit;
 
 use super::support::{Harness, exec, query, rand, rows};
 
+#[cfg(test)]
+#[path = "main_workload_test.rs"]
+mod workload_tests;
+
 pub const typeInt: &str = "int";
 pub const typeVarchar: &str = "varchar(128)";
 pub const typeFloat: &str = "float";
 pub const typeDouble: &str = "double";
 pub const typeDecimal: &str = "decimal(10,2)";
 pub const typeDatetime: &str = "datetime";
+
+const MAIN_QUERY_COUNT: usize = 340;
+const MAIN_QUERY_SHARDS: [Range<usize>; 4] = [0..85, 85..170, 170..255, 255..340];
 
 /// 从候选集合中随机选择一个元素。
 pub fn randomItem(items: &[&str]) -> String {
@@ -470,9 +478,14 @@ fn run_case(mut tk: TestKit, case: TestCase) {
     exec(&mut tk, "deallocate prepare stmt");
 }
 
-#[test]
-/// 启用实例级计划缓存，并发验证多个会话共享缓存计划时的结果一致性。
-pub fn TestInstancePlanCache() {
+/// 启用实例级计划缓存，并发验证指定查询模板区间的结果一致性。
+fn test_instance_plan_cache_shard(range: Range<usize>) {
+    assert!(range.start < range.end, "query shard must not be empty");
+    assert!(
+        range.end <= MAIN_QUERY_COUNT,
+        "query shard {range:?} exceeds the {MAIN_QUERY_COUNT}-template workload"
+    );
+
     let mut harness = Harness::new();
     exec(
         &mut harness.tk,
@@ -481,8 +494,10 @@ pub fn TestInstancePlanCache() {
     for statement in prepareTables(10) {
         exec(&mut harness.tk, &statement);
     }
-    let cases = queryPattern()
-        .into_iter()
+    let patterns = queryPattern();
+    assert_eq!(patterns.len(), MAIN_QUERY_COUNT);
+    let cases = patterns[range]
+        .iter()
         .map(|pattern| prepareStmts(&pattern, 10, 5))
         .collect::<Vec<_>>();
     let barrier = std::sync::Barrier::new(5);
@@ -520,6 +535,26 @@ pub fn TestInstancePlanCache() {
     });
 }
 
+#[test]
+pub fn TestInstancePlanCacheShard1() {
+    test_instance_plan_cache_shard(MAIN_QUERY_SHARDS[0].clone());
+}
+
+#[test]
+pub fn TestInstancePlanCacheShard2() {
+    test_instance_plan_cache_shard(MAIN_QUERY_SHARDS[1].clone());
+}
+
+#[test]
+pub fn TestInstancePlanCacheShard3() {
+    test_instance_plan_cache_shard(MAIN_QUERY_SHARDS[2].clone());
+}
+
+#[test]
+pub fn TestInstancePlanCacheShard4() {
+    test_instance_plan_cache_shard(MAIN_QUERY_SHARDS[3].clone());
+}
+
 #[allow(dead_code)]
 /// 为其他并发测试保留的单用例执行入口。
 pub fn executeWorker(tk: &mut TestKit, case: &TestCase) {
@@ -529,77 +564,4 @@ pub fn executeWorker(tk: &mut TestKit, case: &TestCase) {
 #[allow(dead_code)]
 fn assert_query_equal(tk: &TestKit, sql: &str, expected: &[String]) {
     query(tk, sql).Sort().Check(rows(expected));
-}
-
-#[test]
-fn generated_workload_matches_go_suite_shape() {
-    let patterns = queryPattern();
-    assert_eq!(patterns.len(), 340);
-    assert!(patterns.iter().any(|sql| sql.contains(" order by ")));
-    assert!(patterns.iter().any(|sql| sql.contains(" limit 10")));
-    assert!(patterns.iter().any(|sql| sql.contains(" group by ")));
-    assert!(patterns.iter().any(|sql| sql.contains(" join ")));
-
-    let tables = prepareTables(1);
-    assert_eq!(tables.len(), 2);
-    assert!(tables[0].contains("index idx1"));
-    assert!(tables[0].contains("index idx2"));
-    assert_eq!(tables[1].matches("),(").count() + 1, 100);
-}
-
-#[test]
-fn prepared_direct_results_match_for_captured_case() {
-    let mut harness = Harness::new();
-    exec(
-        &mut harness.tk,
-        "set global tidb_enable_instance_plan_cache=1",
-    );
-    exec(
-        &mut harness.tk,
-        "create table captured(c2 int primary key, c3 double)",
-    );
-    exec(
-        &mut harness.tk,
-        "insert into captured values (-2147483646, 0)",
-    );
-    let mut case = TestCase {
-        prepared_sql: "select * from captured where c2 between ? and ? or c3 like ?".to_owned(),
-        sel_stmts: vec!["select * from captured where c2 between 9223372036854775807 and null or c3 like -0.000000000".to_owned()],
-        arguments: vec![vec!["9223372036854775807".to_owned(), "null".to_owned(), "-0.000000000".to_owned()]],
-    };
-    case.sel_stmts.push(
-        "select * from captured where c2 between 9223372036854775807 and null or c3 like 0"
-            .to_owned(),
-    );
-    case.arguments.push(vec![
-        "9223372036854775807".to_owned(),
-        "null".to_owned(),
-        "0".to_owned(),
-    ]);
-    query(&harness.tk, &case.sel_stmts[0]).Check(Vec::<Vec<String>>::new());
-    query(&harness.tk, &case.sel_stmts[1]).Check(rows(&["-2147483646 0".to_owned()]));
-    for _ in 0..2 {
-        run_case(harness.session(), case.clone());
-    }
-    // The captured NULL argument is deliberately uncacheable. Separately prove
-    // a cacheable input takes the first/repeated/cross-session cache paths.
-    for connection in 0..2 {
-        let mut tk = harness.session();
-        exec(&mut tk, "use test");
-        exec(
-            &mut tk,
-            "prepare hit_probe from 'select c3 from captured where c2=?'",
-        );
-        exec(&mut tk, "set @probe=-2147483646");
-        for execution in 0..3 {
-            query(&tk, "execute hit_probe using @probe").Check(rows(&["0".to_owned()]));
-            let expected_hit = if connection == 0 && execution == 0 {
-                "0"
-            } else {
-                "1"
-            };
-            query(&tk, "select @@last_plan_from_cache").Check(rows(&[expected_hit.to_owned()]));
-        }
-        exec(&mut tk, "deallocate prepare hit_probe");
-    }
 }
