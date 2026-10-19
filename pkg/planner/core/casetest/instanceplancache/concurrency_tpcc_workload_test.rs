@@ -16,6 +16,13 @@
 use super::*;
 
 #[test]
+fn tpcc_shards_preserve_the_go_transaction_budget() {
+    assert_eq!(TPCC_SHARD_COUNT, 3);
+    assert_eq!(TPCC_TRANSACTIONS_PER_SHARD, 100);
+    assert_eq!(TPCC_SHARD_COUNT * TPCC_TRANSACTIONS_PER_SHARD, 300);
+}
+
+#[test]
 fn tpcc_generators_cover_the_go_transaction_statements() {
     let new_order = genNewOrder();
     assert_eq!(new_order.len(), 5);

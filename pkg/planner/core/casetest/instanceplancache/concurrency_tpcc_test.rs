@@ -25,6 +25,9 @@ use astersql_testkit::TestKit;
 
 use super::support::{Harness, exec, insert_rows, rand};
 
+const TPCC_SHARD_COUNT: usize = 3;
+const TPCC_TRANSACTIONS_PER_SHARD: usize = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// 一条可沿直接执行和预处理执行两条路径运行的 TPC-C 事务步骤。
 pub struct TpccStep {
@@ -492,13 +495,12 @@ fn distribute_tpcc_steps(steps: &[TpccStep], worker_count: usize) -> Vec<Vec<Tpc
 #[path = "concurrency_tpcc_workload_test.rs"]
 mod workload_tests;
 
-#[test]
 /// 让十个会话并发执行四类事务片段，覆盖实例级计划缓存的并发复用路径。
-pub fn TestInstancePlanCacheConcurrencyTPCC() {
+fn run_tpcc_workload(transaction_budget: usize) {
     let mut harness = Harness::new();
     prepareTPCC(&mut harness.tk);
     let mut steps = Vec::new();
-    for _ in 0..300 {
+    for _ in 0..transaction_budget {
         steps.extend(match rand::intn(4) {
             0 => genNewOrder(),
             1 => genPayment(),
@@ -516,4 +518,19 @@ pub fn TestInstancePlanCacheConcurrencyTPCC() {
             });
         }
     });
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencyTPCCShard1() {
+    run_tpcc_workload(TPCC_TRANSACTIONS_PER_SHARD);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencyTPCCShard2() {
+    run_tpcc_workload(TPCC_TRANSACTIONS_PER_SHARD);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencyTPCCShard3() {
+    run_tpcc_workload(TPCC_TRANSACTIONS_PER_SHARD);
 }
