@@ -521,6 +521,16 @@ pub mod failpoint {
 pub mod testkit {
     use super::*;
 
+    static REAL_TIKV_TEST_PATH: OnceLock<String> = OnceLock::new();
+
+    pub fn SetRealTiKVTestPath(path: String) {
+        let configured = REAL_TIKV_TEST_PATH.get_or_init(|| path.clone());
+        assert_eq!(
+            configured, &path,
+            "RealTiKV test path changed within one test process"
+        );
+    }
+
     pub type ExecOutcome = (Option<ResultSet>, Option<String>);
     #[cfg(test)]
     type OutcomeHandler = Arc<dyn Fn(&str) -> ExecOutcome + Send + Sync>;
@@ -690,14 +700,14 @@ pub mod testkit {
         type Backend = astersql_testkit::mockstore::AnalyzeStatsStore;
         static STORES: OnceLock<Mutex<std::collections::HashMap<u64, std::sync::Weak<Backend>>>> =
             OnceLock::new();
-        let backend_store = if let Ok(path) = std::env::var("ASTERSQL_REALTIKV_TEST_PATH") {
+        let backend_store = if let Some(path) = REAL_TIKV_TEST_PATH.get() {
             push_local_event("testkit.backend:real-tikv");
             // The add-index RealTiKV harness can opt into the same canonical SQL
             // session over TiKV used by the transaction and session integration tests.
             static REAL_STORES: OnceLock<Mutex<std::collections::HashMap<String, Arc<Backend>>>> =
                 OnceLock::new();
             let mut stores = REAL_STORES.get_or_init(Default::default).lock().unwrap();
-            if let Some(existing) = stores.get(&path) {
+            if let Some(existing) = stores.get(path) {
                 Arc::clone(existing)
             } else {
                 let backend = astersql_testkit::mockstore::CreateTiKVStoreAndDomain(&path)
@@ -705,7 +715,7 @@ pub mod testkit {
                         panic!("open RealTiKV add-index test store {path:?}: {error}")
                     })
                     .0;
-                stores.insert(path, Arc::clone(&backend));
+                stores.insert(path.clone(), Arc::clone(&backend));
                 backend
             }
         } else {
