@@ -21,16 +21,15 @@ max-threads = 1
 filter = 'test(scan_adapter_runtime_test)'
 test-group = "scan-adapter-runtime"
 
-# These full-size instance-plan-cache workloads keep their complete Go statement
-# matrices and internal session concurrency. Running another heavy cache process
-# alongside them can push an otherwise sub-10s focused run past the timeout.
-# Reserve the runner's worker quota for each outer process without changing its
-# internal sessions or the rest of the suite's normal scheduling.
+# These sharded instance-plan-cache workloads each finish within ten seconds,
+# but still need isolation from full-suite CPU contention. Reserve the runner's
+# worker quota for each shard without changing its internal sessions or the
+# rest of the suite's normal scheduling.
 [[profile.default.overrides]]
 filter = '''
-test(=main_test::TestInstancePlanCache) |
-test(=concurrency_test::TestInstancePlanCacheConcurrencyComp) |
-test(=concurrency_test::TestInstancePlanCacheConcurrencySysbench)
+test(/^concurrency_test::TestInstancePlanCacheConcurrency(Comp|Sysbench)Shard[1-4]$/) |
+test(/^concurrency_tpcc_test::TestInstancePlanCacheConcurrencyTPCCShard[1-3]$/) |
+test(/^main_test::TestInstancePlanCacheShard[1-4]$/)
 '''
 threads-required = "num-test-threads"
 
