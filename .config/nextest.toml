@@ -21,6 +21,18 @@ max-threads = 1
 filter = 'test(scan_adapter_runtime_test)'
 test-group = "scan-adapter-runtime"
 
+# These two full-size instance-plan-cache workloads each keep ten concurrent
+# sessions and the complete Go statement matrix. Running both processes at the
+# same time pushes Comp from 9.1s in the focused run past the 10s limit. Reserve
+# the runner's worker quota for either outer process without changing its ten
+# internal sessions or the rest of the suite's normal scheduling.
+[[profile.default.overrides]]
+filter = '''
+test(=concurrency_test::TestInstancePlanCacheConcurrencyComp) |
+test(=concurrency_test::TestInstancePlanCacheConcurrencySysbench)
+'''
+threads-required = "num-test-threads"
+
 # RealTiKV tests share one external cluster and its canonical bootstrap/catalog
 # keys. Running separate packages concurrently can produce real optimistic
 # write conflicts between otherwise independent cases, so serialize only this
