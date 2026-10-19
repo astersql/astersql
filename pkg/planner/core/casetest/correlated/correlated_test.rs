@@ -169,6 +169,7 @@ fn test_correlated_subquery() {
     for cascades in [false, true] {
         // The fixture is immutable after setup. Keep planner rounds in separate
         // sessions so their variables and statement state cannot leak.
+        // The failpoint is process-wide, so finish the parallel SQL cases first.
         let mut tk = TestKit::new(store.clone());
         tk.MustExec(&format!("use {database}"), Vec::new());
         tk.MustExec(
@@ -322,8 +323,8 @@ fn test_natural_join_with_correlated_subquery() {
     prepare_alternative_logical_plan_fixture(&mut setup);
     drop(setup);
 
-    std::thread::scope(|scope| {
-        for cascades in [false, true] {
+    for cascades in [false, true] {
+        std::thread::scope(|scope| {
             let (input, output) = suite
                 .LoadTestCasesByName("TestNaturalJoinWithCorrelatedSubquery", cascades)
                 .expect("load natural join cases");
@@ -368,21 +369,18 @@ fn test_natural_join_with_correlated_subquery() {
                     tk.MustQuery(sql, Vec::new()).Check(expected_result);
                 });
             }
-            let store = store.clone();
-            scope.spawn(move || {
-                let mut tk = TestKit::new(store);
-                tk.MustExec(&format!("use {database}"), Vec::new());
-                tk.MustExec(
-                    &format!(
-                        "set @@tidb_enable_cascades_planner={}",
-                        if cascades { "on" } else { "off" }
-                    ),
-                    Vec::new(),
-                );
-                verify_alternative_logical_plan_rounds(&mut tk);
-            });
-        }
-    });
+        });
+        let mut tk = TestKit::new(store.clone());
+        tk.MustExec(&format!("use {database}"), Vec::new());
+        tk.MustExec(
+            &format!(
+                "set @@tidb_enable_cascades_planner={}",
+                if cascades { "on" } else { "off" }
+            ),
+            Vec::new(),
+        );
+        verify_alternative_logical_plan_rounds(&mut tk);
+    }
 }
 
 fn prepare_alternative_logical_plan_fixture(tk: &mut TestKit) {
