@@ -178,7 +178,7 @@ fn common_mysql_ddl_round_trips_through_catalog_and_storage() {
     // 新增非空列时旧行应回填默认值；重复的条件式加列、加索引必须保持幂等。
     execute(
         &session,
-        "alter table work_items add column rating int not null default 5 comment 'rating'",
+        "alter table work_items add column rating integer not null default 5 comment 'rating'",
     );
     execute(
         &session,
@@ -281,7 +281,7 @@ fn common_mysql_ddl_round_trips_through_catalog_and_storage() {
             ],
             vec![
                 "priority".to_owned(),
-                "integer".to_owned(),
+                "int".to_owned(),
                 "NO".to_owned(),
                 "5".to_owned(),
                 "rating".to_owned(),
