@@ -14,7 +14,33 @@
 
 use astersql_testkit::TestKit;
 
-use super::{Harness, TestStmt, dql_execution_sql, exec, query};
+use super::{Harness, TestStmt, WORKLOAD_SHARDS, dql_execution_sql, exec, query};
+
+#[test]
+fn comp_and_sysbench_shards_preserve_go_workload_budgets() {
+    assert_eq!(WORKLOAD_SHARDS.len(), 4);
+    assert!(
+        WORKLOAD_SHARDS
+            .iter()
+            .all(|&(statement_budget, initial_record_budget)| {
+                statement_budget == 500 && initial_record_budget == 25
+            })
+    );
+    assert_eq!(
+        WORKLOAD_SHARDS
+            .iter()
+            .map(|&(statement_budget, _)| statement_budget)
+            .sum::<usize>(),
+        2000
+    );
+    assert_eq!(
+        WORKLOAD_SHARDS
+            .iter()
+            .map(|&(_, initial_record_budget)| initial_record_budget)
+            .sum::<usize>(),
+        100
+    );
+}
 
 #[test]
 fn dql_execution_matches_go_worker_sequence() {

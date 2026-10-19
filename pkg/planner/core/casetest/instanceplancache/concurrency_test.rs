@@ -679,18 +679,50 @@ pub fn TestInstancePlanCacheConcurrencyPartitioning() {
     });
 }
 
+const WORKLOAD_SHARDS: [(usize, usize); 4] = [(500, 25); 4];
+
 #[test]
-pub fn TestInstancePlanCacheConcurrencyComp() {
-    mixed_read_workload();
+pub fn TestInstancePlanCacheConcurrencyCompShard1() {
+    mixed_read_workload(WORKLOAD_SHARDS[0].0, WORKLOAD_SHARDS[0].1);
 }
 
 #[test]
-pub fn TestInstancePlanCacheConcurrencySysbench() {
-    sysbench_workload();
+pub fn TestInstancePlanCacheConcurrencyCompShard2() {
+    mixed_read_workload(WORKLOAD_SHARDS[1].0, WORKLOAD_SHARDS[1].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencyCompShard3() {
+    mixed_read_workload(WORKLOAD_SHARDS[2].0, WORKLOAD_SHARDS[2].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencyCompShard4() {
+    mixed_read_workload(WORKLOAD_SHARDS[3].0, WORKLOAD_SHARDS[3].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencySysbenchShard1() {
+    sysbench_workload(WORKLOAD_SHARDS[0].0, WORKLOAD_SHARDS[0].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencySysbenchShard2() {
+    sysbench_workload(WORKLOAD_SHARDS[1].0, WORKLOAD_SHARDS[1].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencySysbenchShard3() {
+    sysbench_workload(WORKLOAD_SHARDS[2].0, WORKLOAD_SHARDS[2].1);
+}
+
+#[test]
+pub fn TestInstancePlanCacheConcurrencySysbenchShard4() {
+    sysbench_workload(WORKLOAD_SHARDS[3].0, WORKLOAD_SHARDS[3].1);
 }
 
 /// 覆盖 Go comp 用例中的写入、点查、范围、聚合与连接形状。
-fn mixed_read_workload() {
+fn mixed_read_workload(statement_budget: usize, initial_record_budget: usize) {
     let mut harness = Harness::new();
     exec(&mut harness.tk, "create database normal");
     exec(&mut harness.tk, "create database prepared");
@@ -856,12 +888,12 @@ fn mixed_read_workload() {
         }
     };
     let mut statements = vec![txn("begin")];
-    while statements.len() < 2000 {
+    while statements.len() < statement_budget {
         if rand::intn(15) == 0 {
             statements.extend([txn("commit"), txn("begin")]);
             continue;
         }
-        if statements.len() < 100 {
+        if statements.len() < initial_record_budget {
             statements.push(gen_insert());
             continue;
         }
@@ -906,7 +938,7 @@ fn two_param_stmt(select: &str, predicate: &str, v1: i32, v2: i32) -> TestStmt {
 }
 
 /// 复现 Sysbench 的事务、读写比例和普通/预处理双库对照。
-fn sysbench_workload() {
+fn sysbench_workload(statement_budget: usize, initial_record_budget: usize) {
     let mut harness = Harness::new();
     exec(&mut harness.tk, "create database normal");
     exec(&mut harness.tk, "create database prepared");
@@ -925,14 +957,14 @@ fn sysbench_workload() {
     let mut txn_least_id = 1;
     let mut statements = vec![txn("begin")];
     let mut generated_slots = statements.len();
-    while generated_slots < 2000 {
+    while generated_slots < statement_budget {
         if rand::intn(15) == 0 {
             statements.extend([txn("commit"), txn("begin")]);
             generated_slots += 2;
             txn_least_id = 1;
             continue;
         }
-        if generated_slots < 100 {
+        if generated_slots < initial_record_budget {
             statements.push(sysbench_insert(&mut max_id));
             generated_slots += 1;
             continue;
