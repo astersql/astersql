@@ -344,7 +344,20 @@ fn nested_index_join_preserves_intermediate_lookup_keys() {
         let residual_sql = "select count(*) from fact_t, d1_t, d2_t, d3_t where fact_t.d1_k = d1_t.d1_k and fact_t.d2_k = d2_t.d2_k and fact_t.d3_k = d3_t.d3_k and fact_t.col2 = d2_t.value";
         assert_eq!(
             tk.MustQuery(residual_sql, Vec::new()).Rows(),
-            vec![vec!["2".to_owned()]],
+            vec![vec!["4".to_owned()]],
+        );
+        assert_eq!(
+            tk.MustQuery(
+                "select fact_t.d1_k, fact_t.d2_k, fact_t.d3_k from fact_t, d1_t, d2_t, d3_t where fact_t.d1_k = d1_t.d1_k and fact_t.d2_k = d2_t.d2_k and fact_t.d3_k = d3_t.d3_k and fact_t.col2 = d2_t.value order by fact_t.d1_k, fact_t.d2_k, fact_t.d3_k",
+                Vec::new(),
+            )
+            .Rows(),
+            vec![
+                vec!["1".to_owned(), "10.11".to_owned(), "2010-01-01".to_owned()],
+                vec!["1".to_owned(), "10.11".to_owned(), "2010-01-02".to_owned()],
+                vec!["2".to_owned(), "10.11".to_owned(), "2010-01-01".to_owned()],
+                vec!["2".to_owned(), "10.11".to_owned(), "2010-01-02".to_owned()],
+            ],
         );
         tk.MustQuery(
             &format!("explain format = 'plan_tree' {residual_sql}"),
