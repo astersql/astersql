@@ -277,6 +277,46 @@ impl RUWindowAggregator {
     pub fn dropped_late_ru(&self) -> f64 {
         f64::from_bits(self.droppedLateRUBits.load(Ordering::Relaxed))
     }
+
+    /// Return the currently aggregated totals for one key in tests.
+    ///
+    /// This mirrors the Go reporter test's locked inspection of the live RU
+    /// bucket, allowing callers to wait for the asynchronous worker without a
+    /// timing-based sleep.
+    #[cfg(test)]
+    pub(crate) fn totalsForTest(
+        &self,
+        user: &str,
+        sqlDigest: &[u8],
+        planDigest: &[u8],
+    ) -> Option<(f64, u64)> {
+        let state = self.state.lock().expect("RU aggregator mutex poisoned");
+        let mut totalRU = 0.0;
+        let mut execCount = 0_u64;
+        let mut found = false;
+        for bucket in state.buckets.values() {
+            for collecting in [bucket.collecting.as_deref(), bucket.compacted.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                let Some(userCollecting) = collecting.users.get(user) else {
+                    continue;
+                };
+                let Some(record) = userCollecting.records.values().find(|record| {
+                    record.sqlDigest.as_bytes() == sqlDigest
+                        && record.planDigest.as_bytes() == planDigest
+                }) else {
+                    continue;
+                };
+                found = true;
+                for item in &record.items {
+                    totalRU += item.totalRU;
+                    execCount = execCount.wrapping_add(item.execCount);
+                }
+            }
+        }
+        found.then_some((totalRU, execCount))
+    }
 }
 
 /// 将起始时间 + 桶长不超过 boundary 的活跃桶压缩为 Top-N。

@@ -928,7 +928,17 @@ fn test_top_ru_pipeline_in_process_integration() {
         )]),
         1,
     );
-    std::thread::sleep(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if reporter.ruTotalsForTest("user-hot", b"sql-hot", b"plan-hot") == Some((17.0, 3)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "collect worker should aggregate both hot RU batches before flush"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let end = next_window_end();
     let payload = flush_at(&reporter, &rx, end);
     let hot = find_ru_record(&payload.RURecords, "user-hot", b"sql-hot", b"plan-hot").unwrap();

@@ -814,6 +814,18 @@ impl RemoteTopSQLReporter {
             self.metrics.reportChannelFull.load(Ordering::Relaxed),
         )
     }
+
+    /// Inspect live RU aggregation in tests so asynchronous collection can be
+    /// synchronized on observable state instead of a fixed sleep.
+    #[cfg(test)]
+    pub(crate) fn ruTotalsForTest(
+        &self,
+        user: &str,
+        sqlDigest: &[u8],
+        planDigest: &[u8],
+    ) -> Option<(f64, u64)> {
+        self.ruAggregator.totalsForTest(user, sqlDigest, planDigest)
+    }
 }
 
 impl DataSinkRegisterer for RemoteTopSQLReporter {
