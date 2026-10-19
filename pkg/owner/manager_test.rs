@@ -18,14 +18,12 @@
 // 通过 `go run etcdhelper/main.go` 拉起进程内 etcd，覆盖与 Go `manager_test.go` 对齐的场景。
 
 use std::collections::HashSet;
-use std::fs;
 use std::io::{BufRead, BufReader};
-use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use etcd_client::{Client, ConnectOptions, DeleteOptions};
 use owner::{
@@ -51,48 +49,26 @@ async fn test_distributed_lock_retries_transient_errors() {
 /// 进程内嵌入式 etcd 的 endpoint 与子进程句柄。
 struct EmbeddedEtcd {
     endpoint: String,
-    _child: Option<Mutex<Child>>,
+    _child: Mutex<Child>,
 }
 
 static EMBEDDED_ETCD: OnceLock<EmbeddedEtcd> = OnceLock::new();
 
-/// 跨 nextest 的独立测试进程复用真实嵌入式 etcd，避免每个 case 都重复启动服务。
+/// 单个 nextest 测试进程内复用真实嵌入式 etcd。
 fn embedded_etcd() -> &'static EmbeddedEtcd {
-    EMBEDDED_ETCD.get_or_init(start_or_reuse_embedded_etcd)
+    EMBEDDED_ETCD.get_or_init(start_embedded_etcd)
 }
 
-fn start_or_reuse_embedded_etcd() -> EmbeddedEtcd {
+fn start_embedded_etcd() -> EmbeddedEtcd {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .ancestors()
         .find(|path| path.join("go.mod").is_file())
         .expect("find repository root containing go.mod");
-    let shared_dir = repo_root.join("target/rust-performance/owner-etcd");
-    fs::create_dir_all(&shared_dir).expect("create shared embedded-etcd directory");
-
-    if let Some(endpoint) = live_shared_endpoint(&shared_dir) {
-        return EmbeddedEtcd {
-            endpoint,
-            _child: None,
-        };
-    }
-
-    let startup_lock = SharedStartupLock::acquire(&shared_dir);
-    if let Some(endpoint) = live_shared_endpoint(&shared_dir) {
-        drop(startup_lock);
-        return EmbeddedEtcd {
-            endpoint,
-            _child: None,
-        };
-    }
 
     let helper = manifest_dir.join("etcdhelper/main.go");
-    let mut child = Command::new("sh")
-        .args([
-            "-c",
-            "{ cat; sleep 30; } | go run \"$1\"",
-            "owner-etcd",
-        ])
+    let mut child = Command::new("go")
+        .arg("run")
         .arg(helper)
         .current_dir(repo_root)
         .stdin(Stdio::piped())
@@ -109,49 +85,9 @@ fn start_or_reuse_embedded_etcd() -> EmbeddedEtcd {
         .strip_prefix("READY ")
         .unwrap_or_else(|| panic!("embedded-etcd startup failed: {line}"))
         .to_owned();
-    fs::write(shared_dir.join("endpoint"), &endpoint)
-        .expect("publish shared embedded-etcd endpoint");
-    drop(startup_lock);
     EmbeddedEtcd {
         endpoint,
-        _child: Some(Mutex::new(child)),
-    }
-}
-
-fn live_shared_endpoint(shared_dir: &Path) -> Option<String> {
-    let endpoint = fs::read_to_string(shared_dir.join("endpoint")).ok()?;
-    let endpoint = endpoint.trim().to_owned();
-    let address = endpoint.strip_prefix("http://")?;
-    TcpStream::connect_timeout(&address.parse().ok()?, Duration::from_millis(100))
-        .ok()
-        .map(|_| endpoint)
-}
-
-struct SharedStartupLock(PathBuf);
-
-impl SharedStartupLock {
-    fn acquire(shared_dir: &Path) -> Self {
-        let path = shared_dir.join("startup.lock");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match fs::create_dir(&path) {
-                Ok(()) => return Self(path),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "timed out waiting for shared embedded-etcd startup lock"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("create shared embedded-etcd startup lock: {error}"),
-            }
-        }
-    }
-}
-
-impl Drop for SharedStartupLock {
-    fn drop(&mut self) {
-        fs::remove_dir(&self.0).expect("remove shared embedded-etcd startup lock");
+        _child: Mutex::new(child),
     }
 }
 
@@ -574,17 +510,19 @@ async fn test_cluster() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_watch_owner() {
-    let path = "/task-547/watch";
+    // Keep the key process-scoped so parallel nextest processes cannot clear or
+    // delete this test's owner key if the harness ever shares etcd again.
+    let path = format!("/task-547/watch/{}", std::process::id());
     let mut client = new_client().await;
-    clear_path(&mut client, path).await;
-    let manager = NewOwnerManager(Context::new(), client.clone(), "ddl", "1", path);
+    clear_path(&mut client, &path).await;
+    let manager = NewOwnerManager(Context::new(), client.clone(), "ddl", "1", &path);
     let listener = Arc::new(RecordingListener::default());
     manager.SetListener(listener).await;
     manager.CampaignOwner(&[]).await.unwrap();
     wait_owner(&manager, true).await;
 
     let ctx = Context::new();
-    let (owner_key, revision) = GetOwnerKeyInfo(&ctx, client.clone(), path, &manager.ID())
+    let (owner_key, revision) = GetOwnerKeyInfo(&ctx, client.clone(), &path, &manager.ID())
         .await
         .unwrap();
     let watch_manager = manager.clone();
@@ -609,21 +547,24 @@ async fn test_watch_owner() {
         .await
         .unwrap();
     manager.Close().await;
-    clear_path(&mut client, path).await;
+    clear_path(&mut client, &path).await;
 }
 
 /// Owner key 已删除后再 Watch，应立即返回。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn test_watch_owner_after_delete_owner_key() {
-    let path = "/task-547/watch-after-delete";
+    let path = format!(
+        "/task-547/watch-after-delete/{}",
+        std::process::id()
+    );
     let mut client = new_client().await;
-    clear_path(&mut client, path).await;
-    let manager = NewOwnerManager(Context::new(), client.clone(), "ddl", "1", path);
+    clear_path(&mut client, &path).await;
+    let manager = NewOwnerManager(Context::new(), client.clone(), "ddl", "1", &path);
     manager.CampaignOwner(&[]).await.unwrap();
     wait_owner(&manager, true).await;
     let ctx = Context::new();
-    let (owner_key, revision) = GetOwnerKeyInfo(&ctx, client.clone(), path, &manager.ID())
+    let (owner_key, revision) = GetOwnerKeyInfo(&ctx, client.clone(), &path, &manager.ID())
         .await
         .unwrap();
     client.delete(owner_key.as_str(), None).await.unwrap();
@@ -631,7 +572,7 @@ async fn test_watch_owner_after_delete_owner_key() {
         .await
         .unwrap();
     manager.Close().await;
-    clear_path(&mut client, path).await;
+    clear_path(&mut client, &path).await;
 }
 
 /// 连续 CampaignOwner / CampaignCancel 不应挂死。
