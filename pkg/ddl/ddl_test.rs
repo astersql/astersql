@@ -26,14 +26,40 @@
 //   标识符（表名、列名等）最长 64 个字符。
 //
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 // 被测函数均来自 DDL 执行器模块：
 // - check_identifier: 校验标识符（表名/列名等）长度合法性；
 // - get_interval_from_policy: 按重试策略表返回轮询间隔；
 // - resolve_charset_collation: 解析字符集与排序规则选项。
-use crate::ddl::{ActionType, Job, drop_or_truncate_table_info_from_jobs, recover_snapshot_ts};
+use crate::ddl::{
+    ActionType, Ddl, Job, drop_or_truncate_table_info_from_jobs, recover_snapshot_ts,
+};
 use crate::executor::{check_identifier, get_interval_from_policy, resolve_charset_collation};
+
+#[test]
+fn diagnostic_mode_disallows_switch_mdl() {
+    let previous_in_test = astersql_util_intest::InTest.swap(true, Ordering::SeqCst);
+    struct RestoreInTest(bool);
+    impl Drop for RestoreInTest {
+        fn drop(&mut self) {
+            astersql_util_intest::InTest.store(self.0, Ordering::SeqCst);
+        }
+    }
+    let _restore_in_test = RestoreInTest(previous_in_test);
+    let restore = astersql_config::diagnosticmode::SetForTest(true);
+
+    let mut ddl = Ddl::new("diagnostic", []);
+    let result = ddl.switch_metadata_lock(true);
+
+    restore();
+    assert_eq!(
+        result,
+        Err(astersql_config::diagnosticmode::ErrDDLNotAllowed.clone())
+    );
+    assert!(ddl.metadata_lock_enabled);
+}
 
 #[test]
 fn recover_snapshot_prefers_real_start_ts_like_go() {

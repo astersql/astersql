@@ -683,6 +683,9 @@ impl Syncer {
 
     /// 清理陈旧登记后新建 session，并把本节点 ServerInfo 写入 etcd。
     pub fn NewSessionAndStoreServerInfo(&mut self, context: Context) -> Result<(), SyncError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Ok(());
+        }
         if self.etcdCli.is_none() {
             return Ok(());
         }
@@ -704,6 +707,9 @@ impl Syncer {
 
     /// 将本地 ServerInfo Marshal 后 Put 到 etcd（绑定 session lease）。
     pub fn StoreServerInfo(&self, context: Context) -> Result<(), SyncError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Ok(());
+        }
         let Some(client) = &self.etcdCli else {
             return Ok(());
         };
@@ -757,6 +763,9 @@ impl Syncer {
         context: Context,
         labels: HashMap<String, String>,
     ) -> Result<(), SyncError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Ok(());
+        }
         let Some(client) = &self.etcdCli else {
             return Ok(());
         };
@@ -904,6 +913,9 @@ impl Syncer {
                     );
                 }
             }
+            if astersql_config::diagnosticmode::Enabled() {
+                return;
+            }
             let _ = client.Delete(&Context::Background(), &self.serverInfoPath);
         }
     }
@@ -979,6 +991,9 @@ impl Syncer {
 
     /// 写入 `/topology/tidb/<addr>/info`（无 lease），并刷新 aliveness ttl。
     pub fn StoreTopologyInfo(&self, context: Context) -> Result<(), SyncError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Ok(());
+        }
         let Some(client) = &self.etcdCli else {
             return Ok(());
         };
@@ -995,6 +1010,9 @@ impl Syncer {
 
     /// 用当前纳秒时间戳刷新 `/topology/tidb/<addr>/ttl`（绑定拓扑 session lease）。
     pub fn updateTopologyAliveness(&self, context: Context) -> Result<(), SyncError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Ok(());
+        }
         let Some(client) = &self.etcdCli else {
             return Ok(());
         };
@@ -1036,6 +1054,9 @@ impl Syncer {
 
     /// 删除本节点拓扑前缀下全部键。
     pub fn RemoveTopologyInfo(&self) {
+        if astersql_config::diagnosticmode::Enabled() {
+            return;
+        }
         if let Some(client) = &self.etcdCli {
             let info = self.GetLocalServerInfo();
             let _ = client.DeletePrefix(

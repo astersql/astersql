@@ -333,11 +333,13 @@ impl Syncer {
                 self.deferFn.check();
                 next = Instant::now() + interval;
             }
-            if let Err(error) = self.RefreshMDLFromSQL() {
-                eprintln!("MDL refresh failed: {error}");
+            if !astersql_config::diagnosticmode::Enabled() {
+                if let Err(error) = self.RefreshMDLFromSQL() {
+                    eprintln!("MDL refresh failed: {error}");
+                }
+                *self.mdl_wake.0.lock().unwrap() = true;
+                self.mdl_wake.1.notify_one();
             }
-            *self.mdl_wake.0.lock().unwrap() = true;
-            self.mdl_wake.1.notify_one();
         }
         Ok(())
     }

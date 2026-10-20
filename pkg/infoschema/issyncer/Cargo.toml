@@ -12,6 +12,7 @@ go-package = "pkg/infoschema/issyncer"
 legacy-tasks = ["task-920", "task-926"]
 
 [dependencies]
+"astersql-config" = { path = "../../config" }
 "astersql-sessionctx-vardef" = { path = "../../sessionctx/vardef" }
 "astersql-config-kerneltype" = { path = "../../config/kerneltype" }
 "astersql-ddl-schemaver" = { path = "../../ddl/schemaver" }

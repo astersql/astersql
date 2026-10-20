@@ -298,10 +298,17 @@ impl Ddl {
         self.enabled = false;
     }
     /// 切换元数据锁开关，返回值表示状态是否发生了变化。
-    pub fn switch_metadata_lock(&mut self, enabled: bool) -> bool {
+    /// Diagnostic 实例不参与集群 DDL，因此在修改状态前直接拒绝。
+    pub fn switch_metadata_lock(
+        &mut self,
+        enabled: bool,
+    ) -> Result<bool, astersql_config::diagnosticmode::DiagnosticModeError> {
+        if astersql_config::diagnosticmode::Enabled() {
+            return Err(astersql_config::diagnosticmode::ErrDDLNotAllowed.clone());
+        }
         let changed = self.metadata_lock_enabled != enabled;
         self.metadata_lock_enabled = enabled;
-        changed
+        Ok(changed)
     }
     /// 提交一个新的 DDL 任务。
     ///
