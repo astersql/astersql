@@ -232,6 +232,47 @@ fn test_verify_checkpoint() {
     assert!(err.Error().contains("mydumper.sorted-kv-dir"));
 }
 
+#[test]
+fn test_verify_checkpoint_redacts_source_dir() {
+    let mut cfg = config::Config::NewConfig();
+    cfg.App.CheckRequirements = true;
+    cfg.TikvImporter.Backend = config::BackendTiDB.into();
+    cfg.Mydumper.SourceDir =
+        "s3://bucket/data?access-key=AKID&secret-access-key=SKEY&region=us-east-1".into();
+    let mut checkpoint = checkpoints::TaskCheckpoint {
+        Backend: config::BackendTiDB.into(),
+        LightningVer: build::ReleaseVersion.into(),
+        SourceDir: "s3://bucket/old?access-key=AKID&secret-access-key=SKEY&region=us-east-1".into(),
+        ..Default::default()
+    };
+    let message = verifyCheckpoint(&cfg, &checkpoint).unwrap_err().Error();
+    assert!(
+        !message.contains("AKID") && !message.contains("SKEY"),
+        "{message}"
+    );
+    assert!(message.contains("region=us-east-1"), "{message}");
+
+    cfg.Mydumper.SourceDir =
+        "s3://bucket/old?access-key=NEWKEY&secret-access-key=NEWSECRET&region=us-east-1".into();
+    let message = verifyCheckpoint(&cfg, &checkpoint).unwrap_err().Error();
+    assert!(
+        message.contains("only the redacted parameters differ"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("AKID") && !message.contains("NEWKEY"),
+        "{message}"
+    );
+
+    checkpoint.SourceDir = "s3://bucket/old".into();
+    cfg.Mydumper.SourceDir = "s3://bucket:port/data?access-key=AKID&secret-access-key=SKEY".into();
+    let message = verifyCheckpoint(&cfg, &checkpoint).unwrap_err().Error();
+    assert!(
+        !message.contains("AKID") && !message.contains("SKEY"),
+        "{message}"
+    );
+}
+
 // 自动补充的`FailMetaMgrBuilder` 是测试文件用来搭建场景的辅助部件。
 // 它通常把样例数据、框架对象或重复断言逻辑收敛起来。
 // 这样主测例就能更直接地聚焦契约行为而不是铺垫细节。

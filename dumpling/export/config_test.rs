@@ -21,6 +21,28 @@ fn test_create_external_storage() {
 }
 
 #[test]
+fn test_config_string_redacts_credentials() {
+    let mut conf = default_config_for_test();
+    conf.OutputDirPath = "s3://bucket/path?access-key=AKID&secret_access_key=SKEY&session-token=TOKEN&region=us-east-1".into();
+    conf.BackendOptions.s3.access_key = "AKID".into();
+    conf.BackendOptions.s3.secret_access_key = "SKEY".into();
+    conf.BackendOptions.s3.session_token = "TOKEN".into();
+    conf.BackendOptions.azblob.account_key = "AZKEY".into();
+    conf.BackendOptions.azblob.sas_token = "SAS".into();
+    conf.BackendOptions.azblob.encryption_key = "ENC".into();
+    conf.BackendOptions.azblob.endpoint =
+        "https://account.blob.core.windows.net/?sig=SASQUERY".into();
+
+    let summary = conf.String();
+    for secret in ["AKID", "SKEY", "TOKEN", "AZKEY", "SAS", "ENC", "SASQUERY"] {
+        assert!(!summary.contains(secret), "{summary}");
+    }
+    assert!(summary.contains("region=us-east-1"), "{summary}");
+    assert_eq!(conf.BackendOptions.s3.access_key, "AKID");
+    assert!(conf.OutputDirPath.contains("AKID"));
+}
+
+#[test]
 fn test_match_mysql_bug_version() {
     // 覆盖 bug 版本区间的左右边界，防止比较条件出现 off-by-one。
     // TiDB 版本也放在这里，确保不会被误判成 MySQL bug 版本。

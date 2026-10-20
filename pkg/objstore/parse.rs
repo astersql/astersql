@@ -39,6 +39,76 @@ pub struct BackendOptions {
     pub azblob: AzblobBackendOptions,
 }
 
+/// Replaces a storage URL that cannot be parsed safely.
+pub const InvalidURLPlaceholder: &str = "(invalid storage URL)";
+
+/// Masks credentials in a storage URL without exposing malformed input.
+pub fn RedactURL(raw_url: &str) -> String {
+    if !raw_url.contains("://") && !raw_url.contains('?') {
+        return raw_url.to_owned();
+    }
+    if has_invalid_authority_escape(raw_url) {
+        return InvalidURLPlaceholder.to_owned();
+    }
+    let Ok(mut parsed) = Url::parse(raw_url) else {
+        return InvalidURLPlaceholder.to_owned();
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+    }
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "" | "file" | "local" | "hdfs" | "noop" | "gs" | "gcs" | "s3" | "ks3" | "oss" | "azure"
+        | "azblob" => parser_ast::misc::redact_url(parsed.as_str()),
+        _ => {
+            parsed.set_query(None);
+            parsed.to_string()
+        }
+    }
+}
+
+fn has_invalid_authority_escape(raw_url: &str) -> bool {
+    let Some((_, after_scheme)) = raw_url.split_once("://") else {
+        return false;
+    };
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .as_bytes();
+    authority.iter().enumerate().any(|(index, byte)| {
+        *byte == b'%'
+            && (index + 2 >= authority.len()
+                || !authority[index + 1].is_ascii_hexdigit()
+                || !authority[index + 2].is_ascii_hexdigit())
+    })
+}
+
+impl BackendOptions {
+    /// Returns a redacted copy suitable for logs; the receiver is unchanged.
+    pub fn Redacted(&self) -> Self {
+        let mut options = self.clone();
+        options.s3.access_key = mask_if_set(&options.s3.access_key);
+        options.s3.secret_access_key = mask_if_set(&options.s3.secret_access_key);
+        options.s3.session_token = mask_if_set(&options.s3.session_token);
+        options.azblob.account_key = mask_if_set(&options.azblob.account_key);
+        options.azblob.sas_token = mask_if_set(&options.azblob.sas_token);
+        options.azblob.encryption_key = mask_if_set(&options.azblob.encryption_key);
+        options.s3.endpoint = RedactURL(&options.s3.endpoint);
+        options.gcs.endpoint = RedactURL(&options.gcs.endpoint);
+        options.azblob.endpoint = RedactURL(&options.azblob.endpoint);
+        options
+    }
+}
+
+fn mask_if_set(secret: &str) -> String {
+    if secret.is_empty() {
+        String::new()
+    } else {
+        "xxxxxx".to_owned()
+    }
+}
+
 /// 本地文件系统后端：绝对或相对路径。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Local {
@@ -183,7 +253,32 @@ pub fn ParseRawURL(raw_url: &str) -> Result<ParsedURL> {
             ..ParsedURL::default()
         });
     }
-    let parsed = Url::parse(&escaped)?;
+    if has_invalid_authority_escape(&escaped) {
+        return Err(anyhow!("parse storage URL failed: invalid format"));
+    }
+    // Go accepts userinfo followed by an empty host and reports the missing
+    // bucket later. The url crate rejects it, so preserve that error boundary.
+    if let Some((scheme, after_scheme)) = escaped.split_once("://") {
+        let authority_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        if authority.ends_with('@') {
+            let remainder = &after_scheme[authority_end..];
+            let (path, query) = remainder.split_once('?').unwrap_or((remainder, ""));
+            return Ok(ParsedURL {
+                scheme: scheme.to_owned(),
+                path: decode_url_path(path),
+                query: url::form_urlencoded::parse(query.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect(),
+                original: raw_url.to_owned(),
+                ..ParsedURL::default()
+            });
+        }
+    }
+    let parsed =
+        Url::parse(&escaped).map_err(|_| anyhow!("parse storage URL failed: invalid format"))?;
     Ok(ParsedURL {
         scheme: parsed.scheme().to_owned(),
         host: if parsed.host().is_some() {
@@ -356,7 +451,7 @@ fn require_bucket(url: &ParsedURL, raw_url: &str, provider: &str) -> Result<()> 
     if url.host.is_empty() {
         Err(anyhow!(
             "please specify the bucket for {provider} in {}",
-            parser_ast::misc::redact_url(raw_url)
+            RedactURL(raw_url)
         ))
     } else {
         Ok(())

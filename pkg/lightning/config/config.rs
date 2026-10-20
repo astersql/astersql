@@ -402,7 +402,7 @@ impl Config {
     /// 临时脱敏 source_dir 中的敏感查询参数后生成摘要。
     pub fn redact(&mut self) -> String {
         let original = std::mem::take(&mut self.mydumper.source_dir);
-        self.mydumper.source_dir = redact_url(&original);
+        self.mydumper.source_dir = astersql_objstore::parse::RedactURL(&original);
         let output = self.string();
         self.mydumper.source_dir = original;
         output
@@ -967,7 +967,8 @@ impl MydumperRuntime {
                 let rel = path.strip_prefix(source).map_err(|_| {
                     ConfigError::Invalid(format!(
                         "file route path '{}' is not in source dir '{}'",
-                        rule.path, self.source_dir
+                        rule.path,
+                        astersql_objstore::parse::RedactURL(&self.source_dir)
                     ))
                 })?;
                 // Reject paths that escape via ".."
@@ -977,7 +978,8 @@ impl MydumperRuntime {
                 {
                     return Err(ConfigError::Invalid(format!(
                         "file route path '{}' is not in source dir '{}'",
-                        rule.path, self.source_dir
+                        rule.path,
+                        astersql_objstore::parse::RedactURL(&self.source_dir)
                     )));
                 }
                 rule.path = rel.to_string_lossy().into_owned();
@@ -1028,7 +1030,7 @@ impl MydumperRuntime {
             {
                 return Err(ConfigError::Invalid(format!(
                     "unsupported data-source-dir url '{}', supported storage types are {}",
-                    self.source_dir,
+                    astersql_objstore::parse::RedactURL(&self.source_dir),
                     supported.join(",")
                 )));
             }
@@ -1041,13 +1043,13 @@ impl MydumperRuntime {
         if !Path::new(&self.source_dir).exists() {
             return Err(ConfigError::Invalid(format!(
                 "'{}': `mydumper.data-source-dir` does not exist",
-                self.source_dir
+                astersql_objstore::parse::RedactURL(&self.source_dir)
             )));
         }
         let abs = std::fs::canonicalize(&self.source_dir).map_err(|error| {
             ConfigError::Invalid(format!(
                 "covert data-source-dir '{}' to absolute path failed: {error}",
-                self.source_dir
+                astersql_objstore::parse::RedactURL(&self.source_dir)
             ))
         })?;
         let file_url = url::Url::from_file_path(&abs).map_err(|_| {
@@ -1722,37 +1724,6 @@ fn table_filter_matches(rule: &str, database: &str, table: &str) -> bool {
 /// `*` 或大小写不敏感相等。
 fn wildcard(pattern: &str, value: &str) -> bool {
     pattern == "*" || pattern.eq_ignore_ascii_case(value)
-}
-
-/// 脱敏对象存储 URL 中的 access-key 等敏感查询参数。
-fn redact_url(value: &str) -> String {
-    let Ok(mut parsed) = url::Url::parse(value) else {
-        return value.to_owned();
-    };
-    // 按存储协议选择需打码的查询键名。
-    let sensitive: &[&str] = match parsed.scheme().to_ascii_lowercase().as_str() {
-        "s3" | "ks3" | "oss" => &["access-key", "secret-access-key", "session-token"],
-        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token"],
-        _ => return value.to_owned(),
-    };
-    let mut pairs: Vec<(String, String)> = parsed
-        .query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-    for (key, val) in &mut pairs {
-        let normalized = key.to_ascii_lowercase().replace('_', "-");
-        if sensitive.contains(&normalized.as_str()) {
-            *val = "xxxxxx".into();
-        }
-    }
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    for (key, val) in &pairs {
-        serializer.append_pair(key, val);
-    }
-    let query = serializer.finish();
-    parsed.set_query((!query.is_empty()).then_some(query.as_str()));
-    parsed.to_string()
 }
 
 /// 对摘要 JSON 字符串值做最小转义。

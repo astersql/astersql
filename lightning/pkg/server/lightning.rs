@@ -797,9 +797,9 @@ impl Lightning {
         };
         if !matches!(&walkErr, Some(e) if errors::ErrorEqual(e, &expectedErr)) {
             if walkErr.is_none() {
-                return Err(
-                    common::ErrEmptySourceDir.GenWithStackByArgs(&taskCfg.Mydumper.SourceDir)
-                );
+                return Err(common::ErrEmptySourceDir.GenWithStackByArgs(
+                    &astersql_objstore::parse::RedactURL(&taskCfg.Mydumper.SourceDir),
+                ));
             }
             return Err(common::NormalizeOrWrapLazy(
                 &common::ErrStorageUnknown,

@@ -23,8 +23,8 @@ use std::path::Path;
 
 use crate::parse::{
     AzblobBackendOptions, AzureBlobStorage, BackendOptions, FormatBackendURL, GCSBackendOptions,
-    Gcs, IsLocalPath, KS3SDKProvider, Local, OSSProvider, ParseBackend, ParseRawURL, S3,
-    S3BackendOptions, StorageBackend,
+    Gcs, InvalidURLPlaceholder, IsLocalPath, KS3SDKProvider, Local, OSSProvider, ParseBackend,
+    ParseRawURL, RedactURL, S3, S3BackendOptions, StorageBackend,
 };
 
 /// 断言并取出 S3 后端，便于测试断言字段。
@@ -668,6 +668,113 @@ fn test_s3_default_force_style_path() {
         s3(ParseBackend("s3://bucket3/prefix/path?force-path-style=true", None,).unwrap(),)
             .force_path_style
     );
+}
+
+#[test]
+fn test_backend_options_redacted() {
+    let mut options = BackendOptions::default();
+    options.s3.access_key = "AKID".into();
+    options.s3.secret_access_key = "SKEY".into();
+    options.s3.session_token = "TOKEN".into();
+    options.s3.region = "us-east-1".into();
+    options.s3.endpoint = "https://AKID:SKEY@s3.example.com".into();
+    options.azblob.account_key = "AZKEY".into();
+    options.azblob.sas_token = "SAS".into();
+    options.azblob.encryption_key = "ENC".into();
+    options.azblob.account_name = "account".into();
+    options.azblob.endpoint = "https://account.blob.core.windows.net/?sig=SAS".into();
+
+    let redacted = options.Redacted();
+    assert_eq!(redacted.s3.access_key, "xxxxxx");
+    assert_eq!(redacted.s3.secret_access_key, "xxxxxx");
+    assert_eq!(redacted.s3.session_token, "xxxxxx");
+    assert_eq!(redacted.azblob.account_key, "xxxxxx");
+    assert_eq!(redacted.azblob.sas_token, "xxxxxx");
+    assert_eq!(redacted.azblob.encryption_key, "xxxxxx");
+    assert_eq!(redacted.s3.region, "us-east-1");
+    assert_eq!(redacted.azblob.account_name, "account");
+    assert_eq!(
+        redacted.azblob.endpoint,
+        "https://account.blob.core.windows.net/"
+    );
+    assert_eq!(redacted.s3.endpoint, "https://s3.example.com/");
+    assert_eq!(options.s3.access_key, "AKID");
+    assert_eq!(
+        BackendOptions::default().Redacted(),
+        BackendOptions::default()
+    );
+}
+
+#[test]
+fn test_redact_url() {
+    for (raw, expected) in [
+        ("/local/path", "/local/path"),
+        ("/data/my files/100%off", "/data/my files/100%off"),
+        ("s3://bucket/prefix", "s3://bucket/prefix"),
+        (
+            "s3://bucket/prefix?access-key=AKID&secret-access-key=SKEY&region=us",
+            "s3://bucket/prefix?access-key=xxxxxx&region=us&secret-access-key=xxxxxx",
+        ),
+        (
+            "azure://bucket/prefix?sas-token=SAS",
+            "azure://bucket/prefix?sas-token=xxxxxx",
+        ),
+        (
+            "s3://bucket:port/prefix?access-key=AKID&secret-access-key=SKEY",
+            InvalidURLPlaceholder,
+        ),
+        (
+            "s3://bucket%zz/prefix?access-key=AKID&secret-access-key=SKEY",
+            InvalidURLPlaceholder,
+        ),
+        (
+            "s3a://bucket/prefix?access-key=AKID&secret-access-key=SKEY",
+            "s3a://bucket/prefix",
+        ),
+        (
+            "s3://AKID:SKEY@bucket/prefix?access-key=AKID",
+            "s3://bucket/prefix?access-key=xxxxxx",
+        ),
+        ("s3a://AKID:SKEY@bucket/prefix", "s3a://bucket/prefix"),
+        (
+            "https://account.blob.core.windows.net/?sv=2022&sig=SAS",
+            "https://account.blob.core.windows.net/",
+        ),
+    ] {
+        assert_eq!(RedactURL(raw), expected, "{raw}");
+    }
+}
+
+#[test]
+fn test_parse_raw_url_error_does_not_leak_url() {
+    for raw in [
+        "s3://bucket:port/prefix?access-key=AKID&secret-access-key=SKEY",
+        "s3://bucket%zz/prefix?access-key=AKID&secret-access-key=SKEY",
+        "s3://AKID:SKEY/bucket/prefix",
+    ] {
+        for error in [
+            ParseRawURL(raw).unwrap_err(),
+            ParseBackend(raw, None).unwrap_err(),
+        ] {
+            let message = error.to_string();
+            assert!(!message.contains("AKID"), "{message}");
+            assert!(!message.contains("SKEY"), "{message}");
+        }
+    }
+}
+
+#[test]
+fn test_parse_backend_missing_bucket_does_not_leak_userinfo() {
+    for raw in [
+        "s3://AKID:SKEY@/prefix",
+        "gcs://AKID:SKEY@/prefix",
+        "azblob://AKID:SKEY@/prefix",
+    ] {
+        let message = ParseBackend(raw, None).unwrap_err().to_string();
+        assert!(message.contains("please specify the bucket"), "{message}");
+        assert!(!message.contains("AKID"), "{message}");
+        assert!(!message.contains("SKEY"), "{message}");
+    }
 }
 
 #[test]

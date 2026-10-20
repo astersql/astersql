@@ -24,6 +24,7 @@ async-trait = "0.1"
 futures = "0.3"
 astersql-store-driver = { path = "../../../pkg/store/driver" }
 astersql-metaservice = { path = "../../../pkg/metaservice" }
+astersql-objstore = { path = "../../../pkg/objstore" }
 "astersql-dumpformat-parquetfile" = { path = "../../../pkg/dumpformat/parquetfile" }
 "astersql-lightning-pkg-checkpoints" = { package = "astersql-lightning-pkg-checkpoints", path = "../checkpoints" }
 "astersql-lightning-pkg-errormanager" = { package = "astersql-lightning-pkg-errormanager", path = "../errormanager" }

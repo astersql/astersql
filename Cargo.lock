@@ -2852,6 +2852,7 @@ dependencies = [
  "astersql-dumpling-cli",
  "astersql-dumpling-context",
  "astersql-dumpling-log",
+ "astersql-objstore",
  "astersql-objstore-storeapi",
  "astersql-parser",
  "astersql-parser-format",
@@ -5592,6 +5593,7 @@ dependencies = [
 name = "astersql-lightning-config"
 version = "0.1.0"
 dependencies = [
+ "astersql-objstore",
  "astersql-util-cpu",
  "fail 0.5.1",
  "regex",
@@ -5690,6 +5692,7 @@ dependencies = [
  "astersql-lightning-pkg-precheck",
  "astersql-lightning-pkg-progress",
  "astersql-metaservice",
+ "astersql-objstore",
  "astersql-store-driver",
  "astersql-util-cdcutil",
  "astersql-util-regexpr-router",
@@ -5754,6 +5757,7 @@ dependencies = [
  "astersql-lightning-pkg-importer",
  "astersql-lightning-pkg-importinto",
  "astersql-lightning-pkg-progress",
+ "astersql-objstore",
  "flate2",
  "libc",
  "serde",

@@ -360,6 +360,44 @@ fn test_adjust_file_route_path() {
 }
 
 #[test]
+fn test_adjust_file_router_redacts_source_dir() {
+    let mut cfg = new_config();
+    assign_minimal_legal_value(&mut cfg);
+    cfg.mydumper.source_dir = "s3://bucket/data?access-key=AKID&secret-access-key=SKEY".into();
+    cfg.mydumper.file_routers = vec![FileRouteRule {
+        path: "/abs/dir/file.csv".into(),
+        file_type: "csv".into(),
+        schema: "db".into(),
+        table: "t".into(),
+        ..Default::default()
+    }];
+    let message = cfg.adjust().unwrap_err().to_string();
+    assert!(message.contains("file route path"), "{message}");
+    assert!(
+        !message.contains("AKID") && !message.contains("SKEY"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_adjust_file_path_redacts_source_dir() {
+    for source_dir in [
+        "s3://bucket:port/data?access-key=AKID&secret-access-key=SKEY",
+        "unknown://bucket/data?access-key=AKID&secret-access-key=SKEY",
+    ] {
+        let mut cfg = new_config();
+        assign_minimal_legal_value(&mut cfg);
+        cfg.mydumper.source_dir = source_dir.into();
+        let runtime = &mut cfg.mydumper;
+        let message = runtime.adjust_file_path().unwrap_err().to_string();
+        assert!(
+            !message.contains("AKID") && !message.contains("SKEY"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
 /// 验证非法 TOML/字段解码错误。
 fn test_decode_error() {
     let mut cfg = new_config();

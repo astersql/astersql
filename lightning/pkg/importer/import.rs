@@ -971,9 +971,14 @@ pub fn verifyCheckpoint(cfg: &Config, taskCp: &checkpoints::TaskCheckpoint) -> R
         }
 
         if cfg.Mydumper.SourceDir != taskCp.SourceDir {
+            let cfg_dir = astersql_objstore::parse::RedactURL(&cfg.Mydumper.SourceDir);
+            let mut cp_dir = astersql_objstore::parse::RedactURL(&taskCp.SourceDir);
+            if cfg_dir == cp_dir {
+                cp_dir.push_str(" (only the redacted parameters differ)");
+            }
             return Err(errors::Errorf(format!(
                 "config 'mydumper.data-source-dir' value '{}' different from checkpoint value '{}'. You may set 'check-requirements = false' to skip this check or {}",
-                cfg.Mydumper.SourceDir, taskCp.SourceDir, retry_usage
+                cfg_dir, cp_dir, retry_usage
             )));
         }
 

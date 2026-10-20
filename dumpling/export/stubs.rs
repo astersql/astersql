@@ -810,10 +810,8 @@ pub enum CompressType {
 // 默认不压缩。
 pub const COMPRESS_NONE: CompressType = CompressType::NoCompression;
 
-#[derive(Clone, Debug, Default)]
-// 外部存储 backend 选项占位 struct。
-// 外部存储 backend 选项占位 struct。
-pub struct BackendOptions {}
+// 复用真实对象存储选项，使配置日志采用统一的凭据脱敏语义。
+pub use astersql_objstore::parse::BackendOptions;
 
 // 顺序写字节的 sink，Close 提交缓冲。
 pub trait ObjectWriter: Send {

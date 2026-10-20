@@ -269,10 +269,17 @@ pub fn DefaultConfig() -> Config {
 
 impl Config {
     pub fn String(&self) -> String {
-        // Rust 简化版只输出最关键的几项摘要，避免为 JSON 序列化引入额外依赖噪声。
+        let output_dir = astersql_objstore::parse::RedactURL(&self.OutputDirPath);
+        let backend_options = self.BackendOptions.Redacted();
         format!(
-            "{{\"Host\":\"{}\",\"Port\":{},\"User\":\"{}\",\"Consistency\":\"{}\",\"FileType\":\"{}\"}}",
-            self.Host, self.Port, self.User, self.Consistency, self.FileType
+            "{{\"Host\":\"{}\",\"Port\":{},\"User\":\"{}\",\"Consistency\":\"{}\",\"FileType\":\"{}\",\"OutputDirPath\":\"{}\",\"BackendOptions\":{:?}}}",
+            self.Host,
+            self.Port,
+            self.User,
+            self.Consistency,
+            self.FileType,
+            output_dir,
+            backend_options,
         )
     }
 
