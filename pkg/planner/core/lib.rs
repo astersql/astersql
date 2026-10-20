@@ -291,6 +291,10 @@ mod exhaust_physical_plans_test;
 mod direct_group_by_index_join_test;
 
 #[cfg(test)]
+#[path = "index_join_aggregation_test.rs"]
+mod index_join_aggregation_test;
+
+#[cfg(test)]
 #[path = "encode_test.rs"]
 mod encode_test;
 

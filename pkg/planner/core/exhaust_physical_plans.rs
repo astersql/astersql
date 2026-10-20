@@ -560,6 +560,29 @@ pub fn checkIndexJoinInnerTaskWithAgg(
     keys.len() <= groups.len() && keys.is_subset(&groups)
 }
 
+/// 为聚合内表过滤 Index Join 的非等值运行时 range 条件。
+///
+/// 未直接出现在 GROUP BY 中的内表列必须在聚合之上评估，否则在聚合下构建
+/// range 会先过滤行并拆分分组。外表列不属于内表 schema，不参与该判定。
+pub fn admitIndexJoinPropForAgg(
+    runtime: &IndexJoinRuntimeProp,
+    group_by: &[Expression],
+    data_source_schema: &[usize],
+) -> IndexJoinRuntimeProp {
+    let direct_group_by_columns: HashSet<_> = group_by
+        .iter()
+        .filter(|item| item.function_count == 0)
+        .filter_map(|item| item.column)
+        .collect();
+    let mut child = runtime.clone();
+    child.other_conditions.retain(|condition| {
+        condition.column.is_none_or(|column| {
+            !data_source_schema.contains(&column) || direct_group_by_columns.contains(&column)
+        })
+    });
+    child
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Index Join 内表子树可接受的模式（Scan/Selection/Agg 等）。
 pub enum InnerPattern {
