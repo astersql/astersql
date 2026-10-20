@@ -121,6 +121,7 @@ pub static HINT_UPDATABLE_VERIFIED: &[&str] = &[
     "tidb_enable_non_prepared_plan_cache",
     "tidb_plan_cache_max_plan_size",
     "tidb_opt_range_max_size",
+    "tidb_opt_range_max_count",
     "tidb_opt_advanced_join_hint",
     "tidb_opt_prefix_index_single_scan",
     "tidb_store_batch_size",

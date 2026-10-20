@@ -772,6 +772,29 @@ fn upgrade_97_initializes_opt_range_max_size_to_zero() {
     );
 }
 
+/// Go `TestTiDBOptRangeLimitsWhenUpgrading`: v318 inserts the new default only
+/// when the persisted global value is absent.
+#[test]
+fn range_count_threshold_upgrade_preserves_existing_values() {
+    let cases =
+        [(None, "1000"), (Some("0"), "0"), (Some("2000"), "2000")].map(|(persisted, expected)| {
+            std::thread::spawn(move || {
+                let actual = upgraded_global(
+                    317,
+                    astersql_sessionctx_vardef::TiDBOptRangeMaxCount,
+                    persisted,
+                    false,
+                )
+                .0;
+                (actual, expected)
+            })
+        });
+    for case in cases {
+        let (actual, expected) = case.join().expect("range max count upgrade case");
+        assert_eq!(actual, expected);
+    }
+}
+
 /// 对应 Go `TestTiDBOptAdvancedJoinHintWhenUpgrading`。
 #[test]
 fn upgrade_135_initializes_advanced_join_hint_to_off() {

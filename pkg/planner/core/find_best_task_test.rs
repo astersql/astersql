@@ -20,7 +20,8 @@
 
 use crate::find_best_task::{
     AccessPath, DataSource, Datum, LogicalPlan, PhysicalProperty, Range, SortItem, candidatePath,
-    compareCandidates, convertToPointGet, findBestTask, getTaskPlanCost, mockLogicalPlan4Test,
+    compareCandidates, compareEqOrIn, convertToPointGet, findBestTask, getTaskPlanCost,
+    mockLogicalPlan4Test,
 };
 use crate::task::{PlanKind, StatsInfo, StoreType, Task, TaskType};
 
@@ -242,4 +243,90 @@ fn index_join_skyline_skips_unstable_adjusted_count() {
     let best = index_join_candidate(1_000_000.0, 1_000_000.0, true);
 
     assert_eq!(compareCandidates(&ds, &prop, &current, &best, false).0, 0);
+}
+
+fn range_count_candidate(eq_or_in_count: usize, range_count: usize) -> candidatePath {
+    candidatePath {
+        path: AccessPath {
+            ranges: vec![Range::default(); range_count],
+            ..AccessPath::default()
+        },
+        accessCondsColMap: Default::default(),
+        indexCondsColMap: Default::default(),
+        matchPropResult: Default::default(),
+        partialOrderMatchResult: Default::default(),
+        matchWithAdvisorySortItems: false,
+        partialPathMatchResults: Vec::new(),
+        indexJoinCols: 0,
+        countAfterAccess4IndexJoin: 0.0,
+        countAfterAccess4IndexJoinOK: false,
+        isFullRange: false,
+        eqOrInCount: eq_or_in_count,
+    }
+}
+
+/// Go `testRangeCountComparison`: equality/IN preference is disabled only when
+/// the stronger candidate exceeds the configured range-count threshold.
+#[test]
+fn range_count_threshold_limits_equality_in_preference() {
+    let cases = [
+        ("disabled", 0, 1001, 1, 3, 2, 1),
+        ("below threshold", 1000, 999, 1, 3, 2, 1),
+        ("at threshold", 1000, 1000, 1, 3, 2, 1),
+        ("above threshold", 1000, 1001, 1, 3, 2, 0),
+        ("both above threshold", 1000, 1001, 1002, 3, 2, 0),
+        (
+            "only weaker candidate above threshold",
+            1000,
+            1,
+            1001,
+            3,
+            2,
+            1,
+        ),
+        ("equal predicate counts", 1000, 1001, 1, 2, 2, 0),
+        ("single range", 1, 1, 1, 3, 2, 1),
+    ];
+
+    for (name, threshold, lhs_ranges, rhs_ranges, lhs_count, rhs_count, expected) in cases {
+        let mut lhs = range_count_candidate(lhs_count, lhs_ranges);
+        let rhs = range_count_candidate(rhs_count, rhs_ranges);
+        assert_eq!(compareEqOrIn(&lhs, &rhs, threshold), expected, "{name}");
+        assert_eq!(
+            compareEqOrIn(&rhs, &lhs, threshold),
+            -expected,
+            "{name} reversed"
+        );
+
+        lhs.path.partial_index_paths.push(AccessPath::default());
+        assert_eq!(
+            compareEqOrIn(&lhs, &rhs, threshold),
+            0,
+            "{name} index merge"
+        );
+        assert_eq!(
+            compareEqOrIn(&rhs, &lhs, threshold),
+            0,
+            "{name} reversed index merge"
+        );
+    }
+
+    let lhs = range_count_candidate(3, 1001);
+    let rhs = range_count_candidate(2, 1);
+    for (threshold, expected) in [(0, 1), (1001, 1), (1000, 0)] {
+        let ds = DataSource {
+            range_max_count: threshold,
+            ..DataSource::default()
+        };
+        assert_eq!(
+            compareCandidates(&ds, &PhysicalProperty::default(), &lhs, &rhs, true).0,
+            expected,
+            "skyline threshold={threshold}"
+        );
+        assert_eq!(
+            compareCandidates(&ds, &PhysicalProperty::default(), &rhs, &lhs, true).0,
+            -expected,
+            "reversed skyline threshold={threshold}"
+        );
+    }
 }

@@ -88,6 +88,7 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
     use crate::upgrade_def::{
         version54, version59, version68, version80, version81, version97, version105, version135,
         version215, version255, version279, version281, version283, version284, version317,
+        version318,
     };
 
     if from < version54 && from <= crate::upgrade_def::version38 {
@@ -154,6 +155,12 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
         runtime.insert_global_if_missing(
             astersql_sessionctx_vardef::TiDBEnableAdaptiveLimitScan,
             astersql_sessionctx_vardef::Off,
+        )?;
+    }
+    if from < version318 {
+        runtime.insert_global_if_missing(
+            astersql_sessionctx_vardef::TiDBOptRangeMaxCount,
+            &astersql_sessionctx_vardef::DefTiDBOptRangeMaxCount.to_string(),
         )?;
     }
     Ok(())

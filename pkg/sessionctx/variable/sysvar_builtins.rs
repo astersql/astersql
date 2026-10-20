@@ -1006,6 +1006,16 @@ fn register_planner_tuning_vars() {
     range_max_size.IsHintUpdatableVerified = true;
     RegisterSysVar(range_max_size);
 
+    let mut range_max_count = int_var(
+        vardef::TiDBOptRangeMaxCount,
+        vardef::DefTiDBOptRangeMaxCount,
+        scope_both(),
+        0,
+        i64::MAX as u64,
+    );
+    range_max_count.IsHintUpdatableVerified = true;
+    RegisterSysVar(range_max_count);
+
     let mut isolation_read_engines = string_var(
         vardef::TiDBIsolationReadEngines,
         "tikv,tiflash,tidb",
@@ -1582,6 +1592,15 @@ fn register_getters_and_defaults() {
         0,
         i64::MAX as u64,
     ));
+    let mut range_max_count = int_var(
+        vardef::TiDBOptRangeMaxCount,
+        vardef::DefTiDBOptRangeMaxCount,
+        scope_both(),
+        0,
+        i64::MAX as u64,
+    );
+    range_max_count.IsHintUpdatableVerified = true;
+    RegisterSysVar(range_max_count);
     let mut fix_control = string_var(vardef::TiDBOptFixControl, "", scope_both());
     fix_control.IsHintUpdatableVerified = true;
     let validate_fix_control = |vars: &mut SessionVars, value: &str| {

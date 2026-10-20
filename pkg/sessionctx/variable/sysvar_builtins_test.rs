@@ -16,6 +16,38 @@
 use crate::{Context, GetSysVar, GlobalVarAccessor, SessionVars, VariableError, vardef};
 
 #[test]
+fn range_count_threshold_sysvar_matches_go_contract() {
+    crate::register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBOptRangeMaxCount).expect("range max count sysvar");
+    assert_eq!(variable.Value, vardef::DefTiDBOptRangeMaxCount.to_string());
+    assert!(variable.HasGlobalScope());
+    assert!(variable.HasSessionScope());
+    assert!(variable.IsHintUpdatableVerified);
+
+    let mut vars = crate::session::SessionVars::default();
+    assert_eq!(vars.RangeMaxCount, vardef::DefTiDBOptRangeMaxCount);
+    vars.SetSystemVar(vardef::TiDBOptRangeMaxCount, "2048")
+        .unwrap();
+    assert_eq!(vars.RangeMaxCount, 2048);
+    vars.SetSystemVar(vardef::TiDBOptRangeMaxCount, "0")
+        .unwrap();
+    assert_eq!(vars.RangeMaxCount, 0);
+    vars.SetSystemVar(vardef::TiDBOptRangeMaxCount, "-1")
+        .unwrap();
+    assert_eq!(vars.RangeMaxCount, 0);
+    let warnings = vars.StmtCtx.GetWarnings();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .Err
+            .as_ref()
+            .expect("range max count truncation warning")
+            .to_string()
+            .contains("tidb_opt_range_max_count")
+    );
+}
+
+#[test]
 fn hash_join_concurrency_accepts_explicit_and_auto_values() {
     crate::register_builtin_sysvars();
     let var = GetSysVar(vardef::TiDBHashJoinConcurrency).unwrap();

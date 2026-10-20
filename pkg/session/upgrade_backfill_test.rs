@@ -299,3 +299,21 @@ fn upgrade_to_ver317_backfills_adaptive_limit_scan_without_overwriting() {
     upgrade_bootstrap_variables(&mut current, 317).unwrap();
     assert!(!current.0.contains_key("tidb_enable_adaptive_limit_scan"));
 }
+
+#[test]
+fn range_count_threshold_upgrade_backfills_default_without_overwriting() {
+    for (persisted, expected) in [(None, "1000"), (Some("0"), "0"), (Some("2000"), "2000")] {
+        let mut store = VariableStore::default();
+        if let Some(value) = persisted {
+            store
+                .0
+                .insert("tidb_opt_range_max_count".into(), value.into());
+        }
+        upgrade_bootstrap_variables(&mut store, 317).unwrap();
+        assert_eq!(store.0["tidb_opt_range_max_count"], expected);
+    }
+
+    let mut current = VariableStore::default();
+    upgrade_bootstrap_variables(&mut current, 318).unwrap();
+    assert!(!current.0.contains_key("tidb_opt_range_max_count"));
+}

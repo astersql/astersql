@@ -387,6 +387,11 @@ fn monitor_analyze_defaults_bootstrap_version() {
             .iter()
             .any(|entry| entry.version == 284)
     );
+    assert!(
+        astersql_session::upgrade_def::upgradeToVerFunctions
+            .iter()
+            .any(|entry| entry.version == 318)
+    );
     // SAFETY: this test only reads the compatibility version variable.
     assert_eq!(last, unsafe {
         astersql_session::upgrade_def::currentBootstrapVersion

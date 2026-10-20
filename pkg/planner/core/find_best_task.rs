@@ -183,7 +183,7 @@ impl PhysicalProperty {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 /// 逻辑 DataSource：表扫描候选路径与统计信息。
 pub struct DataSource {
     pub paths: Vec<AccessPath>,
@@ -206,6 +206,35 @@ pub struct DataSource {
     pub handle_columns: Vec<usize>,
     pub new_collation_enabled: bool,
     pub common_handle_version0: bool,
+    /// Range-count threshold for equality/IN preference in skyline pruning.
+    /// Zero disables the threshold without limiting range construction.
+    pub range_max_count: i64,
+}
+
+impl Default for DataSource {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            conditions: Vec::new(),
+            pushed_down_conditions: Vec::new(),
+            schema: Vec::new(),
+            stats: StatsInfo::default(),
+            table_pseudo: false,
+            index_pseudo: HashSet::new(),
+            partitioned: false,
+            has_tiflash: false,
+            mpp_allowed: false,
+            tiflash_cop_banned: false,
+            disaggregated_tiflash: false,
+            memory_db: false,
+            sample: false,
+            columns: Vec::new(),
+            handle_columns: Vec::new(),
+            new_collation_enabled: false,
+            common_handle_version0: false,
+            range_max_count: vardef_dependency::DefTiDBOptRangeMaxCount,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -711,9 +740,27 @@ pub fn compareRiskRatio(lhs: &candidatePath, rhs: &candidatePath) -> (i32, f64) 
         (0, 0.0)
     }
 }
-/// 比较等值/IN 条件覆盖优劣。
-pub fn compareEqOrIn(lhs: &candidatePath, rhs: &candidatePath) -> i32 {
-    lhs.eqOrInCount.cmp(&rhs.eqOrInCount) as i32
+/// Compare equality/IN predicate coverage unless the stronger path exceeds the
+/// configured range-count threshold. IndexMerge paths remain incomparable.
+pub fn compareEqOrIn(lhs: &candidatePath, rhs: &candidatePath, range_max_count: i64) -> i32 {
+    if lhs.path.is_index_merge() || rhs.path.is_index_merge() {
+        return 0;
+    }
+    match lhs.eqOrInCount.cmp(&rhs.eqOrInCount) {
+        Ordering::Greater
+            if range_max_count > 0 && lhs.path.ranges.len() as u64 > range_max_count as u64 =>
+        {
+            0
+        }
+        Ordering::Less
+            if range_max_count > 0 && rhs.path.ranges.len() as u64 > range_max_count as u64 =>
+        {
+            0
+        }
+        Ordering::Greater => 1,
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+    }
 }
 /// 候选是否完全由索引覆盖（无需回表过滤）。
 pub fn isFullIndexMatch(candidate: &candidatePath) -> bool {
@@ -777,7 +824,7 @@ pub fn compareCandidates(
     let (access, access_comparable) = compare_maps(&lhs.accessCondsColMap, &rhs.accessCondsColMap);
     let (scan, scan_comparable) = compareIndexBack(lhs, rhs);
     let (risk, _) = compareRiskRatio(lhs, rhs);
-    let equal = compareEqOrIn(lhs, rhs);
+    let equal = compareEqOrIn(lhs, rhs, ds.range_max_count);
     let total = access + scan + match_result + global;
     if (lhs_pseudo || rhs_pseudo)
         && !ds.table_pseudo

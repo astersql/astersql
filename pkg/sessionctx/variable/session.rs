@@ -724,6 +724,9 @@ pub struct SessionVars {
     pub TiDBOptEnableAdvancedJoinReorder: bool,
     pub EnableLateMaterialization: bool,
     pub RangeMaxSize: i64,
+    /// Range-count threshold for equality/IN preference in skyline pruning.
+    /// Zero disables the threshold without limiting range construction.
+    pub RangeMaxCount: i64,
     pub TiFlashPreAggMode: String,
     pub TiFlashFineGrainedShuffleStreamCount: i64,
     pub TiFlashMaxThreads: i64,
@@ -942,6 +945,7 @@ impl SessionVars {
             TiDBOptEnableAdvancedJoinReorder: vardef::DefTiDBOptEnableAdvancedJoinReorder,
             EnableLateMaterialization: vardef::DefTiDBOptEnableLateMaterialization,
             RangeMaxSize: vardef::DefTiDBOptRangeMaxSize,
+            RangeMaxCount: vardef::DefTiDBOptRangeMaxCount,
             TiFlashPreAggMode: vardef::DefTiFlashPreAggMode.to_owned(),
             TiFlashFineGrainedShuffleStreamCount: vardef::DefTiFlashFineGrainedShuffleStreamCount,
             TiFlashMaxThreads: vardef::DefTiFlashMaxThreads,
@@ -1144,6 +1148,21 @@ impl SessionVars {
             self.RangeMaxSize = normalized.parse().map_err(|_| {
                 format!("invalid {} value {normalized}", vardef::TiDBOptRangeMaxSize)
             })?;
+        } else if name.eq_ignore_ascii_case(vardef::TiDBOptRangeMaxCount) {
+            self.RangeMaxCount = normalized.parse().map_err(|_| {
+                format!(
+                    "invalid {} value {normalized}",
+                    vardef::TiDBOptRangeMaxCount
+                )
+            })?;
+            let original = value.trim().trim_matches(['\'', '"']);
+            if original.parse::<i128>().is_ok_and(|original| original < 0) {
+                self.StmtCtx
+                    .AppendWarning(stmtctx_dependency::errors::NewNoStackError(format!(
+                        "Truncated incorrect {} value: '{original}'",
+                        vardef::TiDBOptRangeMaxCount
+                    )));
+            }
         } else if name.eq_ignore_ascii_case(vardef::SQLSelectLimit) {
             self.SelectLimit = normalized
                 .parse()

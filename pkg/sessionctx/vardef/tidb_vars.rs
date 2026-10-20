@@ -1166,6 +1166,10 @@ pub const TiDBForeignKeyCheckInSharedLock: &str = "tidb_foreign_key_check_in_sha
 // ranges would exceed the limit, it chooses less accurate ranges such as full range. 0 indicates that there is no memory
 // limit for ranges.
 pub const TiDBOptRangeMaxSize: &str = "tidb_opt_range_max_size";
+// TiDBOptRangeMaxCount is the range-count threshold above which skyline pruning does not prefer
+// an access path merely for having more equality/IN predicates. It does not limit range
+// construction. Zero disables the threshold.
+pub const TiDBOptRangeMaxCount: &str = "tidb_opt_range_max_count";
 
 // TiDBOptAdvancedJoinHint indicates whether the join method hint is compatible with join order hint.
 pub const TiDBOptAdvancedJoinHint: &str = "tidb_opt_advanced_join_hint";
@@ -1918,6 +1922,8 @@ pub const DefTiDBForeignKeyCheckInSharedLock: bool = false;
 pub const DefTiDBOptAdvancedJoinHint: bool = true;
 pub const DefTiDBAnalyzePartitionConcurrency: i64 = 2;
 pub const DefTiDBOptRangeMaxSize: i64 = 64 * 1024 * 1024; // 64 MB
+/// Default range-count threshold for equality/IN preference in skyline pruning.
+pub const DefTiDBOptRangeMaxCount: i64 = 1000;
 pub const DefTiDBCostModelVer: i64 = 2;
 pub const DefTiDBServerMemoryLimitSessMinSize: i64 = 128 << 20;
 pub const DefTiDBServerMemoryLimitGCTrigger: f64 = 0.7;
