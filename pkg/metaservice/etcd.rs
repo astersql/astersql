@@ -20,8 +20,11 @@
 
 use super::{MetaServiceError, ServiceClient};
 use std::any::Any;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
+
+use tikv_client::proto::{coprocessor, debugpb, kvrpcpb, mpp};
+use tikv_client::rpc_interceptor::{self, InterceptorGuard, RpcInterceptor};
 
 /// 拉取 PD 全部成员时的最长累计退避预算（毫秒）；耗尽后返回 region unavailable。
 pub const GET_ALL_MEMBERS_BACKOFF_MS: u64 = 5_000;
@@ -108,6 +111,105 @@ pub trait PdClient: Send + Sync {
     fn get_all_members(&self, ctx: &Context) -> Result<Vec<PdMember>, MetaServiceError>;
 }
 
+/// Process-wide PD/TiKV guard installed before diagnostic clients connect.
+///
+/// The upstream interceptor is shared by synchronous `ClientRuntime` calls and
+/// asynchronous client-rust requests, matching client-go's two send paths.
+pub struct DiagnosticRpcGuard;
+
+impl DiagnosticRpcGuard {
+    fn pd_allowed(method: &str) -> bool {
+        matches!(
+            method,
+            "/pdpb.PD/GetMembers"
+                | "/pdpb.PD/GetClusterInfo"
+                | "/pdpb.PD/GetStore"
+                | "/routerpb.Router/GetStore"
+                | "/pdpb.PD/GetAllStores"
+                | "/routerpb.Router/GetAllStores"
+                | "/pdpb.PD/GetRegion"
+                | "/routerpb.Router/GetRegion"
+                | "/pdpb.PD/GetPrevRegion"
+                | "/routerpb.Router/GetPrevRegion"
+                | "/pdpb.PD/GetRegionByID"
+                | "/routerpb.Router/GetRegionByID"
+                | "/pdpb.PD/ScanRegions"
+                | "/pdpb.PD/BatchScanRegions"
+                | "/routerpb.Router/BatchScanRegions"
+                | "/pdpb.PD/GetOperator"
+                | "/pdpb.PD/LoadGlobalConfig"
+                | "/pdpb.PD/GetExternalTimestamp"
+                | "/keyspacepb.Keyspace/LoadKeyspace"
+                | "/keyspacepb.Keyspace/LoadKeyspaceByID"
+                | "/keyspacepb.Keyspace/GetAllKeyspaces"
+                | "/meta_storagepb.MetaStorage/Get"
+                | "/resource_manager.ResourceManager/GetResourceGroup"
+                | "/pdpb.PD/GetGCState"
+                | "/pdpb.PD/GetAllKeyspacesGCStates"
+                | "/tsopb.TSO/FindGroupByKeyspaceID"
+                | "/grpc.health.v1.Health/Check"
+                | "/pdpb.PD/Tso"
+                | "/tsopb.TSO/Tso"
+                | "/pdpb.PD/WatchGlobalConfig"
+                | "/pdpb.PD/QueryRegion"
+                | "/routerpb.Router/QueryRegion"
+                | "/meta_storagepb.MetaStorage/Watch"
+        )
+    }
+
+    fn kv_allowed(request: &dyn Any) -> bool {
+        request.is::<kvrpcpb::GetRequest>()
+            || request.is::<kvrpcpb::BatchGetRequest>()
+            || request.is::<kvrpcpb::ScanRequest>()
+            || request.is::<kvrpcpb::RawGetRequest>()
+            || request.is::<kvrpcpb::RawBatchGetRequest>()
+            || request.is::<kvrpcpb::RawScanRequest>()
+            || request.is::<kvrpcpb::RawGetKeyTtlRequest>()
+            || request.is::<kvrpcpb::RawChecksumRequest>()
+            || request.is::<coprocessor::Request>()
+            || request.is::<coprocessor::BatchRequest>()
+            || request.is::<kvrpcpb::MvccGetByKeyRequest>()
+            || request.is::<kvrpcpb::MvccGetByStartTsRequest>()
+            || request.is::<kvrpcpb::StoreSafeTsRequest>()
+            || request.is::<kvrpcpb::GetLockWaitInfoRequest>()
+            || request.is::<debugpb::GetRegionPropertiesRequest>()
+            || request.is::<kvrpcpb::GetHealthFeedbackRequest>()
+            || request.is::<kvrpcpb::TiFlashSystemTableRequest>()
+            || request.is::<mpp::IsAliveRequest>()
+            || request.is::<kvrpcpb::ScanLockRequest>()
+            || request.is::<kvrpcpb::PhysicalScanLockRequest>()
+            || request.is::<kvrpcpb::BufferBatchGetRequest>()
+    }
+
+    fn permission_denied(message: impl Into<String>) -> tikv_client::Error {
+        tikv_client::Error::GrpcAPI(tonic::Status::permission_denied(message.into()))
+    }
+}
+
+impl RpcInterceptor for DiagnosticRpcGuard {
+    fn before_pd(&self, method: &str) -> tikv_client::Result<()> {
+        if !astersql_config::diagnosticmode::Enabled() || Self::pd_allowed(method) {
+            return Ok(());
+        }
+        Err(Self::permission_denied(format!(
+            "diagnostic mode: blocked PD RPC {method}"
+        )))
+    }
+
+    fn before(&self, request: &dyn Any, _timeout: &mut Duration) -> tikv_client::Result<()> {
+        if !astersql_config::diagnosticmode::Enabled() || Self::kv_allowed(request) {
+            return Ok(());
+        }
+        Err(Self::permission_denied("diagnostic mode: blocked KV RPC"))
+    }
+}
+
+/// Installs the diagnostic guard once for all client-rust PD/TiKV clients.
+pub fn EnsureDiagnosticRpcGuard() {
+    static REGISTRATION: OnceLock<InterceptorGuard> = OnceLock::new();
+    REGISTRATION.get_or_init(|| rpc_interceptor::register(Arc::new(DiagnosticRpcGuard)));
+}
+
 /// The Go implementation only stores and returns the caller-owned etcd client.
 /// This marker keeps that ownership boundary without constructing or using a
 /// second etcd implementation inside metaservice.
@@ -143,6 +245,9 @@ pub fn new_client(
     etcd_client: Option<Arc<dyn EtcdClient>>,
     pd_client: Option<Arc<dyn PdClient>>,
 ) -> Option<Client> {
+    if astersql_config::diagnosticmode::Enabled() {
+        EnsureDiagnosticRpcGuard();
+    }
     if etcd_client.is_none() && pd_client.is_none() {
         return None;
     }

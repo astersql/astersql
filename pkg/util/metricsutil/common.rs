@@ -259,6 +259,12 @@ pub fn RegisterMetricsForBR(
     tls: &TlsConfig,
     keyspace_name: &str,
 ) -> Result<(), MetricsUtilError> {
+    if config::diagnosticmode::Enabled() {
+        // This metrics client exposes only GetMembers and LoadKeyspace, both
+        // allowlisted. Register the shared guard before any other client-rust
+        // connection is opened in the same BR process.
+        astersql_metaservice::EnsureDiagnosticRpcGuard();
+    }
     registerMetricsForBRWithRetry(
         pd_addrs,
         tls,

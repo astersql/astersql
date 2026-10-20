@@ -543,6 +543,9 @@ impl TiKVDriver {
     ) -> Result<TikvStore, DriverError> {
         self.setDefaultAndOptions(options);
         let parsed = parse_path(path)?;
+        if astersql_config::diagnosticmode::Enabled() {
+            astersql_metaservice::EnsureDiagnosticRpcGuard();
+        }
         let pd_options = self.pdClientOptions();
         let tls_config = self.security.to_tls_config()?;
         let (backend, client_runtime) = match &self.backend {

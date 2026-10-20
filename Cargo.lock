@@ -5905,12 +5905,15 @@ version = "0.1.0"
 name = "astersql-metaservice"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-util",
+ "astersql-util-intest",
  "etcd-client",
  "log",
  "thiserror 2.0.21",
  "tikv-client",
  "tokio",
+ "tonic 0.12.3",
  "url",
 ]
 
@@ -10058,6 +10061,7 @@ dependencies = [
 name = "astersql-store-driver"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-config-configtypes",
  "astersql-kv",
  "astersql-metaservice",
@@ -12354,6 +12358,7 @@ dependencies = [
  "astersql-executor-metrics",
  "astersql-infoschema-metrics",
  "astersql-keyspace",
+ "astersql-metaservice",
  "astersql-metrics",
  "astersql-metrics-common",
  "astersql-planner-core-metrics",
@@ -20093,7 +20098,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.10#710d2187e79e1a3d22035b0e68d35a8f267ee835"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.11#bd9d2dbef11e5765e0bcca33df2115abb037e04b"
 dependencies = [
  "async-recursion",
  "async-trait",

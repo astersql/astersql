@@ -12,6 +12,7 @@ go-package = "pkg/util/metricsutil"
 legacy-tasks = ["task-1116", "task-1141"]
 
 [dependencies]
+astersql-metaservice = { path = "../../metaservice" }
 astersql-sessionctx-variable = { path = "../../sessionctx/variable" }
 astersql-sessionctx-stmtctx = { path = "../../sessionctx/stmtctx" }
 "astersql-config" = { package = "astersql-config", path = "../../config" }

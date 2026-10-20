@@ -29,3 +29,7 @@ pub use dial::*;
 #[cfg(test)]
 #[path = "dial_test.rs"]
 mod dial_test;
+
+#[cfg(test)]
+#[path = "diagnostic_rpc_test.rs"]
+mod diagnostic_rpc_test;
