@@ -287,6 +287,9 @@ fn test_validate_resolve_auto_consistency() {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     };
     assert!(validateResolveAutoConsistency(&mut d).is_err());
     // 第二组：切成 TiDB 后，同样的配置应被接受。

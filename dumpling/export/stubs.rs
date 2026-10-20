@@ -170,6 +170,39 @@ pub fn parse_semver(s: &str) -> SemVer {
     }
 }
 
+fn parse_nextgen_version(src: &str) -> Option<SemVer> {
+    let cloud = src
+        .split_once("TiDB-CLOUD.")
+        .map(|(_, suffix)| suffix)
+        .or_else(|| {
+            src.split_once("Release Version: CLOUD.")
+                .map(|(_, suffix)| suffix)
+        })?;
+    let wire = cloud.lines().next().unwrap_or(cloud);
+    let (year_month, patch_suffix) = wire.split_once('.')?;
+    if year_month.len() != 6 || !year_month.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = year_month[..4].parse::<i64>().ok()?;
+    let month = year_month[4..].parse::<i64>().ok()?;
+    if !(2025..=2099).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let patch = patch_suffix
+        .split('-')
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())?;
+    Some(SemVer {
+        major: year - 2000,
+        minor: month,
+        patch,
+        pre_release: patch_suffix
+            .split_once('-')
+            .map(|(_, suffix)| suffix.to_string())
+            .unwrap_or_default(),
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 // 连接目标的服务器类型、版本及是否 TiKV 后端。
 // 连接目标的服务器类型、版本及是否 TiKV 后端。
@@ -178,6 +211,8 @@ pub struct ServerInfo {
     pub ServerVersion: Option<SemVer>,
     // HasTiKV 表示是否 TiKV 存储（snapshot 一致性相关）。
     pub HasTiKV: bool,
+    // NextGen 标记 premium-keyspace 云版本集群。
+    pub NextGen: bool,
 }
 
 // 从 SHOW 类语句或连接串片段推断 ServerType/版本。
@@ -193,7 +228,10 @@ pub fn ParseServerInfo(src: &str) -> ServerInfo {
     } else {
         info.ServerType = ServerType::ServerTypeUnknown;
     }
-    if let Some(v) = extract_version_nums(src) {
+    if let Some(version) = parse_nextgen_version(src) {
+        info.ServerVersion = Some(version);
+        info.NextGen = true;
+    } else if let Some(v) = extract_version_nums(src) {
         info.ServerVersion = Some(parse_semver(&v));
     }
     info
@@ -1514,6 +1552,8 @@ pub struct PdClient {
     pub last_safe_point_ttl: Arc<Mutex<i64>>,
     pub last_safe_point_ts: Arc<Mutex<u64>>,
     pub gc_states_client: Arc<mockGCStatesClient>,
+    pub endpoints: Vec<String>,
+    pub api_context_keyspace: Option<String>,
 }
 // UpdateServiceGCSafePoint 与 GetGCStatesClient。
 // UpdateServiceGCSafePoint 与 GetGCStatesClient。
@@ -1521,6 +1561,13 @@ impl PdClient {
     // 构造全默认 mock，测试按需设置 err 字段。
     pub fn new_mock() -> Self {
         Self::default()
+    }
+    pub fn new_keyspace(endpoints: Vec<String>, keyspace_name: String) -> Self {
+        Self {
+            endpoints,
+            api_context_keyspace: Some(keyspace_name),
+            ..Self::default()
+        }
     }
     // 更新 GC safe point：记录参数并可选失败。
     pub fn UpdateServiceGCSafePoint(

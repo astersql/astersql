@@ -31,6 +31,9 @@ pub struct Dumper {
     pub cancel: Option<astersql_dumpling_context::CancelFunc>,
     pub http: Option<HttpServiceHandle>,
     pub pd_client: Option<PdClient>,
+    pub tidb_keyspace_name: String,
+    pub tidb_keyspace_id: u32,
+    pub tidb_use_keyspace_gc: bool,
 }
 
 pub fn NewDumper(mut conf: Config) -> Result<Dumper> {
@@ -56,6 +59,9 @@ pub fn NewDumper(mut conf: Config) -> Result<Dumper> {
         cancel: Some(cancel),
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     };
     // 初始化顺序基本对齐 Go：先日志，再外部存储和 HTTP，再 DB，再探测 server info。
     // 这样每一步失败都能尽量用已经就绪的 logger 记录上下文。
@@ -70,6 +76,8 @@ pub fn NewDumper(mut conf: Config) -> Result<Dumper> {
             detectServerInfo,
             resolveAutoConsistency,
             validateResolveAutoConsistency,
+            tidbResolveKeyspaceMetaForGC,
+            tidbSetPDClientForGC,
             setSessionParam,
         ],
     )?;
@@ -752,17 +760,107 @@ pub fn parseClusterSSLFlags(ca: &str, cert: &str, key: &str) -> Result<(String, 
 }
 
 pub fn tidbResolveKeyspaceMetaForGC(d: &mut Dumper) -> Result<()> {
-    // arm64-safe 路径下把 keyspace 解析简化为轻量探测，不阻断主流程。
-    // Slim arm64 path: mark keyspace resolution as no-op success unless DB scripts an error.
-    // 即便查询不到 keyspace，这里也尽量给出一个 mock client 继续主流程。
-    if let Some(db) = &d.db {
-        if let Ok(mut rows) = db.Query("SELECT @@tidb_keyspace_name") {
-            let _ = rows.Close();
+    const QUERY: &str =
+        "SELECT KEYSPACE_NAME, KEYSPACE_ID FROM information_schema.KEYSPACE_META;";
+    if d.conf.ServerInfo.ServerType != ServerType::ServerTypeTiDB {
+        if !d.conf.PDAddr.is_empty() {
+            return Err(errors_new("--pd only supports TiDB keyspace clusters"));
         }
+        return Ok(());
     }
-    if d.pd_client.is_none() {
-        d.pd_client = Some(PdClient::new_mock());
+
+    let db = d
+        .db
+        .as_ref()
+        .ok_or_else(|| errors_new("db not open while resolving KEYSPACE_META"))?;
+    let metadata = (|| -> Result<(String, String)> {
+        let mut rows = db.Query(QUERY)?;
+        if !rows.Next() {
+            return Err(errors_new("KEYSPACE_META returned no rows"));
+        }
+        let mut values = [RawBytes::default(), RawBytes::default()];
+        rows.Scan(&mut values)?;
+        rows.Close()?;
+        Ok((
+            String::from_utf8_lossy(values[0].as_opt().unwrap_or_default()).into_owned(),
+            String::from_utf8_lossy(values[1].as_opt().unwrap_or_default()).into_owned(),
+        ))
+    })();
+
+    let (keyspace_name, keyspace_id) = match metadata {
+        Ok(metadata) => metadata,
+        Err(error) if !d.conf.PDAddr.is_empty() || d.conf.ServerInfo.NextGen => {
+            return Err(error);
+        }
+        Err(error) => {
+            d.tctx.L().Info(
+                "meet some problem while fetching keyspace meta. This won't affect dump process",
+                [Field::string("error", error.msg)],
+            );
+            return Ok(());
+        }
+    };
+
+    if keyspace_name.is_empty() {
+        if !d.conf.PDAddr.is_empty() {
+            return Err(errors_new("classical cluster must not specify --pd"));
+        }
+        return Ok(());
     }
+    if keyspace_id.is_empty() {
+        return Err(errors_new(format!(
+            "empty keyspace id from KEYSPACE_META for keyspace {keyspace_name:?}"
+        )));
+    }
+    let parsed_id = keyspace_id.parse::<u32>().map_err(|error| {
+        errors_new(format!(
+            "invalid keyspace id {keyspace_id:?} from KEYSPACE_META: {error}"
+        ))
+    })?;
+    d.tidb_keyspace_name = keyspace_name;
+    d.tidb_keyspace_id = parsed_id;
+    Ok(())
+}
+
+pub fn tidbSetPDClientForGC(d: &mut Dumper) -> Result<()> {
+    d.tidb_use_keyspace_gc = false;
+    if d.conf.ServerInfo.ServerType != ServerType::ServerTypeTiDB
+        || d.tidb_keyspace_name.is_empty()
+    {
+        return Ok(());
+    }
+    if d.conf.PDAddr.is_empty() {
+        d.pd_client = None;
+        d.tctx.L().Warn(
+            "dumping a keyspace cluster but --pd is not specified; automatic GC pause is disabled",
+            [Field::string(
+                "keyspace-name",
+                d.tidb_keyspace_name.clone(),
+            )],
+        );
+        return Ok(());
+    }
+
+    let endpoints: Vec<String> = d
+        .conf
+        .PDAddr
+        .split(',')
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string)
+        .collect();
+    if endpoints.is_empty() {
+        return Err(errors_new(format!(
+            "invalid --pd {:?}: no valid PD endpoint found",
+            d.conf.PDAddr
+        )));
+    }
+
+    d.pd_client = Some(PdClient::new_keyspace(
+        endpoints,
+        d.tidb_keyspace_name.clone(),
+    ));
+    d.tidb_use_keyspace_gc = true;
     Ok(())
 }
 

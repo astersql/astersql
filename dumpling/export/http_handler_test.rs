@@ -79,6 +79,9 @@ fn http_dumper() -> Dumper {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     }
 }
 

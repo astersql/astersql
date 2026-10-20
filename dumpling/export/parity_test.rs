@@ -194,6 +194,7 @@ fn contract_boundary() {
         ServerType: ServerType::ServerTypeMySQL,
         ServerVersion: Some(parse_semver("8.0.10")),
         HasTiKV: false,
+        NextGen: false,
     };
     assert!(matchMysqlBugversion(&info));
     info.ServerVersion = Some(parse_semver("8.0.23"));
@@ -368,6 +369,9 @@ fn contract_resource_cleanup() {
         cancel: Some(cancel),
         http: None,
         pd_client: Some(PdClient::default()),
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     };
     // script version
     d.db.as_ref().unwrap().seed_query(

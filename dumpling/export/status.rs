@@ -51,6 +51,9 @@ impl Dumper {
             cancel: None,
             http: None,
             pd_client: None,
+            tidb_keyspace_name: self.tidb_keyspace_name.clone(),
+            tidb_keyspace_id: self.tidb_keyspace_id,
+            tidb_use_keyspace_gc: self.tidb_use_keyspace_gc,
         }
     }
 

@@ -29,6 +29,9 @@ fn test_get_parameters() {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     };
 
     let mid = d.GetStatus();
@@ -87,6 +90,9 @@ fn test_run_log_progress_waits_until_cancelled() {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     });
     let (ctx, cancel) = tcontext::Background().WithCancel();
     let (started_tx, started_rx) = mpsc::channel();
@@ -122,6 +128,9 @@ fn status_reads_do_not_sample_live_metrics() {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     };
     AddGauge(Some(&d.metrics.finishedSizeGauge), 4096.0);
     assert_eq!(d.GetStatus().FinishedBytes, 0.0);
@@ -141,6 +150,9 @@ fn status_dumper() -> Dumper {
         cancel: None,
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     }
 }
 

@@ -867,6 +867,29 @@ fn tidb_detect_server_info_cases() -> Vec<DetectServerInfoCase> {
     ]
 }
 
+#[test]
+fn test_parse_server_info_nextgen() {
+    for (version, expected) in [
+        ("8.0.11-TiDB-CLOUD.202603.0", true),
+        ("8.0.11-TiDB-CLOUD.202603.3-1c7827b003-dirty", true),
+        ("Release Version: CLOUD.202603.2\nEdition: Community", true),
+        (
+            "Release Version: CLOUD.202603.5-1c7827b003-dirty\nEdition: Community",
+            true,
+        ),
+        ("5.7.25-TiDB-v4.0.0-alpha-1263-g635f2e1af", false),
+        ("8.0.18", false),
+        ("10.4.10-MariaDB-1:10.4.10+maria~bionic", false),
+        ("8.0.11-TiDB-X-CLOUD.202603.0", false),
+    ] {
+        assert_eq!(
+            ParseServerInfo(version).NextGen,
+            expected,
+            "version={version:?}"
+        );
+    }
+}
+
 /// 通过 FetchVersion+ParseServerInfo 锁定类型与版本，并校验 SQL 回退顺序。
 #[test]
 fn test_detect_server_info() {

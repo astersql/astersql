@@ -37,6 +37,7 @@ fn test_filter_tables() {
         ServerType: ServerType::ServerTypeTiDB,
         ServerVersion: None,
         HasTiKV: false,
+        NextGen: false,
     };
     conf.Tables = db_tables.clone();
     conf.TableFilter = table_filter;

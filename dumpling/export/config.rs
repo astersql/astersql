@@ -147,7 +147,8 @@ pub struct Config {
     pub MinTLSVersion: u16,
     pub IOTotalBytes: Arc<AtomicU64>,
     pub Net: String,
-    // 下面三项只在 keyspace / GC 控制场景才真正使用。
+    // PDAddr 在 premium keyspace 集群中可选；未设置时禁用自动 GC pause。
+    // 下面 TLS 项只在已指定 PD 端点的 GC 控制场景使用。
     pub PDAddr: String,
     pub ClusterSSLCA: String,
     pub ClusterSSLCert: String,
@@ -164,6 +165,7 @@ pub fn ServerInfoUnknown() -> ServerInfo {
         ServerType: ServerType::ServerTypeUnknown,
         ServerVersion: None,
         HasTiKV: false,
+        NextGen: false,
     }
 }
 
@@ -784,7 +786,11 @@ impl Config {
         // 方言、分区和集群相关参数。
         flags.String("csv-output-dialect", "", "");
         flags.StringSlice("partitions", &[], "");
-        flags.String("pd", "", "");
+        flags.String(
+            "pd",
+            "",
+            "Optional PD endpoints for controlling GC in premium keyspace clusters. If unset, automatic GC pause is disabled",
+        );
         flags.String("cluster-tls-ca", "", "");
         flags.String("cluster-tls-cert", "", "");
         flags.String("cluster-tls-key", "", "");

@@ -35,6 +35,9 @@ fn make_dumper(mut conf: Config) -> Dumper {
         cancel: Some(cancel),
         http: None,
         pd_client: None,
+        tidb_keyspace_name: String::new(),
+        tidb_keyspace_id: 0,
+        tidb_use_keyspace_gc: false,
     }
 }
 
@@ -56,24 +59,195 @@ fn test_dump_exit() {
 
 #[test]
 fn test_tidb_resolve_keyspace_meta_for_gc() {
-    // keyspace 解析在最小实现里可以退化为 no-op，但应补上一个 mock PD client。
-    let mut conf = default_config_for_test();
-    conf.StatusAddr.clear();
-    let mut d = make_dumper(conf);
-    assert!(tidbResolveKeyspaceMetaForGC(&mut d).is_ok());
-    // 成功后至少应该填上一个可用的 pd_client 句柄。
-    assert!(d.pd_client.is_some());
+    const QUERY: &str = "SELECT KEYSPACE_NAME, KEYSPACE_ID FROM information_schema.KEYSPACE_META;";
+    struct Case {
+        name: &'static str,
+        keyspace_meta: Option<(&'static str, &'static str)>,
+        query_error: Option<Error>,
+        pd_addr: &'static str,
+        nextgen: bool,
+        expected_error: Option<&'static str>,
+        expected_name: &'static str,
+        expected_id: u32,
+    }
+    let cases = [
+        Case {
+            name: "premium_ok",
+            keyspace_meta: Some(("ks1", "123")),
+            query_error: None,
+            pd_addr: "pd1:2379,pd2:2379",
+            nextgen: false,
+            expected_error: None,
+            expected_name: "ks1",
+            expected_id: 123,
+        },
+        Case {
+            name: "premium_missing_pd_is_ok",
+            keyspace_meta: Some(("ks1", "123")),
+            query_error: None,
+            pd_addr: "",
+            nextgen: false,
+            expected_error: None,
+            expected_name: "ks1",
+            expected_id: 123,
+        },
+        Case {
+            name: "classical_ok",
+            keyspace_meta: Some(("", "")),
+            query_error: None,
+            pd_addr: "",
+            nextgen: false,
+            expected_error: None,
+            expected_name: "",
+            expected_id: 0,
+        },
+        Case {
+            name: "classical_with_pd_is_error",
+            keyspace_meta: Some(("", "")),
+            query_error: None,
+            pd_addr: "pd1:2379",
+            nextgen: false,
+            expected_error: Some("classical cluster must not specify"),
+            expected_name: "",
+            expected_id: 0,
+        },
+        Case {
+            name: "classical_no_keyspace_meta_table",
+            keyspace_meta: None,
+            query_error: Some(Error::with_mysql(MySQLError {
+                Number: ErrNoSuchTable,
+                Message: "Table 'information_schema.KEYSPACE_META' doesn't exist".into(),
+            })),
+            pd_addr: "",
+            nextgen: false,
+            expected_error: None,
+            expected_name: "",
+            expected_id: 0,
+        },
+        Case {
+            name: "nextgen_keyspace_meta_error_is_fatal",
+            keyspace_meta: None,
+            query_error: Some(Error::with_mysql(MySQLError {
+                Number: 1142,
+                Message: "SELECT command denied for KEYSPACE_META".into(),
+            })),
+            pd_addr: "",
+            nextgen: true,
+            expected_error: Some("denied"),
+            expected_name: "",
+            expected_id: 0,
+        },
+        Case {
+            name: "nextgen_no_keyspace_meta_table_is_error",
+            keyspace_meta: None,
+            query_error: Some(Error::with_mysql(MySQLError {
+                Number: ErrNoSuchTable,
+                Message: "Table 'information_schema.KEYSPACE_META' doesn't exist".into(),
+            })),
+            pd_addr: "",
+            nextgen: true,
+            expected_error: Some("KEYSPACE_META"),
+            expected_name: "",
+            expected_id: 0,
+        },
+    ];
+
+    for case in cases {
+        let mut conf = default_config_for_test();
+        conf.StatusAddr.clear();
+        conf.ServerInfo.ServerType = ServerType::ServerTypeTiDB;
+        conf.ServerInfo.NextGen = case.nextgen;
+        conf.PDAddr = case.pd_addr.into();
+        let mut d = make_dumper(conf);
+        let db = d.db.as_ref().unwrap();
+        if let Some((name, id)) = case.keyspace_meta {
+            db.seed_query(
+                QUERY,
+                vec!["KEYSPACE_NAME".into(), "KEYSPACE_ID".into()],
+                vec![vec![
+                    Some(name.as_bytes().to_vec()),
+                    Some(id.as_bytes().to_vec()),
+                ]],
+            );
+        }
+        if let Some(error) = case.query_error {
+            *db.fail_query.lock().unwrap() = Some(error);
+        }
+
+        let result = tidbResolveKeyspaceMetaForGC(&mut d);
+        if let Some(expected) = case.expected_error {
+            let error = result.expect_err(case.name);
+            assert!(error.msg.contains(expected), "{}: {error}", case.name);
+        } else {
+            result.unwrap_or_else(|error| panic!("{}: {error}", case.name));
+            assert_eq!(d.tidb_keyspace_name, case.expected_name, "{}", case.name);
+            assert_eq!(d.tidb_keyspace_id, case.expected_id, "{}", case.name);
+        }
+    }
+}
+
+#[test]
+fn test_parse_server_info_nextgen_for_keyspace_gc() {
+    for (version, expected) in [
+        ("8.0.11-TiDB-CLOUD.202603.0", true),
+        (
+            "Release Version: CLOUD.202603.5-1c7827b003-dirty\nEdition: Community",
+            true,
+        ),
+        ("5.7.25-TiDB-v4.0.0-alpha-1263-g635f2e1af", false),
+        ("8.0.11-TiDB-X-CLOUD.202603.0", false),
+    ] {
+        assert_eq!(ParseServerInfo(version).NextGen, expected, "{version:?}");
+    }
 }
 
 #[test]
 fn test_resolve_keyspace_meta_gc_api_choice() {
-    // 同一 helper 再测一遍，锁住“成功后 pd_client 一定存在”这一外部契约。
-    let mut conf = default_config_for_test();
-    conf.StatusAddr.clear();
-    let mut d = make_dumper(conf);
-    tidbResolveKeyspaceMetaForGC(&mut d).unwrap();
-    // 这里和上个测试共同锁定“解析成功 -> pd_client 已准备”的结果。
-    assert!(d.pd_client.is_some());
+    const QUERY: &str = "SELECT KEYSPACE_NAME, KEYSPACE_ID FROM information_schema.KEYSPACE_META;";
+    for (name, pd_addr, expected_error, expect_client, expect_keyspace_gc) in [
+        ("premium_with_pd", "pd1:2379", None, true, true),
+        ("premium_without_pd", "", None, false, false),
+        (
+            "premium_malformed_pd",
+            " , ",
+            Some("invalid --pd"),
+            false,
+            false,
+        ),
+    ] {
+        let mut conf = default_config_for_test();
+        conf.StatusAddr.clear();
+        conf.ServerInfo.ServerType = ServerType::ServerTypeTiDB;
+        conf.PDAddr = pd_addr.into();
+        let mut d = make_dumper(conf);
+        d.db.as_ref().unwrap().seed_query(
+            QUERY,
+            vec!["KEYSPACE_NAME".into(), "KEYSPACE_ID".into()],
+            vec![vec![Some(b"ks1".to_vec()), Some(b"42".to_vec())]],
+        );
+        tidbResolveKeyspaceMetaForGC(&mut d).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(d.tidb_keyspace_name, "ks1", "{name}");
+        assert_eq!(d.tidb_keyspace_id, 42, "{name}");
+
+        let result = tidbSetPDClientForGC(&mut d);
+        if let Some(expected) = expected_error {
+            let error = result.expect_err(name);
+            assert!(error.msg.contains(expected), "{name}: {error}");
+        } else {
+            result.unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
+        assert_eq!(d.pd_client.is_some(), expect_client, "{name}");
+        assert_eq!(d.tidb_use_keyspace_gc, expect_keyspace_gc, "{name}");
+        if expect_keyspace_gc {
+            let client = d.pd_client.as_ref().unwrap();
+            assert_eq!(client.endpoints, ["pd1:2379"], "{name}");
+            assert_eq!(
+                client.api_context_keyspace.as_deref(),
+                Some("ks1"),
+                "{name}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -375,6 +549,7 @@ fn test_set_default_session_params() {
         ServerType: ServerType::ServerTypeTiDB,
         ServerVersion: Some(parse_semver("6.2.0")),
         HasTiKV: true,
+        NextGen: false,
     };
     setDefaultSessionParams(&si, &mut params);
     assert_eq!(
@@ -399,6 +574,7 @@ fn test_set_session_params() {
         ServerType: ServerType::ServerTypeTiDB,
         ServerVersion: Some(parse_semver("6.2.0")),
         HasTiKV: true,
+        NextGen: false,
     };
     let mut d = make_dumper(conf);
     setSessionParam(&mut d).unwrap();

@@ -649,6 +649,8 @@ pub struct ServerInfo {
     pub ServerVersion: Option<Version>,
     /// Go 结构对齐字段；本解析路径不填充。
     pub HasTiKV: bool,
+    /// Whether the target uses the premium-keyspace (NextGen) cloud format.
+    pub NextGen: bool,
 }
 
 impl Default for ServerInfo {
@@ -658,6 +660,7 @@ impl Default for ServerInfo {
             ServerType: ServerType::Unknown,
             ServerVersion: None,
             HasTiKV: false,
+            NextGen: false,
         }
     }
 }
@@ -759,6 +762,7 @@ pub fn ParseServerInfo(src: &str) -> ServerInfo {
         // 常规正则未命中时尝试 Cloud/X 年月映射。
         if version_str.is_empty() {
             version_str = parse_tidbx_version_to_semver(src);
+            server_info.NextGen = !version_str.is_empty();
         }
         if let Some(stripped) = version_str.strip_prefix('v') {
             version_str = stripped.to_string();
