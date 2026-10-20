@@ -460,6 +460,32 @@ fn tcp_packet_io_flushes_existing_packet_codec_and_exposes_socket_lifecycle() {
     assert!(!packet.connection_alive());
 }
 
+#[test]
+fn tcp_packet_io_connection_alive_probe_does_not_consume_packet_bytes() {
+    let (mut client, server) = tcp_pair();
+    let mut packet = TcpPacketIo::new(server, 32 * 1024 * 1024).expect("production packet IO");
+    let probe = packet
+        .connection_alive_probe()
+        .expect("TCP transport exposes a liveness probe");
+
+    assert!(probe(), "an idle connected peer must be alive");
+    client
+        .write_all(&[3, 0, 0, 0, b'o', b'n', b'e'])
+        .expect("write client packet");
+    assert!(probe(), "pending packet data must still mean alive");
+    assert_eq!(
+        packet.read_packet().expect("probe must not consume bytes"),
+        b"one"
+    );
+
+    drop(client);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && probe() {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!probe(), "a closed peer must be reported as dead");
+}
+
 /// PROXY 协议必须延迟到首次读取时探测，以允许服务端先写出握手包再等待客户端数据。
 #[test]
 fn proxy_fallback_is_lazy_until_after_server_handshake_write() {

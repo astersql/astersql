@@ -29,6 +29,7 @@ use std::{
 use rustls::{ServerConnection, StreamOwned};
 
 use astersql_domain::Domain;
+use astersql_server_internal_util::probe_tcp_stream_alive;
 use astersql_session::runtime::{
     CONCRETE_NULL_VALUE, CanonicalSessionFactory, ConcretePreparedArgument, ConcreteProtocolState,
     ConcreteResultField, ConcreteSession, SplitSQLStatements,
@@ -244,24 +245,8 @@ impl PacketIo for TcpPacketIo {
     }
 
     fn connection_alive_probe(&self) -> Option<ConnectionAliveProbe> {
-        let stream = Arc::new(Mutex::new(self.stream.try_clone().ok()?));
-        Some(Arc::new(move || {
-            let Ok(stream) = stream.lock() else {
-                return false;
-            };
-            if stream.set_nonblocking(true).is_err() {
-                return true;
-            }
-            let mut byte = [0_u8; 1];
-            let alive = match stream.peek(&mut byte) {
-                Ok(0) => false,
-                Ok(_) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => true,
-                Err(_) => false,
-            };
-            let _ = stream.set_nonblocking(false);
-            alive
-        }))
+        let stream = self.stream.try_clone().ok()?;
+        Some(Arc::new(move || probe_tcp_stream_alive(&stream) != 0))
     }
 
     fn close_handle(&self) -> Option<crate::conn::PacketCloseHandle> {
