@@ -845,6 +845,15 @@ pub trait DdlInfo: Send {}
 pub trait ParsedStatement: Send {}
 /// 计划的构建数据接口。
 pub trait PlanData: Send + Sync {}
+/// COMPLETE DELTA APPLY plan data. Runtime-specific table and transaction
+/// resources are resolved by `ExecutorBuilderDependencies`.
+pub trait MViewCompleteDeltaApplyPlanData: UnaryPlanData {
+    fn target_table_id(&self) -> i64;
+}
+/// Incremental materialized-view aggregate merge plan data.
+pub trait MViewDeltaMergePlanData: UnaryPlanData {
+    fn target_table_id(&self) -> i64;
+}
 /// 快照抽象接口。
 pub trait Snapshot: Send {
     /// 设置option。
@@ -1885,6 +1894,8 @@ pub enum Plan<'a> {
     SplitRegion(&'a dyn SplitRegionPlanData),
     Update(&'a dyn UpdatePlanData),
     Delete(&'a dyn DeletePlanData),
+    MViewCompleteDeltaApply(&'a dyn MViewCompleteDeltaApplyPlanData),
+    MViewDeltaMerge(&'a dyn MViewDeltaMergePlanData),
     Analyze(&'a dyn AnalyzePlanData),
     IndexJoin(&'a dyn IndexJoinPlanData),
     IndexMergeJoin(&'a dyn IndexJoinPlanData),
@@ -2110,6 +2121,16 @@ pub trait ExecutorBuilderDependencies: Send + Sync {
     fn build_delete_executor(
         &self,
         plan: &dyn DeletePlanData,
+        child: ExecutorBox,
+    ) -> Result<ExecutorBox, BuildError>;
+    fn build_mview_complete_delta_apply_executor(
+        &self,
+        plan: &dyn MViewCompleteDeltaApplyPlanData,
+        child: ExecutorBox,
+    ) -> Result<ExecutorBox, BuildError>;
+    fn build_mview_delta_merge_executor(
+        &self,
+        plan: &dyn MViewDeltaMergePlanData,
         child: ExecutorBox,
     ) -> Result<ExecutorBox, BuildError>;
     /// 构建deleteforeignkeychecks执行器。
@@ -2517,6 +2538,8 @@ impl executorBuilder {
             Plan::SplitRegion(plan) => self.buildSplitRegion(plan),
             Plan::Update(plan) => self.buildUpdate(plan),
             Plan::Delete(plan) => self.buildDelete(plan),
+            Plan::MViewCompleteDeltaApply(plan) => self.buildMViewCompleteDeltaApply(plan),
+            Plan::MViewDeltaMerge(plan) => self.buildMViewDeltaMerge(plan),
             Plan::Analyze(plan) => self.buildAnalyze(plan),
             Plan::IndexJoin(plan) => self.buildIndexLookUpJoin(plan),
             Plan::IndexMergeJoin(plan) => self.buildIndexLookUpMergeJoin(plan),
@@ -3994,6 +4017,28 @@ impl executorBuilder {
             }
         }
         let result = self.dependencies.build_delete_executor(plan, child);
+        self.finish(result)
+    }
+
+    pub fn buildMViewCompleteDeltaApply(
+        &mut self,
+        plan: &dyn MViewCompleteDeltaApplyPlanData,
+    ) -> Option<ExecutorBox> {
+        let child = self.build_required_child(plan.child_plan(), "MViewCompleteDeltaApply")?;
+        let result = self
+            .dependencies
+            .build_mview_complete_delta_apply_executor(plan, child);
+        self.finish(result)
+    }
+
+    pub fn buildMViewDeltaMerge(
+        &mut self,
+        plan: &dyn MViewDeltaMergePlanData,
+    ) -> Option<ExecutorBox> {
+        let child = self.build_required_child(plan.child_plan(), "MViewDeltaMerge")?;
+        let result = self
+            .dependencies
+            .build_mview_delta_merge_executor(plan, child);
         self.finish(result)
     }
 

@@ -150,6 +150,12 @@ pub mod metrics_reader;
 pub mod mpp_gather;
 #[cfg(test)]
 mod mpp_gather_test;
+pub mod mview_complete_delta_apply;
+#[cfg(test)]
+mod mview_complete_delta_apply_test;
+pub mod mviewdeltamergeagg;
+#[cfg(test)]
+mod mviewdeltamergeagg_test;
 /// 操作 DDL Job（取消/暂停等）。
 pub mod operate_ddl_jobs;
 #[cfg(test)]
