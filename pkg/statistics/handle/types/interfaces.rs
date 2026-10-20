@@ -22,7 +22,9 @@ use aster_sql_ddl_notifier::SchemaChangeEvent;
 pub use aster_sql_infoschema::InfoSchema;
 use aster_sql_meta_model::{PartitionDefinition, StatsLoadItem, TableInfo, TableItemID};
 pub use aster_sql_sessionctx_stmtctx::{StatementContext, StatsLoadResult};
-use aster_sql_statistics::{AnalyzeJob, AnalyzeResults, CMSketch, Histogram, JobType, Table, TopN};
+use aster_sql_statistics::{
+    AnalyzeJob, AnalyzeResults, CMSketch, FMSketch, Histogram, JobType, Table, TopN,
+};
 pub use aster_sql_statistics_handle_usage_indexusage::{
     Sample as IndexUsageSample, SessionIndexUsageCollector,
 };
@@ -299,6 +301,7 @@ pub trait StatsReadWriter: Send + Sync {
         histogram: &Histogram,
         cms: Option<&CMSketch>,
         top_n: Option<&TopN>,
+        fm_sketch: Option<&FMSketch>,
         stats_version: i32,
         update_analyze_time: bool,
         source: &str,

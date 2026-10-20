@@ -267,7 +267,7 @@ pub fn save_column_or_index_stats(
         version,
         stats.stats_version,
         stats.stats_version != 2,
-        false,
+        true,
         false,
     )
 }

@@ -71,7 +71,7 @@ fn existing_mv_index_analyze_updates_storage_but_returns_zero_version() {
 }
 
 #[test]
-fn standalone_column_save_removes_stale_fm_sketch_without_reinserting_it() {
+fn standalone_column_save_replaces_stale_fm_sketch() {
     let store = SaveStore::new(Vec::new());
     let stats = crate::ColumnStats {
         histogram: crate::Histogram {
@@ -89,9 +89,7 @@ fn standalone_column_save_removes_stale_fm_sketch_without_reinserting_it() {
     assert!(statements.iter().any(|sql| {
         sql == "delete from mysql.stats_fm_sketch where table_id=7 and is_index=0 and hist_id=8"
     }));
-    assert!(
-        !statements
-            .iter()
-            .any(|sql| sql.starts_with("insert into mysql.stats_fm_sketch"))
-    );
+    assert!(statements.iter().any(|sql| {
+        sql == "insert into mysql.stats_fm_sketch (table_id,is_index,hist_id,value) values (7,0,8,x'ab')"
+    }));
 }

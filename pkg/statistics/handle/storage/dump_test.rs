@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::{
     Bucket, ColumnStats, Error, Histogram, JsonTable, PredicateColumn, TableStats, TopNItem,
@@ -78,6 +79,28 @@ fn complete_json_table() -> JsonTable {
     }
 }
 
+#[derive(Default)]
+struct DumpLoadStore {
+    statements: Mutex<Vec<String>>,
+}
+
+impl DumpLoadStore {
+    fn statements(&self) -> Vec<String> {
+        self.statements.lock().unwrap().clone()
+    }
+}
+
+impl crate::SqlStore for DumpLoadStore {
+    fn start_ts(&self) -> Result<u64, crate::Error> {
+        Ok(123)
+    }
+
+    fn execute(&self, sql: &str) -> Result<Vec<crate::Row>, crate::Error> {
+        self.statements.lock().unwrap().push(sql.to_owned());
+        Ok(Vec::new())
+    }
+}
+
 #[test]
 fn dump_and_load_preserve_complete_table_statistics() {
     let table = complete_json_table();
@@ -89,6 +112,66 @@ fn dump_and_load_preserve_complete_table_statistics() {
     );
     assert!(blocks.iter().all(|block| block.len() <= 11));
     assert_eq!(blocks_to_json_table(&blocks).unwrap(), table);
+}
+
+#[test]
+fn fm_sketch_dump_load_persists_columns_and_indices() {
+    let blocks = json_table_to_blocks(&complete_json_table(), 11).unwrap();
+    let loaded = blocks_to_json_table(&blocks).unwrap();
+    let store = DumpLoadStore::default();
+
+    crate::save_column_or_index_stats(&store, 42, false, &loaded.stats.columns["a"]).unwrap();
+    crate::save_column_or_index_stats(&store, 42, true, &loaded.stats.indices["idx"]).unwrap();
+
+    let statements = store.statements();
+    for is_index in [0, 1] {
+        let fm_insert = statements
+            .iter()
+            .position(|sql| {
+                sql == &format!(
+                    "insert into mysql.stats_fm_sketch (table_id,is_index,hist_id,value) values (42,{is_index},{},x'090a')",
+                    is_index + 1
+                )
+            })
+            .expect("dump/load must restore the FM sketch for both columns and indices");
+        let histogram_replace = statements
+            .iter()
+            .position(|sql| {
+                sql.starts_with("replace into mysql.stats_histograms")
+                    && sql.contains(&format!("(42,{is_index},{},", is_index + 1))
+            })
+            .expect("dump/load must restore the matching histogram");
+        assert!(
+            fm_insert < histogram_replace,
+            "the FM sketch must be committed with the histogram before a concurrent ANALYZE can run"
+        );
+    }
+}
+
+#[test]
+fn fm_sketch_dump_without_sketches_clears_stale_rows() {
+    let mut json = complete_json_table();
+    json.stats.columns.get_mut("a").unwrap().fm_sketch = None;
+    json.stats.indices.get_mut("idx").unwrap().fm_sketch = None;
+    let loaded = blocks_to_json_table(&json_table_to_blocks(&json, 11).unwrap()).unwrap();
+    let store = DumpLoadStore::default();
+
+    crate::save_column_or_index_stats(&store, 42, false, &loaded.stats.columns["a"]).unwrap();
+    crate::save_column_or_index_stats(&store, 42, true, &loaded.stats.indices["idx"]).unwrap();
+
+    let statements = store.statements();
+    assert!(statements.iter().any(|sql| {
+        sql == "delete from mysql.stats_fm_sketch where table_id=42 and is_index=0 and hist_id=1"
+    }));
+    assert!(statements.iter().any(|sql| {
+        sql == "delete from mysql.stats_fm_sketch where table_id=42 and is_index=1 and hist_id=2"
+    }));
+    assert!(
+        !statements
+            .iter()
+            .any(|sql| sql.starts_with("insert into mysql.stats_fm_sketch")),
+        "a dump without sketches must not retain sketches from different statistics"
+    );
 }
 
 #[test]
