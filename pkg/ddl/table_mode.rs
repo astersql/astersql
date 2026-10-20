@@ -203,6 +203,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                 schema_version: 0,
                 update_raw_args: false,
                 removed: false,
+                must_rollback_transaction: false,
             });
         }
         if job.state == JobState::Pausing {
@@ -213,6 +214,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                 schema_version: 0,
                 update_raw_args: false,
                 removed: false,
+                must_rollback_transaction: false,
             });
         }
         if job.state == JobState::Cancelling {
@@ -226,6 +228,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                     schema_version: 0,
                     update_raw_args: false,
                     removed: false,
+                    must_rollback_transaction: false,
                 });
             }
             job.state = JobState::Cancelled;
@@ -249,6 +252,8 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
         current.args = job.args.clone();
         let executed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let completed = executed.clone();
+        let rollback_transaction = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rollback_transaction_after_step = rollback_transaction.clone();
         let limit = self.policy.error_limit();
         let _encoded = session.with_execution_context(Box::new(move |context| {
             let mut stage = None;
@@ -273,6 +278,10 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                     current.last_schema_version = version;
                 }
                 Err(error) => {
+                    rollback_transaction_after_step.store(
+                        context.must_rollback_transaction_on_error(),
+                        std::sync::atomic::Ordering::Release,
+                    );
                     context.with_transaction(&mut |txn| {
                         txn.CleanupStatement(stage).map_err(|e| e.to_string())?;
                         Ok(Vec::new())
@@ -331,6 +340,8 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
             schema_version: version,
             update_raw_args: false,
             removed: false,
+            must_rollback_transaction: rollback_transaction
+                .load(std::sync::atomic::Ordering::Acquire),
         })
     }
 }
@@ -384,6 +395,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> NormalDdlExecutor<B, P> {
             schema_version: 0,
             update_raw_args: false,
             removed: true,
+            must_rollback_transaction: false,
         })
     }
 }

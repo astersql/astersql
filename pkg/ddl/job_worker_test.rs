@@ -344,6 +344,7 @@ fn reorg_job_ru_is_persisted_for_modify_column_and_partition_and_rolled_back_on_
                 schema_version: 1,
                 update_raw_args: false,
                 removed: false,
+                must_rollback_transaction: false,
             })
         }
         fn wait_synced(&mut self, _: &WireJob, _: i64, _: &dyn JobLease) -> Result<(), String> {

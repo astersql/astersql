@@ -220,6 +220,7 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
     })?;
     if t.State == SchemaState::None {
         if t.MaterializedView.is_some() {
+            context.mark_must_rollback_transaction_on_error();
             context.query(
                 &format!(
                     "DELETE FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",
@@ -236,6 +237,7 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
             );
         }
         if t.MaterializedViewLog.is_some() {
+            context.mark_must_rollback_transaction_on_error();
             context.query(
                 &format!(
                     "DELETE FROM mysql.tidb_mlog_purge_info WHERE MLOG_ID={}",

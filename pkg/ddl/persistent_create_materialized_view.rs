@@ -252,6 +252,7 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
         meta.set_create_mlog_schema_diff(job, version, &affected, false)?;
         Ok(vec![])
     })?;
+    context.mark_must_rollback_transaction_on_error();
     crate::persistent_actions::async_notify_event(
         context,
         job,
@@ -312,6 +313,7 @@ fn rollback(
         }
         Ok(vec![])
     })?;
+    context.mark_must_rollback_transaction_on_error();
     context.delete_create_mview_refresh(job.table_id)?;
     let mut version = 0;
     context.with_transaction(&mut |txn| {

@@ -1002,6 +1002,7 @@ struct ConcreteJobExecutionContext<'a>(
     Arc<ddl::Pool>,
     Arc<Mutex<MViewBuildContexts>>,
     Arc<astersql_ddl::storage_class_transition::StorageClassTransitionManager>,
+    bool,
 );
 impl astersql_ddl::index::ReorgIndexEnvironment for ConcreteJobExecutionContext<'_> {
     fn load_cloud_storage_uri(&mut self, job_id: i64) -> Result<String, String> {
@@ -1038,6 +1039,14 @@ impl astersql_ddl::index::ReorgIndexEnvironment for ConcreteJobExecutionContext<
     }
 }
 impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn mark_must_rollback_transaction_on_error(&mut self) {
+        self.4 = true;
+    }
+
+    fn must_rollback_transaction_on_error(&self) -> bool {
+        self.4
+    }
+
     fn cached_storage_class_observation(
         &mut self,
         operation: &astersql_ddl::storage_class_transition::StorageClassTransitionOperation,
@@ -1790,6 +1799,7 @@ impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
                     pool,
                     builds,
                     storage_class_transitions,
+                    false,
                 ))
                 .map_err(sys_error)
             })

@@ -264,6 +264,13 @@ pub type TransactionOperation =
 /// release their borrow before SQL execution. Explicit resource callbacks retain
 /// Go transaction boundaries for operations requiring an independent session.
 pub trait JobExecutionContext {
+    /// Mark an internal SQL mutation whose later error invalidates the entire
+    /// DDL transaction rather than only the current statement stage.
+    fn mark_must_rollback_transaction_on_error(&mut self) {}
+    fn must_rollback_transaction_on_error(&self) -> bool {
+        false
+    }
+
     fn cached_storage_class_observation(
         &mut self,
         _: &crate::storage_class_transition::StorageClassTransitionOperation,
@@ -501,6 +508,10 @@ pub struct DurableJobStep {
     /// A terminal executor step has already deleted the queue row and written
     /// history inside this transaction; do not recreate its queue entry.
     pub removed: bool,
+    /// Internal SQL may release the statement stage before returning an error.
+    /// In that case the whole worker transaction must be reopened before the
+    /// updated job error is persisted.
+    pub must_rollback_transaction: bool,
 }
 
 fn check_job_lease(lease: &dyn JobLease) -> Result<(), String> {
@@ -555,7 +566,26 @@ impl JobWorker {
             if current.as_bytes() != expected_bytes {
                 return Err("job meta changed by others".into());
             }
-            let result = executor.step(session, job)?;
+            let mut result = executor.step(session, job)?;
+            if result.must_rollback_transaction {
+                session.rollback();
+                session.begin()?;
+                let rows = session.query(
+                    &format!(
+                        "select job_meta from mysql.tidb_ddl_job where job_id = {}",
+                        job.id
+                    ),
+                    "get_job",
+                )?;
+                let current = rows
+                    .first()
+                    .and_then(|row| row.first())
+                    .ok_or_else(|| "DDL job disappeared".to_owned())?;
+                if current.as_bytes() != expected_bytes {
+                    return Err("job meta changed by others".into());
+                }
+                result.schema_version = 0;
+            }
             check_job_lease(lease)?;
             let failed = matches!(
                 job.state,
@@ -882,6 +912,7 @@ impl DurableJobExecutor for IndexReorgInitialization {
             schema_version: 0,
             update_raw_args: false,
             removed: false,
+            must_rollback_transaction: false,
         })
     }
 }

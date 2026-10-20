@@ -150,6 +150,7 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
             log.ID
         )
     };
+    context.mark_must_rollback_transaction_on_error();
     if let Err(error) = context.query(&sql, "mlog-purge-info-upsert") {
         if is_missing_purge_table(&error) {
             job.state = JobState::Rollingback;
@@ -216,6 +217,7 @@ fn rollback(
         }
         Ok(Vec::new())
     })?;
+    context.mark_must_rollback_transaction_on_error();
     if let Err(error) = context.query(
         &format!(
             "DELETE FROM mysql.tidb_mlog_purge_info WHERE MLOG_ID={}",
