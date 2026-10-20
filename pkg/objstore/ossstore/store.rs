@@ -35,6 +35,19 @@ pub const DEFAULT_REGION: &str = "cn-hangzhou";
 pub const ECS_RAM_ROLE_PROVIDER_NAME: &str = "ecs_ram_role";
 /// ECS 元数据中读取实例所在 Region 的 URL。
 pub const REGION_ID_META_URL: &str = "http://100.100.100.200/latest/meta-data/region-id";
+/// Aliyun ECS metadata service address used by the default credential chain.
+const ECS_METADATA_IP: &str = "100.100.100.200";
+
+/// Reports whether a flattened credential-chain error represents a timeout
+/// while contacting the Aliyun ECS metadata service.
+pub fn IsTransientNoCredentialsError(message: Option<&str>) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains(ECS_METADATA_IP)
+        && (message.contains("context deadline exceeded") || message.contains("i/o timeout"))
+}
 
 /// 包装 `s3like::Storage` 与可选的后台凭证刷新器。
 pub struct OSSStore {
@@ -186,7 +199,7 @@ pub fn NewOSSStorage(
         );
         let refresher = Arc::new(CredentialRefresher::new(provider));
         refresher
-            .refresh_once()
+            .refresh_once_with_context(ctx)
             .context("failed to get initial OSS credentials")?;
         (refresher.clone(), Some(refresher))
     };

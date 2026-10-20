@@ -20,11 +20,72 @@
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use arc_swap::ArcSwapOption;
 use reqsign_core::ProvideCredential;
+
+use crate::IsTransientNoCredentialsError;
+
+const CREDENTIAL_MAX_ATTEMPTS: usize = 30;
+const CREDENTIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const CREDENTIAL_LOG_INTERVAL: usize = 5;
+
+/// Fetch credentials while retrying only Aliyun ECS metadata timeouts.
+pub(crate) fn fetch_credentials(
+    context: &storeapi::Context,
+    provider: &dyn CredentialsProvider,
+) -> Result<ProviderCredentials> {
+    fetch_credentials_with_policy(
+        context,
+        provider,
+        CREDENTIAL_MAX_ATTEMPTS,
+        CREDENTIAL_RETRY_INTERVAL,
+    )
+}
+
+/// Policy-injected form used by deterministic unit tests.
+pub(crate) fn fetch_credentials_with_policy(
+    context: &storeapi::Context,
+    provider: &dyn CredentialsProvider,
+    max_attempts: usize,
+    retry_interval: Duration,
+) -> Result<ProviderCredentials> {
+    assert!(max_attempts > 0, "credential attempts must be positive");
+    for attempt in 1..=max_attempts {
+        match provider.get_credentials() {
+            Ok(credentials) => return Ok(credentials),
+            Err(error)
+                if IsTransientNoCredentialsError(Some(&format!("{error:#}")))
+                    && attempt < max_attempts =>
+            {
+                if attempt % CREDENTIAL_LOG_INTERVAL == 0 {
+                    log::warn!(
+                        "failed to get credentials from the default provider chain, will retry: {error:#}; attempt={attempt}, max-attempts={max_attempts}"
+                    );
+                }
+                wait_for_retry(context, retry_interval)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("positive attempt count always returns")
+}
+
+fn wait_for_retry(context: &storeapi::Context, retry_interval: Duration) -> Result<()> {
+    context.check()?;
+    let deadline = Instant::now() + retry_interval;
+    while Instant::now() < deadline {
+        context.check()?;
+        std::thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(10)),
+        );
+    }
+    Ok(())
+}
 
 /// 一次完整的凭证快照：AK/SK、可选 STS Token，以及来源名称。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -153,7 +214,12 @@ impl CredentialRefresher {
 
     /// 同步拉取一次并原子替换快照。
     pub fn refresh_once(&self) -> Result<()> {
-        let credentials = self.provider.get_credentials()?;
+        self.refresh_once_with_context(&storeapi::Context::default())
+    }
+
+    /// Pull once with cancellation support for initial store construction.
+    pub fn refresh_once_with_context(&self, context: &storeapi::Context) -> Result<()> {
+        let credentials = fetch_credentials(context, self.provider.as_ref())?;
         self.credentials.store(Some(Arc::new(credentials)));
         Ok(())
     }

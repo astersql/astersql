@@ -13,6 +13,7 @@ legacy-tasks = ["task-899", "task-900", "task-903", "task-1396"]
 
 [dependencies]
 "astersql-lightning-log" = { package = "astersql-lightning-log", path = "../log" }
+"astersql-objstore-ossstore" = { package = "astersql-objstore-ossstore", path = "../../objstore/ossstore" }
 libc = "0.2"
 
 [dev-dependencies]

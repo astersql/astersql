@@ -88,6 +88,12 @@ pub fn isSingleRetryableError(error: &CommonError) -> bool {
         error = next;
     }
 
+    // Default-provider errors are flattened by the OSS credential SDK, so the
+    // metadata host and timeout signal must be classified from the message.
+    if astersql_objstore_ossstore::IsTransientNoCredentialsError(Some(&error.Message)) {
+        return true;
+    }
+
     // 明确不可重试的 Kind
     if matches!(error.Kind.as_str(), "cancelled" | "eof" | "no-rows") {
         return false;

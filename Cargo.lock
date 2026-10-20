@@ -5585,6 +5585,7 @@ name = "astersql-lightning-common"
 version = "0.1.0"
 dependencies = [
  "astersql-lightning-log",
+ "astersql-objstore-ossstore",
  "libc",
  "serial_test",
 ]

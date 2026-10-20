@@ -15,12 +15,35 @@
 
 // `CredentialRefresher` 单元测试：整快照发布、周期刷新与停止后不再拉取。
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use task_ossstore::{CredentialRefresher, CredentialsProvider, ProviderCredentials};
+
+struct SequenceProvider(Mutex<VecDeque<Result<ProviderCredentials, String>>>);
+
+impl CredentialsProvider for SequenceProvider {
+    fn get_credentials(&self) -> Result<ProviderCredentials> {
+        self.0
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("credential result sequence exhausted")
+            .map_err(anyhow::Error::msg)
+    }
+}
+
+fn credentials(access_key_id: &str) -> ProviderCredentials {
+    ProviderCredentials {
+        access_key_id: access_key_id.to_owned(),
+        access_key_secret: "sk".to_owned(),
+        security_token: String::new(),
+        provider_name: "mock".to_owned(),
+    }
+}
 
 /// 每次 `get_credentials` 递增序列号，用序列生成 AK/SK/Token。
 struct CountingProvider(AtomicUsize);
@@ -78,4 +101,91 @@ fn test_credential_refresher() {
     let stopped_at = provider.0.load(Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(15));
     assert_eq!(provider.0.load(Ordering::SeqCst), stopped_at);
+}
+
+#[test]
+fn fetch_credentials_retries_only_transient_ecs_metadata_failures() {
+    let transient = concat!(
+        "unable to get credentials from any of the providers in the chain: ",
+        "get role name failed: Get http://100.100.100.200/latest/meta-data/ram/",
+        "security-credentials/: dial tcp 100.100.100.200:80: i/o timeout"
+    );
+    let raw_transient = concat!(
+        "get role name failed: Get http://100.100.100.200/latest/meta-data/ram/",
+        "security-credentials/: context deadline exceeded"
+    );
+    let permanent = "open /home/pingcap/.aliyun/config.json: no such file or directory";
+
+    let provider = SequenceProvider(Mutex::new(VecDeque::from([
+        Err(transient.to_owned()),
+        Err(raw_transient.to_owned()),
+        Ok(credentials("ak")),
+    ])));
+    let credential = task_ossstore::fetch_credentials_with_policy(
+        &storeapi::Context::default(),
+        &provider,
+        30,
+        Duration::ZERO,
+    )
+    .unwrap();
+    assert_eq!(credential.access_key_id, "ak");
+
+    let provider = SequenceProvider(Mutex::new(VecDeque::from([
+        Err(permanent.to_owned()),
+        Ok(credentials("must-not-be-read")),
+    ])));
+    let error = task_ossstore::fetch_credentials_with_policy(
+        &storeapi::Context::default(),
+        &provider,
+        30,
+        Duration::ZERO,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("no such file or directory"));
+    assert_eq!(provider.0.lock().unwrap().len(), 1);
+
+    let provider = SequenceProvider(Mutex::new(VecDeque::from_iter(
+        (0..30).map(|_| Err(raw_transient.to_owned())),
+    )));
+    let error = task_ossstore::fetch_credentials_with_policy(
+        &storeapi::Context::default(),
+        &provider,
+        30,
+        Duration::ZERO,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("context deadline exceeded"));
+    assert!(provider.0.lock().unwrap().is_empty());
+
+    let context = storeapi::Context::default();
+    context.cancel();
+    let provider = SequenceProvider(Mutex::new(VecDeque::from([Err(transient.to_owned())])));
+    let error = task_ossstore::fetch_credentials_with_policy(
+        &context,
+        &provider,
+        30,
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::Interrupted
+    );
+}
+
+#[test]
+fn transient_no_credentials_error_requires_ecs_metadata_timeout() {
+    assert!(!task_ossstore::IsTransientNoCredentialsError(None));
+    assert!(!task_ossstore::IsTransientNoCredentialsError(Some(
+        "open /home/pingcap/.aliyun/config.json: no such file or directory"
+    )));
+    assert!(!task_ossstore::IsTransientNoCredentialsError(Some(
+        "dial tcp 100.100.100.200:80: connect: connection refused"
+    )));
+    assert!(task_ossstore::IsTransientNoCredentialsError(Some(
+        "Get http://100.100.100.200/latest/meta-data/: i/o timeout"
+    )));
+    assert!(task_ossstore::IsTransientNoCredentialsError(Some(
+        "GET HTTP://100.100.100.200/latest/meta-data/: CONTEXT DEADLINE EXCEEDED"
+    )));
 }

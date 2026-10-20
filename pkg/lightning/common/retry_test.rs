@@ -121,6 +121,25 @@ fn test_is_retryable_error() {
     assert!(!IsRetryableError(Some(&with_status(404))));
     assert!(IsRetryableError(Some(&with_status(500))));
 
+    // Aliyun ECS metadata timeouts while resolving OSS credentials are transient.
+    assert!(IsRetryableError(Some(&err(
+        "other",
+        concat!(
+            "failed to get credentials from default provider: unable to get credentials ",
+            "from any of the providers in the chain: get role name failed: Get ",
+            "http://100.100.100.200/latest/meta-data/ram/security-credentials/: ",
+            "dial tcp 100.100.100.200:80: i/o timeout"
+        )
+    ))));
+    assert!(!IsRetryableError(Some(&err(
+        "other",
+        concat!(
+            "failed to get credentials from default provider: unable to get credentials ",
+            "from any of the providers in the chain: open ",
+            "/home/pingcap/.aliyun/config.json: no such file or directory"
+        )
+    ))));
+
     // kv errors
     // TiKV 常见可重试错误 ID；磁盘满不可重试
     assert!(IsRetryableError(Some(
