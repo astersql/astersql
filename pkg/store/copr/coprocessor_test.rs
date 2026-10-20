@@ -1643,6 +1643,44 @@ fn paging_size_bytes_is_forwarded_to_wire_request() {
 }
 
 #[test]
+fn paging_size_bytes_is_the_only_precharge_gate() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "z")]);
+    req.paging.enabled = true;
+    let task = CopTask {
+        paging: true,
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "z")]),
+        ..CopTask::default()
+    };
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        range: Some(key_range("a", "m")),
+        read_bytes: 1_048_576,
+        ..CopProtocolResponse::default()
+    };
+    let row_count_worker = worker(backend.clone(), req);
+    row_count_worker
+        .handle_task_once(&mut Backoffer::new(1), task.clone())
+        .unwrap();
+    *backend.response.lock().unwrap() = CopProtocolResponse::default();
+    row_count_worker
+        .handle_task_once(&mut Backoffer::new(1), task)
+        .unwrap();
+    assert_eq!(backend.wires.lock().unwrap()[1].predicted_read_bytes, 0);
+
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "z")]);
+    req.paging.size_bytes = 4 * 1024 * 1024;
+    worker(backend.clone(), req)
+        .handle_task_once(&mut Backoffer::new(1), CopTask::default())
+        .unwrap();
+    assert_eq!(
+        backend.wires.lock().unwrap()[0].predicted_read_bytes,
+        4 * 1024 * 1024
+    );
+}
+
+#[test]
 fn calculate_retry_matches_ascending_and_descending_go_cases() {
     let ranges = KeyRanges::new(vec![key_range("a", "m"), key_range("m", "z")]);
     let split = key_range("f", "t");

@@ -1384,7 +1384,9 @@ impl CopTaskWorker {
             .collect();
         wire.resolved_locks.sort_unstable();
         wire.committed_locks.sort_unstable();
-        if task.paging || self.request.paging.size_bytes > 0 {
+        // The byte budget is the only switch for pre-charge. Row-count paging
+        // still uses its task index, but must not send an RU prediction alone.
+        if self.request.paging.size_bytes > 0 {
             wire.predicted_read_bytes = self.ema.predict();
         }
         if self.request.copr_request_limiter.is_some()
