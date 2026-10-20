@@ -90,6 +90,7 @@ enum AdminRule {
     AnalyzeOptionAlt09,
     AnalyzeOptionAlt10,
     AnalyzeOptionAlt11,
+    AnalyzeOptionAlt12,
     BinlogStmtAlt01,
     IdentListWithParenOptAlt01,
     IdentListWithParenOptAlt02,
@@ -709,6 +710,7 @@ fn identify(rule_id: RuleId) -> Option<AdminRule> {
         "analyzeoption_default_topn--c2d926504f665863" => AdminRule::AnalyzeOptionAlt09,
         "analyzeoption_default_samples--5caa91fa5ed520e7" => AdminRule::AnalyzeOptionAlt10,
         "analyzeoption_default_samplerate--6d162a23401d8fe2" => AdminRule::AnalyzeOptionAlt11,
+        "analyzeoption_default_ndvrate--04eb469da4c755b0" => AdminRule::AnalyzeOptionAlt12,
         "analyzeoptionlist_analyzeoption--7c63d961e87956a8" => AdminRule::AnalyzeOptionListAlt01,
         "analyzeoptionlist_analyzeoptionlist_analyzeoptio--aedb853e042163ed" => {
             AdminRule::AnalyzeOptionListAlt03
@@ -2416,13 +2418,15 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         AdminRule::AnalyzeOptionAlt08
         | AdminRule::AnalyzeOptionAlt09
         | AdminRule::AnalyzeOptionAlt10
-        | AdminRule::AnalyzeOptionAlt11 => {
+        | AdminRule::AnalyzeOptionAlt11
+        | AdminRule::AnalyzeOptionAlt12 => {
             out.item = Some(Box::new(parser_ast::AnalyzeOpt {
                 Type: match rule {
                     AdminRule::AnalyzeOptionAlt08 => parser_ast::AnalyzeOptionType::NumBuckets,
                     AdminRule::AnalyzeOptionAlt09 => parser_ast::AnalyzeOptionType::NumTopN,
                     AdminRule::AnalyzeOptionAlt10 => parser_ast::AnalyzeOptionType::NumSamples,
-                    _ => parser_ast::AnalyzeOptionType::SampleRate,
+                    AdminRule::AnalyzeOptionAlt11 => parser_ast::AnalyzeOptionType::SampleRate,
+                    _ => parser_ast::AnalyzeOptionType::NDVRate,
                 },
                 Value: None,
             }));

@@ -148,6 +148,29 @@ contract_table_tests! {
 }
 
 #[test]
+fn analyze_default_ndvrate() {
+    let sql = "analyze table t with default ndvrate";
+    let statement = parser::New()
+        .ParseOneStmt(sql, "", "")
+        .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    let analyze = statement
+        .as_any()
+        .downcast_ref::<parser_ast::AnalyzeTableStmt>()
+        .expect("ANALYZE TABLE AST");
+
+    assert_eq!(analyze.AnalyzeOpts.len(), 1);
+    assert_eq!(
+        analyze.AnalyzeOpts[0].Type,
+        parser_ast::AnalyzeOptionType::NDVRate
+    );
+    assert!(analyze.AnalyzeOpts[0].Value.is_none());
+    assert_eq!(
+        analyze.restore().unwrap(),
+        "ANALYZE TABLE `t` WITH DEFAULT NDVRATE"
+    );
+}
+
+#[test]
 /// 基础 SQL 正反例解析。
 pub fn test_simple() {
     let mut parser = parser::New();

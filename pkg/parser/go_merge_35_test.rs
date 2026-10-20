@@ -358,7 +358,7 @@ fn go_merge_35_parser_table_cases() {
         ("ANALYZE TABLE t PARTITION a WITH DEFAULT BUCKETS", true),
         ("ANALYZE TABLE t WITH DEFAULT CMSKETCH WIDTH", false),
         ("ANALYZE TABLE t WITH DEFAULT CMSKETCH DEPTH", false),
-        ("ANALYZE TABLE t WITH DEFAULT NDVRATE", false),
+        ("ANALYZE TABLE t WITH DEFAULT NDVRATE", true),
     ];
     for (sql, accepted) in cases {
         let result = crate::New().ParseOneStmt(sql, "", "");

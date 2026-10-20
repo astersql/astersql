@@ -1288,6 +1288,7 @@ AnalyzeOption : "DEFAULT" "BUCKETS" @action;
 AnalyzeOption : "DEFAULT" "TOPN" @action;
 AnalyzeOption : "DEFAULT" "SAMPLES" @action;
 AnalyzeOption : "DEFAULT" "SAMPLERATE" @action;
+AnalyzeOption : "DEFAULT" "NDVRATE" @action;
 Assignment : ColumnName EqOrAssignmentEq ExprOrDefault @action;
 AssignmentList : Assignment @action;
 AssignmentList : AssignmentList "," Assignment @action;
