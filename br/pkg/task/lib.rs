@@ -135,6 +135,10 @@ mod restore_txn_test;
 #[path = "stream_test.rs"]
 mod stream_test;
 
+#[cfg(test)]
+#[path = "retain_latest_mvcc_test.rs"]
+mod retain_latest_mvcc_test;
+
 // 对外 re-export：保持与 Go 同包可见性习惯，调用方无需写 `task::backup::...`。
 // 通配导出含桩与实现，测试与 CLI 均可直接引用公开符号。
 pub use backup::*;

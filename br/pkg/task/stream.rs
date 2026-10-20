@@ -983,17 +983,21 @@ where
                 DisableGC(control.sessions.as_ref())
                     .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?,
             );
-            jobs = Some(
-                KeepRocksDBMaxBackgroundJobsLow(control.sessions.as_ref())
-                    .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?,
-            );
+            if cfg.RetainLatestMVCCVersion {
+                jobs = Some(
+                    KeepRocksDBMaxBackgroundJobsLow(control.sessions.as_ref())
+                        .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?,
+                );
+            }
             Ok(())
         })
         .map_err(|e| Error::new(e.to_string()))?;
     let (mut restoreGC, mut oldGC) =
         gc.ok_or_else(|| Error::new("registry did not run configuration operation"))?;
-    let (mut restoreJobs, mut oldJobs) =
-        jobs.ok_or_else(|| Error::new("registry did not run configuration operation"))?;
+    let (mut restoreJobs, mut oldJobs) = match jobs {
+        Some((restore, old)) => (Some(restore), old),
+        None => (None, String::new()),
+    };
     let mut persisted = !cfg.UseCheckpoint;
     let mut restorable = false;
     let result = (|| {
@@ -1037,7 +1041,11 @@ where
         .registry
         .GlobalOperationAfterSetResettingStatus(&ctx, cfg.RestoreID, || {
             restoreGC(&oldGC).map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?;
-            restoreJobs(&oldJobs).map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))
+            if let Some(restoreJobs) = restoreJobs.as_mut() {
+                restoreJobs(&oldJobs)
+                    .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?;
+            }
+            Ok(())
         })
         .map_err(|e| Error::new(e.to_string()))
 }

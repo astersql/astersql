@@ -649,10 +649,10 @@ fn test_build_key_ranges_from_schemas_replace() {
 }
 
 #[derive(Default)]
-struct ConfigSQLState {
-    values: HashMap<String, String>,
-    calls: Vec<String>,
-    fail: Option<usize>,
+pub(crate) struct ConfigSQLState {
+    pub(crate) values: HashMap<String, String>,
+    pub(crate) calls: Vec<String>,
+    pub(crate) fail: Option<usize>,
 }
 struct ConfigSQL(std::sync::Arc<std::sync::Mutex<ConfigSQLState>>);
 impl RestoreSQLSessionFactory for ConfigSQL {
@@ -786,7 +786,7 @@ impl astersql_br_pkg_conn::HttpClient for ConfigPD {
         panic!("empty PD stores must not issue HTTP")
     }
 }
-fn config_control(
+pub(crate) fn config_control(
     unfinished: bool,
 ) -> (
     RestoreTiKVConfigControl,
@@ -850,6 +850,7 @@ fn stream_tikv_config_checkpoint_retry_and_cleanup_match_go() {
         let (control, state, registry_calls) = config_control(unfinished);
         let mut cfg = RestoreConfig {
             UseCheckpoint: checkpoint,
+            RetainLatestMVCCVersion: true,
             RestoreID: 42,
             snapshotRestoreDataSize: 512,
             RestoreTS: 100,
@@ -906,6 +907,7 @@ fn stream_tikv_config_metadata_failure_restores_and_legacy_values_fall_back() {
     control.metadata = None;
     let mut cfg = RestoreConfig {
         UseCheckpoint: true,
+        RetainLatestMVCCVersion: true,
         ..Default::default()
     };
     // Go deferred global cleanup replaces the named metadata error with its result.
