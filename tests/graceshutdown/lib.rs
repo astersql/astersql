@@ -21,6 +21,25 @@
     clippy::all
 )]
 
+extern crate self as astersql_tests_graceshutdown;
+
+const SIGINT: i32 = 2;
+
+/// Exit status used by `tidb-server` after a graceful SIGINT shutdown.
+pub const GRACEFUL_SIGINT_EXIT_CODE: i32 = 128 + SIGINT;
+
+/// Apply the same `cmd.Wait` result handling as Go's `stopService`.
+///
+/// A successful wait is always graceful. A failed wait is graceful only when
+/// the process reports `128 + SIGINT`; every other wait error is preserved.
+pub fn classify_stop_wait(wait_error: Option<&str>, exit_code: i32) -> Result<(), String> {
+    match wait_error {
+        None => Ok(()),
+        Some(_) if exit_code == GRACEFUL_SIGINT_EXIT_CODE => Ok(()),
+        Some(error) => Err(error.to_owned()),
+    }
+}
+
 #[cfg(test)]
 #[path = "graceshutdown_test.rs"]
 // 模块 `graceshutdown_test` 在这里被显式接线，方便按既定边界编译。

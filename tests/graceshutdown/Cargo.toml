@@ -19,6 +19,10 @@ name = "graceshutdown_test"
 path = "graceshutdown_test.rs"
 
 [[test]]
+name = "graceful_exit_test"
+path = "graceful_exit_test.rs"
+
+[[test]]
 name = "main_test"
 path = "main_test.rs"
 

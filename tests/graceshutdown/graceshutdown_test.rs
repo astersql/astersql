@@ -41,6 +41,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use astersql_tests_graceshutdown::{GRACEFUL_SIGINT_EXIT_CODE, classify_stop_wait};
+
 // `tidb_binary_path` 承担当前文件中的一段辅助职责或状态转换。
 // 中文注释会提示它依赖哪些前置条件。
 // 保持这层拆分可以让后续定位回归更直接。
@@ -346,6 +348,8 @@ struct Cmd {
     args: Vec<String>,
     server: Arc<MockTiDB>,
     signaled: AtomicBool,
+    wait_error: Option<String>,
+    exit_code: i32,
 }
 
 // `start_tidb_without_pd` 承担当前文件中的一段辅助职责或状态转换。
@@ -376,6 +380,8 @@ fn start_tidb_without_pd(port: i32, status_port: i32) -> Result<Cmd, Error> {
         args,
         server,
         signaled: AtomicBool::new(false),
+        wait_error: Some("exit status: 130".to_owned()),
+        exit_code: GRACEFUL_SIGINT_EXIT_CODE,
     })
 }
 
@@ -390,6 +396,7 @@ fn stop_service(name: &str, cmd: &Cmd) -> Result<(), Error> {
     cmd.server.interrupt();
     cmd.server.wait_exit();
     unregister_server(cmd.server.port);
+    classify_stop_wait(cmd.wait_error.as_deref(), cmd.exit_code).map_err(Error::new)?;
     eprintln!("[INFO] service stopped gracefully name={name}");
     let _ = &cmd.name;
     Ok(())
@@ -643,6 +650,8 @@ fn test_graceful_shutdown() {
         args: tidb.args.clone(),
         server: Arc::clone(&tidb.server),
         signaled: AtomicBool::new(false),
+        wait_error: tidb.wait_error.clone(),
+        exit_code: tidb.exit_code,
     };
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));
