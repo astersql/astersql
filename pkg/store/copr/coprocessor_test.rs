@@ -1302,9 +1302,9 @@ use crate::{
     Backoffer, BatchError, BatchResult, BatchedCopTask, BuildCopTaskOptions, CopBackend,
     CopProtocolResponse, CopRUInterceptor, CopRequest, CopTask, CopTaskWorker, CopWireRequest,
     KeyRange, KeyRanges, LocatedKeyRanges, PagingOptions, PartitionKeyRanges, Peer, RegionVerId,
-    ReplicaReadType, RequestType, RunawayAction, RunawayChecker, StoreType, build_cop_tasks,
-    calculate_remain, calculate_retry, check_store_batch_coprocessor, ensure_monotonic_key_ranges,
-    is_small_task, small_task_concurrency,
+    ReplicaReadType, RequestType, RunawayAction, RunawayChecker, StoreType, TiDBRPCServer,
+    build_cop_tasks, calculate_remain, calculate_retry, check_store_batch_coprocessor,
+    ensure_monotonic_key_ranges, is_small_task, small_task_concurrency,
 };
 
 #[derive(Default)]
@@ -1320,6 +1320,7 @@ struct TestBackend {
     resolved_lock_calls: Mutex<Vec<Vec<u8>>>,
     resolved_lock_start_ts: Mutex<Vec<u64>>,
     resolve_lock_error: Mutex<Option<BatchError>>,
+    tidb_rpc_servers: Mutex<Option<Vec<TiDBRPCServer>>>,
 }
 
 impl TestBackend {
@@ -1358,6 +1359,28 @@ impl CopBackend for TestBackend {
 
     fn tidb_server_addresses(&self) -> BatchResult<Vec<(u64, String)>> {
         Ok(vec![(1, "tidb-1".to_owned()), (2, "tidb-2".to_owned())])
+    }
+
+    fn tidb_rpc_servers(&self) -> BatchResult<Vec<TiDBRPCServer>> {
+        Ok(self
+            .tidb_rpc_servers
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    TiDBRPCServer {
+                        server_id: 1,
+                        address: "tidb-1".into(),
+                        disable_rpc: false,
+                    },
+                    TiDBRPCServer {
+                        server_id: 2,
+                        address: "tidb-2".into(),
+                        disable_rpc: false,
+                    },
+                ]
+            }))
     }
 
     fn send(&self, _task: &CopTask, request: &CopWireRequest) -> BatchResult<CopProtocolResponse> {
@@ -1460,6 +1483,39 @@ fn ensure_monotonic_key_ranges_sorts_only_invalid_input() {
         ]
     );
     assert!(!ensure_monotonic_key_ranges(&mut ranges));
+}
+
+#[test]
+fn skip_empty_tidb_nodes() {
+    let backend = TestBackend::default();
+    *backend.tidb_rpc_servers.lock().unwrap() = Some(vec![
+        TiDBRPCServer {
+            server_id: 1,
+            address: String::new(),
+            disable_rpc: false,
+        },
+        TiDBRPCServer {
+            server_id: 2,
+            address: "standalone-br:4000".into(),
+            disable_rpc: true,
+        },
+        TiDBRPCServer {
+            server_id: 3,
+            address: "tidb:4000".into(),
+            disable_rpc: false,
+        },
+    ]);
+    let mut req = request(vec![key_range("a", "z")]);
+    req.store_type = StoreType::TiDb;
+    let tasks = build_cop_tasks(
+        &backend,
+        &req,
+        KeyRanges::new(vec![key_range("a", "z")]),
+        BuildCopTaskOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].store_address, "tidb:4000");
 }
 
 #[test]

@@ -855,6 +855,7 @@ pub struct ServerInfo {
     pub start_timestamp: i64,
     pub server_id: u64,
     pub engine_role: String,
+    pub disable_rpc: bool,
 }
 
 impl ServerInfo {
@@ -932,7 +933,7 @@ pub trait ServerDiscovery {
 /// 汇总各组件节点并解析回环地址后返回。
 pub fn GetClusterServerInfo(discovery: &dyn ServerDiscovery) -> Result<Vec<ServerInfo>, String> {
     let mut result = Vec::new();
-    result.extend(discovery.tidb_servers()?);
+    result.extend(GetTiDBServerInfo(discovery)?);
     result.extend(discovery.pd_servers()?);
     result.extend(discovery.store_servers()?);
     result.extend(discovery.tiflash_servers()?);
@@ -947,7 +948,11 @@ pub fn GetClusterServerInfo(discovery: &dyn ServerDiscovery) -> Result<Vec<Serve
 }
 /// 仅返回 TiDB 节点信息。
 pub fn GetTiDBServerInfo(discovery: &dyn ServerDiscovery) -> Result<Vec<ServerInfo>, String> {
-    discovery.tidb_servers()
+    Ok(discovery
+        .tidb_servers()?
+        .into_iter()
+        .filter(|server| !server.disable_rpc)
+        .collect())
 }
 /// 仅返回 PD 节点信息。
 pub fn GetPDServerInfo(discovery: &dyn ServerDiscovery) -> Result<Vec<ServerInfo>, String> {

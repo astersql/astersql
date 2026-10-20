@@ -629,7 +629,6 @@ pub mod config {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
     // 不可承接 cop 的地址。
-    pub const UnavailableIP: &str = "0.0.0.0";
     // 超大事务上限。
     pub const SuperLargeTxnSize: u64 = 1 << 40;
     #[derive(Default)]

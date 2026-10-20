@@ -155,6 +155,7 @@ fn index_scan_submission_obeys_version_gate_and_persists_choice() {
             git_hash: "a".into(),
         },
         assumed: false,
+        disable_rpc: false,
     };
     manager.local_server = Ok(Some(local.clone()));
     manager.all_servers = Ok(vec![
@@ -167,6 +168,7 @@ fn index_scan_submission_obeys_version_gate_and_persists_choice() {
                     git_hash: "z".into(),
                 },
                 assumed: false,
+                disable_rpc: false,
             }),
         ),
     ]);

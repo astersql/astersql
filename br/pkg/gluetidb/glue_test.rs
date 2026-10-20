@@ -397,6 +397,8 @@ struct IsolationHooks {
     started_owner: Mutex<i32>,
     // StartDomain 调用次数。
     started_domain: Mutex<i32>,
+    // BR Domain 必须在发布的 server info 上禁用 TiDB RPC。
+    disable_rpc: Mutex<bool>,
 }
 
 impl IsolationHooks {
@@ -408,6 +410,7 @@ impl IsolationHooks {
             last_session: Mutex::new(None),
             started_owner: Mutex::new(0),
             started_domain: Mutex::new(0),
+            disable_rpc: Mutex::new(false),
         }
     }
 
@@ -427,7 +430,9 @@ impl DomainHooks for IsolationHooks {
         &self,
         store: Option<&dyn Storage>,
         _filter: Option<&dyn Filter>,
+        disable_rpc: bool,
     ) -> Result<Option<Arc<Domain>>, SharedError> {
+        *self.disable_rpc.lock().unwrap() = disable_rpc;
         // store=None：只查询；Some：按需创建。
         if store.is_none() {
             return Ok(self.domain.lock().unwrap().clone());
@@ -535,6 +540,7 @@ fn test_the_session_isoation() {
     let g = New();
     // CreateSession 应触发 domain 启动并返回可用会话。
     let mut glue_se = g.CreateSession(&store).expect("CreateSession");
+    assert!(*hooks.disable_rpc.lock().unwrap());
     assert!(
         *hooks.started_owner.lock().unwrap() >= 1,
         "StartOwnerManager called"

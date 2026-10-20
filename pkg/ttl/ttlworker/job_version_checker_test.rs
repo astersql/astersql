@@ -11,7 +11,28 @@ fn server(version: &str, hash: &str, assumed: bool) -> ServerInfo {
             git_hash: hash.into(),
         },
         assumed,
+        disable_rpc: false,
     }
+}
+
+#[test]
+fn server_version_gate_ignores_rpc_disabled_entries() {
+    let current = VersionInfo {
+        version: "v1".into(),
+        git_hash: "a".into(),
+    };
+    let mut br = server("old", "old", false);
+    br.disable_rpc = true;
+    assert!(
+        version_infos_consistent(
+            &current,
+            &[
+                ("self".into(), Some(server("v1", "a", false))),
+                ("br".into(), Some(br)),
+            ],
+        )
+        .unwrap()
+    );
 }
 
 #[test]

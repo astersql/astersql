@@ -100,6 +100,7 @@ pub trait DomainHooks: Send + Sync {
         &self,
         store: Option<&dyn Storage>,
         filter: Option<&dyn Filter>,
+        disable_rpc: bool,
     ) -> Result<Option<Arc<Domain>>, SharedError>;
     fn StartOwnerManager(&self, store: &dyn Storage) -> Result<(), SharedError>;
     fn StartDomain(&self, dom: &Domain) -> Result<(), SharedError>;
@@ -118,6 +119,7 @@ impl DomainHooks for NopDomainHooks {
         &self,
         _store: Option<&dyn Storage>,
         _filter: Option<&dyn Filter>,
+        _disable_rpc: bool,
     ) -> Result<Option<Arc<Domain>>, SharedError> {
         // 未注入真实 domain 时返回 None，触发 startDomainAsNeeded。
         Ok(None)
@@ -314,7 +316,7 @@ impl Glue {
         &self,
         store: Option<&dyn Storage>,
     ) -> Result<Option<Arc<Domain>>, SharedError> {
-        active_hooks().GetOrCreateDomainWithFilter(store, self.InfoSchemaFilter.as_deref())
+        active_hooks().GetOrCreateDomainWithFilter(store, self.InfoSchemaFilter.as_deref(), true)
     }
 
     // 若尚无 Domain：加锁后 StartOwnerManager → 创建 → StartDomain。

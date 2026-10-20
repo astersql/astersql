@@ -542,6 +542,8 @@ pub struct Syncer {
 pub enum SyncerOption {
     /// Temporary global-variable Domains must not claim the serving endpoint.
     WithoutStatusEndpointClaim,
+    /// Standalone BR publishes server info but must not receive TiDB RPC.
+    WithDisableRPC,
 }
 
 /// 由节点 ID 拼出 ServerInfo etcd 键。
@@ -604,7 +606,12 @@ fn newSyncer(
     assumed_keyspace: String,
     options: &[SyncerOption],
 ) -> Box<Syncer> {
-    let info = *getServerInfo(uuid.clone(), server_id_getter, assumed_keyspace);
+    let info = *getServerInfo(
+        uuid.clone(),
+        server_id_getter,
+        assumed_keyspace,
+        options.contains(&SyncerOption::WithDisableRPC),
+    );
     let claim_enabled = astersql_config::get_global_config().status.report_status
         && !options.contains(&SyncerOption::WithoutStatusEndpointClaim)
         && !info.StaticInfo.IsAssumed();
@@ -812,6 +819,7 @@ impl Syncer {
                         .clone()
                         .unwrap_or_else(|| Arc::new(|| 0)),
                     String::new(),
+                    local.StaticInfo.DisableRPC,
                 ),
             )]));
         };
@@ -1111,6 +1119,7 @@ pub fn getServerInfo(
     id: String,
     server_id_getter: Arc<dyn Fn() -> u64 + Send + Sync>,
     assumed_keyspace: String,
+    disable_rpc: bool,
 ) -> Box<ServerInfo> {
     let config = GetGlobalServerConfig();
     let mut info = ServerInfo {
@@ -1132,6 +1141,7 @@ pub fn getServerInfo(
             AssumedKeyspace: assumed_keyspace,
             ServerIDGetter: Some(server_id_getter),
             JSONServerID: 0,
+            DisableRPC: disable_rpc,
         },
         DynamicInfo: DynamicInfo {
             Labels: config.Labels,

@@ -854,6 +854,7 @@ pub mod cluster_info {
             start_timestamp: 0,
             server_id: 1,
             engine_role: String::new(),
+            disable_rpc: false,
         }
     }
 

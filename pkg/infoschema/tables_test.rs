@@ -26,12 +26,12 @@ use std::sync::Arc;
 use crate::ClusterTableTiDBIndexUsage;
 use crate::infoschema::{CiString, TableInfo};
 use crate::tables::{
-    ColumnType, FilterClusterServerInfo, FormatStoreServerVersion, GetShardingInfo, ServerInfo,
-    StoreInfo, StoreLabel, TableCheckConstraints, TableClusterConfig, TableCollations,
-    TableColumnPrivileges, TableColumns, TableConstraints, TableKeyColumn, TablePartitions,
-    TableSchemaPrivileges, TableSchemata, TableStatistics, TableTablePrivileges, TableTables,
-    TableTiDBCheckConstraints, TableUserPrivileges, TableViews, columnInfo, is_tiflash_store,
-    is_tiflash_write_node, table_registry,
+    ColumnType, FilterClusterServerInfo, FormatStoreServerVersion, GetShardingInfo,
+    GetTiDBServerInfo, ServerDiscovery, ServerInfo, StoreInfo, StoreLabel, TableCheckConstraints,
+    TableClusterConfig, TableCollations, TableColumnPrivileges, TableColumns, TableConstraints,
+    TableKeyColumn, TablePartitions, TableSchemaPrivileges, TableSchemata, TableStatistics,
+    TableTablePrivileges, TableTables, TableTiDBCheckConstraints, TableUserPrivileges, TableViews,
+    columnInfo, is_tiflash_store, is_tiflash_write_node, table_registry,
 };
 
 fn assert_go_column_names(table_name: &str, expected: &[&str]) -> Vec<columnInfo> {
@@ -395,6 +395,30 @@ fn cluster_server_filter_matches_go_strings_exactly() {
         FilterClusterServerInfo(servers, &node_types, &HashSet::new()).len(),
         1
     );
+}
+
+#[test]
+fn tidb_server_info_skips_rpc_disabled_processes() {
+    struct Discovery;
+    impl ServerDiscovery for Discovery {
+        fn tidb_servers(&self) -> Result<Vec<ServerInfo>, String> {
+            Ok(vec![
+                ServerInfo {
+                    address: "tidb:4000".into(),
+                    ..ServerInfo::default()
+                },
+                ServerInfo {
+                    address: "standalone-br:4000".into(),
+                    disable_rpc: true,
+                    ..ServerInfo::default()
+                },
+            ])
+        }
+    }
+
+    let servers = GetTiDBServerInfo(&Discovery).unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].address, "tidb:4000");
 }
 
 #[test]

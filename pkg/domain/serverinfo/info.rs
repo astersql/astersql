@@ -77,6 +77,8 @@ pub struct StaticInfo {
     pub ServerIDGetter: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
     /// 最近一次 Marshal 写入 JSON 的 server_id。
     pub JSONServerID: u64,
+    /// 当前进程只发布 server info、不能承载 TiDB RPC。
+    pub DisableRPC: bool,
 }
 
 impl Default for StaticInfo {
@@ -93,6 +95,7 @@ impl Default for StaticInfo {
             AssumedKeyspace: String::new(),
             ServerIDGetter: None,
             JSONServerID: 0,
+            DisableRPC: false,
         }
     }
 }
@@ -101,6 +104,11 @@ impl StaticInfo {
     /// 是否处于跨 keyspace 假定身份（AssumedKeyspace 非空）。
     pub fn IsAssumed(&self) -> bool {
         !self.AssumedKeyspace.is_empty()
+    }
+
+    /// 是否禁止将当前进程选为 TiDB RPC 目标。
+    pub fn IsDisableRPC(&self) -> bool {
+        self.DisableRPC
     }
 }
 
@@ -207,6 +215,8 @@ impl StaticInfo {
                 assign_string(value, "assumed_keyspace", &mut self.AssumedKeyspace)
             } else if key.eq_ignore_ascii_case("server_id") {
                 assign_u64(value, "server_id", &mut self.JSONServerID)
+            } else if key.eq_ignore_ascii_case("disable_rpc") {
+                assign_bool(value, "disable_rpc", &mut self.DisableRPC)
             } else {
                 Ok(())
             };
@@ -258,6 +268,9 @@ impl ServerInfo {
                 "\"assumed_keyspace\":{}",
                 json_string(&info.AssumedKeyspace)
             ));
+        }
+        if info.DisableRPC {
+            fields.push("\"disable_rpc\":true".into());
         }
         fields.push(format!("\"server_id\":{}", info.JSONServerID));
         fields.push(format!("\"labels\":{{{labels}}}"));
@@ -395,7 +408,7 @@ enum Json {
     Array(Vec<Json>),
     String(String),
     Number(String),
-    Bool,
+    Bool(bool),
     Null,
 }
 
@@ -442,11 +455,11 @@ impl<'a> JsonParser<'a> {
             Some(b'-' | b'0'..=b'9') => self.number().map(Json::Number),
             Some(b't') => {
                 self.keyword(b"true")?;
-                Ok(Json::Bool)
+                Ok(Json::Bool(true))
             }
             Some(b'f') => {
                 self.keyword(b"false")?;
-                Ok(Json::Bool)
+                Ok(Json::Bool(false))
             }
             Some(b'n') => {
                 self.keyword(b"null")?;
@@ -711,6 +724,17 @@ fn assign_i64(value: &Json, key: &str, target: &mut i64) -> Result<(), ServerInf
             Ok(())
         }
         _ => Err(ServerInfoError(format!("field {key} must be an integer"))),
+    }
+}
+
+fn assign_bool(value: &Json, key: &str, target: &mut bool) -> Result<(), ServerInfoError> {
+    match value {
+        Json::Null => Ok(()),
+        Json::Bool(value) => {
+            *target = *value;
+            Ok(())
+        }
+        _ => Err(ServerInfoError(format!("field {key} must be a boolean"))),
     }
 }
 

@@ -22,6 +22,7 @@ fn sample_server_info() -> ServerInfo {
             AssumedKeyspace: String::new(),
             ServerIDGetter: Some(Arc::new(|| 9)),
             JSONServerID: 0,
+            DisableRPC: false,
         },
         DynamicInfo: DynamicInfo {
             Labels: HashMap::from([("old".into(), "label".into())]),

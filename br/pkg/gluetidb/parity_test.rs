@@ -121,6 +121,7 @@ impl DomainHooks for RecHooks {
         &self,
         store: Option<&dyn Storage>,
         _filter: Option<&dyn Filter>,
+        _disable_rpc: bool,
     ) -> Result<Option<Arc<Domain>>, SharedError> {
         // store 为 None 时只读缓存，不新建（对齐 Go 查询路径）。
         if store.is_none() {

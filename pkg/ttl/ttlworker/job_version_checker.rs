@@ -24,6 +24,7 @@ pub struct VersionInfo {
 pub struct ServerInfo {
     pub version: VersionInfo,
     pub assumed: bool,
+    pub disable_rpc: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -47,7 +48,7 @@ pub fn version_infos_consistent(
         let server = server
             .as_ref()
             .ok_or_else(|| format!("TiDB server info is nil, server ID: {id}"))?;
-        if server.assumed {
+        if server.assumed || server.disable_rpc {
             continue;
         }
         real_servers += 1;

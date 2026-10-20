@@ -1210,3 +1210,38 @@ fn status_endpoint_concurrent_registrations_preserve_both_server_infos() {
         assert!(!client.Snapshot().contains_key(key));
     });
 }
+
+#[test]
+fn skip_empty_tidb_nodes() {
+    with_config(ServerConfig::default(), || {
+        let plain = NewSyncer(
+            "tidb".into(),
+            Arc::new(|| 1),
+            None,
+            Arc::new(NoopMinStartTSReporter),
+        );
+        assert!(!plain.GetLocalServerInfo().StaticInfo.IsDisableRPC());
+
+        let disabled = crate::NewSyncerWithOptions(
+            "br".into(),
+            Arc::new(|| 2),
+            None,
+            Arc::new(NoopMinStartTSReporter),
+            &[crate::SyncerOption::WithDisableRPC],
+        );
+        let mut local = disabled.GetLocalServerInfo();
+        assert!(local.StaticInfo.IsDisableRPC());
+        let encoded = local.Marshal().expect("marshal disabled RPC marker");
+        assert!(String::from_utf8_lossy(&encoded).contains("\"disable_rpc\":true"));
+        let mut decoded = ServerInfo::default();
+        decoded
+            .Unmarshal(&encoded)
+            .expect("unmarshal disabled RPC marker");
+        assert!(decoded.StaticInfo.IsDisableRPC());
+
+        let all = disabled
+            .GetAllServerInfo(Context::Background())
+            .expect("local server info");
+        assert!(all["br"].StaticInfo.IsDisableRPC());
+    });
+}

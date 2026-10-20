@@ -85,8 +85,6 @@ fn runRestoreCommand(command: &mut Command, cmdName: &str) -> Result<()> {
     }
 
     config::UpdateGlobal(|conf| {
-        // 恢复进程不应被当成可承载 cop 任务的 TiDB 节点。
-        conf.AdvertiseAddress = config::UnavailableIP.to_string();
         // copr cache 对一次性恢复收益有限，关闭可减少无谓内存占用。
         conf.TiKVClient.CoprCache.CapacityMB = 0.0;
     });

@@ -732,6 +732,19 @@ pub trait CopBackend: Send + Sync + 'static {
         replica_read: ReplicaReadType,
     ) -> BatchResult<Option<BatchedCopTask>>;
     fn tidb_server_addresses(&self) -> BatchResult<Vec<(u64, String)>>;
+    /// TiDB RPC candidates, including processes that publish server info but
+    /// explicitly opt out of RPC (for example standalone BR).
+    fn tidb_rpc_servers(&self) -> BatchResult<Vec<TiDBRPCServer>> {
+        Ok(self
+            .tidb_server_addresses()?
+            .into_iter()
+            .map(|(server_id, address)| TiDBRPCServer {
+                server_id,
+                address,
+                disable_rpc: false,
+            })
+            .collect())
+    }
     fn send(&self, task: &CopTask, request: &CopWireRequest) -> BatchResult<CopProtocolResponse>;
     fn invalidate_region(&self, region: RegionVerId);
     fn update_buckets(&self, region: RegionVerId, old_version: u64, new_version: u64);
@@ -750,6 +763,13 @@ pub trait CopBackend: Send + Sync + 'static {
             "TiFlash batch transport is unavailable".to_owned(),
         ))
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TiDBRPCServer {
+    pub server_id: u64,
+    pub address: String,
+    pub disable_rpc: bool,
 }
 
 /// 确保 key ranges 单调有序；若需修正则原地排序并返回是否改动。
@@ -875,10 +895,14 @@ pub fn build_cop_tasks(
     }
     if request.store_type == StoreType::TiDb {
         let mut tasks = Vec::new();
-        for (_, address) in backend.tidb_server_addresses()? {
+        for server in backend
+            .tidb_rpc_servers()?
+            .into_iter()
+            .filter(|server| !server.disable_rpc && !server.address.is_empty())
+        {
             tasks.push(CopTask {
                 ranges: ranges.clone(),
-                store_address: address,
+                store_address: server.address,
                 store_type: StoreType::TiDb,
                 row_count_hint: -1,
                 ..CopTask::default()

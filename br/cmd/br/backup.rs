@@ -64,8 +64,6 @@ fn runBackupCommand(command: &mut Command, cmdName: &str) -> Result<()> {
 
     let result = crate::cmd::with_tracing(enable, ctx, |_ctx| {
         config::UpdateGlobal(|conf| {
-            // 备份过程中不应把本进程当作可被访问的 TiDB 节点，从而避免触发错误的 cop 任务路由。
-            conf.AdvertiseAddress = config::UnavailableIP.to_string();
             // BR 是批处理命令，copp cache 只会额外占用内存，不像长活服务那样能摊薄成本。
             conf.TiKVClient.CoprCache.CapacityMB = 0.0;
         });
