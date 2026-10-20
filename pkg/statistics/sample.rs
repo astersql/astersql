@@ -73,6 +73,8 @@ pub struct SampleCollector {
     pub TotalSize: i64,
     pub MemSize: i64,
     pub IsMerger: bool,
+    /// Schema guarantees every non-NULL value is distinct.
+    pub Unique: bool,
     randomState: u64,
 }
 
@@ -91,6 +93,7 @@ impl SampleCollector {
             TotalSize: 0,
             MemSize: 0,
             IsMerger: false,
+            Unique: false,
             randomState: 0x9e37_79b9_7f4a_7c15,
         }
     }
@@ -108,6 +111,7 @@ impl SampleCollector {
         self.TotalSize = 0;
         self.MemSize = 0;
         self.IsMerger = false;
+        self.Unique = false;
     }
 
     /// xorshift 伪随机，供蓄水池替换决策使用。

@@ -19,8 +19,9 @@
 // 串并行合并一致性、取消传播、NDV 计算及缺失统计跳过等关键行为。
 
 use crate::{
-    AsyncMergePartitionStats, CmSketch, FmSketch, Histogram, MergeOptions, PartitionItemStats,
-    PartitionStats, PartitionStatsProvider, TopN, TopNMeta, merge_partition_stats_to_global,
+    AsyncMergePartitionStats, CmSketch, FmSketch, GlobalStatsIndex, GlobalStatsItem,
+    GlobalStatsSchema, Histogram, MergeOptions, PartitionItemStats, PartitionStats,
+    PartitionStatsProvider, TopN, TopNMeta, merge_partition_stats_to_global,
 };
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -97,6 +98,8 @@ fn options(concurrency: usize) -> MergeOptions {
         version: 2,
         concurrency,
         skip_missing: false,
+        schema: None,
+        items: Vec::new(),
     }
 }
 
@@ -243,6 +246,89 @@ fn test_ddl_partition_4_global_stats() {
 fn test_global_stats_ndv() {
     let result = merged(1);
     assert_eq!(result.histograms[0].as_ref().unwrap().ndv, 7);
+}
+
+#[test]
+fn schema_unique_ndv_sums_local_partition_ndvs_but_not_global_unique_ndvs() {
+    let input = TestProvider(vec![
+        PartitionStats {
+            name: "p0".into(),
+            count: 4,
+            items: vec![
+                Some(item(&[(b"a", 1)], 4, &[])),
+                Some(item(&[(b"a", 1)], 4, &[])),
+            ],
+            ..PartitionStats::default()
+        },
+        PartitionStats {
+            name: "p1".into(),
+            count: 4,
+            items: vec![
+                Some(item(&[(b"b", 1)], 4, &[])),
+                Some(item(&[(b"b", 1)], 4, &[])),
+            ],
+            ..PartitionStats::default()
+        },
+    ]);
+    let mut opts = options(1);
+    opts.schema = Some(GlobalStatsSchema {
+        columns: vec![1],
+        indexes: vec![
+            GlobalStatsIndex {
+                id: 10,
+                column_offsets: vec![0],
+                public: true,
+                unique: true,
+                primary: false,
+                has_prefix: false,
+                has_condition: false,
+                global: false,
+            },
+            GlobalStatsIndex {
+                id: 11,
+                column_offsets: vec![0],
+                public: true,
+                unique: true,
+                primary: false,
+                has_prefix: false,
+                has_condition: false,
+                global: true,
+            },
+        ],
+    });
+    opts.items = vec![
+        GlobalStatsItem {
+            id: 10,
+            is_index: true,
+        },
+        GlobalStatsItem {
+            id: 11,
+            is_index: true,
+        },
+    ];
+
+    let sync =
+        merge_partition_stats_to_global(&input, 42, 2, opts.clone(), &AtomicBool::new(false))
+            .unwrap();
+    assert_eq!(sync.histograms[0].as_ref().unwrap().ndv, 8);
+    assert_eq!(sync.histograms[1].as_ref().unwrap().ndv, 4);
+
+    let mut asynchronous = AsyncMergePartitionStats::new(&input, 42, 2);
+    asynchronous.merge(opts, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        asynchronous.result().unwrap().histograms[0]
+            .as_ref()
+            .unwrap()
+            .ndv,
+        8
+    );
+    assert_eq!(
+        asynchronous.result().unwrap().histograms[1]
+            .as_ref()
+            .unwrap()
+            .ndv,
+        4
+    );
 }
 
 #[test]

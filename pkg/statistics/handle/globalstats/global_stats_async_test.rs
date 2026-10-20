@@ -27,6 +27,8 @@ fn async_merge_allows_an_empty_resolved_histogram_list() {
         version: 2,
         concurrency: 1,
         skip_missing: false,
+        schema: None,
+        items: Vec::new(),
     };
 
     task.merge(options, &AtomicBool::new(false)).unwrap();

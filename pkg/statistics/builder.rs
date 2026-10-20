@@ -375,7 +375,11 @@ pub fn BuildHistAndTopN(
 ) -> Result<(Histogram, TopN), astersql_errors::SharedError> {
     let count = collector.Count;
     // 空表或零 NDV：返回空直方图与空 TopN。
-    let ndv = collector.FMSketch.NDV().min(count);
+    let ndv = if collector.Unique {
+        count
+    } else {
+        collector.FMSketch.NDV().min(count)
+    };
     let mut histogram = NewHistogram(
         id,
         ndv,

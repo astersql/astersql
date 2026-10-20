@@ -69,13 +69,70 @@ pub struct GlobalStats {
 }
 
 /// 合并参数：TopN 大小、桶数、统计版本、并发度与是否跳过缺失分区。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MergeOptions {
     pub top_n_size: usize,
     pub bucket_count: usize,
     pub version: i64,
     pub concurrency: usize,
     pub skip_missing: bool,
+    /// Schema metadata and item identities used to recognize local uniqueness.
+    pub schema: Option<GlobalStatsSchema>,
+    pub items: Vec<GlobalStatsItem>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GlobalStatsSchema {
+    pub columns: Vec<i64>,
+    pub indexes: Vec<GlobalStatsIndex>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlobalStatsIndex {
+    pub id: i64,
+    pub column_offsets: Vec<usize>,
+    pub public: bool,
+    pub unique: bool,
+    pub primary: bool,
+    pub has_prefix: bool,
+    pub has_condition: bool,
+    pub global: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GlobalStatsItem {
+    pub id: i64,
+    pub is_index: bool,
+}
+
+fn is_local_unique(options: &MergeOptions, item_offset: usize) -> bool {
+    let Some(schema) = options.schema.as_ref() else {
+        return false;
+    };
+    let Some(item) = options.items.get(item_offset) else {
+        return false;
+    };
+    schema.indexes.iter().any(|index| {
+        !index.global
+            && index.public
+            && (index.unique || index.primary)
+            && index.column_offsets.len() == 1
+            && !index.has_prefix
+            && !index.has_condition
+            && if item.is_index {
+                index.id == item.id
+            } else {
+                schema.columns[index.column_offsets[0]] == item.id
+            }
+    })
+}
+
+fn unique_global_ndv(items: &[PartitionItemStats], count: i64) -> i64 {
+    items
+        .iter()
+        .map(|item| item.histogram.ndv)
+        .sum::<i64>()
+        .min(count)
 }
 
 /// 按表 ID 提供各分区统计的数据源。
@@ -202,10 +259,15 @@ pub fn merge_partition_stats_to_global(
                 cancelled,
             )?
         };
+        let ndv = if is_local_unique(&options, index) {
+            unique_global_ndv(&items, output.count)
+        } else {
+            fms.ndv.min(output.count)
+        };
         let mut merged = Histogram {
             id: histograms[0].id,
             // NDV 不超过全局行数。
-            ndv: fms.ndv.min(output.count),
+            ndv,
             ..Histogram::default()
         };
         for histogram in histograms {

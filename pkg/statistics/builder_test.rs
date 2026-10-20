@@ -142,3 +142,31 @@ fn sampled_top_n_does_not_consume_every_sampled_value() {
     assert_eq!(top_n.Num(), 1);
     assert!(histogram.Len() > 0);
 }
+
+#[test]
+fn schema_unique_ndv_uses_non_null_row_count_instead_of_the_sketch_estimate() {
+    let context = stmtctx::NewStmtCtx();
+    let mut collector = SampleCollector::New(4, 2);
+    for value in 1_i64..=4 {
+        collector
+            .Collect(&context, types::NewIntDatum(value))
+            .unwrap();
+    }
+    collector.Count = 32_768;
+    collector.Unique = true;
+
+    let field_type = types::NewFieldType(types::mysql::TypeLonglong);
+    let (histogram, top_n) = BuildHistAndTopN(
+        &context,
+        DefaultHistogramBuckets,
+        0,
+        1,
+        &mut collector,
+        &field_type,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(histogram.NDV, 32_768);
+    assert_eq!(top_n.Num(), 0);
+}

@@ -68,7 +68,6 @@ pub struct ColumnInfo {
     pub virtual_generated: bool,
     pub generated_stored: bool,
     pub string_type: bool,
-    pub unique_single_column: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// 索引列偏移与可选前缀长度。
@@ -83,6 +82,8 @@ pub struct IndexInfo {
     pub columns: Vec<IndexColumn>,
     pub unique: bool,
     pub primary: bool,
+    pub public: bool,
+    pub condition: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,6 +283,25 @@ pub struct AnalyzeColumnsExec<B: AnalyzeSamplingBackend> {
 }
 
 impl<B: AnalyzeSamplingBackend> AnalyzeColumnsExec<B> {
+    fn is_single_column_non_prefix_unique_index(index: &IndexInfo) -> bool {
+        index.public
+            && (index.unique || index.primary)
+            && index.columns.len() == 1
+            && index.columns[0].prefix_length.is_none()
+            && index.condition.is_none()
+    }
+
+    fn unique_by_schema(&self, task: &samplingBuildTask) -> bool {
+        self.indexes.iter().any(|index| {
+            Self::is_single_column_non_prefix_unique_index(index)
+                && if task.isColumn {
+                    self.columns[index.columns[0].offset].id == task.id
+                } else {
+                    index.id == task.id
+                }
+        })
+    }
+
     /// 入口：处理特殊索引 NDV，再构建采样统计并拆成列/索引结果。
     pub fn analyzeColumnsPushDown(&self) -> AnalyzeResults {
         if self.samplingStatsConcurrency == 0 {
@@ -696,26 +716,18 @@ impl<B: AnalyzeSamplingBackend> AnalyzeColumnsExec<B> {
                 }
             }
         }
-        let num_topn = if task.isColumn && self.columns[task.slicePos].unique_single_column
-            || !task.isColumn
-                && self.indexes[task.slicePos - self.columns.len()].unique
-                && self.indexes[task.slicePos - self.columns.len()]
-                    .columns
-                    .len()
-                    == 1
-                && self.indexes[task.slicePos - self.columns.len()].columns[0]
-                    .prefix_length
-                    .is_none()
-        {
-            0
+        let unique = self.unique_by_schema(task);
+        let num_topn = if unique { 0 } else { self.topn_count };
+        let ndv = if unique {
+            root.count.saturating_sub(root.null_count[task.slicePos]) as u64
         } else {
-            self.topn_count
+            root.fm_sketches[task.slicePos].ndv()
         };
         Ok(build_hist_topn(
             task.id,
             values,
             root.null_count[task.slicePos],
-            root.fm_sketches[task.slicePos].ndv(),
+            ndv,
             self.bucket_count,
             num_topn,
         ))

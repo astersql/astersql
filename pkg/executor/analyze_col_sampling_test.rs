@@ -108,6 +108,8 @@ fn executor(
             ],
             unique: false,
             primary: false,
+            public: true,
+            condition: None,
         }],
         sample_size: 8,
         sample_rate: 1.0,
@@ -127,8 +129,36 @@ fn column(id: i64, string_type: bool) -> ColumnInfo {
         virtual_generated: false,
         generated_stored: false,
         string_type,
-        unique_single_column: false,
     }
+}
+
+#[test]
+fn schema_unique_ndv_uses_row_count_for_the_column_and_local_index() {
+    let columns = vec![column(1, false)];
+    let mut backend = SamplingBackend::with_row(vec![Datum::Signed(1)], 32, false);
+    backend.collector.count = 32_768;
+    backend.collector.fm_sketches[0].hashes.insert(1);
+    let mut exec = executor(backend, columns);
+    exec.topn_count = 20;
+    exec.indexes = vec![IndexInfo {
+        id: 9,
+        columns: vec![IndexColumn {
+            offset: 0,
+            prefix_length: None,
+        }],
+        unique: true,
+        primary: false,
+        public: true,
+        condition: None,
+    }];
+
+    let result = exec.analyzeColumnsPushDown();
+
+    assert_eq!(result.error, None);
+    assert_eq!(result.results[0].histograms[0].ndv, 32_768);
+    assert_eq!(result.results[1].histograms[0].ndv, 32_768);
+    assert!(result.results[0].topns[0].values.is_empty());
+    assert!(result.results[1].topns[0].values.is_empty());
 }
 
 #[test]

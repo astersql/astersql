@@ -99,6 +99,8 @@ fn options(concurrency: usize, skip_missing: bool) -> MergeOptions {
         version: 2,
         concurrency,
         skip_missing,
+        schema: None,
+        items: Vec::new(),
     }
 }
 
