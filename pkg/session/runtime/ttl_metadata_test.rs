@@ -5,8 +5,25 @@ use astersql_parser_ast::{NewCIStr, TimeUnitType};
 
 use super::{
     CreateAnalyzeSession,
-    ttl_metadata::{collect_physical_ttl_tables, collect_ttl_schedules, physical_ttl_tables},
+    ttl_metadata::{
+        collect_physical_ttl_tables, collect_ttl_schedules, physical_ttl_tables, ttl_server_info,
+    },
 };
+
+#[test]
+fn ttl_server_info_preserves_rpc_serving_state() {
+    let mut info = astersql_domain_infosync::ServerInfo::default();
+    info.Version = "v1".into();
+    info.GitHash = "hash".into();
+    assert!(!ttl_server_info(info.clone()).disable_rpc);
+
+    info.DisableRPC = true;
+    let converted = ttl_server_info(info);
+    assert_eq!(converted.version.version, "v1");
+    assert_eq!(converted.version.git_hash, "hash");
+    assert!(!converted.assumed);
+    assert!(converted.disable_rpc);
+}
 
 #[test]
 fn go_merge_43_ttl_metadata_uses_canonical_table_and_calendar_interval() {

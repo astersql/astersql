@@ -43,6 +43,9 @@ pub struct ServerInfo {
     #[serde(rename = "server_id")]
     /// 数值型 server ID（JSON 字段 `server_id`）。
     pub JSONServerID: u64,
+    #[serde(rename = "disable_rpc")]
+    /// 节点只发布 server info，不接受 TiDB RPC。
+    pub DisableRPC: bool,
     #[serde(rename = "labels")]
     /// 节点标签（如 zone、host），用于调度亲和。
     pub Labels: HashMap<String, String>,

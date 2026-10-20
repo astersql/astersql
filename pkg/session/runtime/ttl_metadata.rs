@@ -29,9 +29,8 @@ pub struct TtlScanRanges {
 
 struct StorageRegions(Arc<StorageHandle>);
 
-fn ttl_index_scan_version_check() -> JobVersionCheckResult {
-    static CHECKER: OnceLock<Mutex<JobVersionChecker>> = OnceLock::new();
-    let convert = |info: astersql_domain_infosync::ServerInfo| TtlServerInfo {
+pub(super) fn ttl_server_info(info: astersql_domain_infosync::ServerInfo) -> TtlServerInfo {
+    TtlServerInfo {
         version: VersionInfo {
             version: info.Version,
             git_hash: info.GitHash,
@@ -39,16 +38,21 @@ fn ttl_index_scan_version_check() -> JobVersionCheckResult {
         // The Rust infosync model contains only registered, concrete TiDB
         // servers. Synthetic assumed entries are not returned by this API.
         assumed: false,
-    };
+        disable_rpc: info.DisableRPC,
+    }
+}
+
+fn ttl_index_scan_version_check() -> JobVersionCheckResult {
+    static CHECKER: OnceLock<Mutex<JobVersionChecker>> = OnceLock::new();
     let local = astersql_domain_infosync::GetServerInfo()
-        .map(convert)
+        .map(ttl_server_info)
         .map(Some)
         .map_err(|error| error.to_string());
     let all = astersql_domain_infosync::GetAllServerInfo()
         .map(|servers| {
             servers
                 .into_iter()
-                .map(|(id, info)| (id, Some(convert(info))))
+                .map(|(id, info)| (id, Some(ttl_server_info(info))))
                 .collect()
         })
         .map_err(|error| error.to_string());

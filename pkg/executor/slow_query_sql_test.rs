@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
+use astersql_util_execdetails::execdetails::util::ScanDetail;
 
 use crate::slow_query::{calculateLogSize, slowQueryRuntimeStats, splitSlowLogLines};
 
@@ -99,6 +100,45 @@ fn tiflash_replica_with_tikv_hint_uses_tikv_plan() {
         "a TiKV-forced plan must not contain an MPP exchange: {plan:?}"
     );
     tk.MustQuery(query, Vec::new()).Check(Rows(&["1"]));
+}
+
+/// Go `TestPointReadScanDetailsInDiagnostics`: an unrelated point read must
+/// not contribute scan diagnostics to the statement being observed.
+#[test]
+fn point_read_scan_details_ignore_unrelated_statement_responses() {
+    let target = astersql_sessionctx_stmtctx::NewStmtCtx();
+    let noise = astersql_sessionctx_stmtctx::NewStmtCtx();
+    let target_scan = ScanDetail {
+        ProcessedKeys: 1,
+        TotalKeys: 2,
+        IaRemoteReadSegmentCount: 2,
+        IaRemoteReadSegmentBytes: 4096,
+        IaRemoteReadSegmentDuration: Duration::from_millis(6),
+        ..Default::default()
+    };
+    let noise_scan = ScanDetail {
+        ProcessedKeys: 7,
+        TotalKeys: 11,
+        IaRemoteReadSegmentCount: 13,
+        IaRemoteReadSegmentBytes: 8192,
+        IaRemoteReadSegmentDuration: Duration::from_millis(17),
+        ..Default::default()
+    };
+
+    noise.SyncExecDetails.MergeScanDetail(Some(&noise_scan));
+    target.SyncExecDetails.MergeScanDetail(Some(&target_scan));
+
+    let observed = target.GetExecDetails();
+    let scan = observed
+        .CopExecDetails
+        .ScanDetail
+        .expect("the target point read must retain its scan diagnostics");
+    assert_eq!(scan.ProcessedKeys, 1);
+    assert_eq!(scan.TotalKeys, 2);
+    assert_eq!(scan.IaRemoteReadSegmentCount, 2);
+    assert_eq!(scan.IaRemoteReadSegmentBytes, 4096);
+    assert_eq!(scan.IaRemoteReadSegmentDuration, Duration::from_millis(6));
+    assert_eq!(observed.RequestCount, 0, "point reads are not cop tasks");
 }
 
 /// 验证慢日志分行、日志字节估算，以及 runtime stats 的 Merge/String。

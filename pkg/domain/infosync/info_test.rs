@@ -297,12 +297,14 @@ fn test_info_syncer_marshal() {
         Lease: "1s".into(),
         StartTimestamp: 10000,
         JSONServerID: 1,
+        DisableRPC: true,
         Labels: HashMap::from([("zone".into(), "ap-northeast-1a".into())]),
     };
     let data = serde_json::to_vec(&info).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&data).unwrap();
     assert_eq!(value["ddl_id"], "tidb1");
     assert_eq!(value["listening_port"], 4000);
+    assert_eq!(value["disable_rpc"], true);
     assert_eq!(value["labels"]["zone"], "ap-northeast-1a");
     assert_eq!(serde_json::from_slice::<ServerInfo>(&data).unwrap(), info);
 }
