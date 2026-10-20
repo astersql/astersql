@@ -63,7 +63,7 @@ pub struct LineFieldsInfo {
     pub FieldsEscapedBy: String,
     /// 是否仅对字符串类可选包围。
     pub FieldsOptEnclosed: bool,
-    /// 行前缀（当前写出路径未强制使用）。
+    /// 每个输出行的字面前缀。
     pub LinesStartingBy: String,
     /// 行终止符。
     pub LinesTerminatedBy: String,
@@ -294,6 +294,10 @@ impl SelectIntoExec {
             .as_ref()
             .expect("SelectIntoExec must be opened")
             .NumRows();
+        self.lineBuf.clear();
+        self.lineBuf
+            .extend_from_slice(self.LineFieldsInfo.LinesStartingBy.as_bytes());
+        let line_prefix_length = self.lineBuf.len();
         // 逐行逐列序列化：NULL、包围、按 MySQL 类型写出。
         for row_index in 0..row_count {
             let row = self
@@ -301,7 +305,7 @@ impl SelectIntoExec {
                 .as_ref()
                 .expect("SelectIntoExec must be opened")
                 .GetRow(row_index);
-            self.lineBuf.clear();
+            self.lineBuf.truncate(line_prefix_length);
             for column_index in 0..self.fieldTypes.len() {
                 if column_index != 0 {
                     self.lineBuf
