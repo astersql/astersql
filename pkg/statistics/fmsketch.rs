@@ -67,8 +67,12 @@ impl FMSketch {
         if self.hashset.len() > self.maxSize {
             // mask = mask*2+1：多约束一位，过滤掉约一半元素。
             self.mask = self.mask * 2 + 1;
-            self.hashset.retain(|value| value & self.mask == 0);
+            self.filterHashes();
         }
+    }
+
+    fn filterHashes(&mut self) {
+        self.hashset.retain(|value| value & self.mask == 0);
     }
 
     /// 将单个 Datum 编码哈希后插入草图。
@@ -95,7 +99,7 @@ impl FMSketch {
     pub fn MergeFMSketch(&mut self, other: &FMSketch) {
         if self.mask < other.mask {
             self.mask = other.mask;
-            self.hashset.retain(|value| value & self.mask == 0);
+            self.filterHashes();
         }
         for value in &other.hashset {
             self.insertHashValue(*value);

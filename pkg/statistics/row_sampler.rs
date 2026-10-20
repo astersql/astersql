@@ -47,6 +47,22 @@ pub struct baseCollector {
 }
 
 impl baseCollector {
+    fn mergeBase(&mut self, other: &baseCollector) {
+        assert_eq!(self.NullCount.len(), other.NullCount.len());
+        assert_eq!(self.TotalSizes.len(), other.TotalSizes.len());
+        assert_eq!(self.FMSketches.len(), other.FMSketches.len());
+        self.Count += other.Count;
+        for (destination, source) in self.FMSketches.iter_mut().zip(&other.FMSketches) {
+            destination.MergeFMSketch(source);
+        }
+        for (destination, source) in self.NullCount.iter_mut().zip(&other.NullCount) {
+            *destination += source;
+        }
+        for (destination, source) in self.TotalSizes.iter_mut().zip(&other.TotalSizes) {
+            *destination += source;
+        }
+    }
+
     /// `CollectColumns` 的小写别名。
     pub fn collectColumns(
         &mut self,
@@ -273,36 +289,9 @@ impl RowSampleCollector for ReservoirRowSampleCollector {
     /// 合并另一收集器的计数/草图，并按权重重采样其样本行。
     fn MergeCollector(&mut self, collector: &dyn RowSampleCollector) {
         let other = collector.Base();
-        assert_eq!(self.baseCollector.NullCount.len(), other.NullCount.len());
-        assert_eq!(self.baseCollector.TotalSizes.len(), other.TotalSizes.len());
-        assert_eq!(self.baseCollector.FMSketches.len(), other.FMSketches.len());
         let old_sample_count = self.baseCollector.Samples.len();
         let old_mem_size = self.baseCollector.MemSize;
-        self.baseCollector.Count += other.Count;
-        for (destination, source) in self
-            .baseCollector
-            .NullCount
-            .iter_mut()
-            .zip(&other.NullCount)
-        {
-            *destination += source;
-        }
-        for (destination, source) in self
-            .baseCollector
-            .TotalSizes
-            .iter_mut()
-            .zip(&other.TotalSizes)
-        {
-            *destination += source;
-        }
-        for (destination, source) in self
-            .baseCollector
-            .FMSketches
-            .iter_mut()
-            .zip(&other.FMSketches)
-        {
-            destination.MergeFMSketch(source);
-        }
+        self.baseCollector.mergeBase(other);
         for sample in &other.Samples {
             self.SampleRow(sample.Columns.clone(), sample.Weight);
         }
@@ -401,35 +390,8 @@ impl RowSampleCollector for BernoulliRowSampleCollector {
     /// 合并计数/草图并拼接样本列表。
     fn MergeCollector(&mut self, collector: &dyn RowSampleCollector) {
         let other = collector.Base();
-        assert_eq!(self.baseCollector.NullCount.len(), other.NullCount.len());
-        assert_eq!(self.baseCollector.TotalSizes.len(), other.TotalSizes.len());
-        assert_eq!(self.baseCollector.FMSketches.len(), other.FMSketches.len());
-        self.baseCollector.Count += other.Count;
+        self.baseCollector.mergeBase(other);
         self.baseCollector.Samples.extend(other.Samples.clone());
-        for (destination, source) in self
-            .baseCollector
-            .NullCount
-            .iter_mut()
-            .zip(&other.NullCount)
-        {
-            *destination += source;
-        }
-        for (destination, source) in self
-            .baseCollector
-            .TotalSizes
-            .iter_mut()
-            .zip(&other.TotalSizes)
-        {
-            *destination += source;
-        }
-        for (destination, source) in self
-            .baseCollector
-            .FMSketches
-            .iter_mut()
-            .zip(&other.FMSketches)
-        {
-            destination.MergeFMSketch(source);
-        }
         self.baseCollector.MemSize += other.MemSize;
     }
 

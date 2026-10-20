@@ -78,6 +78,9 @@ mod cmsketch_util_test;
 #[path = "estimate_test.rs"]
 mod estimate_test;
 #[cfg(test)]
+#[path = "fm_sketch_merge_test.rs"]
+mod fm_sketch_merge_test;
+#[cfg(test)]
 #[path = "fmsketch_test.rs"]
 mod fmsketch_test;
 #[cfg(test)]
