@@ -161,15 +161,26 @@ fn test_load_data_escape() {
 
 #[test]
 fn test_load_data_specified_columns() {
-    // 输入列只写入显式目标位置，未映射列保持空值，\N 仍映射为 SQL NULL。
-    let rows =
-        parse_load_data(b"7\ta string\n\\N\ta string\n", &LoadDataConfig::default()).unwrap();
+    // 单次解析整个 reader 并在返回后同步验证所有行；输入列只写入显式目标
+    // 位置，未映射列保持空值，\N 仍映射为 SQL NULL。
+    let rows = parse_load_data(
+        b"7\ta string\n8\tstr \\t\n9\tstr \\n\n10\tboth \\t\\n\n11\tstr \\\\\n12\t\\r\\t\\n\\0\\Z\\b\n\\N\ta string\n",
+        &LoadDataConfig::default(),
+    )
+    .unwrap();
     let mapped = map_columns(&rows, &[1, 2], None, false).unwrap();
     assert_eq!(
-        mapped[0],
-        vec![None, Some("7".into()), Some("a string".into())]
+        mapped,
+        vec![
+            vec![None, Some("7".into()), Some("a string".into())],
+            vec![None, Some("8".into()), Some("str \t".into())],
+            vec![None, Some("9".into()), Some("str \n".into())],
+            vec![None, Some("10".into()), Some("both \t\n".into())],
+            vec![None, Some("11".into()), Some("str \\".into())],
+            vec![None, Some("12".into()), Some("\r\t\n\0\u{1a}\u{8}".into()),],
+            vec![None, None, Some("a string".into())],
+        ]
     );
-    assert_eq!(mapped[1], vec![None, None, Some("a string".into())]);
 }
 
 #[test]
