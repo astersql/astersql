@@ -1801,6 +1801,7 @@ dependencies = [
  "astersql-config-kerneltype",
  "astersql-resourcegroup",
  "astersql-testkit-testsetup",
+ "astersql-util-intest",
  "base64 0.22.1",
  "once_cell",
  "regex",

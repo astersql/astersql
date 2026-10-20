@@ -20,6 +20,9 @@ extern crate self as astersql_config;
 pub mod config;
 pub use config::*;
 
+/// Process-wide diagnostic-mode state.
+pub mod diagnosticmode;
+
 /// TiKV 客户端配置的精简桩模块。
 ///
 /// TiKV 是 TiDB 体系中的分布式键值存储层；此处仅提供获取
@@ -73,6 +76,9 @@ mod config_util_test;
 #[cfg(test)]
 #[path = "const_3_aster_unit_test.rs"]
 mod const_3_aster_unit_test;
+#[cfg(test)]
+#[path = "diagnosticmode_test.rs"]
+mod diagnosticmode_test;
 #[cfg(test)]
 #[path = "main_test.rs"]
 mod main_test;

@@ -10,6 +10,7 @@ path = "lib.rs"
 [dependencies]
 astersql-config-kerneltype = { path = "kerneltype" }
 astersql-resourcegroup = { path = "../resourcegroup" }
+astersql-util-intest = { path = "../util/intest" }
 base64 = "0.22"
 once_cell = "1"
 regex = "1"
