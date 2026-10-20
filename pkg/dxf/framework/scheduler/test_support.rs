@@ -291,8 +291,12 @@ impl TaskManager for TestTaskManager {
         Ok(())
     }
 
-    fn succeed_task(&self, task_id: i64) -> Result<()> {
-        self.change_state(task_id, TASK_STATE_SUCCEED)
+    fn succeed_task(&self, task: &Task) -> Result<()> {
+        let mut stored = task.clone();
+        stored.base.state = TASK_STATE_SUCCEED;
+        stored.base.step = STEP_DONE;
+        self.insert_task(stored);
+        Ok(())
     }
 
     fn switch_task_step(

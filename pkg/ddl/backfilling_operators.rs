@@ -1139,6 +1139,8 @@ pub struct TemporaryIndexResult {
     pub scan_count: usize,
     /// 实际合并（写入/删除正式索引）的记录数。
     pub add_count: usize,
+    /// 本批成功提交的事务字节数。
+    pub written_bytes: usize,
     /// 是否已处理完该区间（扫描数量不足一整批即为结束）。
     pub done: bool,
 }
@@ -1148,7 +1150,7 @@ pub trait TemporaryIndexStore {
     fn apply_batch(
         &mut self,
         mutations: &[TemporaryIndexMutation],
-    ) -> Result<(), TemporaryStoreError>;
+    ) -> Result<usize, TemporaryStoreError>;
 }
 
 /// 临时索引存储写入错误。
@@ -1194,7 +1196,7 @@ impl<S: TemporaryIndexStore> MergeTemporaryIndexWorker<S> {
         let original_batch_count = self.batch_count.max(1);
         let mut attempts = 0;
         // 重试循环：成功时 break 出统计信息。
-        let (selected_count, successful_batch_count, add_count, next_key) = loop {
+        let (selected_count, successful_batch_count, add_count, written_bytes, next_key) = loop {
             attempts += 1;
             // 从区间内最多取一批记录。
             let selected: Vec<&TemporaryIndexRecord> = records
@@ -1228,13 +1230,19 @@ impl<S: TemporaryIndexStore> MergeTemporaryIndexWorker<S> {
                 add_count += 1;
             }
             match self.store.apply_batch(&mutations) {
-                Ok(()) => {
+                Ok(written_bytes) => {
                     // 下一批从最后一条已处理键的字节序后继开始；本批为空则整个区间结束。
                     let next_key = selected
                         .last()
                         .map(|record| prefix_next(&record.temporary_key))
                         .unwrap_or_else(|| task.end.clone());
-                    break (selected.len(), self.batch_count.max(1), add_count, next_key);
+                    break (
+                        selected.len(),
+                        self.batch_count.max(1),
+                        add_count,
+                        written_bytes,
+                        next_key,
+                    );
                 }
                 // 可重试错误：批大小减半（至少为 1）后重试，减少写冲突概率。
                 Err(TemporaryStoreError::Retryable) if attempts < self.maximum_attempts.max(1) => {
@@ -1257,6 +1265,7 @@ impl<S: TemporaryIndexStore> MergeTemporaryIndexWorker<S> {
             next_key,
             scan_count: selected_count,
             add_count,
+            written_bytes,
             done: selected_count < successful_batch_count,
         })
     }

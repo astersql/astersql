@@ -1791,7 +1791,8 @@ fn canonical_history_http_preserves_failed_tasks() {
                     )
                     .unwrap();
             } else {
-                manager.SucceedTask((), id).unwrap();
+                let task = manager.GetTaskByID((), id).unwrap();
+                manager.SucceedTask((), task).unwrap();
             }
             tasks.push(manager.GetTaskByID((), id).unwrap());
             ids.push(id);

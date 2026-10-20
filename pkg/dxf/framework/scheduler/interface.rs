@@ -392,7 +392,8 @@ pub trait TaskManager: Send + Sync {
     ) -> Result<()>;
     fn resumed_task(&self, task_id: i64) -> Result<()>;
     fn modified_task(&self, task: &Task) -> Result<()>;
-    fn succeed_task(&self, task_id: i64) -> Result<()>;
+    /// 成功状态转换与 `on_done` 改写的 task meta 一起持久化。
+    fn succeed_task(&self, task: &Task) -> Result<()>;
     fn switch_task_step(
         &self,
         task: &Task,

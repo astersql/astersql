@@ -639,7 +639,8 @@ fn clean_drain_moves_all_bounded_batches_through_real_sql_history() {
                 Vec::new(),
             )
             .unwrap();
-        storage_manager.SucceedTask((), id).unwrap();
+        let task = storage_manager.GetTaskByID((), id).unwrap();
+        storage_manager.SucceedTask((), task).unwrap();
         ids.push(id);
     }
     let manager = scheduler::Manager::new(

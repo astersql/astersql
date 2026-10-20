@@ -38,6 +38,8 @@ pub const BACKFILL_TASK_META_VERSION_1: u32 = 1;
 pub struct BackfillTaskSummary {
     /// 全局排序路径生成的索引 KV 总字节数。
     pub index_kv_size: u64,
+    /// 合并临时索引时已提交事务的 KV 总字节数。
+    pub merge_temp_index_txn_kv_size: u64,
 }
 
 /// 回填任务的整体元数据，对应一个 DDL 作业（如新增索引）在

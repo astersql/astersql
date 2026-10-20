@@ -28,9 +28,15 @@ struct MemoryStore;
 impl TemporaryIndexStore for MemoryStore {
     fn apply_batch(
         &mut self,
-        _mutations: &[TemporaryIndexMutation],
-    ) -> Result<(), TemporaryStoreError> {
-        Ok(())
+        mutations: &[TemporaryIndexMutation],
+    ) -> Result<usize, TemporaryStoreError> {
+        Ok(mutations
+            .iter()
+            .map(|mutation| match mutation {
+                TemporaryIndexMutation::Set { key, value } => key.len() + value.len(),
+                TemporaryIndexMutation::Delete { key } => key.len(),
+            })
+            .sum())
     }
 }
 

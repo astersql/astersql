@@ -784,7 +784,7 @@ fn registered_import_scheduler_reuses_encode_runtime_services() {
         fn modified_task(&self, _: &framework::Task) -> framework::Result<()> {
             unreachable!()
         }
-        fn succeed_task(&self, _: i64) -> framework::Result<()> {
+        fn succeed_task(&self, _: &framework::Task) -> framework::Result<()> {
             unreachable!()
         }
         fn switch_task_step(

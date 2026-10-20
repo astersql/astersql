@@ -447,7 +447,8 @@ impl ConcreteSession {
                 )
                 .map_err(error)?;
         } else {
-            manager.SucceedTask((), task_id).map_err(error)?;
+            let task = manager.GetTaskByID((), task_id).map_err(error)?;
+            manager.SucceedTask((), task).map_err(error)?;
         }
         let mut task = manager.GetTaskByID((), task_id).map_err(error)?;
         if let Ok(rows) = &result {

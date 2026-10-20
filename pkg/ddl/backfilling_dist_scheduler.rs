@@ -139,8 +139,47 @@ impl LitBackfillScheduler {
         let plan = build_plan(&meta_groups, &element_ids)?;
         self.task_meta.summary = Some(BackfillTaskSummary {
             index_kv_size: total_kv_size,
+            merge_temp_index_txn_kv_size: 0,
         });
         Ok(plan)
+    }
+
+    /// 任务成功时汇总 merge-temp-index 子任务已提交字节。
+    pub fn record_merge_temp_index_summary(
+        &mut self,
+        is_next_gen: bool,
+        reverting: bool,
+        processed_units: &[i64],
+    ) {
+        if !is_next_gen || reverting || !self.merge_temporary_index {
+            return;
+        }
+        let txn_kv_size = processed_units
+            .iter()
+            .fold(0_u64, |total, value| total.wrapping_add(*value as u64));
+        self.task_meta
+            .summary
+            .get_or_insert_with(BackfillTaskSummary::default)
+            .merge_temp_index_txn_kv_size = txn_kv_size;
+    }
+}
+
+/// DDL RU v2 中两条写入路径的字节权重。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DdlRuWeights {
+    pub ingest_kv_bytes: f64,
+    pub txn_kv_bytes: f64,
+}
+
+/// 按任务实际的 ingest 或事务写入路径换算 RU。
+pub fn task_ru(task_meta: &BackfillTaskMeta, weights: DdlRuWeights) -> f64 {
+    let Some(summary) = task_meta.summary.as_ref() else {
+        return 0.0;
+    };
+    if task_meta.merge_temporary_index {
+        summary.merge_temp_index_txn_kv_size as f64 * weights.txn_kv_bytes
+    } else {
+        summary.index_kv_size as f64 * weights.ingest_kv_bytes
     }
 }
 

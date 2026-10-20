@@ -284,7 +284,7 @@ impl BaseScheduler {
         if next_step == STEP_DONE {
             self.extension
                 .on_done_with_context(&self.context, self, &mut task)?;
-            self.param.task_manager.succeed_task(task.base.id)?;
+            self.param.task_manager.succeed_task(&task)?;
             task.base.step = STEP_DONE;
             task.base.state = TASK_STATE_SUCCEED;
             on_task_finished(task.base.state, task.error.as_ref());

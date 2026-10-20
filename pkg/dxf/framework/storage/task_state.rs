@@ -321,16 +321,17 @@ impl TaskManager {
         })
     }
 
-    /// running → succeed，step 置为 Done，写入 end_time。
-    // SucceedTask update task state from running to succeed.
-    pub fn SucceedTask(&self, ctx: Context, taskID: i64) -> Result<(), Error> {
+    /// running → succeed，step 置为 Done，同时持久化完成回调改写的 meta。
+    // SucceedTask update task state from running to succeed and persists task meta.
+    pub fn SucceedTask(&self, ctx: Context, task: proto::Task) -> Result<(), Error> {
         injectfailpoint::DXFRandomErrorWithOnePercent()?;
+        let task_id = task.ID;
         self.WithNewSession(|se| {
             sqlexec::ExecSQL(
                 ctx.clone(),
                 se.GetSQLExecutor(),
-                "update mysql.tidb_global_task set state = %?, step = %?, state_update_time = CURRENT_TIMESTAMP(), end_time = CURRENT_TIMESTAMP() where id = %? and state = %?",
-                vec![proto::TaskStateSucceed.into(), proto::StepDone.into(), taskID.into(), proto::TaskStateRunning.into()],
+            "update mysql.tidb_global_task set state = %?, step = %?, meta = %?, state_update_time = CURRENT_TIMESTAMP(), end_time = CURRENT_TIMESTAMP() where id = %? and state = %?",
+            vec![proto::TaskStateSucceed.into(), proto::StepDone.into(), task.Meta.into(), task_id.into(), proto::TaskStateRunning.into()],
             )?;
             Ok(())
         })

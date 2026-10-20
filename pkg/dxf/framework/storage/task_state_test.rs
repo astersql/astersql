@@ -32,7 +32,19 @@ fn TestTaskState() {
         .RevertTask((), 9, proto::TaskStateFailed, Error::new("retry"))
         .unwrap();
     manager.RevertedTask((), 9).unwrap();
-    manager.SucceedTask((), 10).unwrap();
+    manager
+        .SucceedTask(
+            (),
+            proto::Task {
+                TaskBase: proto::TaskBase {
+                    ID: 10,
+                    ..proto::TaskBase::default()
+                },
+                Meta: b"summary".to_vec(),
+                ..proto::Task::default()
+            },
+        )
+        .unwrap();
     let calls = manager.calls();
     assert_eq!(calls.len(), 5);
     assert_eq!(
@@ -49,6 +61,7 @@ fn TestTaskState() {
     );
     assert!(calls[4].sql.contains("step = %?"));
     assert_eq!(calls[4].args[1], Value::Int(proto::StepDone));
+    assert_eq!(calls[4].args[2], Value::Bytes(b"summary".to_vec()));
 }
 
 #[test]

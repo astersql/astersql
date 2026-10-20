@@ -231,6 +231,10 @@ impl<S: TemporaryIndexStore> MergeTemporaryIndexExecutor<S> {
                 .entry((meta.physical_table_id, index_id))
                 .or_default() += result.add_count as i64;
             self.summary.row_count += result.add_count as i64;
+            self.summary.processed_bytes = self
+                .summary
+                .processed_bytes
+                .wrapping_add(result.written_bytes as i64);
             // mergeTempIndexCollector receives addCount from the result sink;
             // its scanCount (and therefore executor.totalRows) tracks that same
             // value rather than the worker's raw scan count.

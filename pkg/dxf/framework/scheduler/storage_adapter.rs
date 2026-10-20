@@ -319,8 +319,10 @@ impl TaskManager for StorageTaskManagerAdapter {
             .ModifiedTask(context(), to_task(task))
             .map_err(error)
     }
-    fn succeed_task(&self, task_id: i64) -> Result<()> {
-        self.manager.SucceedTask(context(), task_id).map_err(error)
+    fn succeed_task(&self, task: &Task) -> Result<()> {
+        self.manager
+            .SucceedTask(context(), to_task(task))
+            .map_err(error)
     }
     fn switch_task_step(
         &self,

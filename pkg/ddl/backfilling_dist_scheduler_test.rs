@@ -33,9 +33,13 @@ use crate::backfilling_dist_executor::{
     BackfillTaskMeta, BackfillTaskSummary,
 };
 use crate::backfilling_dist_scheduler::{
-    LitBackfillScheduler, Modification, MultipleFilesStat, PlanError, RegionMeta,
+    DdlRuWeights, LitBackfillScheduler, Modification, MultipleFilesStat, PlanError, RegionMeta,
     calculate_region_batch, generate_merge_sort_plan, generate_plan_for_physical_table,
-    generate_temporary_index_plan,
+    generate_temporary_index_plan, task_ru,
+};
+use crate::backfilling_operators::{
+    MergeTemporaryIndexWorker, TemporaryIndexMutation, TemporaryIndexRecord,
+    TemporaryIndexScanTask, TemporaryIndexStore, TemporaryStoreError,
 };
 use crate::backfilling_read_index::SortedKvMeta;
 
@@ -258,7 +262,10 @@ fn global_sort_ingest_records_total_only_after_successful_planning() {
         scheduler.task_meta.cloud_storage_uri
     );
     assert_eq!(
-        Some(BackfillTaskSummary { index_kv_size: 54 }),
+        Some(BackfillTaskSummary {
+            index_kv_size: 54,
+            ..BackfillTaskSummary::default()
+        }),
         scheduler.task_meta.summary
     );
 }
@@ -322,13 +329,92 @@ fn test_backfill_task_meta_version() {
     assert_eq!(None, current.summary);
 
     let with_zero_summary = BackfillTaskMeta {
-        summary: Some(BackfillTaskSummary { index_kv_size: 0 }),
+        summary: Some(BackfillTaskSummary::default()),
         ..BackfillTaskMeta::default()
     };
     assert_eq!(
-        Some(BackfillTaskSummary { index_kv_size: 0 }),
+        Some(BackfillTaskSummary::default()),
         with_zero_summary.summary
     );
+}
+
+#[test]
+fn merge_temp_index_ru_accounts_committed_bytes_across_retry_and_success() {
+    #[derive(Default)]
+    struct RetryOnceStore {
+        attempts: usize,
+    }
+
+    impl TemporaryIndexStore for RetryOnceStore {
+        fn apply_batch(
+            &mut self,
+            mutations: &[TemporaryIndexMutation],
+        ) -> Result<usize, TemporaryStoreError> {
+            self.attempts += 1;
+            if self.attempts == 1 {
+                return Err(TemporaryStoreError::Retryable);
+            }
+            Ok(mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    TemporaryIndexMutation::Set { key, value } => key.len() + value.len(),
+                    TemporaryIndexMutation::Delete { key } => key.len(),
+                })
+                .sum())
+        }
+    }
+
+    let mut worker = MergeTemporaryIndexWorker {
+        store: RetryOnceStore::default(),
+        batch_count: 2,
+        maximum_attempts: 2,
+        total_scan_count: 0,
+    };
+    let result = worker
+        .handle_one_range(
+            &TemporaryIndexScanTask {
+                id: 1,
+                start: b"a".to_vec(),
+                end: b"z".to_vec(),
+            },
+            &[TemporaryIndexRecord {
+                temporary_key: b"b".to_vec(),
+                original_key: b"index-key".to_vec(),
+                value: b"value".to_vec(),
+                delete: false,
+                skip: false,
+            }],
+        )
+        .unwrap();
+    assert_eq!(15, result.written_bytes);
+    assert_eq!(2, worker.store.attempts);
+
+    let mut scheduler = LitBackfillScheduler::new(BackfillTaskMeta {
+        merge_temporary_index: true,
+        ..BackfillTaskMeta::default()
+    });
+    scheduler.record_merge_temp_index_summary(true, false, &[result.written_bytes as i64, 7]);
+    assert_eq!(
+        Some(BackfillTaskSummary {
+            index_kv_size: 0,
+            merge_temp_index_txn_kv_size: 22,
+        }),
+        scheduler.task_meta.summary
+    );
+    assert_eq!(
+        44.0,
+        task_ru(
+            &scheduler.task_meta,
+            DdlRuWeights {
+                ingest_kv_bytes: 3.0,
+                txn_kv_bytes: 2.0,
+            }
+        )
+    );
+
+    let before = scheduler.task_meta.clone();
+    scheduler.record_merge_temp_index_summary(true, true, &[99]);
+    assert_eq!(before, scheduler.task_meta);
 }
 
 /// Go's merge-temporary-index plan identifies the target through the encoded
