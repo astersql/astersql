@@ -895,6 +895,43 @@ fn TestBinaryJSONOpaque() {
 }
 
 #[test]
+fn TestMarshalFloatInContainer() {
+    for (input, expected) in [
+        (
+            r#"["1234567e-0", 1.2345678e20]"#,
+            r#"["1234567e-0", 1.2345678e20]"#,
+        ),
+        (r#"["ae-0x", 1.5e-20]"#, r#"["ae-0x", 1.5e-20]"#),
+        (
+            r#"{"e-0": 1e-20, "k": [1e20, -1.5e-20]}"#,
+            r#"{"e-0": 1e-20, "k": [1e20, -1.5e-20]}"#,
+        ),
+    ] {
+        assert_eq!(
+            core::ParseBinaryJSONFromString(input).unwrap().String(),
+            expected,
+            "{input}"
+        );
+    }
+
+    for value in [1.2345678e20, 1.5e-20, -1e300, 5e-324] {
+        let scalar = core::CreateBinaryJSON(value).String();
+        for length in 0..30 {
+            let prefix = format!("{}e-0", "x".repeat(length));
+            let container = core::CreateBinaryJSON(vec![
+                core::JsonValue::String(prefix.clone()),
+                core::JsonValue::F64(value),
+            ]);
+            assert_eq!(
+                container.String(),
+                format!(r#"["{prefix}", {scalar}]"#),
+                "prefix length {length}, value {value}"
+            );
+        }
+    }
+}
+
+#[test]
 /// 校验哈希稳定性。
 fn TestHashValue() {
     let values = ["[]", "[[]]", "[[[]]]", "{}", "[false]", "[true]", "[null]"];

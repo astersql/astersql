@@ -472,6 +472,11 @@ struct jsonPathStream {
     pos: usize,
 }
 
+// Match MySQL json_path.cc: JSON paths only treat ASCII whitespace as space.
+fn isJSONPathWhiteSpace(value: char) -> bool {
+    value == ' ' || ('\t'..='\r').contains(&value)
+}
+
 impl jsonPathStream {
     /// 按 Unicode 标量拆分路径文本。
     fn new(path_expr: &str) -> Self {
@@ -481,9 +486,9 @@ impl jsonPathStream {
         }
     }
 
-    /// 跳过空白。
+    /// 跳过 JSON path 定义的 ASCII 空白。
     fn skipWhiteSpace(&mut self) {
-        while self.peek().is_some_and(char::is_whitespace) {
+        while self.peek().is_some_and(isJSONPathWhiteSpace) {
             self.pos += 1;
         }
     }
@@ -587,8 +592,12 @@ impl jsonPathStream {
                 self.pos = record_pos;
                 return (0, false);
             }
+            // Keep whitespace after `last` when no minus follows. The caller
+            // still needs it to recognize ` to ` or the closing bracket.
+            let last_end_pos = self.pos;
             self.skipWhiteSpace();
             if self.exhausted() || self.peek() != Some('-') {
+                self.pos = last_end_pos;
                 return (jsonPathArrayIndexFromLast(0), true);
             }
             self.skip(1);
@@ -680,9 +689,12 @@ fn parseJSONPathArray(stream: &mut jsonPathStream, expression: &mut JSONPathExpr
         }
 
         let mut selection = jsonPathArraySelectionIndex { index: start }.into();
-        if stream.peek().is_some_and(char::is_whitespace) {
+        if stream.peek().is_some_and(isJSONPathWhiteSpace) {
             stream.skipWhiteSpace();
-            if stream.tryReadString(TO_STR) && stream.peek().is_some_and(char::is_whitespace) {
+            if stream.tryReadString(TO_STR) {
+                if stream.exhausted() || !stream.peek().is_some_and(isJSONPathWhiteSpace) {
+                    return false;
+                }
                 stream.skipWhiteSpace();
                 if stream.exhausted() {
                     return false;
@@ -754,8 +766,9 @@ fn parseJSONPathMember(stream: &mut jsonPathStream, expression: &mut JSONPathExp
             Err(_) => return false,
         }
     } else {
-        let (key, _) =
-            stream.readWhile(|value| !(value.is_whitespace() || matches!(value, '.' | '[' | '*')));
+        let (key, _) = stream.readWhile(|value| {
+            !(isJSONPathWhiteSpace(value) || matches!(value, '.' | '[' | '*'))
+        });
         let raw = key.iter().collect::<String>();
         // Go validates and unquotes JSON escapes before checking the identifier,
         // even when the member was not surrounded by quotation marks.
@@ -818,25 +831,54 @@ fn decodePathMemberKey(encoded: &str) -> Result<String, serde_json::Error> {
     serde_json::from_slice(&normalized)
 }
 
-// Go intentionally classifies each UTF-8 byte after converting it to a rune.
-// Keeping that byte-wise behavior preserves cases such as µ being accepted and
-// unquoted Cyrillic identifiers being rejected.
-// 按字节转 rune 分类，保留 µ 可接受、西里尔等需引号的行为。
+fn isUnicodeCombiningMark(value: char) -> bool {
+    ('\u{0300}'..='\u{036f}').contains(&value)
+}
+
+// MySQL's utf8mb4_bin ctype lookup classifies the low byte of each code point.
+fn isJSONPathLetter(value: char) -> bool {
+    if isUnicodeCombiningMark(value) {
+        return false;
+    }
+    let byte = value as u32 as u8;
+    byte.is_ascii_alphabetic() || (0x80..=0xfe).contains(&byte)
+}
+
+fn isJSONPathDigit(value: char) -> bool {
+    (value as u32 as u8).is_ascii_digit()
+}
+
+fn isUnicodeConnectorPunctuation(value: char) -> bool {
+    matches!(
+        value,
+        '\u{005f}'
+            | '\u{203f}'
+            | '\u{2040}'
+            | '\u{2054}'
+            | '\u{fe33}'
+            | '\u{fe34}'
+            | '\u{fe4d}'..='\u{fe4f}'
+            | '\u{ff3f}'
+    )
+}
+
 /// 判断是否可作为未加引号的 ECMAScript 标识符。
 fn isEcmascriptIdentifier(value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
 
-    for (index, byte) in value.bytes().enumerate() {
-        let character = char::from(byte);
-        if character.is_alphabetic() || character == '$' || character == '_' {
+    for (index, character) in value.chars().enumerate() {
+        if isJSONPathLetter(character) || character == '$' || character == '_' {
             continue;
         }
         if index == 0 {
             return false;
         }
-        if character.is_ascii_digit() {
+        if isUnicodeCombiningMark(character)
+            || isJSONPathDigit(character)
+            || isUnicodeConnectorPunctuation(character)
+        {
             continue;
         }
         return false;

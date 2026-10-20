@@ -52,6 +52,14 @@ fn TestValidatePathExpr() {
         ("$[1 to last]", true, 1),
         ("$[1to3]", false, 1),
         ("$[last - 5 to last - 10]", false, 1),
+        ("$[last to last]", true, 1),
+        ("$[last ]", true, 1),
+        ("$[last ", false, 0),
+        ("$[last  ", false, 0),
+        ("$[last\tto last]", true, 1),
+        ("$[last to]", false, 0),
+        ("$[1 to]", false, 0),
+        ("$[1 tox]", false, 0),
         (r#"$.\"escaped quotes\"[3][*].*.key3"#, false, 0),
         (r#"$.hello \"escaped quotes\" world[3][*].*.key3"#, false, 0),
         ("$NoValidLegsHere", false, 0),
@@ -73,6 +81,20 @@ fn TestValidatePathExpr() {
         ("$.Ѡ", false, 0),
         (r#"$."Ѡ""#, true, 1),
         ("$.µ", true, 1),
+        ("$.é", true, 1),
+        ("$.ß", true, 1),
+        ("$.α", true, 1),
+        ("$.с", true, 1),
+        ("$.aб", true, 1),
+        ("$.б", false, 0),
+        ("$.ÿ", false, 0),
+        ("$.Ā", false, 0),
+        ("$.你", false, 0),
+        (r#"$."你""#, true, 1),
+        ("$.a\u{00a0}b", true, 1),
+        ("$.a\u{0085}b", true, 1),
+        ("$.a\u{00a0}.b", true, 2),
+        ("$.a\u{3000}b", false, 0),
     ];
 
     for (expression, success, legs) in tests {
@@ -83,6 +105,43 @@ fn TestValidatePathExpr() {
             }
             Err(_) => assert!(!success, "{expression:?} should parse"),
         }
+    }
+}
+
+#[test]
+fn TestQuoteStringAndPathKeyRoundTrip() {
+    for (raw, quoted) in [
+        ("é", "é"),
+        ("ß", "ß"),
+        ("α", "α"),
+        ("с", "с"),
+        ("б", r#""б""#),
+        ("aб", "aб"),
+        ("ÿ", r#""ÿ""#),
+        ("Ā", r#""Ā""#),
+        ("😀", r#""😀""#),
+        ("a\u{0301}", "a\u{0301}"),
+        ("\u{0301}", "\"\u{0301}\""),
+    ] {
+        assert_eq!(quoteJSONString(raw), quoted, "{raw:?}");
+    }
+
+    for key in [
+        "a",
+        "a b",
+        "é",
+        "你",
+        "a\u{00a0}b",
+        "a\u{0085}b",
+        "a\u{1680}b",
+        "a\u{3000}b",
+        "a.b",
+        "a\"b",
+    ] {
+        let expression = ParseJSONPathExpr(format!("$.{}", quoteJSONString(key)))
+            .unwrap_or_else(|error| panic!("{key:?}: {error}"));
+        assert_eq!(expression.legs.len(), 1, "{key:?}");
+        assert_eq!(expression.legs[0].dotKey, key, "{key:?}");
     }
 }
 
@@ -173,14 +232,10 @@ fn test_path_boundaries_and_state() {
             "{input}"
         );
     }
-    for input in [
-        "$[4294967295]",
-        "$[last-4294967295]",
-        "$[last-3 to last-1]",
-        "\u{85}$\u{a0}[0]",
-    ] {
+    for input in ["$[4294967295]", "$[last-4294967295]", "$[last-3 to last-1]"] {
         assert!(ParseJSONPathExpr(input).is_ok(), "{input}");
     }
+    assert!(ParseJSONPathExpr("\u{85}$\u{a0}[0]").is_err());
     assert_eq!(jsonPathArraySelectionAsterisk.getIndexRange(0), (0, -1));
     assert_eq!(
         jsonPathArraySelectionIndex { index: 5 }.getIndexRange(3),
