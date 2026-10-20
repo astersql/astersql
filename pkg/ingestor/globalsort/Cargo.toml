@@ -12,7 +12,10 @@ go-package = "pkg/ingestor/globalsort"
 legacy-tasks = ["task-958", "task-959", "task-962", "task-966", "task-967"]
 
 [dependencies]
+anyhow = "1"
 astersql-ingestor-errdef = { path = "../errdef" }
+astersql-metrics = { path = "../../metrics" }
+astersql-objstore = { path = "../../objstore" }
 "astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
 "astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
 "astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
@@ -41,3 +44,6 @@ astersql-ingestor-errdef = { path = "../errdef" }
 "astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../lightning/backend/kv" }
 "astersql-lightning-config" = { package = "astersql-lightning-config", path = "../../lightning/config" }
 "astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+
+[dev-dependencies]
+prometheus = "0.14"

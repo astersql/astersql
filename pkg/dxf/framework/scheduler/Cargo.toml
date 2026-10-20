@@ -12,10 +12,15 @@ go-package = "pkg/dxf/framework/scheduler"
 legacy-tasks = ["task-838", "task-839", "task-841", "task-1561", "task-1562"]
 
 [dependencies]
+anyhow = "1"
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
 "astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
 "astersql-dxf-framework-schstatus" = { package = "astersql-dxf-framework-schstatus", path = "../schstatus" }
 "astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
 "astersql-dxf-framework-dxfmetric" = { package = "astersql-dxf-framework-dxfmetric", path = "../dxfmetric" }
+"astersql-ingestor-globalsort" = { package = "astersql-ingestor-globalsort", path = "../../../ingestor/globalsort" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../../objstore" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 "astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }

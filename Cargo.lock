@@ -3037,6 +3037,7 @@ dependencies = [
 name = "astersql-dxf-framework-scheduler"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "astersql-config",
  "astersql-config-kerneltype",
  "astersql-domain-infosync",
@@ -3054,10 +3055,12 @@ dependencies = [
  "astersql-dxf-framework-taskexecutor-execute",
  "astersql-dxf-framework-testutil",
  "astersql-ingestor-errdef",
+ "astersql-ingestor-globalsort",
  "astersql-keyspace",
  "astersql-kv",
  "astersql-lightning-log",
  "astersql-metrics",
+ "astersql-objstore",
  "astersql-sessionctx",
  "astersql-sessionctx-vardef",
  "astersql-testkit",
@@ -5331,6 +5334,7 @@ version = "0.1.0"
 name = "astersql-ingestor-globalsort"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "astersql-dxf-framework-taskexecutor-execute",
  "astersql-dxf-operator",
  "astersql-ingestor-engineapi",
@@ -5356,6 +5360,7 @@ dependencies = [
  "astersql-util-logutil",
  "astersql-util-mathutil",
  "astersql-util-size",
+ "prometheus 0.14.0",
 ]
 
 [[package]]

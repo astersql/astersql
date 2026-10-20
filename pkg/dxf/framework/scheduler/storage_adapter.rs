@@ -175,6 +175,12 @@ impl TaskManager for StorageTaskManagerAdapter {
             })
             .map_err(error)
     }
+    fn active_task_count(&self) -> Result<i64> {
+        self.manager
+            .GetActiveTaskCountsByKeyspace(context())
+            .map(|summary| summary.Total)
+            .map_err(error)
+    }
     fn all_subtasks(&self) -> Result<Vec<SubtaskBase>> {
         self.manager
             .GetAllSubtasks(context())

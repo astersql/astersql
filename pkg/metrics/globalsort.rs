@@ -24,6 +24,7 @@ use crate::bindinfo::compat_prometheus::{
 };
 use crate::bindinfo::{compat_metricscommon as metricscommon, compat_prometheus as prometheus};
 use crate::*;
+use std::sync::LazyLock;
 
 // 下列 Option 对应 Go 中初始化前为 nil 的指针或零值接口；初始化函数负责一次性填入具体 collector。
 /// 写入云存储耗时直方图。
@@ -44,6 +45,22 @@ pub static mut GlobalSortIngestWorkerCnt: Option<prometheus::GaugeVec> = None;
 /// 活跃并行上传 worker 数量。
 // GlobalSortUploadWorkerCount 记录活跃并行上传 worker 数量。
 pub static mut GlobalSortUploadWorkerCount: Option<prometheus::Gauge> = None;
+/// Orphan global-sort bytes measured while no DXF producer is active.
+///
+/// This is a vector without variable labels so reset can remove the series and
+/// distinguish "not measured" from a measured zero.
+pub static GlobalSortOrphanDataSize: LazyLock<prometheus::GaugeVec> = LazyLock::new(|| {
+    metricscommon::NewGaugeVec(
+        prometheus::GaugeOpts {
+            Namespace: "tidb",
+            Subsystem: "global_sort",
+            Name: "orphan_data_size_bytes",
+            Help: "Gauge of orphan data size in bytes when no DXF task exists.",
+            ..Default::default()
+        },
+        Vec::<&str>::new(),
+    )
+});
 /// 归并排序写出字节数。
 // MergeSortWriteBytes 记录归并排序写出的字节数。
 pub static mut MergeSortWriteBytes: Option<prometheus::Counter> = None;

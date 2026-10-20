@@ -353,6 +353,11 @@ pub trait TaskManager: Send + Sync {
     fn top_unfinished_tasks(&self) -> Result<Vec<TaskBase>>;
     fn top_no_need_resource_tasks(&self) -> Result<Vec<TaskBase>>;
     fn all_tasks(&self) -> Result<Vec<TaskBase>>;
+    /// Number of rows in the active global-task table. Finished rows still
+    /// count until scheduler cleanup moves them to history.
+    fn active_task_count(&self) -> Result<i64> {
+        Ok(self.all_tasks()?.len() as i64)
+    }
     fn all_subtasks(&self) -> Result<Vec<SubtaskBase>>;
     fn tasks_in_states(&self, states: &[TaskState]) -> Result<Vec<Task>>;
     /// Finished tasks bounded by the owner-local cleanup setting.

@@ -194,6 +194,7 @@ macro_rules! register_options {
 pub unsafe fn RegisterMetrics() -> Result<(), prometheus::Error> {
     register_clone(&*PanicCounter)?;
     register_clone(&*MemoryUsage)?;
+    register_clone(&*crate::globalsort::GlobalSortOrphanDataSize)?;
     // 以下列表对应 Go RegisterMetrics 中逐项 Register 的 collector。
     register_options!(
         crate::ddl::BatchAddIdxHistogram,

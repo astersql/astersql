@@ -30,6 +30,33 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+pub(crate) trait OrphanDataMonitor: Send + Sync {
+    fn trigger(&self, context: &Context);
+    fn reset(&self);
+}
+
+struct NoopOrphanDataMonitor;
+
+impl OrphanDataMonitor for NoopOrphanDataMonitor {
+    fn trigger(&self, _: &Context) {}
+    fn reset(&self) {}
+}
+
+struct GlobalSortOrphanDataMonitor(astersql_ingestor_globalsort::orphandata::Monitor);
+
+impl OrphanDataMonitor for GlobalSortOrphanDataMonitor {
+    fn trigger(&self, context: &Context) {
+        let storage_context = astersql_objstore::storage::Context::from_cancellation_flag(
+            context.cancellation_flag(),
+        );
+        self.0.trigger(&storage_context);
+    }
+
+    fn reset(&self) {
+        self.0.reset();
+    }
+}
+
 /// 默认可并发运行的调度器（任务）数量上限。
 pub const DEFAULT_MAX_CONCURRENT_TASKS: usize = 16;
 /// 可配置的最大并发任务数上界（防止配置过大耗尽资源）。
@@ -88,6 +115,8 @@ pub struct Manager {
     node_resource: Option<NodeResource>,
     /// 是否已完成 start 初始化。
     initialized: AtomicBool,
+    /// Owner-only monitor. Classic kernels use the no-op implementation.
+    orphan_monitor: Arc<dyn OrphanDataMonitor>,
 }
 
 impl Manager {
@@ -136,6 +165,7 @@ impl Manager {
             allocated_slots: false,
             node_resource: node_resource.clone(),
         };
+        let orphan_monitor = new_orphan_data_monitor(Arc::clone(&task_manager));
         Self {
             task_manager,
             node_manager,
@@ -145,6 +175,7 @@ impl Manager {
             server_id: param.server_id,
             node_resource,
             initialized: AtomicBool::new(false),
+            orphan_monitor,
         }
     }
 
@@ -153,6 +184,7 @@ impl Manager {
         self.node_manager
             .refresh_nodes(self.task_manager.as_ref(), &self.slot_manager)?;
         self.drain_clean_task_batches();
+        self.orphan_monitor.trigger(&Context::new());
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
@@ -179,6 +211,7 @@ impl Manager {
                     .unreserve(&entry.reservation, &entry.reserved_exec_id);
             }
         }
+        self.orphan_monitor.reset();
     }
 
     /// 是否已 start。
@@ -216,6 +249,7 @@ impl Manager {
         self.start_schedulers(schedulable)?;
         self.drive_schedulers();
         self.drain_clean_task_batches();
+        self.orphan_monitor.trigger(&Context::new());
         Ok(())
     }
 
@@ -469,6 +503,38 @@ impl Manager {
     pub fn slot_manager(&self) -> Arc<SlotManager> {
         Arc::clone(&self.slot_manager)
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_orphan_monitor_for_test(&mut self, monitor: Arc<dyn OrphanDataMonitor>) {
+        self.orphan_monitor = monitor;
+    }
+}
+
+fn new_orphan_data_monitor(task_manager: Arc<dyn TaskManager>) -> Arc<dyn OrphanDataMonitor> {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return Arc::new(NoopOrphanDataMonitor);
+    }
+    let checker = Arc::clone(&task_manager);
+    Arc::new(GlobalSortOrphanDataMonitor(
+        astersql_ingestor_globalsort::orphandata::Monitor::new(
+            astersql_ingestor_globalsort::orphandata::Config {
+                active_producer_checker: Arc::new(move || {
+                    checker
+                        .active_task_count()
+                        .map(|count| count > 0)
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))
+                }),
+                get_storage_uri: Arc::new(|| {
+                    astersql_dxf_framework_handle::GetCloudStorageURI(
+                        &astersql_dxf_framework_handle::Context::background(),
+                    )
+                    .unwrap_or_default()
+                }),
+                retained_prefixes: vec!["conflicted-rows/".to_owned()],
+                store_factory: None,
+            },
+        ),
+    ))
 }
 
 /// 析构时自动 stop，避免泄漏运行中的调度器。

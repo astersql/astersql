@@ -23,7 +23,39 @@ use crate::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
+
+#[derive(Default)]
+struct RecordingOrphanMonitor {
+    triggers: AtomicUsize,
+    resets: AtomicUsize,
+}
+
+impl crate::scheduler_manager::OrphanDataMonitor for RecordingOrphanMonitor {
+    fn trigger(&self, _: &Context) {
+        self.triggers.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn orphan_monitor_runs_with_scheduler_cleanup_and_resets_on_stop() {
+    let task_manager = Arc::new(TestTaskManager::default());
+    let recorder = Arc::new(RecordingOrphanMonitor::default());
+    let mut manager = Manager::new(task_manager, "server", None);
+    manager.set_orphan_monitor_for_test(recorder.clone());
+
+    manager.start().unwrap();
+    manager.tick().unwrap();
+    manager.stop();
+
+    assert_eq!(recorder.triggers.load(Ordering::SeqCst), 2);
+    assert_eq!(recorder.resets.load(Ordering::SeqCst), 1);
+}
 
 struct HoldingScheduler {
     task: Task,

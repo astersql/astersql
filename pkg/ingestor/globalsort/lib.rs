@@ -15,6 +15,7 @@ pub mod engine;
 pub mod kvgroup;
 pub mod merge;
 pub mod merge_v2;
+pub mod orphandata;
 pub mod reader;
 pub mod split;
 pub mod testutil;
@@ -33,6 +34,9 @@ mod merge_v2_test;
 #[cfg(test)]
 #[path = "misc_bench_test.rs"]
 mod misc_bench_test;
+#[cfg(test)]
+#[path = "orphandata_test.rs"]
+mod orphandata_test;
 #[cfg(test)]
 #[path = "reader_test.rs"]
 mod reader_test;
