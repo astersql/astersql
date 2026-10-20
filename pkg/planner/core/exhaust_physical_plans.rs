@@ -538,12 +538,19 @@ pub fn checkOpSelfSatisfyPropTaskTypeRequirement(
     }
 }
 /// 检查 Index Join 内表任务是否允许携带聚合。
+///
+/// 只有直接的 GROUP BY 列才是分组键；标量表达式内部引用的列不能用于证明
+/// Index Join 的逐探测聚合是安全的，否则同一表达式分组可能被拆到不同批次。
 pub fn checkIndexJoinInnerTaskWithAgg(
-    group_by: &[usize],
+    group_by: &[Expression],
     data_source_schema: &[usize],
     runtime: &IndexJoinRuntimeProp,
 ) -> bool {
-    let groups: HashSet<_> = group_by.iter().copied().collect();
+    let groups: HashSet<_> = group_by
+        .iter()
+        .filter(|item| item.function_count == 0)
+        .filter_map(|item| item.column)
+        .collect();
     let keys: HashSet<_> = runtime
         .inner_join_keys
         .iter()

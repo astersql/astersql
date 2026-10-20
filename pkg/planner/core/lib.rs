@@ -287,6 +287,10 @@ mod core_init_test;
 mod exhaust_physical_plans_test;
 
 #[cfg(test)]
+#[path = "direct_group_by_index_join_test.rs"]
+mod direct_group_by_index_join_test;
+
+#[cfg(test)]
 #[path = "encode_test.rs"]
 mod encode_test;
 
