@@ -614,3 +614,129 @@ fn partial_index_errors_follow_selection_and_loading() {
 }
 
 static COMMIT_D0_METRICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn requires_global_sort_with_sem() {
+    let _serial = COMMIT_D0_METRICS.lock().unwrap();
+    use astersql_meta_model::group_3::{DDLReorgMeta, Job};
+    use astersql_util_sem_compat::{SwitchToSEMForTest, V1, V2};
+
+    for (name, value) in [
+        (
+            astersql_sessionctx_vardef::Hostname,
+            astersql_sessionctx_vardef::DefHostname,
+        ),
+        (
+            astersql_sessionctx_vardef::TiDBEnableEnhancedSecurity,
+            astersql_sessionctx_vardef::Off,
+        ),
+    ] {
+        if astersql_sessionctx_variable::GetSysVar(name).is_none() {
+            astersql_sessionctx_variable::RegisterSysVar(astersql_sessionctx_variable::SysVar {
+                Name: name.to_owned(),
+                Value: value.to_owned(),
+                Scope: astersql_sessionctx_vardef::ScopeNone,
+                ..Default::default()
+            });
+        }
+    }
+    let sem_config: serde_json::Value =
+        serde_json::from_str(astersql_util_sem_compat::compatibleSEMV2Config).unwrap();
+    for restriction in sem_config["restricted_variables"].as_array().unwrap() {
+        let name = restriction["name"].as_str().unwrap();
+        astersql_sessionctx_variable::UnregisterSysVar(name);
+        astersql_sessionctx_variable::RegisterSysVar(astersql_sessionctx_variable::SysVar {
+            Name: name.to_owned(),
+            Value: "default".to_owned(),
+            Scope: if restriction["value"].as_str().unwrap_or_default().is_empty() {
+                astersql_sessionctx_vardef::ScopeGlobal
+            } else {
+                astersql_sessionctx_vardef::ScopeNone
+            },
+            ..Default::default()
+        });
+    }
+
+    for sem_version in [V1, V2] {
+        let cleanup = SwitchToSEMForTest(sem_version);
+
+        let mut local_environment = CommitD0Environment {
+            uri: String::new(),
+            initialized: true,
+            disk_error: None,
+            loads: 0,
+            probes: 0,
+        };
+        let mut local_job = Job {
+            reorg_meta: Some(DDLReorgMeta {
+                IsFastReorg: true,
+                IsDistReorg: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut indexes = [astersql_meta_model::IndexInfo::default()];
+        let local_result = crate::index::init_for_reorg_indexes(
+            &mut local_environment,
+            &mut local_job,
+            &mut indexes,
+        );
+        if astersql_config_kerneltype::IsNextGen() {
+            assert_eq!(
+                local_result.unwrap_err(),
+                astersql_util_dbterror_plannererrors::ErrNotSupportedWithSem
+                    .GenWithStackByArgs(&["add index or modify column with local sort".into()])
+                    .to_string()
+            );
+        } else {
+            local_result.unwrap();
+        }
+        assert_eq!(
+            (local_environment.loads, local_environment.probes),
+            (1, usize::from(!astersql_config_kerneltype::IsNextGen()))
+        );
+
+        let mut txn_environment = CommitD0Environment {
+            uri: String::new(),
+            initialized: true,
+            disk_error: None,
+            loads: 0,
+            probes: 0,
+        };
+        let mut txn_job = Job {
+            reorg_meta: Some(DDLReorgMeta {
+                IsFastReorg: false,
+                IsDistReorg: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        crate::index::init_for_reorg_indexes(&mut txn_environment, &mut txn_job, &mut indexes)
+            .unwrap();
+
+        let mut global_environment = CommitD0Environment {
+            uri: "s3://bucket".into(),
+            initialized: true,
+            disk_error: None,
+            loads: 0,
+            probes: 0,
+        };
+        let mut global_job = Job {
+            reorg_meta: Some(DDLReorgMeta {
+                IsFastReorg: true,
+                IsDistReorg: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        crate::index::init_for_reorg_indexes(
+            &mut global_environment,
+            &mut global_job,
+            &mut indexes,
+        )
+        .unwrap();
+        assert!(global_job.reorg_meta.as_ref().unwrap().UseCloudStorage);
+
+        cleanup();
+    }
+}

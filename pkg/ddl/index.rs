@@ -1181,6 +1181,22 @@ pub fn init_for_reorg_indexes(
         .ok_or("DDL reorg metadata missing")?;
     meta.UseCloudStorage = !uri.is_empty() && meta.IsDistReorg;
     environment.after_load_cloud_storage_uri(job);
+    // NextGen add-index and modify-column jobs support sorting through global
+    // storage. Local sort remains available only for SEM-disabled tests. Jobs
+    // without fast reorg use transactional backfill and do not sort at all.
+    let meta = job
+        .reorg_meta
+        .as_ref()
+        .ok_or("DDL reorg metadata missing")?;
+    if astersql_config_kerneltype::IsNextGen()
+        && astersql_util_sem_compat::IsEnabled()
+        && meta.IsFastReorg
+        && !meta.UseCloudStorage
+    {
+        return Err(astersql_util_dbterror_plannererrors::ErrNotSupportedWithSem
+            .GenWithStackByArgs(&["add index or modify column with local sort".into()])
+            .to_string());
+    }
     let selected = pick_job_backfill_type(environment, job)?;
     if matches!(
         selected,

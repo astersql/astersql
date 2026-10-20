@@ -46,6 +46,12 @@ astersql-ddl-schemaver = { path = "schemaver" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
 "astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
 "astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../util/dbterror/plannererrors" }
+"astersql-util-sem-compat" = { package = "astersql-util-sem-compat", path = "../util/sem/compat" }
+
+[features]
+default = []
+nextgen = ["astersql-config-kerneltype/nextgen"]
 
 [lib]
 path = "lib.rs"
