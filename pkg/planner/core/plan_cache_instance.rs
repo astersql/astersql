@@ -8,7 +8,7 @@
 // 不同并存），用软/硬内存上限控制容量。淘汰（Evict）按最近使用时间戳
 // （单调 use_clock，避免 SystemTime 粗粒度导致 LRU 顺序不确定）优先驱逐最旧项。
 
-use crate::{CheckTypesCompatibility4PC, PlanCacheValue};
+use crate::PlanCacheValue;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -75,9 +75,11 @@ impl InstancePlanCache {
         parameter_types: &[types_dependency::metadata::FieldType],
     ) -> Option<Arc<PlanCacheValue>> {
         let mut state = self.state();
-        let index = state.items.get(key)?.iter().position(|entry| {
-            CheckTypesCompatibility4PC(&entry.value.ParamTypes, parameter_types)
-        })?;
+        let index = state
+            .items
+            .get(key)?
+            .iter()
+            .position(|entry| entry.value.MatchesParamTypes(parameter_types))?;
         state.use_clock = state.use_clock.saturating_add(1);
         let stamp = state.use_clock;
         let entry = &mut state.items.get_mut(key)?[index];
@@ -96,9 +98,9 @@ impl InstancePlanCache {
         // 硬上限或同键已有兼容参数类型的条目时拒绝写入。
         if state.memory + mem > self.hard.load(Ordering::Acquire)
             || state.items.get(&key).is_some_and(|entries| {
-                entries.iter().any(|entry| {
-                    CheckTypesCompatibility4PC(&entry.value.ParamTypes, &value.ParamTypes)
-                })
+                entries
+                    .iter()
+                    .any(|entry| entry.value.MatchesParamTypes(&value.ParamTypes))
             })
         {
             return false;

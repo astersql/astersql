@@ -11,7 +11,7 @@
 // Get 命中会将条目移到队头；Put 超容量或超过 `quota * (1 - guard)` 内存阈值时
 // 从队尾驱逐。同一键可按参数类型兼容性区分多条桶（bucket）。
 
-use crate::{CheckTypesCompatibility4PC, PlanCacheValue};
+use crate::PlanCacheValue;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -68,9 +68,10 @@ impl LRUPlanCache {
         parameter_types: &[types_dependency::metadata::FieldType],
     ) -> Option<Arc<PlanCacheValue>> {
         let mut state = self.state();
-        let index = state.entries.iter().position(|entry| {
-            entry.key == key && CheckTypesCompatibility4PC(&entry.value.ParamTypes, parameter_types)
-        })?;
+        let index = state
+            .entries
+            .iter()
+            .position(|entry| entry.key == key && entry.value.MatchesParamTypes(parameter_types))?;
         let entry = state.entries.remove(index)?;
         let value = Arc::clone(&entry.value);
         state.entries.push_front(entry);
@@ -85,10 +86,11 @@ impl LRUPlanCache {
         let value = value.into();
         let mut state = self.state();
         // 同键且参数类型兼容则先移除旧条目，避免重复桶。
-        if let Some(index) = state.entries.iter().position(|entry| {
-            entry.key == key
-                && CheckTypesCompatibility4PC(&entry.value.ParamTypes, &value.ParamTypes)
-        }) {
+        if let Some(index) = state
+            .entries
+            .iter()
+            .position(|entry| entry.key == key && entry.value.MatchesParamTypes(&value.ParamTypes))
+        {
             if let Some(old) = state.entries.remove(index) {
                 state.memory -= Self::entryMemoryUsage(&old);
             }

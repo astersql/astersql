@@ -72,6 +72,33 @@ fn non_prepared_parameters_keep_values_when_sorted_before_build() {
     assert_eq!(markers[1].datum, Some(crate::Datum::Int(22)));
 }
 
+#[test]
+fn coalesce_plan_cache_update_maps_sorted_parameter_offsets() {
+    let input = PlanCachePrepareInput {
+        is_prepared_statement: false,
+        markers: vec![
+            PlanCacheParamMarker {
+                offset: 30,
+                datum: Some(crate::Datum::Int(30)),
+                ..Default::default()
+            },
+            PlanCacheParamMarker {
+                offset: 10,
+                datum: Some(crate::Datum::Int(10)),
+                ..Default::default()
+            },
+        ],
+        exact_decimal_marker_offsets: vec![30],
+        ..Default::default()
+    };
+    let (statement, _, count) =
+        GeneratePlanCacheStmtWithAST(&PrepareBindingRuntime, input).unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(statement.Params[0].offset, 10);
+    assert_eq!(statement.Params[1].offset, 30);
+    assert_eq!(statement.ExactDecimalParamOffsets(), &[1]);
+}
+
 struct BindingPlanContext {
     vars: variable_dependency::session::SessionVars,
     expr: exprstatic_dependency::ExprContext,

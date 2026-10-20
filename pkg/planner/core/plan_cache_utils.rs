@@ -426,6 +426,7 @@ pub struct PlanCacheStmt<ColumnInfo = (), Executor = (), FastPlan = ()> {
     pub SnapshotTSEvaluator: Option<SnapshotTSEvaluator>,
     pub BindingInfo: PlanCacheBindingInfo,
     pub StmtText: String,
+    exact_decimal_param_offsets: Vec<usize>,
     limits: Vec<PlanCacheLimit>,
     has_subquery: bool,
     tables: Vec<PlanCacheTable>,
@@ -455,6 +456,7 @@ impl<ColumnInfo, Executor, FastPlan> Default for PlanCacheStmt<ColumnInfo, Execu
             SnapshotTSEvaluator: None,
             BindingInfo: PlanCacheBindingInfo::default(),
             StmtText: String::new(),
+            exact_decimal_param_offsets: Vec::new(),
             limits: Vec::new(),
             has_subquery: false,
             tables: Vec::new(),
@@ -482,6 +484,11 @@ impl<ColumnInfo, Executor, FastPlan> PlanCacheStmt<ColumnInfo, Executor, FastPla
     /// 语句是否包含子查询。
     pub fn HasSubquery(&self) -> bool {
         self.has_subquery
+    }
+
+    /// Parameter indexes that require exact DECIMAL precision and scale matching.
+    pub fn ExactDecimalParamOffsets(&self) -> &[usize] {
+        &self.exact_decimal_param_offsets
     }
 
     /// 返回引用表列表。
@@ -569,6 +576,8 @@ pub struct PlanCachePrepareInput {
     pub prepared_ast: ast::misc::Prepared,
     pub statement_kind: PlanCacheStatementKind,
     pub markers: Vec<PlanCacheParamMarker>,
+    /// Source offsets of markers inside an admitted non-prepared COALESCE assignment.
+    pub exact_decimal_marker_offsets: Vec<usize>,
     pub resolve_context: Option<resolve_dependency::Context>,
     pub current_database: String,
     pub visit_infos: Vec<PlanCacheVisitInfo>,
@@ -634,6 +643,21 @@ pub fn GeneratePlanCacheStmtWithAST(
 
     runtime.Preprocess(&input)?;
     input.markers.sort_by_key(|marker| marker.offset);
+    let exact_decimal_param_offsets = if input.is_prepared_statement {
+        Vec::new()
+    } else {
+        input
+            .markers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, marker)| {
+                input
+                    .exact_decimal_marker_offsets
+                    .contains(&marker.offset)
+                    .then_some(index)
+            })
+            .collect()
+    };
     for (order, marker) in input.markers.iter_mut().enumerate() {
         marker.order = order;
         // Go only resets values collected for binary-protocol PREPARE. Values
@@ -699,6 +723,7 @@ pub fn GeneratePlanCacheStmtWithAST(
     statement.StmtDB = input.current_database;
     statement.VisitInfos = input.visit_infos;
     statement.Params = input.markers;
+    statement.exact_decimal_param_offsets = exact_decimal_param_offsets;
     statement.SchemaVersion = input.schema_version;
     statement.RelateVersion = input.related_versions;
     statement.StmtCacheable = cacheable;
@@ -881,6 +906,7 @@ pub struct PlanCacheValue {
     pub OutputColumns: base_dependency::types::NameSlice,
     pub ParamTypes: Vec<types_dependency::metadata::FieldType>,
     pub StmtHints: hint_dependency::StmtHints,
+    exact_decimal_param_offsets: Vec<usize>,
     plan_memory_usage: i64,
     memory: AtomicI64,
     executions: AtomicI64,
@@ -911,6 +937,33 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 impl PlanCacheValue {
+    /// Marks parameter positions whose DECIMAL precision and scale must match exactly.
+    pub fn SetExactDecimalParamOffsets(&mut self, offsets: Vec<usize>) {
+        self.exact_decimal_param_offsets = offsets;
+        self.memory.store(0, Ordering::Release);
+    }
+
+    /// Applies the cached plan's relaxed compatibility plus COALESCE-specific exact matching.
+    pub fn MatchesParamTypes(&self, actual: &[types_dependency::metadata::FieldType]) -> bool {
+        use types_dependency::metadata::mysql;
+
+        if !CheckTypesCompatibility4PC(&self.ParamTypes, actual) {
+            return false;
+        }
+        if self.exact_decimal_param_offsets.is_empty() || actual.is_empty() {
+            return true;
+        }
+        self.exact_decimal_param_offsets.iter().all(|&index| {
+            let Some((expected, current)) = self.ParamTypes.get(index).zip(actual.get(index))
+            else {
+                return false;
+            };
+            expected.GetType() != mysql::TypeNewDecimal
+                || (expected.GetFlen() == current.GetFlen()
+                    && expected.GetDecimal() == current.GetDecimal())
+        })
+    }
+
     /// 原子累加执行次数、处理键数、总键数与延迟，并更新最近使用时间。
     pub fn UpdateRuntimeInfo(&self, processed_keys: i64, total_keys: i64, latency: i64) {
         self.executions.fetch_add(1, Ordering::Relaxed);
@@ -970,6 +1023,8 @@ impl PlanCacheValue {
             .flatten()
             .map(|name| name.MemoryUsage())
             .sum::<i64>();
+        memory +=
+            (self.exact_decimal_param_offsets.capacity() * std::mem::size_of::<usize>()) as i64;
         memory += self
             .ParamTypes
             .iter()
@@ -1019,6 +1074,7 @@ pub fn NewPlanCacheValue<ColumnInfo, Executor, FastPlan>(
         OutputColumns: output_columns,
         ParamTypes: parameter_types.to_vec(),
         StmtHints: statement_hints.clone(),
+        exact_decimal_param_offsets: statement.exact_decimal_param_offsets.clone(),
         plan_memory_usage: build_info.plan_memory_usage,
         memory: AtomicI64::new(0),
         executions: AtomicI64::new(0),
@@ -1031,9 +1087,9 @@ pub fn NewPlanCacheValue<ColumnInfo, Executor, FastPlan>(
     value
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 /// 测试用：构造带指定 plan_memory_usage 的 PlanCacheValue。
-pub(crate) fn NewPlanCacheValueForTest(plan_memory_usage: i64) -> PlanCacheValue {
+pub fn NewPlanCacheValueForTest(plan_memory_usage: i64) -> PlanCacheValue {
     PlanCacheValue {
         SQLDigest: "digest".to_owned(),
         SQLText: "select 1".to_owned(),
@@ -1049,6 +1105,7 @@ pub(crate) fn NewPlanCacheValueForTest(plan_memory_usage: i64) -> PlanCacheValue
         OutputColumns: base_dependency::types::NameSlice(Vec::new()),
         ParamTypes: Vec::new(),
         StmtHints: hint_dependency::StmtHints::default(),
+        exact_decimal_param_offsets: Vec::new(),
         plan_memory_usage,
         memory: AtomicI64::new(0),
         executions: AtomicI64::new(0),

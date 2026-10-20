@@ -7,7 +7,125 @@
 // Plan Cache（计划缓存）。Prepared 与 Non-Prepared 路径分别检查子查询、
 // 全局 SET、常量参数数量、计划内存占用及特定不可缓存算子。
 
-use crate::{AstNode, PlanKind, PlanNode, StoreType};
+use crate::{AstNode, PlanKind, PlanNode, StoreType, ast};
+
+/// Column metadata needed to validate the narrowly supported COALESCE UPDATE shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoalesceColumnType {
+    pub name: String,
+    pub field_type: types_dependency::metadata::FieldType,
+}
+
+impl CoalesceColumnType {
+    pub fn new(name: impl Into<String>, field_type: types_dependency::metadata::FieldType) -> Self {
+        Self {
+            name: name.into().to_ascii_lowercase(),
+            field_type,
+        }
+    }
+}
+
+fn coalesce_column_type<'a>(
+    columns: &'a [CoalesceColumnType],
+    name: &ast::ColumnName,
+) -> Option<&'a types_dependency::metadata::FieldType> {
+    columns
+        .iter()
+        .find(|column| column.name == name.Name.L)
+        .map(|column| &column.field_type)
+}
+
+fn same_coalesce_column_type(
+    expected: &types_dependency::metadata::FieldType,
+    actual: &types_dependency::metadata::FieldType,
+) -> bool {
+    use types_dependency::metadata::mysql;
+
+    const VALUE_FLAGS: usize = mysql::NotNullFlag | mysql::UnsignedFlag | mysql::ZerofillFlag;
+    expected.GetType() == actual.GetType()
+        && expected.GetFlen() == actual.GetFlen()
+        && expected.GetDecimal() == actual.GetDecimal()
+        && expected.GetCharset() == actual.GetCharset()
+        && expected.GetCollate() == actual.GetCollate()
+        && expected.GetFlag() & VALUE_FLAGS == actual.GetFlag() & VALUE_FLAGS
+}
+
+/// Reports whether an UPDATE assignment is the exact numeric COALESCE shape admitted by Go.
+pub fn SupportedCoalesceAssignment(
+    assignment: &ast::Assignment,
+    columns: &[CoalesceColumnType],
+) -> bool {
+    use types_dependency::metadata::mysql;
+
+    let Some(target) = coalesce_column_type(columns, &assignment.Column) else {
+        return false;
+    };
+    if !matches!(
+        target.GetType(),
+        mysql::TypeTiny
+            | mysql::TypeShort
+            | mysql::TypeInt24
+            | mysql::TypeLong
+            | mysql::TypeLonglong
+            | mysql::TypeNewDecimal
+    ) {
+        return false;
+    }
+
+    fn supported(
+        expression: &ast::ExprNode,
+        target: &types_dependency::metadata::FieldType,
+        columns: &[CoalesceColumnType],
+    ) -> bool {
+        let ast::ExprKind::Function { FnName, Args, .. } = &expression.Kind else {
+            return false;
+        };
+        if FnName.L != "coalesce" || Args.len() != 2 {
+            return false;
+        }
+        let first_supported = match &Args[0].Kind {
+            ast::ExprKind::Value(value) => matches!(
+                value.Datum,
+                ast::ValueDatum::Int64(_)
+                    | ast::ValueDatum::Uint64(_)
+                    | ast::ValueDatum::Decimal(_)
+            ),
+            _ => supported(&Args[0], target, columns),
+        };
+        if !first_supported {
+            return false;
+        }
+        match &Args[1].Kind {
+            ast::ExprKind::Column(column) => coalesce_column_type(columns, column)
+                .is_some_and(|fallback| same_coalesce_column_type(target, fallback)),
+            _ => supported(&Args[1], target, columns),
+        }
+    }
+
+    supported(&assignment.Expr, target, columns)
+}
+
+/// Returns source offsets of parameter markers nested inside COALESCE calls.
+pub fn CoalesceParamMarkerOffsets(assignment: &ast::Assignment) -> Vec<usize> {
+    fn collect(expression: &ast::ExprNode, coalesce_depth: usize, offsets: &mut Vec<usize>) {
+        match &expression.Kind {
+            ast::ExprKind::ParamMarker { Offset } if coalesce_depth > 0 => offsets.push(*Offset),
+            ast::ExprKind::Function { FnName, Args, .. } => {
+                let depth = coalesce_depth + usize::from(FnName.L == "coalesce");
+                for argument in Args {
+                    collect(argument, depth, offsets);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut offsets = Vec::new();
+    collect(&assignment.Expr, 0, &mut offsets);
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
+}
 
 /// 简化入口：仅返回 AST 是否可缓存（忽略失败原因）。
 pub fn Cacheable(node: &AstNode) -> bool {

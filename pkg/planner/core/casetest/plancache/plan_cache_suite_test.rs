@@ -90,3 +90,177 @@ fn statement_features_obey_plan_cache_session_switches() {
     };
     assert!(NewPlanCacheKey(&all_enabled, &statement).unwrap().cacheable);
 }
+
+#[test]
+fn coalesce_plan_cache_update() {
+    use astersql_parser_ast::{Assignment, ColumnName, ExprNode, NewCIStr};
+    use astersql_planner_core::{
+        CoalesceColumnType, CoalesceParamMarkerOffsets, NewInstancePlanCache, NewLRUPlanCache,
+        NewPlanCacheValueForTest, SupportedCoalesceAssignment,
+    };
+    use astersql_types::metadata::{FieldType, mysql};
+
+    fn field_type(kind: u8, precision: isize, scale: isize, flags: usize) -> FieldType {
+        let mut field_type = FieldType::default();
+        field_type.SetType(kind);
+        field_type.SetFlen(precision);
+        field_type.SetDecimal(scale);
+        field_type.SetFlag(flags);
+        field_type
+    }
+    fn column(name: &str) -> ColumnName {
+        ColumnName {
+            Name: NewCIStr(name),
+            ..Default::default()
+        }
+    }
+    fn coalesce(first: ExprNode, second: ExprNode) -> ExprNode {
+        ExprNode::Function(NewCIStr(""), NewCIStr("coalesce"), vec![first, second])
+    }
+
+    let decimal = field_type(mysql::TypeNewDecimal, 20, 8, 0);
+    let decimal_other_precision = field_type(mysql::TypeNewDecimal, 19, 8, 0);
+    let decimal_other_scale = field_type(mysql::TypeNewDecimal, 20, 7, 0);
+    let signed_bigint = field_type(mysql::TypeLonglong, 20, 0, 0);
+    let unsigned_bigint = field_type(mysql::TypeLonglong, 20, 0, mysql::UnsignedFlag);
+    let nullable_bigint = field_type(mysql::TypeLonglong, 20, 0, 0);
+    let not_null_bigint = field_type(mysql::TypeLonglong, 20, 0, mysql::NotNullFlag);
+    let signed_int = field_type(mysql::TypeLong, 11, 0, 0);
+    let string = field_type(mysql::TypeVarchar, 100, -1, 0);
+    let columns = vec![
+        CoalesceColumnType::new("d", decimal.clone()),
+        CoalesceColumnType::new("other_precision", decimal_other_precision),
+        CoalesceColumnType::new("other_scale", decimal_other_scale),
+        CoalesceColumnType::new("signed_bigint", signed_bigint.clone()),
+        CoalesceColumnType::new("unsigned_bigint", unsigned_bigint),
+        CoalesceColumnType::new("nullable_bigint", nullable_bigint),
+        CoalesceColumnType::new("not_null_bigint", not_null_bigint),
+        CoalesceColumnType::new("signed_int", signed_int),
+        CoalesceColumnType::new("s", string),
+    ];
+    let valid = Assignment {
+        Column: column("d"),
+        Expr: coalesce(
+            ExprNode::DecimalValue("1.23456789".to_owned()),
+            ExprNode::Column(column("d")),
+        ),
+    };
+    assert!(SupportedCoalesceAssignment(&valid, &columns));
+    assert!(SupportedCoalesceAssignment(
+        &Assignment {
+            Column: column("signed_bigint"),
+            Expr: coalesce(
+                ExprNode::IntValue(1),
+                coalesce(
+                    ExprNode::IntValue(2),
+                    ExprNode::Column(column("signed_bigint")),
+                ),
+            ),
+        },
+        &columns,
+    ));
+
+    for invalid in [
+        Assignment {
+            Column: column("d"),
+            Expr: coalesce(
+                ExprNode::StringValue("abc".to_owned(), "utf8mb4", "utf8mb4_bin"),
+                ExprNode::Column(column("d")),
+            ),
+        },
+        Assignment {
+            Column: column("d"),
+            Expr: coalesce(
+                ExprNode::DecimalValue("1.2".to_owned()),
+                ExprNode::Column(column("other_precision")),
+            ),
+        },
+        Assignment {
+            Column: column("d"),
+            Expr: coalesce(
+                ExprNode::DecimalValue("1.2".to_owned()),
+                ExprNode::Column(column("other_scale")),
+            ),
+        },
+        Assignment {
+            Column: column("signed_bigint"),
+            Expr: coalesce(
+                ExprNode::IntValue(1),
+                ExprNode::Column(column("unsigned_bigint")),
+            ),
+        },
+        Assignment {
+            Column: column("signed_bigint"),
+            Expr: coalesce(
+                ExprNode::IntValue(1),
+                ExprNode::Column(column("signed_int")),
+            ),
+        },
+        Assignment {
+            Column: column("not_null_bigint"),
+            Expr: coalesce(
+                ExprNode::IntValue(1),
+                ExprNode::Column(column("nullable_bigint")),
+            ),
+        },
+        Assignment {
+            Column: column("s"),
+            Expr: coalesce(
+                ExprNode::DecimalValue("1.2".to_owned()),
+                ExprNode::Column(column("s")),
+            ),
+        },
+    ] {
+        assert!(!SupportedCoalesceAssignment(&invalid, &columns));
+    }
+    assert!(!SupportedCoalesceAssignment(&valid, &[]));
+
+    let parameterized = Assignment {
+        Column: column("d"),
+        Expr: coalesce(
+            ExprNode::ParamMarker(30),
+            coalesce(ExprNode::ParamMarker(10), ExprNode::Column(column("d"))),
+        ),
+    };
+    assert_eq!(CoalesceParamMarkerOffsets(&parameterized), vec![10, 30]);
+
+    let signature = |precision, scale| {
+        vec![
+            field_type(mysql::TypeNewDecimal, precision, scale, 0),
+            field_type(mysql::TypeNewDecimal, 20, 8, 0),
+        ]
+    };
+    let signatures = [signature(10, 8), signature(7, 5), signature(10, 5)];
+
+    let lru = NewLRUPlanCache(10, 0.0, 0);
+    for (index, types) in signatures.iter().enumerate() {
+        assert!(lru.Get("same-key", types).is_none());
+        let mut value = NewPlanCacheValueForTest(100);
+        value.ParamTypes = types.clone();
+        value.SetExactDecimalParamOffsets(vec![0]);
+        lru.Put("same-key".to_owned(), value);
+        assert_eq!(lru.Size(), index + 1);
+    }
+    for types in &signatures {
+        assert!(lru.Get("same-key", types).is_some());
+    }
+
+    let instance = NewInstancePlanCache(1 << 20, 1 << 20);
+    for (index, types) in signatures.iter().enumerate() {
+        assert!(instance.Get("same-key", types).is_none());
+        let mut value = NewPlanCacheValueForTest(100);
+        value.ParamTypes = types.clone();
+        value.SetExactDecimalParamOffsets(vec![0]);
+        assert!(instance.Put("same-key".to_owned(), value));
+        assert_eq!(instance.Size(), index + 1);
+    }
+    for types in &signatures {
+        assert!(instance.Get("same-key", types).is_some());
+    }
+
+    let relaxed = NewLRUPlanCache(10, 0.0, 0);
+    let mut value = NewPlanCacheValueForTest(100);
+    value.ParamTypes = signatures[0].clone();
+    relaxed.Put("relaxed".to_owned(), value);
+    assert!(relaxed.Get("relaxed", &signatures[1]).is_some());
+}
