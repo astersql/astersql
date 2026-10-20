@@ -1591,6 +1591,7 @@ ViewFieldList : "(" ColumnList ")" @action;
 ColumnList : Identifier @action;
 ColumnList : ColumnList "," Identifier @action;
 ViewCheckOption : ε @action;
+ViewCheckOption : "WITH" "CHECK" "OPTION" @action;
 ViewCheckOption : "WITH" "CASCADED" "CHECK" "OPTION" @action;
 ViewCheckOption : "WITH" "LOCAL" "CHECK" "OPTION" @action;
 DoStmt : "DO" ExpressionList @action;

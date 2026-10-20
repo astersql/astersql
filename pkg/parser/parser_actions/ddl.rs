@@ -399,6 +399,7 @@ enum DdlRule {
     ViewCheckOptionAlt01,
     ViewCheckOptionAlt02,
     ViewCheckOptionAlt03,
+    ViewCheckOptionAlt04,
     DropDatabaseStmtAlt01,
     DropIndexStmtAlt01,
     DropIndexStmtAlt02,
@@ -1491,6 +1492,9 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
         "viewcheckoption--bbe158ab33f08659" => Some(DdlRule::ViewCheckOptionAlt01),
         "viewcheckoption_with_cascaded_check_option--4865ebbaf826d771" => {
             Some(DdlRule::ViewCheckOptionAlt02)
+        }
+        "viewcheckoption_with_check_option--2f0b08df560596bb" => {
+            Some(DdlRule::ViewCheckOptionAlt04)
         }
         "viewcheckoption_with_local_check_option--0939e3018ff72080" => {
             Some(DdlRule::ViewCheckOptionAlt03)
@@ -5148,7 +5152,7 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
             ));
             out.item = Some(Box::new(columns));
         }
-        DdlRule::ViewCheckOptionAlt02 => {
+        DdlRule::ViewCheckOptionAlt02 | DdlRule::ViewCheckOptionAlt04 => {
             out.item = Some(Box::new(parser_ast::ViewCheckOption::Cascaded))
         }
         DdlRule::ViewCheckOptionAlt03 => {

@@ -895,6 +895,49 @@ pub fn test_view() {
 }
 
 #[test]
+/// A bare WITH CHECK OPTION is accepted as CASCADED and excluded from select text.
+pub fn view_check_option() {
+    for sql in [
+        "create view v as select * from t with check option",
+        "create view v as (select * from t) with check option",
+        "create view v as select * from t union select * from t with check option",
+        "create view v as select * from t union all select * from t with check option",
+    ] {
+        let statement = parser::New()
+            .ParseOneStmt(sql, "", "")
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        let view = statement
+            .as_any()
+            .downcast_ref::<parser_ast::CreateViewStmt>()
+            .expect("CREATE VIEW AST");
+        assert_eq!(
+            view.CheckOption,
+            parser_ast::ViewCheckOption::Cascaded,
+            "{sql}"
+        );
+        assert!(
+            !view
+                .Select
+                .Text()
+                .to_ascii_lowercase()
+                .contains("check option"),
+            "select text retained the view clause for {sql}: {:?}",
+            view.Select.Text()
+        );
+    }
+
+    for sql in [
+        "create view v as select * from t with check",
+        "create view v as select * from t with cascaded local check option",
+    ] {
+        assert!(
+            parser::New().ParseOneStmt(sql, "", "").is_err(),
+            "invalid view check option was accepted: {sql}"
+        );
+    }
+}
+
+#[test]
 /// TIMESTAMPDIFF 时间单位。
 pub fn test_timestamp_diff_unit() {
     let (statements, _) = parser::New()
