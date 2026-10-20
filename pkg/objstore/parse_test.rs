@@ -61,7 +61,9 @@ fn query_escape(value: &str) -> String {
 fn test_create_storage() {
     let error = ParseBackend("1invalid:", None).unwrap_err();
     assert!(
-        error.to_string().contains("relative URL without a base"),
+        error
+            .to_string()
+            .contains("parse storage URL failed: invalid format"),
         "unexpected parse error: {error:#}"
     );
 
@@ -360,7 +362,11 @@ fn test_relative_local_path_is_lexically_cleaned() {
 #[test]
 fn test_is_local() {
     let invalid = IsLocalPath(":").unwrap_err();
-    assert!(invalid.to_string().contains("relative URL without a base"));
+    assert!(
+        invalid
+            .to_string()
+            .contains("parse storage URL failed: invalid format")
+    );
 
     for (path, expected) in [
         ("~/tmp/file", true),
