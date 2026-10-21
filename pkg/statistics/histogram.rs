@@ -674,6 +674,12 @@ impl Histogram {
             HistNDV: histogram_ndv,
             ..OutOfRangeShape::default()
         };
+        // NULL and MinNotNull upper bounds describe ranges containing only NULLs.
+        // NULLs are tracked separately and never contribute out-of-range rows.
+        if upper.IsNull() || upper.Kind() == types::KindMinNotNull {
+            shape.Impossible = true;
+            return shape;
+        }
         let common_prefix = if matches!(
             self.GetLower(0).Kind(),
             types::KindBytes | types::KindString

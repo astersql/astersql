@@ -422,6 +422,20 @@ fn out_of_range_shape_empty_impossible_and_determinate_order() {
 }
 
 #[test]
+fn null_only_range_skips_out_of_range_estimation() {
+    let h = out_of_range_histogram(1);
+    for upper in [types::Datum::default(), types::MinNotNullDatum()] {
+        let shape = h.OutOfRangeShape(&types::Datum::default(), &upper, 100);
+
+        assert!(shape.Impossible);
+        assert_eq!(
+            h.ScaleOutOfRangeShape(shape, 200, 100, true, 0.0),
+            DefaultRowEst(0.0)
+        );
+    }
+}
+
+#[test]
 fn out_of_range_shape_low_ndv_and_degenerate_width() {
     let mut h = out_of_range_histogram(1);
     let point = h.OutOfRangeShape(&types::NewIntDatum(30), &types::NewIntDatum(30), -1);
