@@ -773,6 +773,7 @@ pub trait Storage: Send + Sync {
     fn ReadFile(&self, name: &str) -> Result<Vec<u8>>;
     fn WriteFile(&self, name: &str, data: &[u8]) -> Result<()>;
     fn FileExists(&self, name: &str) -> Result<bool>;
+    fn DeleteFile(&self, name: &str) -> Result<()>;
     fn WalkDir(&self, sub_dir: &str, f: &mut dyn FnMut(&str, i64) -> Result<()>) -> Result<()>;
 }
 
@@ -812,6 +813,10 @@ impl Storage for MemStorage {
     }
     fn FileExists(&self, name: &str) -> Result<bool> {
         Ok(self.files.lock().unwrap().contains_key(name))
+    }
+    fn DeleteFile(&self, name: &str) -> Result<()> {
+        self.files.lock().unwrap().remove(name);
+        Ok(())
     }
     // 前缀匹配 WalkDir；size 为字节长度而非 inode 元数据。
     fn WalkDir(&self, sub_dir: &str, f: &mut dyn FnMut(&str, i64) -> Result<()>) -> Result<()> {

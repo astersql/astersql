@@ -920,10 +920,16 @@ pub mod checkpoint {
         pub GCServiceId: String,
         pub ConfigHash: Vec<u8>,
         pub BackupTS: u64,
+        #[serde(default, rename = "backup-id", skip_serializing_if = "is_zero")]
+        pub BackupID: u64,
         #[serde(skip)]
         pub CheckpointChecksum: Option<HashMap<i64, ChecksumItem>>,
         #[serde(skip)]
         pub LoadCheckpointDataMap: bool,
+    }
+
+    fn is_zero(value: &u64) -> bool {
+        *value == 0
     }
 
     #[derive(Clone, Debug, Default)]

@@ -151,12 +151,19 @@ pub struct CheckpointMetadataForBackup {
     pub ConfigHash: Vec<u8>,
     #[serde(rename = "backup-ts", default)]
     pub BackupTS: u64,
+    /// Repository snapshot identifier. Zero preserves legacy checkpoint compatibility.
+    #[serde(rename = "backup-id", default, skip_serializing_if = "is_zero")]
+    pub BackupID: u64,
     /// 从 checksum 目录加载的表级校验汇总（跳过 serde）。
     #[serde(skip)]
     pub CheckpointChecksum: HashMap<i64, ChecksumItem>,
     /// 是否需要加载 data map 的提示标志（运行时，不落盘）。
     #[serde(skip)]
     pub LoadCheckpointDataMap: bool,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// 读取 meta 文件并合并 checksum 目录内容。

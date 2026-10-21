@@ -556,6 +556,7 @@ impl Client {
         ctx: &Context,
         cfgHash: Vec<u8>,
         backupTS: u64,
+        backupID: u64,
         safePointID: String,
         _progressCallBack: impl Fn(ProgressUnit),
     ) -> Result<()> {
@@ -565,6 +566,7 @@ impl Client {
                 GCServiceId: safePointID,
                 ConfigHash: cfgHash,
                 BackupTS: backupTS,
+                BackupID: backupID,
                 CheckpointChecksum: None,
                 LoadCheckpointDataMap: false,
             };

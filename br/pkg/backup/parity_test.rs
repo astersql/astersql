@@ -472,6 +472,7 @@ fn go_rust_public_contract_matches() {
         GCServiceId: "svc".into(),
         ConfigHash: vec![1, 2, 3],
         BackupTS: ts,
+        BackupID: 0,
         CheckpointChecksum: None,
         LoadCheckpointDataMap: false,
     });

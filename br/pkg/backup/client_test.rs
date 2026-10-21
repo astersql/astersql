@@ -847,6 +847,7 @@ fn test_storage_lock_check_respects_checkpoint_mode() {
             GCServiceId: "gc-service".into(),
             ConfigHash: vec![1, 2, 3],
             BackupTS: 42,
+            BackupID: 0,
             CheckpointChecksum: None,
             LoadCheckpointDataMap: false,
         },

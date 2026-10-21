@@ -73,6 +73,10 @@ pub mod restore_txn;
 #[path = "stream.rs"]
 pub mod stream;
 
+// Snapshot repository layout and lifecycle helpers.
+#[path = "repo/mod.rs"]
+pub mod repo;
+
 // 单元/对齐测试：与同名 Go `*_test.go` 对照，不进入发布二进制。
 
 #[cfg(test)]
@@ -138,6 +142,10 @@ mod stream_test;
 #[cfg(test)]
 #[path = "retain_latest_mvcc_test.rs"]
 mod retain_latest_mvcc_test;
+
+#[cfg(test)]
+#[path = "snapshot_repo_test.rs"]
+mod snapshot_repo_test;
 
 // 对外 re-export：保持与 Go 同包可见性习惯，调用方无需写 `task::backup::...`。
 // 通配导出含桩与实现，测试与 CLI 均可直接引用公开符号。
