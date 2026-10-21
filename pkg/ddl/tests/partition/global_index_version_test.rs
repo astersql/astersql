@@ -19,7 +19,8 @@
 // `GlobalIndexVersion`（Legacy / V1 / V2）标记元数据格式代际；
 // `Get/SetGlobalIndexV1Supported` 控制集群是否接受 V1 能力边界。
 
-use astersql_ddl::index::set_global_index_version;
+use astersql_ddl::index::{global_index_handle_equal, set_global_index_version};
+use astersql_kv::{IntHandle, NewPartitionHandle};
 use astersql_meta_model::{
     ColumnInfo, GetGlobalIndexV1Supported, GlobalIndexVersionLegacy, GlobalIndexVersionV1,
     GlobalIndexVersionV2, IndexColumn, IndexInfo, SetGlobalIndexV1Supported, TableInfo,
@@ -170,4 +171,48 @@ fn global_index_version_survives_the_real_metadata_clone_path() {
         assert!(clone.Global);
         assert_eq!(clone.GlobalIndexVersion, version);
     }
+}
+
+/// Go `TestGlobalUniqueIndexAfterValidatedExchange`: rows exchanged into a
+/// partition can retain the same inner row ID as a row in another partition.
+/// Global-index backfill must therefore compare both the physical partition ID
+/// and the inner handle, while local indexes retain inner-handle equality.
+#[test]
+fn global_index_handle_equality_includes_the_backfill_partition() {
+    let indexed = NewPartitionHandle(10, Box::new(IntHandle(1)));
+    let raw_same_inner = IntHandle(1);
+
+    assert!(global_index_handle_equal(
+        false,
+        20,
+        &indexed,
+        &raw_same_inner
+    ));
+    assert!(!global_index_handle_equal(
+        true,
+        20,
+        &indexed,
+        &raw_same_inner
+    ));
+    assert!(global_index_handle_equal(
+        true,
+        10,
+        &indexed,
+        &raw_same_inner
+    ));
+
+    let same_partition = NewPartitionHandle(10, Box::new(IntHandle(1)));
+    let other_partition = NewPartitionHandle(20, Box::new(IntHandle(1)));
+    assert!(global_index_handle_equal(
+        true,
+        99,
+        &indexed,
+        &same_partition
+    ));
+    assert!(!global_index_handle_equal(
+        true,
+        10,
+        &indexed,
+        &other_partition
+    ));
 }

@@ -58,6 +58,31 @@ pub fn set_global_index_version(
     }
 }
 
+/// Compare an index entry's decoded handle with the row currently being
+/// backfilled.
+///
+/// Global-index entries identify rows by both partition ID and inner handle.
+/// The transactional backfill path can still hold the current row as a plain
+/// handle, so attach the worker's physical table ID before comparing it. An
+/// already partition-aware handle must be preserved as-is.
+pub fn global_index_handle_equal(
+    global: bool,
+    physical_id: i64,
+    indexed: &dyn astersql_kv::Handle,
+    current: &dyn astersql_kv::Handle,
+) -> bool {
+    if global
+        && current
+            .as_any()
+            .downcast_ref::<astersql_kv::PartitionHandle>()
+            .is_none()
+    {
+        let current = astersql_kv::NewPartitionHandle(physical_id, current.Copy());
+        return indexed.Equal(&current);
+    }
+    indexed.Equal(current)
+}
+
 /// Appends the canonical metadata for `ALTER TABLE ... ADD FULLTEXT`.
 /// Validation and ID allocation follow the CREATE TABLE metadata path, while
 /// the deployment gate remains inside DDL so non-session callers cannot bypass
