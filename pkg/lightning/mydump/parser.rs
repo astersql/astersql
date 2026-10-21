@@ -198,19 +198,18 @@ impl BlockParser {
     }
     /// 从 reader 读下一块；文件头 UTF-8 BOM 在首次读入时剥离。
     pub fn read_block(&mut self) -> Result<(), Error> {
-        let mut block = vec![0; self.block_buf.len()];
-        let n = self.reader.read(&mut block)?;
+        let n = self.reader.read(&mut self.block_buf)?;
         if n == 0 {
             self.is_last_chunk = true;
             return Ok(());
         }
-        block.truncate(n);
+        let mut block = &self.block_buf[..n];
         // 跳过 UTF-8 BOM（EF BB BF），避免污染首个 token。
         if self.pos == 0 && self.buf.is_empty() && block.starts_with(&[0xef, 0xbb, 0xbf]) {
-            block.drain(..3);
+            block = &block[3..];
             self.pos += 3
         }
-        self.buf.extend(block);
+        self.buf.extend_from_slice(block);
         self.row_len_exceeds_limit(
             self.pos
                 .saturating_sub(self.row_start_pos)

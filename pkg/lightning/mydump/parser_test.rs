@@ -158,6 +158,49 @@ fn TestContinuation() {
     }
 }
 
+/// `read_block` must refill the fixed block buffer while preserving the
+/// unconsumed prefix already accumulated in `buf`.
+#[test]
+fn block_parser_read_block_reuses_buffer_and_keeps_remainder() {
+    let content = "abcdefghijklmnopqrstuvwxyzABCD";
+    let mut parser = makeBlockParser(Box::new(NewStringReader(content)), 8, None, 0);
+    let block_len = parser.block_buf.len();
+    assert!(content.len() > block_len);
+
+    parser.read_block().unwrap();
+    assert_eq!(parser.buf, content.as_bytes()[..block_len]);
+    assert_eq!(parser.block_buf, content.as_bytes()[..block_len]);
+
+    parser.buf.drain(..10);
+    parser.read_block().unwrap();
+    assert_eq!(parser.buf, content.as_bytes()[10..]);
+    assert_eq!(
+        &parser.block_buf[..content.len() - block_len],
+        &content.as_bytes()[block_len..]
+    );
+}
+
+/// A row much larger than the fixed block buffer and the following row remain
+/// intact while `read_block` repeatedly appends to the current remainder.
+#[test]
+fn block_parser_reads_long_row_across_blocks() {
+    let value = "abcdefgh".repeat(300);
+    let input = format!("INSERT INTO t VALUES ('{value}',1);INSERT INTO t VALUES ('x',2);");
+    let mut parser = parser(&input, 64, false);
+
+    parser.ReadRow().unwrap();
+    assert_eq!(
+        parser.LastRow().row,
+        vec![Datum::Bytes(value.into_bytes()), Datum::I64(1)]
+    );
+    parser.ReadRow().unwrap();
+    assert_eq!(
+        parser.LastRow().row,
+        vec![Datum::Bytes(b"x".to_vec()), Datum::I64(2)]
+    );
+    assert_eq!(parser.ReadRow(), Err(Error::Eof));
+}
+
 /// 引号内的 null/true/false/values 应作为普通字符串，而非关键字。
 #[test]
 fn TestPseudoKeywords() {
