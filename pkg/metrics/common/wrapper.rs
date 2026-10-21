@@ -21,16 +21,79 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 /// 标签键值映射别名。
 pub type Labels = HashMap<String, String>;
 
 static CONST_LABELS: OnceLock<RwLock<Labels>> = OnceLock::new();
+static KEYSPACE_GATHERER_ENABLED: AtomicBool = AtomicBool::new(false);
+static KEYSPACE_ID: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+const KEYSPACE_ID_LABEL: &str = "keyspace_id";
 
 /// 惰性初始化包级常量标签读写锁。
 fn const_labels() -> &'static RwLock<Labels> {
     CONST_LABELS.get_or_init(|| RwLock::new(Labels::new()))
+}
+
+fn gathered_keyspace_id() -> &'static RwLock<Option<String>> {
+    KEYSPACE_ID.get_or_init(|| RwLock::new(None))
+}
+
+/// Enables Starter's gather-time label injection for early and third-party metrics.
+pub fn EnableKeyspaceIDGatherer() {
+    KEYSPACE_GATHERER_ENABLED.store(true, Ordering::Release);
+}
+
+/// Updates the numeric keyspace ID resolved by the initialized storage codec.
+pub fn SetGatheredKeyspaceID(keyspace_id: u32) {
+    *gathered_keyspace_id()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(keyspace_id.to_string());
+}
+
+/// Adds a sorted `keyspace_id` label to every gathered sample that lacks one.
+pub fn GatherMetricsWithKeyspaceID(
+    mut families: Vec<prometheus::proto::MetricFamily>,
+    keyspace_id: Option<u32>,
+) -> Vec<prometheus::proto::MetricFamily> {
+    let keyspace_id = keyspace_id.map_or_else(String::new, |id| id.to_string());
+    for family in &mut families {
+        for metric in family.mut_metric() {
+            if metric
+                .get_label()
+                .iter()
+                .any(|label| label.get_name() == KEYSPACE_ID_LABEL)
+            {
+                continue;
+            }
+            let mut label = prometheus::proto::LabelPair::new();
+            label.set_name(KEYSPACE_ID_LABEL.to_owned());
+            label.set_value(keyspace_id.clone());
+            metric.label.push(label);
+            metric
+                .label
+                .sort_unstable_by(|left, right| left.get_name().cmp(right.get_name()));
+        }
+    }
+    families
+}
+
+/// Applies Starter labels to a snapshot from the default Prometheus registry.
+pub fn GatherMetrics(
+    families: Vec<prometheus::proto::MetricFamily>,
+) -> Vec<prometheus::proto::MetricFamily> {
+    if !KEYSPACE_GATHERER_ENABLED.load(Ordering::Acquire) {
+        return families;
+    }
+    let keyspace_id = gathered_keyspace_id()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_deref()
+        .and_then(|id| id.parse::<u32>().ok());
+    GatherMetricsWithKeyspaceID(families, keyspace_id)
 }
 
 /// Returns a snapshot of the package-level constant labels.

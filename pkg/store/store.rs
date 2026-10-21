@@ -222,15 +222,14 @@ struct RegisteredTiKVStorage {
 impl RegisteredTiKVStorage {
     fn new(store: TikvStore) -> Self {
         let keyspace = store.GetKeyspace();
+        let keyspace_id = store.GetKeyspaceID().unwrap_or_default();
         let codec = BasicCodec {
             api_version: if keyspace.is_empty() {
                 ApiVersion::V1
             } else {
                 ApiVersion::V2
             },
-            // client-rust resolves a named API-v2 keyspace internally but does
-            // not expose its numeric ID through the public 0.4 API.
-            keyspace_id: 0,
+            keyspace_id,
         };
         Self {
             store,

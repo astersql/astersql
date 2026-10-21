@@ -1002,6 +1002,16 @@ impl TikvStore {
         self.inner.lock().unwrap().keyspace.clone()
     }
 
+    /// Returns the numeric keyspace ID retained by the initialized client runtime.
+    pub fn GetKeyspaceID(&self) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .client_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.read().unwrap().keyspace_id())
+    }
+
     /// Resolve and retain complete PD metadata for the store's transaction keyspace.
     fn metadata_snapshot(
         &self,

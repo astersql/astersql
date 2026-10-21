@@ -27,12 +27,99 @@ use astersql_config as config;
 use astersql_metrics_common as metricscommon;
 
 use super::{
-    KeyspaceMeta, MetricsUtilError, PdClient, PdClientFactory, PdErrorKind, RegisterMetricsForBR,
-    SecurityOption, SetPdClientFactory, TlsConfig, cloneConstLabels, getKeyspaceMetaWithRetry,
-    registerMetrics, registerMetricsForBRWithRetry, setKeyspaceIDConstLabel,
+    EnableKeyspaceIDGatherer, GatherMetricsWithKeyspaceID, KeyspaceMeta, MetricsUtilError,
+    PdClient, PdClientFactory, PdErrorKind, RegisterMetricsForBR, SecurityOption, SetKeyspaceID,
+    SetPdClientFactory, TlsConfig, cloneConstLabels, getKeyspaceMetaWithRetry, registerMetrics,
+    registerMetricsForBRWithRetry, setKeyspaceIDConstLabel,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn test_keyspace_id_labels_every_gathered_metric_and_preserves_existing_values() {
+    let registry = prometheus::Registry::new();
+    let before = prometheus::Gauge::new("registered_before_init", "before").unwrap();
+    before.set(7.0);
+    registry.register(Box::new(before)).unwrap();
+
+    let existing = prometheus::Gauge::with_opts(
+        prometheus::Opts::new("existing_keyspace", "existing").const_label("keyspace_id", "43"),
+    )
+    .unwrap();
+    registry.register(Box::new(existing)).unwrap();
+
+    let initial = GatherMetricsWithKeyspaceID(registry.gather(), None);
+    for family in &initial {
+        for metric in family.get_metric() {
+            let label = metric
+                .get_label()
+                .iter()
+                .find(|label| label.get_name() == "keyspace_id")
+                .expect("every metric receives keyspace_id");
+            let expected = if family.get_name() == "existing_keyspace" {
+                "43"
+            } else {
+                ""
+            };
+            assert_eq!(label.get_value(), expected);
+        }
+    }
+
+    let after = prometheus::Counter::new("registered_after_init_total", "after").unwrap();
+    after.inc_by(3.0);
+    registry.register(Box::new(after)).unwrap();
+    let families = GatherMetricsWithKeyspaceID(registry.gather(), Some(42));
+    assert_eq!(families.len(), 3);
+    for family in &families {
+        for metric in family.get_metric() {
+            let labels = metric.get_label();
+            assert!(
+                labels
+                    .windows(2)
+                    .all(|pair| pair[0].get_name() < pair[1].get_name())
+            );
+            let matching = labels
+                .iter()
+                .filter(|label| label.get_name() == "keyspace_id")
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1);
+            let expected = if family.get_name() == "existing_keyspace" {
+                "43"
+            } else {
+                "42"
+            };
+            assert_eq!(matching[0].get_value(), expected);
+        }
+    }
+
+    EnableKeyspaceIDGatherer();
+    SetKeyspaceID(42);
+    let registry = Arc::new(registry);
+    let gathers = (0..4)
+        .map(|_| {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || metricscommon::GatherMetrics(registry.gather()))
+        })
+        .collect::<Vec<_>>();
+    for gather in gathers {
+        for family in gather.join().expect("concurrent gather") {
+            for metric in family.get_metric() {
+                let labels = metric
+                    .get_label()
+                    .iter()
+                    .filter(|label| label.get_name() == "keyspace_id")
+                    .collect::<Vec<_>>();
+                assert_eq!(labels.len(), 1);
+                let expected = if family.get_name() == "existing_keyspace" {
+                    "43"
+                } else {
+                    "42"
+                };
+                assert_eq!(labels[0].get_value(), expected);
+            }
+        }
+    }
+}
 
 struct FactoryReset;
 
@@ -132,7 +219,7 @@ fn mock_state(
 /// Corresponds to Go `TestRegisterMetricsWithKeyspaceObservabilityValues`.
 /// 验证 registerMetrics 合并 KeyspaceObservability 标签，以及 setKeyspaceIDConstLabel。
 #[test]
-fn test_register_metrics_with_keyspace_observability_values() {
+fn test_register_metrics_keyspace_id_with_observability_values() {
     let _guard = TEST_LOCK.lock().expect("test lock");
     let restore = config::restore_func();
     struct Restore(Option<Box<dyn FnOnce()>>);
@@ -201,7 +288,7 @@ fn test_register_metrics_for_br_has_a_production_pd_factory() {
 }
 
 #[test]
-fn test_register_metrics_for_br_passes_pd_options_retries_and_closes() {
+fn test_register_metrics_for_br_keyspace_id_passes_pd_options_retries_and_closes() {
     let _guard = TEST_LOCK.lock().expect("test lock");
     let _factory_reset = FactoryReset;
     let state = mock_state([

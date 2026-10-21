@@ -24,6 +24,8 @@ use prometheus::{Counter, CounterVec, Encoder, GaugeVec, Opts, TextEncoder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, Once};
 
+use crate::metricscommon;
+
 /// 各子系统 Init*Metrics 共用的包级互斥锁，串行化 static mut 赋值。
 pub static PACKAGE_INIT_LOCK: Mutex<()> = Mutex::new(());
 /// 保证 InitMetrics 只执行一次的 Once。
@@ -456,7 +458,10 @@ pub fn Register(collectors: Vec<Box<dyn Collector>>) -> Result<(), prometheus::E
 pub fn GatherText() -> Result<(Vec<u8>, String), prometheus::Error> {
     let encoder = TextEncoder::new();
     let mut body = Vec::new();
-    encoder.encode(&prometheus::gather(), &mut body)?;
+    encoder.encode(
+        &metricscommon::GatherMetrics(prometheus::gather()),
+        &mut body,
+    )?;
     Ok((body, encoder.format_type().to_owned()))
 }
 

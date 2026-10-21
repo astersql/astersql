@@ -1702,10 +1702,18 @@ pub mod kv {
     #[derive(Clone, Debug)]
     pub struct Codec {
         pub meta: Option<KeyspaceMeta>,
+        pub api_v2: bool,
+        pub keyspace_id: u32,
     }
     impl Codec {
         pub fn GetKeyspaceMeta(&self) -> Option<KeyspaceMeta> {
             self.meta.clone()
+        }
+        pub fn IsAPIV2(&self) -> bool {
+            self.api_v2
+        }
+        pub fn GetKeyspaceID(&self) -> u32 {
+            self.keyspace_id
         }
     }
     #[derive(Clone)]
@@ -1783,6 +1791,13 @@ pub mod kv {
                 .map_err(|error| Error::new(error.to_string()))
         }
         pub fn GetCodec(&self) -> Codec {
+            let (api_v2, keyspace_id) =
+                self.registered
+                    .as_ref()
+                    .map_or((!self.keyspace.is_empty(), 0), |storage| {
+                        let codec = storage.GetCodec();
+                        (!storage.GetKeyspace().is_empty(), codec.keyspace_id())
+                    });
             Codec {
                 meta: if self.keyspace.is_empty() {
                     None
@@ -1791,6 +1806,8 @@ pub mod kv {
                         name: self.keyspace.clone(),
                     })
                 },
+                api_v2,
+                keyspace_id,
             }
         }
         pub fn AsStorageWithPD(&self) -> Option<StorageWithPD> {
@@ -2449,7 +2466,14 @@ pub mod metricsutil {
     use super::*;
     pub fn RegisterMetrics() -> Result<()> {
         record_event("metricsutil.RegisterMetrics");
+        if deploymode::IsStarter() {
+            astersql_util_metricsutil::EnableKeyspaceIDGatherer();
+        }
         Ok(())
+    }
+    pub fn SetKeyspaceID(keyspace_id: u32) {
+        astersql_util_metricsutil::SetKeyspaceID(keyspace_id);
+        record_event(format!("metricsutil.SetKeyspaceID {keyspace_id}"));
     }
 }
 

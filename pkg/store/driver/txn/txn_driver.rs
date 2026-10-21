@@ -71,8 +71,7 @@ pub fn map_client_error(error: tikv_client::Error) -> canonical_kv::errors::Shar
     fn conflict(error: &tikv_client::Error) -> Option<&tikv_client::proto::kvrpcpb::WriteConflict> {
         match error {
             tikv_client::Error::KeyError(error) => error.conflict.as_ref(),
-            tikv_client::Error::ExtractedErrors(errors)
-            | tikv_client::Error::MultipleKeyErrors(errors) => errors.iter().find_map(conflict),
+            tikv_client::Error::MultipleKeyErrors(errors) => errors.iter().find_map(conflict),
             tikv_client::Error::PessimisticLockError { inner, .. } => conflict(inner),
             _ => None,
         }

@@ -7,6 +7,10 @@ publish.workspace = true
 [lib]
 path = "lib.rs"
 
+[features]
+default = []
+nextgen = ["astersql-config-deploymode/nextgen", "astersql-config-kerneltype/nextgen"]
+
 [package.metadata.porting]
 go-package = "pkg/util/metricsutil"
 legacy-tasks = ["task-1116", "task-1141"]
@@ -16,6 +20,7 @@ astersql-metaservice = { path = "../../metaservice" }
 astersql-sessionctx-variable = { path = "../../sessionctx/variable" }
 astersql-sessionctx-stmtctx = { path = "../../sessionctx/stmtctx" }
 "astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
 "astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
 "astersql-domain-metrics" = { package = "astersql-domain-metrics", path = "../../domain/metrics" }
 "astersql-executor-metrics" = { package = "astersql-executor-metrics", path = "../../executor/metrics" }

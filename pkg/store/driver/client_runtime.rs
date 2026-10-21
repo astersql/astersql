@@ -159,6 +159,13 @@ pub struct ClientRuntime {
 }
 
 impl ClientRuntime {
+    /// Returns the keyspace ID resolved by the already initialized client.
+    pub fn keyspace_id(&self) -> Option<u32> {
+        self.client
+            .as_ref()
+            .and_then(TransactionClient::keyspace_id)
+    }
+
     /// 连接 PD 并建立官方事务客户端。
     pub fn connect(config: ClientConfig) -> Result<Self, ClientRuntimeError> {
         config.validate()?;

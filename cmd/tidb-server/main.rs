@@ -1043,6 +1043,10 @@ pub fn createStoreDDLOwnerMgrAndDomain(
         kv::StandAloneTiDB.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     let storage = initRegisteredStorage(keyspaceName)?;
+    let codec = storage.GetCodec();
+    if deploymode::IsStarter() && codec.IsAPIV2() {
+        metricsutil::SetKeyspaceID(codec.GetKeyspaceID());
+    }
     if let Some(tikvStore) = storage.AsStorageWithPD() {
         // 只有带 PD 能力的 storage 才能做内核类型探测。
         if let Some(pdhttpCli) = tikvStore.GetPDHTTPClient() {

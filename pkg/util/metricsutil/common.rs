@@ -20,6 +20,7 @@
 // 并按序初始化 domain/executor/session 等子包指标变量。
 
 use astersql_config as config;
+use astersql_config_deploymode as deploymode;
 use astersql_config_kerneltype as kerneltype;
 use astersql_domain_metrics::domain_metrics;
 use astersql_executor_metrics::executor_metrics;
@@ -380,7 +381,29 @@ pub(crate) fn registerMetrics() -> Result<(), MetricsUtilError> {
     if !labels.is_empty() {
         setConstLabels(labels);
     }
-    initMetrics()
+    initMetrics()?;
+    if deploymode::IsStarter() {
+        EnableKeyspaceIDGatherer();
+    }
+    Ok(())
+}
+
+/// Enables Starter's gather-time labeling without changing collector registration.
+pub fn EnableKeyspaceIDGatherer() {
+    metricscommon::EnableKeyspaceIDGatherer();
+}
+
+/// Labels future Starter gathers after storage resolves its numeric keyspace ID.
+pub fn SetKeyspaceID(keyspace_id: u32) {
+    metricscommon::SetGatheredKeyspaceID(keyspace_id);
+}
+
+/// Pure gather helper used by focused tests and non-default registries.
+pub fn GatherMetricsWithKeyspaceID(
+    families: Vec<prometheus::proto::MetricFamily>,
+    keyspace_id: Option<u32>,
+) -> Vec<prometheus::proto::MetricFamily> {
+    metricscommon::GatherMetricsWithKeyspaceID(families, keyspace_id)
 }
 
 /// 克隆当前全局常量标签映射。

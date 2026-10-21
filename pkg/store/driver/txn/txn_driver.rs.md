@@ -86,7 +86,7 @@ RustCodeGraph 对目标文件显示 120 个符号节点。已核对的关键下�
 - 新增事务选项时，应同时扩展 `TxnOption`、必要的 `TxnSettings` 字段、`SetOption` 分支和可能的 `GetOption`/`TxnOptionValue`，并对照 Go `tikvTxn.SetOption`。读路径选项应优先下推到 `SnapshotOption`，提交期选项要检查 committer 期间不可变约束。
 - 修改读取语义时，要一起审查 `Get`、`BatchGet`、`Iter`、`IterReverse` 以及 `batch_getter.rs`/`union_iter.rs`，保持“脏写优先、墓碑遮蔽、未命中才访问快照”的一致性；测试应放在独立的 `pkg/store/driver/txn_test.rs` 或同目录 `*_test.rs`，不要嵌入生产文件。
 - 修改提交时，应保留有效性检查、commit-ts 上界、KV filter、空值删除、hook 错误观察及成功后失效的顺序。若目标是真实 TiKV 行为，应改动/验证 `kv_adapter.rs::ClientTransaction`，不能只增强本地 map 适配器。
-- 修改错误映射时，应覆盖嵌套 `KeyError`、`ExtractedErrors`、`MultipleKeyErrors`、`PessimisticLockError` 和无冲突普通错误；保留 canonical 错误码和 reason 是兼容性重点。
+- 修改错误映射时，应覆盖嵌套 `KeyError`、`MultipleKeyErrors`、`PessimisticLockError` 和无冲突普通错误；保留 canonical 错误码和 reason 是兼容性重点。
 - 修改 untouched 判断或重复键解码时，应以 `astersql-tablecodec` 的编码规则和 Go `tablecodec.IsUntouchedIndexKValue` 为基准；风险集中在唯一索引兼容、错误文案以及误过滤写入。
 - 性能敏感点是扫描合并、批量查回落、提交时克隆/遍历全部缓冲项，以及持有 storage 写锁的持续时间；扩展时避免在锁内加入慢回调或网络操作。
 
