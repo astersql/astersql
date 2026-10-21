@@ -404,9 +404,87 @@ pub fn round_with_frac_real(value: f64, fraction: i64) -> f64 {
     types_dependency::field::Round(value, clamp_i64_to_i32(fraction))
 }
 
-/// ROUND(整数, d)：经 f64 舍入后再转回整数。
-pub fn round_with_frac_int(value: i64, fraction: i64) -> i64 {
-    round_with_frac_real(value as f64, fraction) as i64
+/// 10^i for every power of ten representable as a u64.
+const U64_POW10: [u64; 20] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+    1_000_000_000,
+    10_000_000_000,
+    100_000_000_000,
+    1_000_000_000_000,
+    10_000_000_000_000,
+    100_000_000_000_000,
+    1_000_000_000_000_000,
+    10_000_000_000_000_000,
+    100_000_000_000_000_000,
+    1_000_000_000_000_000_000,
+    10_000_000_000_000_000_000,
+];
+
+/// ROUND(integer, d) uses exact arithmetic and rounds ties away from zero.
+/// Unsigned values are carried in the i64 bit pattern used by the expression runtime.
+pub fn round_with_frac_int(value: i64, fraction: i64, unsigned: bool) -> MathResult<i64> {
+    if fraction >= 0 {
+        return Ok(value);
+    }
+    if fraction < -(U64_POW10.len() as i64 - 1) {
+        return Ok(0);
+    }
+
+    let unit = U64_POW10[-fraction as usize];
+    let negative = !unsigned && value < 0;
+    let magnitude = if unsigned {
+        value as u64
+    } else {
+        value.unsigned_abs()
+    };
+    let remainder = magnitude % unit;
+    let truncated = magnitude - remainder;
+    let rounded = if remainder >= unit / 2 {
+        truncated.checked_add(unit)
+    } else {
+        Some(truncated)
+    }
+    .ok_or_else(|| round_int_overflow(value, fraction, unsigned))?;
+
+    if !unsigned {
+        let limit = if negative {
+            i64::MAX as u64 + 1
+        } else {
+            i64::MAX as u64
+        };
+        if rounded > limit {
+            return Err(round_int_overflow(value, fraction, false));
+        }
+        if negative {
+            if rounded == i64::MAX as u64 + 1 {
+                return Ok(i64::MIN);
+            }
+            return Ok(-(rounded as i64));
+        }
+    }
+    Ok(rounded as i64)
+}
+
+fn round_int_overflow(value: i64, fraction: i64, unsigned: bool) -> MathError {
+    let data_type = if unsigned {
+        "BIGINT UNSIGNED"
+    } else {
+        "BIGINT"
+    };
+    let displayed = if unsigned {
+        (value as u64).to_string()
+    } else {
+        value.to_string()
+    };
+    MathError::overflow(data_type, format!("round({displayed}, {fraction})"))
 }
 
 /// ROUND(DECIMAL, d)：半入（ModeHalfUp），位数不超过返回类型的 decimal。

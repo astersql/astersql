@@ -45,7 +45,7 @@ fn abs_round_and_metadata_match_go_branches() {
     assert_eq!(round_real(-1.5), -2.0);
     assert_eq!(round_with_frac_real(1.298, 1), 1.3);
     assert_eq!(round_with_frac_real(23.298, -1), 20.0);
-    assert_eq!(round_with_frac_int(15, -1), 20);
+    assert_eq!(round_with_frac_int(15, -1, false).unwrap(), 20);
 
     assert_eq!(
         calculate_decimal_for_round_and_truncate(

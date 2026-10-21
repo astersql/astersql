@@ -83,6 +83,49 @@ fn test_vectorized_builtin_math_round_truncate_and_overflow() {
         absolute.vecEvalInt(&EvalContext::default(), &Chunk::new(1), &mut result),
         Err(EvalError::BigIntOverflow(_)),
     ));
+
+    let integer_round = builtinRoundWithFracIntSig::new(vec![
+        LiteralExpression::ints(vec![
+            Some(25),
+            Some(-25),
+            Some(1_234_567_890_123_456_789),
+            None,
+        ]),
+        LiteralExpression::ints(vec![Some(-1), Some(-1), Some(-1), Some(-1)]),
+    ]);
+    integer_round
+        .vecEvalInt(&EvalContext::default(), &Chunk::new(4), &mut result)
+        .unwrap();
+    assert_eq!(result.Int64s(), &[30, -30, 1_234_567_890_123_456_790, 0]);
+    assert!(result.IsNull(3));
+
+    let unsigned_round = builtinRoundWithFracIntSig::new(vec![
+        LiteralExpression::uints(vec![Some(9_223_372_036_854_775_815)]),
+        LiteralExpression::ints(vec![Some(-1)]),
+    ]);
+    unsigned_round
+        .vecEvalInt(&EvalContext::default(), &Chunk::new(1), &mut result)
+        .unwrap();
+    assert_eq!(result.Int64s()[0] as u64, 9_223_372_036_854_775_820);
+
+    let unsigned_fraction = builtinRoundWithFracIntSig::new(vec![
+        LiteralExpression::ints(vec![Some(i64::MAX)]),
+        LiteralExpression::uints(vec![Some(u64::MAX)]),
+    ]);
+    unsigned_fraction
+        .vecEvalInt(&EvalContext::default(), &Chunk::new(1), &mut result)
+        .unwrap();
+    assert_eq!(result.Int64s()[0], i64::MAX);
+
+    let overflowing_round = builtinRoundWithFracIntSig::new(vec![
+        LiteralExpression::ints(vec![Some(i64::MAX)]),
+        LiteralExpression::ints(vec![Some(-1)]),
+    ]);
+    assert!(matches!(
+        overflowing_round.vecEvalInt(&EvalContext::default(), &Chunk::new(1), &mut result),
+        Err(EvalError::BigIntOverflow(expression))
+            if expression == "round(9223372036854775807, -1)"
+    ));
 }
 
 /// 向量化 CRC32/PI/SIGN/RAND：常量填充、NULL 传播与随机数落在 [0,1)。

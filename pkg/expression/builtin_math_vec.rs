@@ -432,16 +432,28 @@ impl builtinRoundIntSig {
 }
 
 impl builtinRoundWithFracIntSig {
-    /// 向量化 ROUND(INT, d)，经 f64 舍入。
+    /// 向量化 ROUND(INT, d)，使用精确整数运算并在越界时报错。
     pub fn vecEvalInt(&self, ctx: &EvalContext, input: &Chunk, result: &mut Column) -> Result<()> {
         self.base.args[0].VecEvalInt(ctx, input, result)?;
         let mut fraction = Column::default();
         self.base.args[1].VecEvalInt(ctx, input, &mut fraction)?;
         result.MergeNulls(&[&fraction]);
+        if self.base.args[1].GetType(ctx).unsigned {
+            return Ok(());
+        }
+        let unsigned = self.base.args[0].GetType(ctx).unsigned;
         for row in 0..input.NumRows() {
             if !result.IsNull(row) {
+                let value = result.Int64s()[row];
+                let digits = fraction.Int64s()[row];
                 result.Int64sMut()[row] =
-                    round_float(result.Int64s()[row] as f64, fraction.Int64s()[row]) as i64;
+                    crate::builtin_math_kernel::round_with_frac_int(value, digits, unsigned)
+                        .map_err(|error| match error {
+                            crate::builtin_math_kernel::MathError::Overflow {
+                                expression, ..
+                            } if !unsigned => EvalError::BigIntOverflow(expression),
+                            other => EvalError::Message(other.to_string()),
+                        })?;
             }
         }
         Ok(())

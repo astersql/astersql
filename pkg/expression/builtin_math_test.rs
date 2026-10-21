@@ -53,7 +53,54 @@ fn abs_ceil_floor_and_round_cover_normal_boundary_and_overflow() {
     assert_eq!(round_real(-1.5), -2.0);
     assert_eq!(round_with_frac_real(1.298, 1), 1.3);
     assert_eq!(round_with_frac_real(23.298, -1), 20.0);
-    assert_eq!(round_with_frac_int(15, -1), 20);
+    assert_eq!(round_with_frac_int(15, -1, false).unwrap(), 20);
+}
+
+/// Exact integers must not lose precision through f64 while rounding.
+#[test]
+fn round_integer_with_fraction_preserves_exact_values() {
+    assert_eq!(round_with_frac_int(25, -1, false).unwrap(), 30);
+    assert_eq!(round_with_frac_int(-25, -1, false).unwrap(), -30);
+    assert_eq!(round_with_frac_int(24, -1, false).unwrap(), 20);
+    assert_eq!(round_with_frac_int(-24, -1, false).unwrap(), -20);
+    assert_eq!(
+        round_with_frac_int(1_234_567_890_123_456_789, -1, false).unwrap(),
+        1_234_567_890_123_456_790
+    );
+    assert_eq!(round_with_frac_int(i64::MAX, 0, false).unwrap(), i64::MAX);
+    assert_eq!(round_with_frac_int(25, -20, false).unwrap(), 0);
+    assert_eq!(round_with_frac_int(25, -2012, false).unwrap(), 0);
+    assert_eq!(
+        round_with_frac_int(9_223_372_036_854_775_815_u64 as i64, -1, true).unwrap() as u64,
+        9_223_372_036_854_775_820
+    );
+    assert_eq!(
+        round_with_frac_int(18_446_744_073_709_551_605_u64 as i64, -1, true).unwrap() as u64,
+        18_446_744_073_709_551_610
+    );
+    assert_eq!(
+        round_with_frac_int(i64::MIN, -2, false).unwrap(),
+        -9_223_372_036_854_775_800
+    );
+
+    assert_eq!(
+        round_with_frac_int(i64::MAX, -1, false)
+            .unwrap_err()
+            .to_string(),
+        "[types:1690]BIGINT value is out of range in 'round(9223372036854775807, -1)'"
+    );
+    assert_eq!(
+        round_with_frac_int(i64::MIN, -1, false)
+            .unwrap_err()
+            .to_string(),
+        "[types:1690]BIGINT value is out of range in 'round(-9223372036854775808, -1)'"
+    );
+    assert_eq!(
+        round_with_frac_int(u64::MAX as i64, -1, true)
+            .unwrap_err()
+            .to_string(),
+        "[types:1690]BIGINT UNSIGNED value is out of range in 'round(18446744073709551615, -1)'"
+    );
 }
 
 /// 对数/平方根/反三角定义域：非法输入返回 None，并记录对数告警。
