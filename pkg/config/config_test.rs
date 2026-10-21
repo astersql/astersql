@@ -24,6 +24,7 @@
 // - 各类数值上限（索引长度、索引数量、列数量、统计信息加载并发等）的边界测试。
 
 use astersql_config::*;
+use astersql_util_logutil::log::{LOG_TIMEOUT_ACTION_DISCARD, LOG_TIMEOUT_ACTION_PANIC};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -277,6 +278,34 @@ fn test_log_config() {
         assert_eq!(config.log.disable_timestamp(), disable_timestamp);
         assert_eq!(config.log.disable_error_stack(), disable_error_stack);
     }
+}
+
+#[test]
+fn log_timeout_action() {
+    let mut config = new_config();
+    assert_eq!(config.log.timeout_action, LOG_TIMEOUT_ACTION_PANIC);
+    config.valid().unwrap();
+    assert_eq!(
+        config.log.to_log_config().timeout_action,
+        LOG_TIMEOUT_ACTION_PANIC
+    );
+
+    config.log.timeout_action = LOG_TIMEOUT_ACTION_DISCARD.into();
+    config.valid().unwrap();
+    assert_eq!(
+        config.log.to_log_config().timeout_action,
+        LOG_TIMEOUT_ACTION_DISCARD
+    );
+
+    config.log.timeout_action = "DISCARD".into();
+    config.valid().unwrap();
+    assert_eq!(config.log.timeout_action, LOG_TIMEOUT_ACTION_DISCARD);
+
+    config.log.timeout_action = "invalid".into();
+    assert_eq!(
+        error_text(config.valid()),
+        "log.timeout-action should be one of [panic, discard]"
+    );
 }
 
 /// 验证错误消息扩展（error-msg-extension）：按正则匹配错误消息并追加后缀。

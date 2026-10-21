@@ -29,6 +29,10 @@
 
 pub use astersql_resourcegroup::ruv2::model::StmtWeights;
 use astersql_resourcegroup::ruv2::model::default_weights;
+use astersql_util_logutil::log::{
+    FileLogConfig as RuntimeFileLogConfig, LOG_TIMEOUT_ACTION_DISCARD, LOG_TIMEOUT_ACTION_PANIC,
+    LogConfig,
+};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE;
 use once_cell::sync::Lazy;
@@ -465,6 +469,8 @@ pub struct Log {
     pub general_log_file: String,
     /// 日志写入超时（秒），0 表示不超时。
     pub timeout: i64,
+    /// Action taken when a log write or sync operation times out.
+    pub timeout_action: String,
 }
 impl Default for Log {
     fn default() -> Self {
@@ -479,10 +485,31 @@ impl Default for Log {
             slow_query_file: "tidb-slow.log".into(),
             general_log_file: String::new(),
             timeout: 0,
+            timeout_action: LOG_TIMEOUT_ACTION_PANIC.into(),
         }
     }
 }
 impl Log {
+    /// Convert the server log settings to the runtime logger configuration.
+    pub fn to_log_config(&self) -> LogConfig {
+        let mut config = LogConfig::new(
+            &self.level,
+            &self.format,
+            &self.slow_query_file,
+            &self.general_log_file,
+            RuntimeFileLogConfig {
+                filename: self.file.filename.clone(),
+                max_size: self.file.max_size as i32,
+                ..RuntimeFileLogConfig::default()
+            },
+            self.disable_timestamp(),
+        );
+        config.disable_error_verbose = self.disable_error_stack();
+        config.timeout = self.timeout;
+        config.timeout_action = self.timeout_action.clone();
+        config
+    }
+
     /// 计算最终是否禁用时间戳：enable 侧显式设置时以其为准，否则看 disable 侧。
     pub fn disable_timestamp(&self) -> bool {
         if self.enable_timestamp.is_valid {
@@ -1305,6 +1332,19 @@ impl Config {
             .validate()
             .map_err(|error| message(format!("ru-v2.stmt-weights.{error}")))?;
         self.ruv2.ddl_weights.validate()?;
+        match self.log.timeout_action.to_ascii_lowercase().as_str() {
+            "" | LOG_TIMEOUT_ACTION_PANIC => {
+                self.log.timeout_action = LOG_TIMEOUT_ACTION_PANIC.into();
+            }
+            LOG_TIMEOUT_ACTION_DISCARD => {
+                self.log.timeout_action = LOG_TIMEOUT_ACTION_DISCARD.into();
+            }
+            _ => {
+                return Err(message(format!(
+                    "log.timeout-action should be one of [{LOG_TIMEOUT_ACTION_PANIC}, {LOG_TIMEOUT_ACTION_DISCARD}]"
+                )));
+            }
+        }
         // enable/disable 两个新旧开关同时设置且值冲突时，忽略废弃的 disable 侧。
         if self.log.enable_error_stack == self.log.disable_error_stack
             && self.log.enable_error_stack != NullableBool::UNSET

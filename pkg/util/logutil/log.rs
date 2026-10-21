@@ -57,6 +57,10 @@ pub const OldSlowLogTimeFormat: &str = "%Y-%m-%d-%H:%M:%S%.9f %z";
 pub const GRPCDebugEnvName: &str = "GRPC_DEBUG";
 /// 追踪事件字段键名。
 pub const TraceEventKey: &str = "event";
+/// Action taken when a log write or sync operation times out.
+pub const LOG_TIMEOUT_ACTION_PANIC: &str = "panic";
+/// Discard the timed-out log entry instead of panicking.
+pub const LOG_TIMEOUT_ACTION_DISCARD: &str = "discard";
 
 /// 文件日志滚动相关配置。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,7 +98,7 @@ pub fn new_file_log_config(max_size: u32) -> FileLogConfig {
 pub use new_file_log_config as NewFileLogConfig;
 
 /// 完整日志配置：级别、格式、文件与慢查询/General 专用路径。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogConfig {
     /// 日志级别字符串（info/debug/warn/error/fatal）。
     pub level: String,
@@ -110,6 +114,26 @@ pub struct LogConfig {
     pub slow_query_file: String,
     /// General Log 专用文件路径。
     pub general_log_file: String,
+    /// Maximum seconds allowed for a log write or sync operation.
+    pub timeout: i64,
+    /// Action taken when a log write or sync operation times out.
+    pub timeout_action: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: String::new(),
+            format: String::new(),
+            disable_timestamp: false,
+            disable_error_verbose: false,
+            file: FileLogConfig::default(),
+            slow_query_file: String::new(),
+            general_log_file: String::new(),
+            timeout: 0,
+            timeout_action: LOG_TIMEOUT_ACTION_PANIC.into(),
+        }
+    }
 }
 
 impl LogConfig {
