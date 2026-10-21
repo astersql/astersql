@@ -3361,6 +3361,15 @@ pub struct ReleaseSavepointStmt {
     pub Name: String,
 }
 
+/// RECOMMEND INDEX action values shared by parser, planner, and executor.
+pub const RecommendIndexActionRun: &str = "run";
+pub const RecommendIndexActionReturn: &str = "return";
+pub const RecommendIndexActionSet: &str = "set";
+pub const RecommendIndexActionShow: &str = "show";
+pub const RecommendIndexActionApply: &str = "apply";
+pub const RecommendIndexActionIgnore: &str = "ignore";
+pub const RecommendIndexStmtLabel: &str = "RecommendIndex";
+
 /// 推荐索引语句结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecommendIndexStmt {

@@ -85,6 +85,32 @@ fn test_dml_vistor_cover() {
     );
 }
 
+#[test]
+fn recommend_index_return_result_restore_matches_go() {
+    let statement = RecommendIndexStmt {
+        action: RECOMMEND_INDEX_ACTION_RETURN.into(),
+        sql: "select * from t where a=1".into(),
+        options: vec![RecommendIndexOption {
+            option: "max_num_index".into(),
+            value: "1".into(),
+        }],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        statement.restore(),
+        "RECOMMEND INDEX RETURN RESULT FOR 'select * from t where a=1' WITH MAX_NUM_INDEX = 1"
+    );
+    assert_eq!(
+        RecommendIndexStmt {
+            action: RECOMMEND_INDEX_ACTION_RETURN.into(),
+            ..Default::default()
+        }
+        .restore(),
+        "RECOMMEND INDEX RETURN RESULT FOR ''"
+    );
+}
+
 /// 测试：验证 sensitive_statement 行为与 Go 对照一致。
 #[test]
 fn test_sensitive_statement() {

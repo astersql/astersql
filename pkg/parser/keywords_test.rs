@@ -60,10 +60,10 @@ fn test_keywords() {
 }
 
 // test_keywords_length 对应 Go 的 TestKeywordsLength：固定总关键字数和保留关键字数量。
-/// 校验总关键字数 695、保留字数 233（与 Go 生成器快照一致）。
+/// 校验总关键字数 697、保留字数 233（与 Go 生成器快照一致）。
 #[test]
 fn test_keywords_length() {
-    require::Equal(695, parser::Keywords.len());
+    require::Equal(697, parser::Keywords.len());
 
     let mut reserved_nr = 0;
     for kw in parser::Keywords.iter() {

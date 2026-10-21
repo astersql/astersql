@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 use crate::parser_contract_cases::{parser_contract_cases, parser_contract_strings};
-use parser_ast as _;
+use parser_ast::{RecommendIndexStmt, util::IsReadOnly};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -145,6 +145,26 @@ contract_table_tests! {
     test_trace => "TestTrace";
     test_session_manage => "TestSessionManage";
     test_parse_show_open_tables => "TestParseShowOpenTables";
+}
+
+#[test]
+fn recommend_index_return_result_ast_is_read_only() {
+    let statement = parser::New()
+        .ParseOneStmt(
+            "recommend index return result for 'select * from t where a=1' with A = 1",
+            "",
+            "",
+        )
+        .expect("RETURN RESULT should parse");
+    let recommend = statement
+        .as_any()
+        .downcast_ref::<RecommendIndexStmt>()
+        .expect("RETURN RESULT should build RecommendIndexStmt");
+
+    assert_eq!(recommend.Action, "return");
+    assert_eq!(recommend.SQL, "select * from t where a=1");
+    assert_eq!(recommend.Options.len(), 1);
+    assert!(IsReadOnly(statement.as_ref(), true));
 }
 
 #[test]

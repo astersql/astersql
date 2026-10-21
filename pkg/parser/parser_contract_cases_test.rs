@@ -4,7 +4,7 @@ use super::parser_contract_cases::{parser_contract_cases, parser_contract_string
 
 #[test]
 fn go_contract_tables_are_not_reduced_to_smoke_cases() {
-    assert_eq!(parser_contract_cases("TestRecommendIndex").len(), 12);
+    assert_eq!(parser_contract_cases("TestRecommendIndex").len(), 22);
     assert_eq!(parser_contract_cases("TestTrafficStmt").len(), 25);
     assert_eq!(
         parser_contract_strings("TestSignedInt64OutOfRange", "cases"),

@@ -182,6 +182,8 @@ pub mod prepared;
 pub mod projection;
 /// 索引推荐。
 pub mod recommend_index;
+#[cfg(test)]
+mod recommend_index_test;
 /// 重载表达式下推黑名单。
 pub mod reload_expr_pushdown_blacklist;
 #[cfg(test)]

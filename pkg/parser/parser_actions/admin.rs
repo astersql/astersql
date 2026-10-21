@@ -421,6 +421,7 @@ enum AdminRule {
     SetBindingStmtAlt01,
     SetBindingStmtAlt02,
     SetBindingStmtAlt03,
+    RecommendIndexStmtReturnResult,
     RecommendIndexStmtAlt01,
     RecommendIndexStmtAlt02,
     RecommendIndexStmtAlt03,
@@ -1280,6 +1281,9 @@ fn identify(rule_id: RuleId) -> Option<AdminRule> {
         }
         "recommendindexstmt_recommend_index_ignore_num--7ed1f68d408d3040" => {
             AdminRule::RecommendIndexStmtAlt05
+        }
+        "recommendindexstmt_recommend_index_return_result--9605d05bc6989d1c" => {
+            AdminRule::RecommendIndexStmtReturnResult
         }
         "recommendindexstmt_recommend_index_run_for_strin--d641ccabf44000c2" => {
             AdminRule::RecommendIndexStmtAlt01
@@ -2963,7 +2967,7 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         AdminRule::RecommendIndexStmtAlt03 => {
             out.statement = Some(Box::new(parser_ast::RecommendIndexStmt {
-                Action: "show".to_owned(),
+                Action: parser_ast::RecommendIndexActionShow.to_owned(),
                 ..Default::default()
             }))
         }
@@ -2984,9 +2988,9 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         AdminRule::RecommendIndexStmtAlt04 | AdminRule::RecommendIndexStmtAlt05 => {
             out.statement = Some(Box::new(parser_ast::RecommendIndexStmt {
                 Action: if rule == AdminRule::RecommendIndexStmtAlt04 {
-                    "apply"
+                    parser_ast::RecommendIndexActionApply
                 } else {
-                    "ignore"
+                    parser_ast::RecommendIndexActionIgnore
                 }
                 .to_owned(),
                 ID: rhs[rhs_len - (0)]
@@ -2998,7 +3002,8 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 ..Default::default()
             }))
         }
-        AdminRule::RecommendIndexStmtAlt01
+        AdminRule::RecommendIndexStmtReturnResult
+        | AdminRule::RecommendIndexStmtAlt01
         | AdminRule::RecommendIndexStmtAlt02
         | AdminRule::RecommendIndexStmtAlt06 => {
             let options = rhs[rhs_len - (0)]
@@ -3009,12 +3014,17 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 .unwrap_or_default();
             out.statement = Some(Box::new(parser_ast::RecommendIndexStmt {
                 Action: if rule == AdminRule::RecommendIndexStmtAlt06 {
-                    "set"
+                    parser_ast::RecommendIndexActionSet
+                } else if rule == AdminRule::RecommendIndexStmtReturnResult {
+                    parser_ast::RecommendIndexActionReturn
                 } else {
-                    "run"
+                    parser_ast::RecommendIndexActionRun
                 }
                 .to_owned(),
-                SQL: if rule == AdminRule::RecommendIndexStmtAlt01 {
+                SQL: if matches!(
+                    rule,
+                    AdminRule::RecommendIndexStmtReturnResult | AdminRule::RecommendIndexStmtAlt01
+                ) {
                     rhs[rhs_len - (1)].ident.clone()
                 } else {
                     String::new()

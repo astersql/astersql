@@ -944,6 +944,8 @@
 %token transitions 58265 "TRANSITIONS";
 %token builtinMaxCount 58266;
 %token builtinMinCount 58267;
+%token result 58268 "RESULT";
+%token returnKwd 58269 "RETURN";
 %precedence empty;
 %precedence masking;
 %precedence statsExtended;
@@ -1979,6 +1981,8 @@ UnReservedKeyword : "REORGANIZE";
 UnReservedKeyword : "REFRESH";
 UnReservedKeyword : "RESOURCE";
 UnReservedKeyword : "RESTART";
+UnReservedKeyword : "RESULT";
+UnReservedKeyword : "RETURN";
 UnReservedKeyword : "ROLE";
 UnReservedKeyword : "ROLLBACK";
 UnReservedKeyword : "ROLLUP";
@@ -3864,6 +3868,7 @@ DropBindingStmt : "DROP" GlobalScope "BINDING" "FOR" "SQL" "DIGEST" StringLitOrU
 SetBindingStmt : "SET" "BINDING" BindingStatusType "FOR" BindableStmt @action;
 SetBindingStmt : "SET" "BINDING" BindingStatusType "FOR" BindableStmt "USING" BindableStmt @action;
 SetBindingStmt : "SET" "BINDING" BindingStatusType "FOR" "SQL" "DIGEST" stringLit @action;
+RecommendIndexStmt : "RECOMMEND" "INDEX" "RETURN" "RESULT" "FOR" stringLit RecommendIndexOptionListOpt @action;
 RecommendIndexStmt : "RECOMMEND" "INDEX" "RUN" "FOR" stringLit RecommendIndexOptionListOpt @action;
 RecommendIndexStmt : "RECOMMEND" "INDEX" "RUN" RecommendIndexOptionListOpt @action;
 RecommendIndexStmt : "RECOMMEND" "INDEX" "SHOW" "OPTION" @action;

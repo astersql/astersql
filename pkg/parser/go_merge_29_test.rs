@@ -18,7 +18,7 @@ fn go_merge_29_keywords_and_auto_digest() {
         "STORAGE_CLASS",
         "TRANSITIONS",
     ];
-    assert_eq!(Keywords.len(), 695);
+    assert_eq!(Keywords.len(), 697);
     for word in NEW_WORDS {
         let entry = Keywords.iter().find(|keyword| keyword.Word == word);
         assert!(entry.is_some_and(|keyword| !keyword.Reserved), "{word}");

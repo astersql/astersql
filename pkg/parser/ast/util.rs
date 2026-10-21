@@ -23,8 +23,9 @@ mod parser_escape;
 pub use self::parser_escape::UnescapeChar;
 
 use crate::{
-    AdminStmt, AdminStmtType, DoStmt, ExplainStmt, Node, SelectLockType, SelectStmt,
-    SetOprSelectList, SetOprStmt, ShowStmt, TraceStmt, VariableExpr, Visitor,
+    AdminStmt, AdminStmtType, DoStmt, ExplainStmt, Node, RecommendIndexActionReturn,
+    RecommendIndexActionRun, RecommendIndexStmt, SelectLockType, SelectStmt, SetOprSelectList,
+    SetOprStmt, ShowStmt, TraceStmt, VariableExpr, Visitor,
 };
 
 /// The value used when a size was not specified.
@@ -81,6 +82,10 @@ pub fn is_read_only(node: &dyn Node, check_global_vars: bool) -> bool {
     // DO / SHOW 本身不改库，视为只读。
     if node.as_any().is::<DoStmt>() || node.as_any().is::<ShowStmt>() {
         return true;
+    }
+    if let Some(statement) = node.as_any().downcast_ref::<RecommendIndexStmt>() {
+        return statement.Action == RecommendIndexActionRun
+            || statement.Action == RecommendIndexActionReturn;
     }
 
     // UNION/INTERSECT/EXCEPT 等集合运算：所有分支都只读才算只读。

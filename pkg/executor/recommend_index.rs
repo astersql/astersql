@@ -16,13 +16,17 @@
 // 索引推荐（Recommend Index）执行器。
 //
 // 对应 Go 的 `RECOMMEND INDEX`：通过 `IndexAdvisor` 抽象顾问实现，
-// `RecommendIndexExec` 按 action 分发 set/show/run，将推荐结果写成结果集行
+// `RecommendIndexExec` 按 action 分发 set/show/run/return，将推荐结果写成结果集行
 // （含库表、索引列、规模、原因、受影响查询 JSON，以及可执行的 CREATE INDEX）。
 
 #![allow(non_snake_case)]
 
 use std::collections::BTreeMap;
 
+use astersql_parser_ast::{
+    RecommendIndexActionReturn, RecommendIndexActionRun, RecommendIndexActionSet,
+    RecommendIndexActionShow,
+};
 use astersql_util_chunk::Chunk;
 
 /// 单条索引推荐结果（写入结果集的一行语义）。
@@ -59,6 +63,7 @@ pub trait IndexAdvisor {
         context: &mut Self::Context,
         sqls: Vec<String>,
         options: &[Self::Option],
+        persist: bool,
     ) -> (Vec<RecommendIndexResult>, Result<(), Self::Error>);
     fn unsupported_action(&self, action: &str) -> Self::Error;
     fn empty_sqls(&self) -> Self::Error;
@@ -76,7 +81,7 @@ pub struct RecommendIndexExec<A: IndexAdvisor> {
 }
 
 impl<A: IndexAdvisor> RecommendIndexExec<A> {
-    /// 按 action 执行一次：set 写选项、show 列出选项、run 产出推荐行。
+    /// 按 action 执行一次：set 写选项、show 列出选项、run/return 产出推荐行。
     pub fn Next<C>(&mut self, ctx: C, req: &mut Chunk) -> Result<(), A::Error> {
         req.Reset();
         if self.done {
@@ -84,15 +89,16 @@ impl<A: IndexAdvisor> RecommendIndexExec<A> {
         }
         self.done = true;
 
-        // 分发动作；仅 "run" 落入下方推荐主路径。
-        match self.action.as_str() {
-            "set" => {
+        // RETURN RESULT reuses the analysis path but suppresses persistence.
+        let persist = match self.action.as_str() {
+            RecommendIndexActionSet => {
                 return self.advisor.set_options(&mut self.context, &self.options);
             }
-            "show" => return self.showOptions(req),
-            "run" => {}
+            RecommendIndexActionShow => return self.showOptions(req),
+            RecommendIndexActionRun => true,
+            RecommendIndexActionReturn => false,
             action => return Err(self.advisor.unsupported_action(action)),
-        }
+        };
 
         // 按分号拆分多条 SQL；全空则报 empty_sqls。
         let mut sqls = Vec::new();
@@ -114,7 +120,7 @@ impl<A: IndexAdvisor> RecommendIndexExec<A> {
         // 先写出全部推荐行，再返回顾问错误，保证部分结果仍可见。
         let (results, result) =
             self.advisor
-                .advise_indexes(ctx, &mut self.context, sqls, &self.options);
+                .advise_indexes(ctx, &mut self.context, sqls, &self.options, persist);
         for recommendation in results {
             let columns = recommendation.index_columns.join(",");
             req.AppendString(0, &recommendation.database);

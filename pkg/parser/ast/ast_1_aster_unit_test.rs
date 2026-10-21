@@ -250,6 +250,7 @@ fn ast_flags_and_statement_labels_match_go() {
         (StatementKind::Shutdown, "Shutdown"),
         (StatementKind::Savepoint, "Savepoint"),
         (StatementKind::OptimizeTable, "Optimize"),
+        (StatementKind::RecommendIndex, "RecommendIndex"),
         (StatementKind::Other, "other"),
     ];
     for (statement, expected) in cases {

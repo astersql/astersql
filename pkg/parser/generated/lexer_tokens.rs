@@ -946,4 +946,6 @@ mod token {
     pub const transitions: i32 = 58265;
     pub const builtinMaxCount: i32 = 58266;
     pub const builtinMinCount: i32 = 58267;
+    pub const result: i32 = 58268;
+    pub const returnKwd: i32 = 58269;
 }

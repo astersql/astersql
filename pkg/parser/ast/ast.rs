@@ -146,6 +146,7 @@ pub enum StatementKind {
     Shutdown,
     Savepoint,
     OptimizeTable,
+    RecommendIndex,
     Other,
 }
 
@@ -202,6 +203,7 @@ pub fn GetStmtLabel(statement: &StatementKind) -> String {
         StatementKind::Shutdown => "Shutdown",
         StatementKind::Savepoint => "Savepoint",
         StatementKind::OptimizeTable => "Optimize",
+        StatementKind::RecommendIndex => crate::RecommendIndexStmtLabel,
         StatementKind::Other => "other",
     };
     label.to_owned()

@@ -1353,6 +1353,14 @@ pub struct RecommendIndexOption {
     pub option: String,
     pub value: String,
 }
+/// RECOMMEND INDEX action values.
+pub const RECOMMEND_INDEX_ACTION_RUN: &str = "run";
+pub const RECOMMEND_INDEX_ACTION_RETURN: &str = "return";
+pub const RECOMMEND_INDEX_ACTION_SET: &str = "set";
+pub const RECOMMEND_INDEX_ACTION_SHOW: &str = "show";
+pub const RECOMMEND_INDEX_ACTION_APPLY: &str = "apply";
+pub const RECOMMEND_INDEX_ACTION_IGNORE: &str = "ignore";
+
 /// 推荐索引语句结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecommendIndexStmt {
@@ -1370,9 +1378,14 @@ impl RecommendIndexStmt {
             .collect::<Vec<_>>()
             .join(", ");
         match self.action.as_str() {
-            "run" => format!(
-                "RECOMMEND INDEX RUN{}{}",
-                if self.sql.is_empty() {
+            RECOMMEND_INDEX_ACTION_RUN | RECOMMEND_INDEX_ACTION_RETURN => format!(
+                "RECOMMEND INDEX {}{}{}",
+                if self.action == RECOMMEND_INDEX_ACTION_RETURN {
+                    "RETURN RESULT"
+                } else {
+                    "RUN"
+                },
+                if self.sql.is_empty() && self.action != RECOMMEND_INDEX_ACTION_RETURN {
                     String::new()
                 } else {
                     format!(" FOR {}", quote_string(&self.sql))
@@ -1383,10 +1396,10 @@ impl RecommendIndexStmt {
                     format!(" WITH {opts}")
                 }
             ),
-            "show" => "RECOMMEND INDEX SHOW OPTION".into(),
-            "apply" => format!("RECOMMEND INDEX APPLY {}", self.id),
-            "ignore" => format!("RECOMMEND INDEX IGNORE {}", self.id),
-            "set" => format!("RECOMMEND INDEX SET {opts}"),
+            RECOMMEND_INDEX_ACTION_SHOW => "RECOMMEND INDEX SHOW OPTION".into(),
+            RECOMMEND_INDEX_ACTION_APPLY => format!("RECOMMEND INDEX APPLY {}", self.id),
+            RECOMMEND_INDEX_ACTION_IGNORE => format!("RECOMMEND INDEX IGNORE {}", self.id),
+            RECOMMEND_INDEX_ACTION_SET => format!("RECOMMEND INDEX SET {opts}"),
             _ => "RECOMMEND INDEX".into(),
         }
     }
