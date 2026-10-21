@@ -4083,6 +4083,24 @@ impl ConcreteSession {
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
         for (index, statement) in statements.into_iter().enumerate() {
+            if astersql_config::diagnosticmode::Enabled()
+                && !self.state.borrow().in_restricted_sql
+                && !crate::diagnostic_sql::is_diagnostic_sql_allowed(
+                    statement.as_ref(),
+                    &self.current_database(),
+                    |database, table| {
+                        self.domain
+                            .info_schema()
+                            .ModelTableInfoByName(
+                                &astersql_infoschema::CiString::new(database),
+                                &astersql_infoschema::CiString::new(table),
+                            )
+                            .is_ok_and(|table| table.IsView())
+                    },
+                )
+            {
+                return Err(runtime_read_only_mode_error());
+            }
             // Scalar-subquery plans are owned by the statement that built
             // them. Clear the registry before any fast or cached plan can be
             // selected, matching Go's ResetContextOfStmt boundary.
@@ -4700,6 +4718,9 @@ impl TestSession for ConcreteSession {
     }
 
     fn PrepareStmt(&self, sql: &str) -> SessionResult<u64> {
+        if astersql_config::diagnosticmode::Enabled() && !self.state.borrow().in_restricted_sql {
+            return Err(runtime_read_only_mode_error());
+        }
         let statements = parse(sql)?;
         if statements.len() != 1 {
             return Err(SessionError::new("prepared SQL must contain one statement"));

@@ -7,6 +7,10 @@ publish.workspace = true
 [lib]
 path = "lib.rs"
 
+[[test]]
+name = "diagnostic_sql"
+path = "diagnostic_sql_test.rs"
+
 [features]
 nextgen = ["astersql-config-deploymode/nextgen", "astersql-config-kerneltype/nextgen"]
 

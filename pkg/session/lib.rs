@@ -70,6 +70,7 @@ pub mod bootstrap;
 pub mod contextimpl;
 pub mod ddl_tables;
 pub mod diagnostic;
+mod diagnostic_sql;
 pub mod dml_runtime;
 pub mod fts_runtime;
 pub mod global_init;
