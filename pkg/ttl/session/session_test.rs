@@ -118,6 +118,7 @@ struct MockSqlExecutor {
     variables: Arc<SessionVariables>,
     table: Mutex<TableState>,
     sleep_running: AtomicBool,
+    interrupted_result_closed: Arc<AtomicBool>,
     observed_job_ids: Mutex<Vec<String>>,
 }
 
@@ -128,6 +129,7 @@ impl MockSqlExecutor {
             variables,
             table: Mutex::new(TableState::default()),
             sleep_running: AtomicBool::new(false),
+            interrupted_result_closed: Arc::new(AtomicBool::new(false)),
             observed_job_ids: Mutex::new(Vec::new()),
         }
     }
@@ -199,8 +201,14 @@ impl SqlExecutor for MockSqlExecutor {
             return Ok(None);
         }
 
-        // 模拟长时间 sleep，轮询 killed 标志；被打断时返回 "1"。
+        // A kill may be observed while the result set starts, before SLEEP has
+        // entered its wait loop, or from inside SLEEP itself.
         if lower == "select sleep(123)" {
+            if self.variables.is_query_interrupted() {
+                return Ok(Some(Box::new(InterruptedRecordSet {
+                    closed: Arc::clone(&self.interrupted_result_closed),
+                })));
+            }
             self.sleep_running.store(true, Ordering::Release);
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(10) {
@@ -228,12 +236,27 @@ struct VecRecordSet {
     rows: Vec<Row>,
 }
 
+struct InterruptedRecordSet {
+    closed: Arc<AtomicBool>,
+}
+
 impl crate::RecordSet for VecRecordSet {
     fn drain(&mut self, _batch_size: usize) -> Result<Vec<Row>, SessionError> {
         Ok(std::mem::take(&mut self.rows))
     }
 
     fn close(&mut self) -> Result<(), SessionError> {
+        Ok(())
+    }
+}
+
+impl crate::RecordSet for InterruptedRecordSet {
+    fn drain(&mut self, _batch_size: usize) -> Result<Vec<Row>, SessionError> {
+        Err(SessionError::Sql("Query execution was interrupted".into()))
+    }
+
+    fn close(&mut self) -> Result<(), SessionError> {
+        self.closed.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -434,43 +457,65 @@ fn run_in_transaction_rolls_back_and_restores_phase_on_panic() {
     assert_eq!(tracer.phase(), Phase::CommitTransaction);
 }
 
-/// TestSessionKill: background poll finds sleep SQL then KillStmt; sleep returns "1".
-/// 后台轮询发现 sleep SQL 后 KillStmt，sleep 返回 "1"。
+/// A kill observed before SLEEP starts interrupts execution, while one observed
+/// inside SLEEP returns "1". Both races must finish promptly.
 #[test]
-fn TestSessionKill() {
-    let (se, executor) = new_mock_pair();
-    let mgr = Arc::new(MockSessionManager {
-        current_sql: Mutex::new(None),
-    });
+fn session_kill_accepts_both_valid_completion_paths() {
     let sleep_stmt = "select sleep(123)";
-    let se_bg = Arc::clone(&se);
-    let mgr_bg = Arc::clone(&mgr);
 
-    let killer = thread::spawn(move || {
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(10) {
-            thread::sleep(Duration::from_millis(10));
-            for proc in mgr_bg.show_process_list() {
-                if proc.info == sleep_stmt {
-                    se_bg.kill_statement();
-                    return;
+    {
+        let (se, executor) = new_mock_pair();
+        se.kill_statement();
+        let query_start = Instant::now();
+        let error = se
+            .execute_sql(&ExecutionContext::default(), sleep_stmt, &[])
+            .expect_err("a kill observed before SLEEP starts should interrupt the query");
+        assert!(query_start.elapsed() < Duration::from_secs(30));
+        assert!(
+            matches!(error, SessionError::Sql(ref message) if message.contains("Query execution was interrupted"))
+        );
+        assert!(executor.interrupted_result_closed.load(Ordering::Acquire));
+        assert!(!executor.sleep_running.load(Ordering::Acquire));
+    }
+
+    {
+        let (se, executor) = new_mock_pair();
+        let mgr = Arc::new(MockSessionManager {
+            current_sql: Mutex::new(None),
+        });
+        let se_bg = Arc::clone(&se);
+        let executor_bg = Arc::clone(&executor);
+        let mgr_bg = Arc::clone(&mgr);
+
+        let killer = thread::spawn(move || {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                thread::sleep(Duration::from_millis(10));
+                for proc in mgr_bg.show_process_list() {
+                    if proc.info == sleep_stmt && executor_bg.sleep_running.load(Ordering::Acquire)
+                    {
+                        se_bg.kill_statement();
+                        return;
+                    }
                 }
             }
-        }
-        panic!("wait sleep stmt timeout");
-    });
+            panic!("wait sleep stmt timeout");
+        });
 
-    mgr.set_current_sql(Some(sleep_stmt.to_string()));
-    let rows = se
-        .execute_sql(&ExecutionContext::default(), sleep_stmt, &[])
-        .expect("killed sleep should return");
-    assert_eq!(
-        rows,
-        vec![Row {
-            values: vec![SqlValue::String("1".into())]
-        }]
-    );
-    mgr.set_current_sql(None);
-    killer.join().expect("killer thread");
-    assert!(!executor.sleep_running.load(Ordering::Acquire));
+        mgr.set_current_sql(Some(sleep_stmt.to_string()));
+        let query_start = Instant::now();
+        let rows = se
+            .execute_sql(&ExecutionContext::default(), sleep_stmt, &[])
+            .expect("a kill observed inside SLEEP should return its interrupted value");
+        assert!(query_start.elapsed() < Duration::from_secs(30));
+        assert_eq!(
+            rows,
+            vec![Row {
+                values: vec![SqlValue::String("1".into())]
+            }]
+        );
+        mgr.set_current_sql(None);
+        killer.join().expect("killer thread");
+        assert!(!executor.sleep_running.load(Ordering::Acquire));
+    }
 }
