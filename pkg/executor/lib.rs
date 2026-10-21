@@ -567,6 +567,9 @@ mod import_into_test;
 #[path = "insert_test.rs"]
 mod insert_test;
 #[cfg(test)]
+#[path = "multi_table_delete_partition_test.rs"]
+mod multi_table_delete_partition_test;
+#[cfg(test)]
 #[path = "resource_tag_test.rs"]
 mod resource_tag_test;
 #[cfg(test)]

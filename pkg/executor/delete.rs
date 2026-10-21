@@ -73,6 +73,23 @@ pub trait DeleteRuntime {
         position: Option<&TableColumnPosition>,
         row: &[Self::Datum],
     ) -> Result<Self::Handle, Self::Error>;
+    /// Return the identity used to deduplicate a multi-table DELETE row.
+    ///
+    /// Non-clustered partitioned tables must include the physical partition ID because
+    /// `_tidb_rowid` is only unique within one partition after EXCHANGE PARTITION.
+    fn physical_row_identity(
+        &mut self,
+        _table_id: i64,
+        _position: &TableColumnPosition,
+        _row: &[Self::Datum],
+        handle: &Self::Handle,
+    ) -> Result<Self::Handle, Self::Error> {
+        Ok(handle.clone())
+    }
+    /// Remove the partition component that is used only as the deduplication map key.
+    fn remove_record_handle(&self, physical_identity: &Self::Handle) -> Self::Handle {
+        physical_identity.clone()
+    }
     fn multi_table_positions(&self) -> Vec<TableColumnPosition>;
     fn unmatched_outer_row(&self, position: &TableColumnPosition, row: &[Self::Datum]) -> bool;
     fn handle_extra_memory(&self, handle: &Self::Handle) -> i64;
@@ -223,10 +240,16 @@ impl<R: DeleteRuntime> DeleteExec<R> {
             let handle =
                 self.runtime
                     .build_handle(position.table_id, Some(position), joined_row)?;
+            let physical_identity = self.runtime.physical_row_identity(
+                position.table_id,
+                position,
+                joined_row,
+                &handle,
+            )?;
             let table_map = table_rows.entry(position.table_id).or_default();
-            let existed = table_map.contains_key(&handle);
+            let existed = table_map.contains_key(&physical_identity);
             table_map.insert(
-                handle.clone(),
+                physical_identity.clone(),
                 HandleInfoPair {
                     handle_values: joined_row[position.start..position.end].to_vec(),
                     position_index,
@@ -234,7 +257,7 @@ impl<R: DeleteRuntime> DeleteExec<R> {
             );
             if !existed {
                 memory_delta += self.runtime.estimated_row_memory(joined_row);
-                memory_delta += self.runtime.handle_extra_memory(&handle);
+                memory_delta += self.runtime.handle_extra_memory(&physical_identity);
             }
         }
         self.runtime.consume_memory(memory_delta);
@@ -278,10 +301,11 @@ impl<R: DeleteRuntime> DeleteExec<R> {
                 {
                     continue;
                 }
+                let record_handle = self.runtime.remove_record_handle(&handle);
                 self.removeRow(
                     context,
                     table_id,
-                    &handle,
+                    &record_handle,
                     &pair.handle_values,
                     Some(&positions[pair.position_index]),
                 )?;
