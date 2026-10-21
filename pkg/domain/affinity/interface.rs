@@ -131,17 +131,21 @@ pub fn get_groups(
         .get_affinity_groups(ctx, ids)
 }
 
-/// 拉取全部 Affinity Group 状态；未配置 PD Client 时返回空 Map。
-pub fn get_all_group_states(
+/// 查询指定 Affinity Group 状态；空 ID 或未配置 PD Client 时返回空 Map。
+pub fn get_group_states(
     ctx: &dyn Context,
+    ids: &[String],
 ) -> Result<HashMap<String, AffinityGroupState>, AffinityError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let client = package_state()
         .read()
         .expect("affinity package state lock poisoned")
         .pd_client
         .clone();
     match client {
-        Some(client) => client.get_all_affinity_groups(ctx),
+        Some(client) => new_pd_manager(client).get_affinity_groups(ctx, ids),
         None => Ok(HashMap::new()),
     }
 }

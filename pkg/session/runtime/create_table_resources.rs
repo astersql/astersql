@@ -270,8 +270,12 @@ pub(super) fn create_affinity(domain: &Domain, t: &TableInfo) -> Result<(), Stri
     let Some(a) = &t.Affinity else {
         return Ok(());
     };
+    let keyspace = affinity_keyspace_id(domain)?;
     let physical: Vec<(String, i64)> = match a.Level.as_str() {
-        "table" => vec![(format!("_tidb_t_{}", t.ID), t.ID)],
+        "table" => vec![(
+            astersql_ddl::affinity::table_affinity_group_id_for_keyspace(keyspace, t.ID),
+            t.ID,
+        )],
         "partition" => t
             .GetPartitionInfo()
             .map(|p| &p.Definitions)
@@ -283,7 +287,14 @@ pub(super) fn create_affinity(domain: &Domain, t: &TableInfo) -> Result<(), Stri
                 )
             })?
             .iter()
-            .map(|d| (format!("_tidb_pt_{}_p{}", t.ID, d.ID), d.ID))
+            .map(|d| {
+                (
+                    astersql_ddl::affinity::partition_affinity_group_id_for_keyspace(
+                        keyspace, t.ID, d.ID,
+                    ),
+                    d.ID,
+                )
+            })
             .collect(),
         other => return Err(format!("invalid affinity level: {other}")),
     };
@@ -317,6 +328,19 @@ pub(super) fn create_affinity(domain: &Domain, t: &TableInfo) -> Result<(), Stri
             )
             .map_err(|e| e.to_string())
     }
+}
+
+fn affinity_keyspace_id(domain: &Domain) -> Result<Option<u32>, String> {
+    domain.storage_handle().with_storage(|store| {
+        if store.GetKeyspace().is_empty() {
+            Ok(None)
+        } else {
+            store
+                .DDLKeyspaceID()
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
+    })
 }
 
 fn read_optional_tls(path: &str) -> Result<Vec<u8>, String> {
@@ -512,14 +536,21 @@ pub(super) fn delete_affinity(domain: &Domain, table: &TableInfo) -> Result<(), 
     let Some(affinity) = &table.Affinity else {
         return Ok(());
     };
+    let keyspace = affinity_keyspace_id(domain)?;
     let ids = match affinity.Level.as_str() {
-        "table" => vec![format!("_tidb_t_{}", table.ID)],
+        "table" => {
+            vec![astersql_ddl::affinity::table_affinity_group_id_for_keyspace(keyspace, table.ID)]
+        }
         "partition" => table
             .GetPartitionInfo()
             .map(|p| {
                 p.Definitions
                     .iter()
-                    .map(|d| format!("_tidb_pt_{}_p{}", table.ID, d.ID))
+                    .map(|d| {
+                        astersql_ddl::affinity::partition_affinity_group_id_for_keyspace(
+                            keyspace, table.ID, d.ID,
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default(),

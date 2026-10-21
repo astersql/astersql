@@ -28,6 +28,7 @@ struct AffinityRuntime {
     pattern_result: bool,
     tables: Vec<AffinitySchemaTables>,
     states: Result<HashMap<String, AffinityState>, &'static str>,
+    requested_group_ids: Vec<Vec<String>>,
     rows: Vec<Vec<ShowAffinityValue>>,
 }
 
@@ -56,6 +57,7 @@ impl Default for AffinityRuntime {
                     affinity_region_count: 7,
                 },
             )])),
+            requested_group_ids: Vec::new(),
             rows: Vec::new(),
         }
     }
@@ -80,10 +82,12 @@ impl ShowAffinityRuntime for AffinityRuntime {
     fn partition_group_id(&self, table_id: i64, partition_id: i64) -> String {
         format!("partition-{table_id}-{partition_id}")
     }
-    fn all_group_states(
+    fn group_states(
         &mut self,
         _: &mut (),
+        group_ids: &[String],
     ) -> Result<HashMap<String, AffinityState>, &'static str> {
+        self.requested_group_ids.push(group_ids.to_vec());
         self.states.clone()
     }
     fn append_row(&mut self, row: Vec<ShowAffinityValue>) {
@@ -103,6 +107,7 @@ fn exact_filter_does_not_bypass_like_pattern() {
     fetchShowAffinity(&mut runtime, &mut ()).unwrap();
 
     assert!(runtime.rows.is_empty());
+    assert!(runtime.requested_group_ids.is_empty());
 }
 
 /// 分区级亲和按每个分区展开；无状态的组保持原生 NULL。
@@ -185,6 +190,13 @@ fn partition_affinity_and_missing_state_match_go_rows() {
             ],
         ]
     );
+    assert_eq!(
+        runtime.requested_group_ids,
+        vec![vec![
+            "partition-20-21".to_owned(),
+            "partition-20-22".to_owned(),
+        ]]
+    );
 }
 
 /// 阶段映射保留 Go 的三个已知文案和未知值透传分支。
@@ -241,6 +253,10 @@ fn group_state_error_is_propagated_without_rows() {
         Err("pd unavailable")
     );
     assert!(runtime.rows.is_empty());
+    assert_eq!(
+        runtime.requested_group_ids,
+        vec![vec!["table-11".to_owned()]]
+    );
 }
 
 /// 核对 leader / voters / Stable 阶段与 Region 计数是否正确写入结果行。
@@ -260,5 +276,9 @@ fn show_affinity_maps_group_state_to_visible_row() {
             ShowAffinityValue::U64(8),
             ShowAffinityValue::U64(7),
         ]]
+    );
+    assert_eq!(
+        runtime.requested_group_ids,
+        vec![vec!["table-11".to_owned()]]
     );
 }

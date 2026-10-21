@@ -21,8 +21,8 @@
 // 相同或相近的存储节点上，从而提升局部性、减少跨节点访问。
 //
 // 本模块负责：
-// - 按表级 / 分区级两种亲和级别生成组 ID（`_tidb_t_{tableID}` 与
-//   `_tidb_pt_{tableID}_p{partitionID}`）；
+// - 按表级 / 分区级两种亲和级别生成组 ID，并在 NextGen codec 下加入
+//   keyspace ID，避免不同 keyspace 复用物理 ID 时发生冲突；
 // - 根据表或分区的物理 ID 构造对应的 key range（键区间）；
 // - 在 DDL（数据定义语言，如 CREATE/DROP/TRUNCATE TABLE）执行过程中，
 //   通过抽象出的管理器接口在 PD 上创建或删除亲和组。
@@ -87,6 +87,11 @@ impl std::error::Error for AffinityError {}
 pub trait AffinityCodec {
     /// 把逻辑上的 [start, end) 区间编码为实际的 Region key 区间。
     fn encode_region_range(&self, start: Vec<u8>, end: Vec<u8>) -> (Vec<u8>, Vec<u8>);
+
+    /// NextGen codec 所属的 keyspace；Classic codec 返回 `None`。
+    fn keyspace_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// 亲和组管理器抽象，封装对 PD 的创建/删除调用（对应 Go 侧
@@ -101,14 +106,44 @@ pub trait AffinityGroupManager {
     fn delete_groups_with_retry(&mut self, group_ids: &[String]) -> Result<(), String>;
 }
 
-/// 返回表级亲和组 ID，格式为 `_tidb_t_{tableID}`。
-pub fn get_table_affinity_group_id(table_id: i64) -> String {
-    format!("_tidb_t_{table_id}")
+/// 返回表级亲和组 ID；NextGen 格式包含 keyspace ID。
+pub fn get_table_affinity_group_id(codec: Option<&dyn AffinityCodec>, table_id: i64) -> String {
+    table_affinity_group_id_for_keyspace(codec.and_then(AffinityCodec::keyspace_id), table_id)
 }
 
-/// 返回分区级亲和组 ID，格式为 `_tidb_pt_{tableID}_p{partitionID}`。
-pub fn get_partition_affinity_group_id(table_id: i64, partition_id: i64) -> String {
-    format!("_tidb_pt_{table_id}_p{partition_id}")
+/// 根据已解析的 keyspace ID 生成表级亲和组 ID，供 DDL 运行时接线复用。
+pub fn table_affinity_group_id_for_keyspace(keyspace_id: Option<u32>, table_id: i64) -> String {
+    match keyspace_id {
+        Some(keyspace_id) => format!("_tidb_ks{keyspace_id}_t_{table_id}"),
+        None => format!("_tidb_t_{table_id}"),
+    }
+}
+
+/// 返回分区级亲和组 ID；NextGen 格式包含 keyspace ID。
+pub fn get_partition_affinity_group_id(
+    codec: Option<&dyn AffinityCodec>,
+    table_id: i64,
+    partition_id: i64,
+) -> String {
+    partition_affinity_group_id_for_keyspace(
+        codec.and_then(AffinityCodec::keyspace_id),
+        table_id,
+        partition_id,
+    )
+}
+
+/// 根据已解析的 keyspace ID 生成分区级亲和组 ID，供 DDL 运行时接线复用。
+pub fn partition_affinity_group_id_for_keyspace(
+    keyspace_id: Option<u32>,
+    table_id: i64,
+    partition_id: i64,
+) -> String {
+    match keyspace_id {
+        Some(keyspace_id) => {
+            format!("_tidb_ks{keyspace_id}_pt_{table_id}_p{partition_id}")
+        }
+        None => format!("_tidb_pt_{table_id}_p{partition_id}"),
+    }
 }
 
 /// 对齐 Go `tablecodec.EncodeTablePrefix` 的 `t` + `codec.EncodeInt(id)` 布局。
@@ -165,7 +200,7 @@ pub fn build_affinity_group_definitions(
         AffinityLevel::Table => {
             // 表级：整表一个组，key 范围按表 ID 计算。
             groups.insert(
-                get_table_affinity_group_id(table.id),
+                get_table_affinity_group_id(codec, table.id),
                 vec![build_affinity_group_key_range(codec, table.id)],
             );
         }
@@ -178,7 +213,7 @@ pub fn build_affinity_group_definitions(
             }
             for partition_id in partitions {
                 groups.insert(
-                    get_partition_affinity_group_id(table.id, *partition_id),
+                    get_partition_affinity_group_id(codec, table.id, *partition_id),
                     vec![build_affinity_group_key_range(codec, *partition_id)],
                 );
             }

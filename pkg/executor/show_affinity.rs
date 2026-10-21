@@ -94,9 +94,10 @@ pub trait ShowAffinityRuntime {
     /// 分区级亲和组 ID。
     fn partition_group_id(&self, table_id: i64, partition_id: i64) -> String;
     /// 批量拉取各亲和组的放置状态。
-    fn all_group_states(
+    fn group_states(
         &mut self,
         context: &mut Self::Context,
+        group_ids: &[String],
     ) -> Result<HashMap<String, AffinityState>, Self::Error>;
     /// 追加一行展示结果。
     fn append_row(&mut self, row: Vec<ShowAffinityValue>);
@@ -153,8 +154,16 @@ pub fn fetchShowAffinity<R: ShowAffinityRuntime>(
         }
     }
 
-    // 一次拉取全部组状态，再编码为可见列（leader / voters / phase / counts）。
-    let states = runtime.all_group_states(context)?;
+    // 只批量拉取通过 SHOW 过滤条件的组，避免跨 keyspace 泄漏或全量扫描。
+    let group_ids = infos
+        .iter()
+        .map(|info| info.group_id.clone())
+        .collect::<Vec<_>>();
+    let states = if group_ids.is_empty() {
+        HashMap::new()
+    } else {
+        runtime.group_states(context, &group_ids)?
+    };
     for info in infos {
         let (leader, voters, status, regions, affinity_regions) =
             if let Some(state) = states.get(&info.group_id) {

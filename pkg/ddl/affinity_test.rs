@@ -48,6 +48,22 @@ impl AffinityCodec for PrefixCodec {
     }
 }
 
+struct KeyspaceCodec(u32);
+
+impl AffinityCodec for KeyspaceCodec {
+    fn encode_region_range(&self, start: Vec<u8>, end: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+        let prefix = self.0.to_be_bytes();
+        (
+            [prefix.as_slice(), start.as_slice()].concat(),
+            [prefix.as_slice(), end.as_slice()].concat(),
+        )
+    }
+
+    fn keyspace_id(&self) -> Option<u32> {
+        Some(self.0)
+    }
+}
+
 /// 内存版亲和组管理器，替代真实的 PD 客户端，用于在测试中
 /// 记录亲和组的存储状态以及创建 / 删除接口的调用次数。
 #[derive(Default)]
@@ -110,7 +126,7 @@ fn test_affinity_build_group_definitions_table() {
     let table = table(123, AffinityLevel::Table, Vec::new());
     let groups = build_affinity_group_definitions(Some(&PrefixCodec), Some(&table), None).unwrap();
     assert_eq!(1, groups.len());
-    let ranges = &groups[&get_table_affinity_group_id(123)];
+    let ranges = &groups[&get_table_affinity_group_id(Some(&PrefixCodec), 123)];
     assert_eq!(1, ranges.len());
     // 编解码器加了 `k:` 前缀，表数据 key 本身以 `t` 开头。
     assert!(ranges[0].start_key.starts_with(b"k:t"));
@@ -126,6 +142,57 @@ fn test_affinity_build_group_definitions_table() {
     );
 }
 
+#[test]
+fn test_affinity_group_id_includes_keyspace_in_next_gen() {
+    let codec = KeyspaceCodec(42);
+    let other_codec = KeyspaceCodec(43);
+
+    assert_eq!(
+        "_tidb_ks42_t_123",
+        get_table_affinity_group_id(Some(&codec), 123)
+    );
+    assert_eq!(
+        "_tidb_ks42_pt_123_p456",
+        get_partition_affinity_group_id(Some(&codec), 123, 456)
+    );
+    assert_ne!(
+        get_table_affinity_group_id(Some(&codec), 123),
+        get_table_affinity_group_id(Some(&other_codec), 123)
+    );
+    assert_ne!(
+        get_partition_affinity_group_id(Some(&codec), 123, 456),
+        get_partition_affinity_group_id(Some(&other_codec), 123, 456)
+    );
+
+    let max_group_id =
+        get_partition_affinity_group_id(Some(&KeyspaceCodec(16_777_215)), i64::MAX, i64::MAX);
+    assert_eq!(
+        "_tidb_ks16777215_pt_9223372036854775807_p9223372036854775807",
+        max_group_id
+    );
+    assert_eq!(60, max_group_id.len());
+    assert!(
+        max_group_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    );
+
+    for target in [&codec, &other_codec] {
+        let table = table(123, AffinityLevel::Table, Vec::new());
+        let groups = build_affinity_group_definitions(Some(target), Some(&table), None).unwrap();
+        let expected_id = format!("_tidb_ks{}_t_123", target.0);
+        let range = &groups[&expected_id][0];
+        assert_eq!(
+            [
+                target.0.to_be_bytes().as_slice(),
+                table_prefix(123).as_slice()
+            ]
+            .concat(),
+            range.start_key
+        );
+    }
+}
+
 /// 分区级亲和：每个分区各生成一个亲和组；也可以用显式的分区
 /// ID 列表覆盖表元信息中的分区（如 TRUNCATE 后替换新分区 ID）。
 #[test]
@@ -134,7 +201,7 @@ fn test_affinity_build_group_definitions_partition() {
     let groups = build_affinity_group_definitions(None, Some(&table), None).unwrap();
     assert_eq!(2, groups.len());
     for partition_id in [1_i64, 3] {
-        let ranges = &groups[&get_partition_affinity_group_id(50, partition_id)];
+        let ranges = &groups[&get_partition_affinity_group_id(None, 50, partition_id)];
         assert_eq!(1, ranges.len());
         // 每个分区组的 key 范围为 [分区 ID, 分区 ID + 1) 的 tablecodec 编码。
         assert_eq!(table_prefix(partition_id), ranges[0].start_key);
@@ -143,8 +210,8 @@ fn test_affinity_build_group_definitions_partition() {
 
     // 传入替换分区列表时，按新分区 ID（7、9）生成组定义。
     let replacement = build_affinity_group_definitions(None, Some(&table), Some(&[7, 9])).unwrap();
-    assert!(replacement.contains_key(&get_partition_affinity_group_id(50, 7)));
-    assert!(replacement.contains_key(&get_partition_affinity_group_id(50, 9)));
+    assert!(replacement.contains_key(&get_partition_affinity_group_id(None, 50, 7)));
+    assert!(replacement.contains_key(&get_partition_affinity_group_id(None, 50, 9)));
 }
 
 /// Go 的 int64 加法按二进制补码回绕；最大物理 ID 的结束边界因此编码
@@ -153,7 +220,7 @@ fn test_affinity_build_group_definitions_partition() {
 fn test_affinity_key_range_max_physical_id_wraps_like_go() {
     let table = table(i64::MAX, AffinityLevel::Table, Vec::new());
     let groups = build_affinity_group_definitions(None, Some(&table), None).unwrap();
-    let range = &groups[&get_table_affinity_group_id(i64::MAX)][0];
+    let range = &groups[&get_table_affinity_group_id(None, i64::MAX)][0];
     assert_eq!(table_prefix(i64::MAX), range.start_key);
     assert_eq!(table_prefix(i64::MIN), range.end_key);
 }
@@ -197,12 +264,12 @@ fn test_affinity_pd_interaction() {
     assert!(
         !manager
             .groups
-            .contains_key(&get_partition_affinity_group_id(20, 21))
+            .contains_key(&get_partition_affinity_group_id(None, 20, 21))
     );
     assert!(
         manager
             .groups
-            .contains_key(&get_partition_affinity_group_id(20, 22))
+            .contains_key(&get_partition_affinity_group_id(None, 20, 22))
     );
 
     // 模拟 TRUNCATE 分区：分区 21 被替换为新分区 23，需要为其新建组。
@@ -211,7 +278,7 @@ fn test_affinity_pd_interaction() {
     assert!(
         manager
             .groups
-            .contains_key(&get_partition_affinity_group_id(20, 23))
+            .contains_key(&get_partition_affinity_group_id(None, 20, 23))
     );
 }
 

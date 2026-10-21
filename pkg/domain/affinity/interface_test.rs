@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
 use astersql_domain_affinity::interface::{
-    create_groups_if_not_exists, delete_groups, delete_groups_with_retry, get_all_group_states,
+    create_groups_if_not_exists, delete_groups, delete_groups_with_retry, get_group_states,
     get_groups, init_manager,
 };
 use astersql_domain_affinity::manager::{
@@ -180,7 +180,7 @@ fn package_api_forwards_context_to_every_pd_operation() {
     create_groups_if_not_exists(&ctx, &groups).unwrap();
     delete_groups(&ctx, &ids).unwrap();
     get_groups(&ctx, &ids).unwrap();
-    get_all_group_states(&ctx).unwrap();
+    get_group_states(&ctx, &ids).unwrap();
 
     assert_eq!(
         *client.observations.lock().unwrap(),
@@ -188,9 +188,12 @@ fn package_api_forwards_context_to_every_pd_operation() {
             ("create", true, Some(deadline)),
             ("delete", true, Some(deadline)),
             ("get", true, Some(deadline)),
-            ("get_all", true, Some(deadline)),
+            ("get", true, Some(deadline)),
         ]
     );
+    let observations = client.observations.lock().unwrap().len();
+    get_group_states(&ctx, &[]).unwrap();
+    assert_eq!(observations, client.observations.lock().unwrap().len());
     init_manager(None);
 }
 
