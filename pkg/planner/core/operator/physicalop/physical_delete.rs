@@ -288,6 +288,8 @@ pub struct Update {
     pub VirtualAssignmentsOffset: usize,
     /// 是否忽略执行错误。
     pub IgnoreError: bool,
+    /// 是否为可以重复匹配同一目标行的多表 UPDATE。
+    pub IsMultiTable: bool,
     /// 提供旧行的子计划。
     pub SelectPlan: Box<dyn base::PhysicalPlan>,
     /// 外键检查存在时与 Go 一致拒绝计划缓存。
@@ -307,6 +309,7 @@ impl Update {
             AllAssignmentsAreConstant: true,
             VirtualAssignmentsOffset: 0,
             IgnoreError: false,
+            IsMultiTable: false,
             SelectPlan: select_plan,
             FKChecks: Vec::new(),
             FKCascades: Vec::new(),
@@ -406,6 +409,7 @@ impl base::Plan for Update {
             AllAssignmentsAreConstant: self.AllAssignmentsAreConstant,
             VirtualAssignmentsOffset: self.VirtualAssignmentsOffset,
             IgnoreError: self.IgnoreError,
+            IsMultiTable: self.IsMultiTable,
             SelectPlan: select_plan,
             FKChecks: Vec::new(),
             FKCascades: Vec::new(),

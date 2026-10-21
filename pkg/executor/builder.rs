@@ -1478,6 +1478,8 @@ pub trait UpdatePlanData: PlanData {
     fn assignments(&self) -> &[AssignmentSpec];
     /// allowwriterowid。
     fn allow_write_row_id(&self) -> bool;
+    /// Whether the UPDATE row source is a join and can match one target row repeatedly.
+    fn is_multi_table(&self) -> bool;
 }
 
 /// 删除计划的构建数据接口。

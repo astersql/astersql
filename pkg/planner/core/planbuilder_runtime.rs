@@ -1147,6 +1147,10 @@ impl PlanBuilder {
         update.AllAssignmentsAreConstant = all_assignments_are_constant;
         update.VirtualAssignmentsOffset = statement.List.len();
         update.IgnoreError = statement.IgnoreErr;
+        update.IsMultiTable = statement
+            .TableRefs
+            .as_ref()
+            .is_some_and(|tables| tables.TableRefs.Right.is_some());
         update.set_output_names(output_names);
         update.ResolveIndices()?;
         Ok(Box::new(update))

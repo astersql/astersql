@@ -1747,6 +1747,7 @@ impl PlanBuilder {
     }
     /// `buildUpdate`：逻辑计划构建辅助。
     pub fn buildUpdate(&mut self, update: &UpdateStmt) -> Result<PlanNode> {
+        let is_multi_table = matches!(&update.source, ResultSet::Join(_));
         let mut plan = self.buildResultSetNode(&update.source, false)?;
         plan = self.buildSelection(plan, update.where_clause.as_ref())?;
         if !update.order_by.is_empty() {
@@ -1768,6 +1769,10 @@ impl PlanBuilder {
         update_plan
             .labels
             .insert("ignore".into(), if update.ignore { 1.0 } else { 0.0 });
+        update_plan.labels.insert(
+            "is_multi_table".into(),
+            if is_multi_table { 1.0 } else { 0.0 },
+        );
         Ok(update_plan)
     }
     /// `buildDelete`：逻辑计划构建辅助。

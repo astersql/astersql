@@ -570,6 +570,9 @@ mod insert_test;
 #[path = "multi_table_delete_partition_test.rs"]
 mod multi_table_delete_partition_test;
 #[cfg(test)]
+#[path = "multi_table_update_partition_test.rs"]
+mod multi_table_update_partition_test;
+#[cfg(test)]
 #[path = "resource_tag_test.rs"]
 mod resource_tag_test;
 #[cfg(test)]

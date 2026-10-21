@@ -651,6 +651,7 @@ pub struct CachedUpdate {
     all_assignments_are_constant: bool,
     virtual_assignments_offset: usize,
     ignore_error: bool,
+    is_multi_table: bool,
     select_plan: Box<CachedPlan>,
 }
 
@@ -667,6 +668,7 @@ impl CachedUpdate {
             all_assignments_are_constant: value.AllAssignmentsAreConstant,
             virtual_assignments_offset: value.VirtualAssignmentsOffset,
             ignore_error: value.IgnoreError,
+            is_multi_table: value.IsMultiTable,
             select_plan: Box::new(CachedPlan::try_capture(value.SelectPlan.as_ref())?),
         })
     }
@@ -677,6 +679,7 @@ impl CachedUpdate {
             AllAssignmentsAreConstant: self.all_assignments_are_constant,
             VirtualAssignmentsOffset: self.virtual_assignments_offset,
             IgnoreError: self.ignore_error,
+            IsMultiTable: self.is_multi_table,
             SelectPlan: self.select_plan.restore(context)?,
             FKChecks: Vec::new(),
             FKCascades: Vec::new(),

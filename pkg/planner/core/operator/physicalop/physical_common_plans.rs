@@ -605,6 +605,8 @@ pub struct Update {
     pub ordered_list: Vec<Assignment>,
     /// 是否全部为常量赋值。
     pub all_assignments_are_constant: bool,
+    /// 是否为可以重复匹配同一目标行的多表 UPDATE。
+    pub is_multi_table: bool,
     /// 外键检查。
     pub fk_checks: Vec<crate::foreign_key::FkCheck>,
     /// 外键级联。

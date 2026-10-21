@@ -20,7 +20,134 @@
 
 #![allow(non_snake_case)]
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::time::Duration;
+
+/// UPDATE 用于去重和合并多次匹配行的身份。
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum UpdateRowKey<H> {
+    /// 非分区表或聚簇分区表中全表唯一的 handle。
+    Handle(H),
+    /// 非聚簇分区表的物理分区与分区内 handle。
+    Partitioned { physical_id: i64, handle: H },
+}
+
+/// 当前行对分区定位的结果。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PartitionRowLocation {
+    /// 非分区表，或 handle 本身已在聚簇索引中全表唯一。
+    NotPartitionedOrClustered,
+    /// 非聚簇分区表定位到的物理分区 ID。
+    NonClustered(i64),
+    /// 分区定位失败；真正更新路径负责报错或 UPDATE IGNORE。
+    LookupFailed,
+}
+
+/// 为 UPDATE 匹配行构造追踪键。
+pub fn partitionRowKey<H: Clone>(
+    handle: &H,
+    is_multi_table: bool,
+    location: PartitionRowLocation,
+) -> Option<UpdateRowKey<H>> {
+    match location {
+        PartitionRowLocation::NotPartitionedOrClustered | PartitionRowLocation::LookupFailed => {
+            Some(UpdateRowKey::Handle(handle.clone()))
+        }
+        PartitionRowLocation::NonClustered(physical_id) if is_multi_table => {
+            Some(UpdateRowKey::Partitioned {
+                physical_id,
+                handle: handle.clone(),
+            })
+        }
+        PartitionRowLocation::NonClustered(_) => None,
+    }
+}
+
+/// `prepare` 后的当前行追踪状态。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedUpdateRow<H> {
+    pub row_key: Option<UpdateRowKey<H>>,
+    pub changed: bool,
+    pub matches: bool,
+}
+
+/// UPDATE 跨输入行的去重和合并状态。
+pub struct UpdateRowTracker<H, R> {
+    updated: HashMap<usize, HashMap<UpdateRowKey<H>, bool>>,
+    merged: HashMap<i64, HashMap<UpdateRowKey<H>, R>>,
+}
+
+impl<H, R> Default for UpdateRowTracker<H, R> {
+    fn default() -> Self {
+        Self {
+            updated: HashMap::new(),
+            merged: HashMap::new(),
+        }
+    }
+}
+
+impl<H: Clone + Eq + Hash, R> UpdateRowTracker<H, R> {
+    /// 根据物理行身份判断该表行是否已匹配或更改。
+    pub fn prepare(
+        &mut self,
+        table_start: usize,
+        handle: Option<&H>,
+        is_multi_table: bool,
+        location: PartitionRowLocation,
+    ) -> PreparedUpdateRow<H> {
+        let row_key = handle.and_then(|handle| partitionRowKey(handle, is_multi_table, location));
+        let Some(key) = row_key.as_ref() else {
+            return PreparedUpdateRow {
+                row_key,
+                changed: false,
+                matches: true,
+            };
+        };
+        let changed = self
+            .updated
+            .entry(table_start)
+            .or_default()
+            .get(key)
+            .copied();
+        PreparedUpdateRow {
+            row_key,
+            changed: changed.unwrap_or(false),
+            matches: changed.is_none(),
+        }
+    }
+
+    /// 只记录有追踪键的行；单表非聚簇分区 UPDATE 保持不跟踪。
+    pub fn record_updated(
+        &mut self,
+        table_start: usize,
+        row_key: Option<&UpdateRowKey<H>>,
+        changed: bool,
+    ) -> bool {
+        let Some(row_key) = row_key else {
+            return false;
+        };
+        self.updated
+            .entry(table_start)
+            .or_default()
+            .insert(row_key.clone(), changed)
+            .is_none()
+    }
+
+    /// 返回同一物理行上一次合并的新值。
+    pub fn merged_row(&self, table_id: i64, row_key: &UpdateRowKey<H>) -> Option<&R> {
+        self.merged.get(&table_id)?.get(row_key)
+    }
+
+    /// 以物理行身份保存非生成列和生成列共用的合并行。
+    pub fn set_merged_row(&mut self, table_id: i64, row_key: UpdateRowKey<H>, row: R) -> bool {
+        self.merged
+            .entry(table_id)
+            .or_default()
+            .insert(row_key, row)
+            .is_none()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// 更新时重复键（unique key）检查时机。

@@ -50,6 +50,7 @@ fn dml_round_trip_preserves_assignments_layouts_and_generated_columns() {
     update.AllAssignmentsAreConstant = false;
     update.VirtualAssignmentsOffset = 1;
     update.IgnoreError = true;
+    update.IsMultiTable = true;
     let restored = CachedPlan::try_capture_plan(&update)
         .expect("capture")
         .restore_plan(context())
@@ -69,6 +70,7 @@ fn dml_round_trip_preserves_assignments_layouts_and_generated_columns() {
     assert!(!restored.AllAssignmentsAreConstant);
     assert_eq!(restored.VirtualAssignmentsOffset, 1);
     assert!(restored.IgnoreError);
+    assert!(restored.IsMultiTable);
 
     let mut delete = Delete::New(context(), Box::new(PhysicalTableDual::New(context(), 3)));
     delete.IsMultiTable = true;

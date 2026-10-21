@@ -413,6 +413,28 @@ fn plan_builder_result_string(sql: &str) -> Result<String, String> {
     }
 }
 
+#[test]
+fn multi_table_update_partition_planner_marks_join_source() {
+    for (sql, expected) in [
+        ("update t set b = 1", false),
+        (
+            "update t as left_t join t as right_t on left_t.a = right_t.a set left_t.b = 1",
+            true,
+        ),
+    ] {
+        let (_, _, built) = super::main_test::build_plan_builder_fixture_for_test(sql)
+            .unwrap_or_else(|error| panic!("build {sql:?}: {error}"));
+        let crate::BuiltRuntimePlan::NonLogical(plan) = built else {
+            panic!("{sql:?} must build a physical UPDATE")
+        };
+        let update = plan
+            .as_any()
+            .downcast_ref::<physicalop::Update>()
+            .unwrap_or_else(|| panic!("{sql:?} must retain the UPDATE wrapper"));
+        assert_eq!(update.IsMultiTable, expected, "{sql}");
+    }
+}
+
 /// 断言 TestPlanBuilder 全部用例。
 fn assert_plan_builder_group() {
     let fixture = plan_fixture("TestPlanBuilder");
