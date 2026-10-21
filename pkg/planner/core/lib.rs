@@ -135,6 +135,8 @@ pub mod subquery_plan_builder;
 pub mod task;
 
 mod access_object;
+#[cfg(test)]
+mod aggregation_group_by_column_identity_test;
 mod columnar_index_utils;
 mod common_plans;
 mod core_init;

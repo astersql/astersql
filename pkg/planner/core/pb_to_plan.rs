@@ -31,6 +31,48 @@ pub struct PBColumnInfo {
     pub name: String,
     /// 字段类型的文本表示。
     pub field_type: String,
+    /// 当前输入 schema 中的计划列 identity；它不等同于列 offset。
+    pub unique_id: i64,
+}
+
+/// Protobuf 列引用。PB 只携带 offset，构建计划时从输入 schema 恢复 `unique_id`。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PBColumnRef {
+    pub index: usize,
+    pub unique_id: Option<i64>,
+}
+
+impl PBColumnRef {
+    pub fn new(index: usize) -> Self {
+        Self {
+            index,
+            unique_id: None,
+        }
+    }
+}
+
+/// 下推聚合函数及其单个列参数。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PBAggregateFunction {
+    pub name: String,
+    pub argument: PBColumnRef,
+}
+
+impl PBAggregateFunction {
+    pub fn new(name: impl Into<String>, argument: PBColumnRef) -> Self {
+        Self {
+            name: name.into(),
+            argument,
+        }
+    }
+}
+
+/// 最近构建的下推聚合表达式，供后续投影注入按列 identity 判等。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PBAggregationInfo {
+    pub functions: Vec<PBAggregateFunction>,
+    pub group_by: Vec<PBColumnRef>,
+    pub stream: bool,
 }
 /// Protobuf 侧的表元信息，含库名、是否为集群表及列列表。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -70,8 +112,8 @@ pub enum PBExecutor {
     Limit { offset: u64, limit: u64 },
     /// 聚合：普通 HashAgg 或流式 StreamAgg（`stream` 为真时）。
     Aggregation {
-        functions: Vec<String>,
-        group_by: Vec<String>,
+        functions: Vec<PBAggregateFunction>,
+        group_by: Vec<PBColumnRef>,
         stream: bool,
     },
     /// 终止连接或当前查询（Kill）。
@@ -92,6 +134,9 @@ pub struct PBPlanBuilder {
     tables: BTreeMap<i64, PBTableInfo>,
     /// 扫描范围列表，每项为 (start_key, end_key) 字节区间。
     ranges: Vec<(Vec<u8>, Vec<u8>)>,
+    /// 当前子计划 schema 的列 identity，顺序与 PB column offset 一致。
+    input_column_identities: Vec<i64>,
+    last_aggregation: Option<PBAggregationInfo>,
 }
 
 /// 用会话上下文、表元信息与扫描范围创建 `PBPlanBuilder`。
@@ -105,6 +150,8 @@ pub fn NewPBPlanBuilder(
         field_types: Vec::new(),
         tables: tables.into_iter().map(|table| (table.id, table)).collect(),
         ranges,
+        input_column_identities: Vec::new(),
+        last_aggregation: None,
     }
 }
 
@@ -171,22 +218,38 @@ impl PBPlanBuilder {
                 group_by,
                 stream,
             } => {
+                let aggregation = self.pbToAgg(functions, group_by, *stream)?;
                 let mut plan = PlanNode::New(
                     0,
                     if *stream {
                         PlanKind::StreamAgg
                     } else {
                         PlanKind::Aggregation {
-                            functions: functions.clone(),
+                            functions: aggregation
+                                .functions
+                                .iter()
+                                .map(|function| function.name.clone())
+                                .collect(),
                         }
                     },
                     Vec::new(),
                 );
                 plan.operator_info = format!(
                     "functions:[{}], group-by:[{}]",
-                    functions.join(","),
-                    group_by.join(",")
+                    aggregation
+                        .functions
+                        .iter()
+                        .map(|function| function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    aggregation
+                        .group_by
+                        .iter()
+                        .map(|column| format!("column:{}", column.index))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
+                self.last_aggregation = Some(aggregation);
                 plan
             }
             PBExecutor::Kill {
@@ -241,6 +304,7 @@ impl PBPlanBuilder {
             .iter()
             .map(|column| column.field_type.clone())
             .collect();
+        self.input_column_identities = converted.iter().map(|column| column.unique_id).collect();
         let mut plan = PlanNode::New(
             0,
             PlanKind::TableScan {
@@ -259,6 +323,45 @@ impl PBPlanBuilder {
             self.ranges.len()
         );
         Ok(plan)
+    }
+
+    /// 恢复聚合表达式中 PB column offset 对应的输入计划列 identity。
+    fn pbToAgg(
+        &self,
+        functions: &[PBAggregateFunction],
+        group_by: &[PBColumnRef],
+        stream: bool,
+    ) -> Result<PBAggregationInfo, String> {
+        let restore = |column: &PBColumnRef| {
+            let unique_id = self
+                .input_column_identities
+                .get(column.index)
+                .copied()
+                .ok_or_else(|| {
+                    format!("aggregation column offset {} is out of range", column.index)
+                })?;
+            let mut column = column.clone();
+            column.unique_id = Some(unique_id);
+            Ok::<_, String>(column)
+        };
+        let functions = functions
+            .iter()
+            .map(|function| {
+                Ok(PBAggregateFunction {
+                    name: function.name.clone(),
+                    argument: restore(&function.argument)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let group_by = group_by
+            .iter()
+            .map(restore)
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(PBAggregationInfo {
+            functions,
+            group_by,
+            stream,
+        })
     }
 
     /// 按列 ID 列表从表元信息中解析出对应的列描述。
@@ -378,5 +481,10 @@ impl PBPlanBuilder {
     /// 返回构建器持有的会话规划上下文。
     pub fn SessionContext(&self) -> &PlannerContext {
         &self.sctx
+    }
+
+    /// 返回已从输入 schema 恢复列 identity 的最近一次聚合描述。
+    pub fn last_aggregation(&self) -> Option<&PBAggregationInfo> {
+        self.last_aggregation.as_ref()
     }
 }

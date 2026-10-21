@@ -13,11 +13,13 @@ fn table(name: &str) -> PBTableInfo {
                 id: 1,
                 name: "a".to_owned(),
                 field_type: "longlong".to_owned(),
+                unique_id: 11,
             },
             PBColumnInfo {
                 id: 2,
                 name: "b".to_owned(),
                 field_type: "varchar".to_owned(),
+                unique_id: 12,
             },
         ],
     }
