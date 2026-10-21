@@ -69,6 +69,7 @@ pub mod advisory_locks;
 pub mod bootstrap;
 pub mod contextimpl;
 pub mod ddl_tables;
+pub mod diagnostic;
 pub mod dml_runtime;
 pub mod fts_runtime;
 pub mod global_init;

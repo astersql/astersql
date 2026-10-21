@@ -1419,7 +1419,7 @@ impl ConcreteSession {
         state.last_plan_from_cache = false;
     }
 
-    fn sync_global_bindings(&self) {
+    pub(super) fn sync_global_bindings(&self) {
         self.bindings
             .borrow_mut()
             .ReplaceGlobalBindings(runtime_global_bindings(&self.domain));

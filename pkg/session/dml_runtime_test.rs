@@ -2163,6 +2163,51 @@ fn sql_defaults_and_bootstrap_upgrade() {
 }
 
 #[test]
+fn start_diagnostic_preserves_persisted_bootstrap_versions() {
+    let normal = canonical_mlog_session();
+    let domain = Arc::clone(normal.domain());
+    // SAFETY: the test only reads the compatibility version used by bootstrap.
+    let current = unsafe { crate::upgrade_def::currentBootstrapVersion };
+    let old = current - 1;
+    normal
+        .execute(&format!(
+            "UPDATE mysql.tidb SET variable_value='{old}' \
+             WHERE variable_name='tidb_server_version'"
+        ))
+        .expect("lower SQL bootstrap version");
+    domain.storage_handle().with_storage(|store| {
+        let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnBootstrap);
+        kv::RunInNewTxn(&context, store, true, |_, transaction| {
+            transaction.Set(
+                astersql_meta::transaction_meta_string_key(b"BootstrapKey"),
+                old.to_string().into_bytes(),
+            )
+        })
+        .expect("lower KV bootstrap version");
+    });
+
+    let diagnostic = crate::diagnostic::bootstrap_session_impl_diagnostic(Arc::clone(&domain))
+        .expect("start diagnostic bootstrap");
+    assert_eq!(
+        crate::runtime::ValidateDiagnosticBootstrap(&diagnostic, &domain)
+            .expect("re-read diagnostic bootstrap versions"),
+        old
+    );
+    let mut versions = diagnostic
+        .execute(
+            "SELECT variable_value FROM mysql.tidb \
+             WHERE variable_name='tidb_server_version'",
+        )
+        .expect("read SQL bootstrap version")
+        .remove(0);
+    assert_eq!(
+        versions.Next().expect("read version row"),
+        Some(vec![old.to_string()])
+    );
+    domain.close();
+}
+
+#[test]
 fn saved_options_precede_changed_globals() {
     struct Restore(u64, u64, bool);
     impl Drop for Restore {

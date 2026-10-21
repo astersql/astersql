@@ -12,6 +12,8 @@
 mod autoid_store;
 /// Domain 核心实现与配置。
 pub mod canonical_domain;
+/// Diagnostic-only Domain startup and metadata readers.
+pub mod diagnostic;
 /// Domain 运行时与生命周期。
 pub mod domain;
 /// Domain 侧系统变量相关逻辑。
@@ -66,6 +68,8 @@ pub use domain::{
 mod canonical_domain_test;
 #[cfg(test)]
 mod db_test;
+#[cfg(test)]
+mod diagnostic_test;
 #[cfg(test)]
 mod domain_sysvars_test;
 #[cfg(test)]

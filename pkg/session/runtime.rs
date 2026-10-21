@@ -179,6 +179,7 @@ use source::*;
 use statistics::*;
 use system_query::*;
 
+pub(crate) use session::ValidateDiagnosticBootstrap;
 pub use session::{
     AddRecordWithoutAutoIDRebaseForTest, BootstrapCanonicalDomain, CanonicalSessionFactory,
     ConcretePreparedArgument, ConcreteProtocolState, ConcreteRecordSet, ConcreteResultField,

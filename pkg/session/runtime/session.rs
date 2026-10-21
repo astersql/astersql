@@ -860,6 +860,10 @@ impl CanonicalSessionFactory {
             None
         };
         let factory = Self::from_storage(store, config)?;
+        if astersql_config::diagnosticmode::Enabled() {
+            crate::diagnostic::bootstrap_session_impl_diagnostic(Arc::clone(&factory.domain))?;
+            return Ok(factory);
+        }
         let workload_config = astersql_config::get_global_config()
             .external_workload
             .clone();
@@ -1615,6 +1619,138 @@ impl ConcreteSession {
         }
     }
 
+    /// Loads the persisted, query-facing metadata caches used by diagnostic
+    /// sessions. Every source is scanned read-only; no bootstrap, upgrade,
+    /// ownership, GC, or usage writer is started here.
+    pub(crate) fn load_diagnostic_metadata_readers(&self) -> SessionResult<()> {
+        use astersql_privilege_privileges::{MySQLPrivilege, PrivilegeRow};
+
+        let rows = |table_name: &str| -> SessionResult<Vec<PrivilegeRow>> {
+            let Some(table) = self.resolve_runtime_table("mysql", table_name) else {
+                return Ok(Vec::new());
+            };
+            self.scan_registered_table(&table).map(|rows| {
+                rows.into_iter()
+                    .map(|(_, row)| {
+                        row.into_iter()
+                            .map(|(name, value)| {
+                                let value = match value {
+                                    None => serde_json::Value::Null,
+                                    Some(text) => serde_json::from_str(&text)
+                                        .unwrap_or(serde_json::Value::String(text)),
+                                };
+                                (name.to_ascii_lowercase(), value)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+        };
+
+        if !astersql_config::get_global_config()
+            .security
+            .skip_grant_table
+        {
+            let mut privileges = MySQLPrivilege::default();
+            let default_auth_plugin = self
+                .session_vars
+                .GetSystemVar(astersql_sessionctx_vardef::DefaultAuthPlugin)
+                .unwrap_or_else(|| "mysql_native_password".to_owned());
+            privileges.SetGlobalVarsAccessor(&default_auth_plugin);
+            for row in rows("user")? {
+                privileges
+                    .decodeUserTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.user", error))?;
+            }
+            for row in rows("global_priv")? {
+                privileges
+                    .decodeGlobalPrivTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.global_priv", error))?;
+            }
+            for row in rows("global_grants")? {
+                privileges
+                    .decodeGlobalGrantsTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.global_grants", error))?;
+            }
+            for row in rows("db")? {
+                privileges
+                    .decodeDBTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.db", error))?;
+            }
+            for row in rows("tables_priv")? {
+                privileges
+                    .decodeTablesPrivTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.tables_priv", error))?;
+            }
+            for row in rows("columns_priv")? {
+                privileges
+                    .decodeColumnsPrivTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.columns_priv", error))?;
+            }
+            for row in rows("default_roles")? {
+                privileges
+                    .decodeDefaultRoleTableRow(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.default_roles", error))?;
+            }
+            for row in rows("role_edges")? {
+                privileges
+                    .decodeRoleEdgesTable(&row)
+                    .map_err(|error| session_error("load diagnostic mysql.role_edges", error))?;
+            }
+            privileges.SortUserTable();
+            runtime_privilege_handle(&self.domain).merge(privileges);
+        }
+
+        if let Some(table) = self.resolve_runtime_table("mysql", "bind_info") {
+            for (_, row) in self.scan_registered_table(&table)? {
+                let field = |name: &str| row.get(name).and_then(Clone::clone).unwrap_or_default();
+                let status = field("status");
+                if status.eq_ignore_ascii_case(astersql_bindinfo::StatusDeleted) {
+                    continue;
+                }
+                let original_sql = field("original_sql");
+                let mut parsed = parse(&original_sql)?;
+                if parsed.len() != 1 {
+                    return Err(SessionError::new(
+                        "diagnostic binding must contain exactly one statement",
+                    ));
+                }
+                let statement = crate::hint_runtime::BindingStatementFromAST(
+                    &original_sql,
+                    parsed.remove(0).as_ref(),
+                );
+                let database = field("default_db");
+                let restored = astersql_bindinfo::RestoreDBForBinding(&statement, &database);
+                let (_, digest) = astersql_parser::NormalizeDigestForBinding(&restored);
+                let sql_digest = field("sql_digest");
+                runtime_upsert_global_binding(
+                    &self.domain,
+                    astersql_bindinfo::Binding {
+                        OriginalSQL: original_sql,
+                        Db: database,
+                        BindSQL: field("bind_sql"),
+                        Status: status,
+                        CreateTime: astersql_bindinfo::BindingTime::now(),
+                        UpdateTime: astersql_bindinfo::BindingTime::now(),
+                        Source: field("source"),
+                        Charset: field("charset"),
+                        Collation: field("collation"),
+                        SQLDigest: if sql_digest.is_empty() {
+                            digest.String().to_owned()
+                        } else {
+                            sql_digest
+                        },
+                        PlanDigest: field("plan_digest"),
+                        TableNames: statement.Tables,
+                        ..Default::default()
+                    },
+                );
+            }
+            self.sync_global_bindings();
+        }
+        Ok(())
+    }
+
     fn apply_persisted_global_variable(&self, name: String, value: String) {
         let name = name.to_ascii_lowercase();
         if name == astersql_sessionctx_vardef::TiDBForeignKeyCheckInSharedLock {
@@ -2035,6 +2171,31 @@ fn canonical_bootstrapped(session: &ConcreteSession, domain: &Domain) -> Session
         return Ok(false);
     };
     Ok(row.first().is_some_and(|value| value == "True"))
+}
+
+/// Validates both persisted bootstrap-version records without mutating either
+/// one. Diagnostic startup rejects an unbootstrapped or inconsistent store
+/// instead of entering normal bootstrap/upgrade.
+pub(crate) fn ValidateDiagnosticBootstrap(
+    session: &ConcreteSession,
+    domain: &Domain,
+) -> SessionResult<i64> {
+    let kv_version = domain
+        .storage_handle()
+        .with_storage(super::bootstrap_wait::must_get_store_bootstrap_version);
+    if kv_version <= 0 || !canonical_bootstrapped(session, domain)? {
+        return Err(SessionError::new(
+            "diagnostic mode requires an already bootstrapped store",
+        ));
+    }
+    let sql_version = canonical_bootstrap_version(session, domain)?
+        .ok_or_else(|| SessionError::new("mysql.tidb bootstrap version is missing"))?;
+    if sql_version != kv_version {
+        return Err(SessionError::new(format!(
+            "diagnostic bootstrap versions disagree: mysql.tidb={sql_version}, KV={kv_version}"
+        )));
+    }
+    Ok(sql_version)
 }
 
 fn ensure_canonical_ddl_system_tables(

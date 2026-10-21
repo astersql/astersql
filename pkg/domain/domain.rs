@@ -5910,15 +5910,7 @@ impl Domain {
 
     /// 按 StartMode 启动 Domain 与后台 worker。
     pub fn start(&self, mode: StartMode) -> Result<(), DomainError> {
-        if !self.initialized.load(Ordering::Acquire) {
-            return Err(DomainError::NotInitialized);
-        }
-        if self.closed.load(Ordering::Acquire) {
-            return Err(DomainError::Closed);
-        }
-        if self.started.swap(true, Ordering::AcqRel) {
-            return Err(DomainError::AlreadyStarted);
-        }
+        self.begin_start()?;
         if let Some(ddl) = self.ddl() {
             if let Err(error) = ddl.start(mode) {
                 self.started.store(false, Ordering::Release);
@@ -5933,31 +5925,7 @@ impl Domain {
                 let _ = syncer.updateTopologyAliveness(context);
             });
         }
-        if !self.ddl().is_some_and(|ddl| ddl.manages_schema_sync()) {
-            self.start_periodic_worker(
-                "schema-reload",
-                self.config.schema_lease.max(Duration::from_millis(10)),
-                {
-                    let store = self.store.clone();
-                    let schema_loader = self.schema_loader.clone();
-                    let cache = self.info_cache.clone();
-                    let keyspace = self.config.keyspace.clone();
-                    move || {
-                        if let Ok(loaded) = store
-                            .with_storage(|store| schema_loader.load_info_schema(store, &keyspace))
-                        {
-                            let current = cache
-                                .GetLatest()
-                                .map(|schema| schema.SchemaMetaVersion())
-                                .unwrap_or(i64::MIN);
-                            if loaded.schema.SchemaMetaVersion() > current {
-                                cache.Insert(loaded.schema, loaded.timestamp);
-                            }
-                        }
-                    }
-                },
-            );
-        }
+        self.start_schema_reload_worker(false);
         self.start_periodic_worker("tiflash-replica-progress", Duration::from_secs(2), {
             let store = self.store.clone();
             let metadata = self.ddl_metadata.clone();
@@ -6012,6 +5980,47 @@ impl Domain {
         });
         self.init_inference_providers();
         Ok(())
+    }
+
+    pub(crate) fn begin_start(&self) -> Result<(), DomainError> {
+        if !self.initialized.load(Ordering::Acquire) {
+            return Err(DomainError::NotInitialized);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DomainError::Closed);
+        }
+        if self.started.swap(true, Ordering::AcqRel) {
+            return Err(DomainError::AlreadyStarted);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_schema_reload_worker(&self, force: bool) {
+        if force || !self.ddl().is_some_and(|ddl| ddl.manages_schema_sync()) {
+            self.start_periodic_worker(
+                "schema-reload",
+                self.config.schema_lease.max(Duration::from_millis(10)),
+                {
+                    let store = self.store.clone();
+                    let schema_loader = self.schema_loader.clone();
+                    let cache = self.info_cache.clone();
+                    let keyspace = self.config.keyspace.clone();
+                    move || {
+                        if let Ok(loaded) = store
+                            .with_storage(|store| schema_loader.load_info_schema(store, &keyspace))
+                        {
+                            let current = cache
+                                .GetLatest()
+                                .map(|schema| schema.SchemaMetaVersion())
+                                .unwrap_or(i64::MIN);
+                            if loaded.schema.SchemaMetaVersion() > current {
+                                cache.Insert(loaded.schema, loaded.timestamp);
+                            }
+                        }
+                    }
+                },
+            );
+        }
     }
 
     /// 启动周期性后台 worker。
