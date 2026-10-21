@@ -74,6 +74,7 @@ struct Backend {
     reject_snapshot: bool,
     sem: bool,
     sem_v2: bool,
+    privilege_manager_available: bool,
     noop_enabled: bool,
     legacy_instance: bool,
     service_scope: String,
@@ -176,6 +177,7 @@ impl Backend {
             reject_snapshot: false,
             sem: false,
             sem_v2: false,
+            privilege_manager_available: true,
             noop_enabled: false,
             legacy_instance: false,
             service_scope: String::new(),
@@ -288,6 +290,10 @@ impl SetBackend for Backend {
 
     fn sem_v2_read_only_variable(&self, name: &str) -> bool {
         name.eq_ignore_ascii_case("restricted")
+    }
+
+    fn privilege_manager_available(&self) -> bool {
+        self.privilege_manager_available
     }
 
     fn verify_dynamic_privilege(&self, privilege: &str) -> bool {
@@ -621,6 +627,63 @@ fn test_validate_set_var() {
     // 校验失败后会话快照时间戳应保持原值。
     assert!(executor.Next(&(), &mut TestChunk::default()).is_err());
     assert_eq!(executor.BaseExecutor.snapshot_ts, 7);
+}
+
+/// 内部会话没有 privilege manager 时应跳过权限校验，
+/// 但已绑定 manager 的普通会话仍必须保持原有授权边界。
+#[test]
+fn sem_v2_internal_session_without_privilege_manager() {
+    let mut internal = Backend::new();
+    internal.sem_v2 = true;
+    internal.privilege_manager_available = false;
+
+    let mut dynamic = assignment("concurrency", SetDatum::String("8".to_owned()), true);
+    dynamic.is_global = true;
+    let internal = execute(
+        internal,
+        vec![
+            assignment("restricted", SetDatum::String("ON".to_owned()), true),
+            dynamic,
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        internal.session.get("restricted").map(String::as_str),
+        Some("ON")
+    );
+    assert_eq!(
+        internal.global.get("concurrency").map(String::as_str),
+        Some("8")
+    );
+
+    let mut external = Backend::new();
+    external.sem_v2 = true;
+    let error = match execute(
+        external,
+        vec![assignment(
+            "restricted",
+            SetDatum::String("ON".to_owned()),
+            true,
+        )],
+    ) {
+        Ok(_) => panic!("external session without the privilege must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        TestError("access denied; need RESTRICTED_VARIABLES_ADMIN".to_owned())
+    );
+
+    let mut dynamic = assignment("concurrency", SetDatum::String("8".to_owned()), true);
+    dynamic.is_global = true;
+    let error = match execute(Backend::new(), vec![dynamic]) {
+        Ok(_) => panic!("external session without the dynamic privilege must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        TestError("access denied; need SUPER or SYSTEM_VARIABLES_ADMIN".to_owned())
+    );
 }
 
 /// 旧版 instance 作用域：写入 instance 并产生 instance 警告。

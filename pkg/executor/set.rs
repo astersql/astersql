@@ -182,6 +182,8 @@ pub trait SetBackend {
     fn sem_v2_enabled(&self) -> bool;
     /// 变量在 SEM v2 下是否只读。
     fn sem_v2_read_only_variable(&self, name: &str) -> bool;
+    /// 当前会话是否绑定了权限管理器。
+    fn privilege_manager_available(&self) -> bool;
     /// 校验当前用户是否持有动态权限。
     fn verify_dynamic_privilege(&self, privilege: &str) -> bool;
     /// 构造权限拒绝错误。
@@ -367,24 +369,27 @@ impl<B: SetBackend> SetExecutor<B> {
         };
         // 校验修改该变量所需的动态权限。
         let sem_enabled = self.BaseExecutor.sem_enabled();
-        for privilege in self.BaseExecutor.required_dynamic_privileges(
-            &system_variable,
-            self.vars[assignment_index].is_global,
-            sem_enabled,
-        ) {
-            if !self.BaseExecutor.verify_dynamic_privilege(&privilege) {
-                let message = if sem_enabled {
-                    privilege
-                } else {
-                    format!("SUPER or {privilege}")
-                };
-                return Err(self.BaseExecutor.access_denied(&message));
+        if self.BaseExecutor.privilege_manager_available() {
+            for privilege in self.BaseExecutor.required_dynamic_privileges(
+                &system_variable,
+                self.vars[assignment_index].is_global,
+                sem_enabled,
+            ) {
+                if !self.BaseExecutor.verify_dynamic_privilege(&privilege) {
+                    let message = if sem_enabled {
+                        privilege
+                    } else {
+                        format!("SUPER or {privilege}")
+                    };
+                    return Err(self.BaseExecutor.access_denied(&message));
+                }
             }
         }
         if self.BaseExecutor.sem_v2_enabled()
             && self
                 .BaseExecutor
                 .sem_v2_read_only_variable(&self.vars[assignment_index].name)
+            && self.BaseExecutor.privilege_manager_available()
             && !self
                 .BaseExecutor
                 .verify_dynamic_privilege("RESTRICTED_VARIABLES_ADMIN")
