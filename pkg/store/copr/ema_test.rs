@@ -21,23 +21,19 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 #[test]
-fn ema_seed_and_converge() {
+fn ruema_starts_at_zero_and_converges() {
     let now = Instant::now();
-    let seeded = RuEma::new(4 * 1024 * 1024);
-    assert_eq!(seeded.predict(), 4 * 1024 * 1024);
-    seeded.observe(1_000_000, now);
-    assert_eq!(seeded.predict(), 1_000_000);
-    let unseeded = RuEma::new(0);
-    assert_eq!(unseeded.predict(), 0);
-    unseeded.observe(1_000_000, now);
-    assert_eq!(unseeded.predict(), 1_000_000);
-    unseeded.observe(1_000_000, now + Duration::from_millis(100));
-    assert!(unseeded.predict().abs_diff(1_000_000) <= 1);
+    let ema = RuEma::new();
+    assert_eq!(ema.predict(), 0);
+    ema.observe(1_000_000, now);
+    assert_eq!(ema.predict(), 1_000_000);
+    ema.observe(1_000_000, now + Duration::from_millis(100));
+    assert!(ema.predict().abs_diff(1_000_000) <= 1);
 }
 
 #[test]
-fn ema_tracks_shift() {
-    let ema = RuEma::new(0);
+fn ruema_tracks_shift() {
+    let ema = RuEma::new();
     let now = Instant::now();
     for i in 0..5 {
         ema.observe(100_000, now + Duration::from_millis(i * 100));
@@ -51,8 +47,8 @@ fn ema_tracks_shift() {
 }
 
 #[test]
-fn ema_large_gap_collapses_weight() {
-    let ema = RuEma::new(0);
+fn ruema_large_gap_collapses_weight() {
+    let ema = RuEma::new();
     let now = Instant::now();
     ema.observe(100_000, now);
     ema.observe(1_000_000, now + Duration::from_secs(10));
@@ -60,8 +56,8 @@ fn ema_large_gap_collapses_weight() {
 }
 
 #[test]
-fn ema_non_monotonic_time() {
-    let ema = RuEma::new(0);
+fn ruema_non_monotonic_time() {
+    let ema = RuEma::new();
     let now = Instant::now();
     ema.observe(100_000, now);
     ema.observe(500_000, now - Duration::from_secs(1));
@@ -76,8 +72,8 @@ fn ema_non_monotonic_time() {
 }
 
 #[test]
-fn ema_concurrent_observe_and_predict() {
-    let ema = Arc::new(RuEma::new(0));
+fn ruema_concurrent_observe_and_predict() {
+    let ema = Arc::new(RuEma::new());
     let done = Arc::new(AtomicBool::new(false));
     let reader_ema = ema.clone();
     let reader_done = done.clone();

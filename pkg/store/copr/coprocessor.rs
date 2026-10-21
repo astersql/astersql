@@ -1193,7 +1193,7 @@ impl CopTaskWorker {
         keys_read: Arc<AtomicU64>,
         paging_task_index: Arc<AtomicU32>,
     ) -> Self {
-        let ema = Arc::new(RuEma::new(request.paging.size_bytes));
+        let ema = Arc::new(RuEma::new());
         let resolved_locks = Arc::new(Mutex::new(request.resolved_locks.iter().copied().collect()));
         let committed_locks = Arc::new(Mutex::new(
             request.committed_locks.iter().copied().collect(),
@@ -1838,7 +1838,7 @@ impl CopIterator {
         } else {
             worker_capacity
         };
-        let ema = Arc::new(RuEma::new(request.paging.size_bytes));
+        let ema = Arc::new(RuEma::new());
         let resolved_locks = Arc::new(Mutex::new(request.resolved_locks.iter().copied().collect()));
         let committed_locks = Arc::new(Mutex::new(
             request.committed_locks.iter().copied().collect(),

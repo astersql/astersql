@@ -26,9 +26,11 @@ pub struct RuEma {
 }
 
 impl RuEma {
-    pub fn new(seed_read_bytes: u64) -> Self {
+    /// Starts without a prediction. A page byte budget is an upper bound, not
+    /// an estimate of how many bytes the storage node will actually read.
+    pub fn new() -> Self {
         Self {
-            state: Mutex::new((seed_read_bytes as f64, None)),
+            state: Mutex::new((0.0, None)),
             tau: DEFAULT_RU_EMA_TAU,
         }
     }

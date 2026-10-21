@@ -1730,10 +1730,7 @@ fn paging_size_bytes_is_the_only_precharge_gate() {
     worker(backend.clone(), req)
         .handle_task_once(&mut Backoffer::new(1), CopTask::default())
         .unwrap();
-    assert_eq!(
-        backend.wires.lock().unwrap()[0].predicted_read_bytes,
-        4 * 1024 * 1024
-    );
+    assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, 0);
 }
 
 #[test]
@@ -2077,7 +2074,7 @@ fn go_merge_48_paging_ema_precharge_updates_only_for_continuation() {
     worker
         .handle_task_once(&mut Backoffer::new(1), task.clone())
         .unwrap();
-    assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, 4096);
+    assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, 0);
     *backend.response.lock().unwrap() = CopProtocolResponse {
         read_bytes: 999,
         ..CopProtocolResponse::default()
@@ -2807,7 +2804,7 @@ fn paging_prediction_preserves_byte_budget_and_small_limit() {
         worker
             .handle_task_once(&mut Backoffer::new(1), tasks[0].clone())
             .unwrap();
-        assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, bytes);
+        assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, 0);
     }
 }
 
@@ -2876,7 +2873,7 @@ fn paging_observation_error_zero_final_and_remain_order() {
                 .last()
                 .unwrap()
                 .predicted_read_bytes,
-            4096
+            0
         );
     }
     *backend.response.lock().unwrap() = CopProtocolResponse {
