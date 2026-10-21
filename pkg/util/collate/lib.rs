@@ -97,3 +97,6 @@ mod general_ci_aster_unit_test;
 #[cfg(test)]
 #[path = "main_test.rs"]
 mod main_test;
+#[cfg(test)]
+#[path = "unicode_0900_boundary_test.rs"]
+mod unicode_0900_boundary_test;

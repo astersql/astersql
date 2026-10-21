@@ -61,7 +61,7 @@ impl unicode0900Impl {
 // convertRuneUnicodeCI0900 对应 Go 的同名函数：把 rune 转成最多两段 UCA 权重。
 pub fn convertRuneUnicodeCI0900(r: char) -> (u64, u64) {
     let raw = r as u32;
-    if raw as usize > ucadata::DUCET0900Table.map_table4.len() {
+    if raw as usize >= ucadata::DUCET0900Table.map_table4.len() {
         // Go 对表外 rune 构造 FBC0 区间的兜底权重，保留位运算形状。
         let high = (raw >> 15) as u64;
         let low = (((raw & 0x7FFF) | 0x8000) as u64) << 16;
