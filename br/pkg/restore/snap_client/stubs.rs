@@ -894,6 +894,11 @@ pub mod model {
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MaterializedViewShadowInfo {
+        pub SourceMViewID: i64,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
     /// `PartitionDefinition`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
     pub struct PartitionDefinition {
         pub ID: i64,
@@ -926,6 +931,7 @@ pub mod model {
         pub MaterializedViewBase: Option<MaterializedViewBaseInfo>,
         pub MaterializedView: Option<MaterializedViewInfo>,
         pub MaterializedViewLog: Option<MaterializedViewLogInfo>,
+        pub MaterializedViewShadow: Option<MaterializedViewShadowInfo>,
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq)]

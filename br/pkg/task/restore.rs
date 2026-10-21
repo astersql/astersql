@@ -1090,7 +1090,10 @@ pub fn FilterRestoreFiles(
             {
                 continue;
             }
-            if table.Info.MaterializedView.is_some() || table.Info.MaterializedViewLog.is_some() {
+            if table.Info.MaterializedView.is_some()
+                || table.Info.MaterializedViewLog.is_some()
+                || table.Info.MaterializedViewShadow.is_some()
+            {
                 continue;
             }
             table.Info.MaterializedViewBase = None;

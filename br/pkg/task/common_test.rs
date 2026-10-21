@@ -175,9 +175,31 @@ fn test_filter_restore_files_skips_materialized_objects() {
         },
         ..Default::default()
     };
+    let materialized_shadow = metautil::Table {
+        DB: db_info.clone(),
+        Info: model::TableInfo {
+            ID: 14,
+            Name: model::CIStr::new("_mv_shadow"),
+            MaterializedViewShadow: Some(model::MaterializedViewShadowInfo { SourceMViewID: 13 }),
+            ..Default::default()
+        },
+        FilesOfPhysicals: HashMap::from([(
+            14,
+            vec![astersql_br_pkg_restore_snap_client::stubs::backuppb::File {
+                Name: "shadow_write.sst".into(),
+                ..Default::default()
+            }],
+        )]),
+        ..Default::default()
+    };
     let mut database = metautil::Database::default();
     database.Info = db_info;
-    database.Tables = vec![base_table, materialized_log, materialized_view];
+    database.Tables = vec![
+        base_table,
+        materialized_log,
+        materialized_view,
+        materialized_shadow,
+    ];
     let mut databases = vec![database];
     let mut cfg = RestoreConfig::default();
     cfg.Config.TableFilter =
@@ -191,6 +213,7 @@ fn test_filter_restore_files_skips_materialized_objects() {
     assert!(table_map.contains_key(&11));
     assert!(!table_map.contains_key(&12));
     assert!(!table_map.contains_key(&13));
+    assert!(!table_map.contains_key(&14));
     assert!(table_map[&11].Info.MaterializedViewBase.is_none());
     assert!(databases[0].Tables[0].Info.MaterializedViewBase.is_none());
     assert_eq!(table_map[&11].FilesOfPhysicals[&11].len(), 1);
