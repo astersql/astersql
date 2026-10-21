@@ -310,6 +310,7 @@ fn go_rust_public_contract_matches() {
         Columns: vec![model::ColumnInfo {
             Name: model::CIStr::new("db"),
             Collate: "utf8mb4_bin".into(),
+            ..Default::default()
         }],
         ..Default::default()
     };

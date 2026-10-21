@@ -9,6 +9,7 @@
 //! 脱敏用例覆盖 storage query、cipher key、azure key、master-key 整串。
 //! 默认配置用例同时覆盖 common/backup/restore 三套 Default* 工厂。
 
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::backup::{BackupConfig, DefaultBackupConfig, DefineBackupFlags};
@@ -122,6 +123,77 @@ fn test_parse_stream_restore_flags_pitr_add_index_sql_storage() {
     cfg.ParseStreamRestoreFlags(&flags).unwrap();
     // 解析结果应与 Set 的路径一致。
     assert_eq!(cfg.PiTRAddIndexSQLStorage, "local:///tmp/pitr-add-index");
+}
+
+#[test]
+fn test_filter_restore_files_skips_materialized_objects() {
+    use astersql_br_pkg_restore_snap_client::stubs::{metautil, model};
+
+    let db_info = model::DBInfo {
+        ID: 1,
+        Name: model::CIStr::new("test"),
+    };
+    let base_table = metautil::Table {
+        DB: db_info.clone(),
+        Info: model::TableInfo {
+            ID: 11,
+            Name: model::CIStr::new("base_table"),
+            MaterializedViewBase: Some(model::MaterializedViewBaseInfo {
+                MLogID: 12,
+                MViewIDs: vec![13],
+            }),
+            ..Default::default()
+        },
+        FilesOfPhysicals: HashMap::from([(
+            11,
+            vec![astersql_br_pkg_restore_snap_client::stubs::backuppb::File {
+                Name: "base_table_write.sst".into(),
+                ..Default::default()
+            }],
+        )]),
+        ..Default::default()
+    };
+    let materialized_log = metautil::Table {
+        DB: db_info.clone(),
+        Info: model::TableInfo {
+            ID: 12,
+            Name: model::CIStr::new("$mlog$base_table"),
+            MaterializedViewLog: Some(model::MaterializedViewLogInfo { BaseTableID: 11 }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let materialized_view = metautil::Table {
+        DB: db_info.clone(),
+        Info: model::TableInfo {
+            ID: 13,
+            Name: model::CIStr::new("mv_table"),
+            MaterializedView: Some(model::MaterializedViewInfo {
+                BaseTableIDs: vec![11],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut database = metautil::Database::default();
+    database.Info = db_info;
+    database.Tables = vec![base_table, materialized_log, materialized_view];
+    let mut databases = vec![database];
+    let mut cfg = RestoreConfig::default();
+    cfg.Config.TableFilter =
+        crate::stubs::CaseInsensitive(crate::stubs::ParseFilter(vec!["*.*".into()]).unwrap());
+
+    let (table_map, db_map) =
+        crate::restore::FilterRestoreFiles(&mut databases, &cfg, false).unwrap();
+
+    assert_eq!(db_map.len(), 1);
+    assert_eq!(table_map.len(), 1);
+    assert!(table_map.contains_key(&11));
+    assert!(!table_map.contains_key(&12));
+    assert!(!table_map.contains_key(&13));
+    assert!(table_map[&11].Info.MaterializedViewBase.is_none());
+    assert!(databases[0].Tables[0].Info.MaterializedViewBase.is_none());
+    assert_eq!(table_map[&11].FilesOfPhysicals[&11].len(), 1);
 }
 
 /// 对应 Go `TestTiDBConfigUnchanged`：restore 闭包可安全调用。

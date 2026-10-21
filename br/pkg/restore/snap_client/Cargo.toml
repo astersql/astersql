@@ -19,9 +19,11 @@ astersql-br-pkg-utils = { path = "../../utils" }
 astersql-errors = { path = "../../../../pkg/errors" }
 astersql-br-pkg-errors = { path = "../../errors" }
 astersql-br-pkg-restore = { path = ".." }
+astersql-parser-types = { path = "../../../../pkg/parser/types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
+astersql-parser-mysql = { path = "../../../../pkg/parser/mysql" }
 astersql-session = { path = "../../../../pkg/session" }

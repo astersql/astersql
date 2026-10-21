@@ -27,13 +27,77 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::stubs::{
-    Error, Result, StripTempDBPrefix, SystemDB, TemporaryDBName, WorkloadSchema, berrors, log,
-    model,
+    EncloseDBAndTable, EncloseName, Error, Result, StripTempDBPrefix, SystemDB, TemporaryDBName,
+    WorkloadSchema, berrors, log, model,
 };
 use crate::systable_schema_update::update_stats_meta_schema_function_map;
 
 /// `sysUserTableName`：与 Go 常量同义的阈值/阈值阈值，改动前先对照 Go。
 pub const sysUserTableName: &str = "user";
+const sysDBTableName: &str = "db";
+const sysBindInfoTableName: &str = "bind_info";
+const operateViewPrivColumnName: &str = "operate_view_priv";
+
+#[derive(Clone, Copy)]
+struct CompatibleMissingBackupSystemTableColumn {
+    required_columns: &'static [&'static str],
+    select_expression: &'static str,
+}
+
+fn compatible_missing_backup_system_table_column(
+    table_name: &str,
+    column_name: &str,
+) -> Option<CompatibleMissingBackupSystemTableColumn> {
+    match (table_name, column_name) {
+        (sysUserTableName, operateViewPrivColumnName) => {
+            Some(CompatibleMissingBackupSystemTableColumn {
+                required_columns: &["super_priv"],
+                select_expression: "IF(`Super_priv` = 'Y', 'Y', 'N')",
+            })
+        }
+        (sysDBTableName, operateViewPrivColumnName) => {
+            Some(CompatibleMissingBackupSystemTableColumn {
+                required_columns: &[],
+                select_expression: "'N'",
+            })
+        }
+        (sysBindInfoTableName, "last_used_date") => {
+            Some(CompatibleMissingBackupSystemTableColumn {
+                required_columns: &[],
+                select_expression: "NULL",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn can_load_system_table_with_missing_backup_column(
+    db_name: &str,
+    table_name: &str,
+    column_name: &str,
+    backup_columns: &HashMap<&str, &model::ColumnInfo>,
+) -> bool {
+    if db_name != SystemDB {
+        return false;
+    }
+    compatible_missing_backup_system_table_column(table_name, column_name).is_some_and(|config| {
+        !config.select_expression.is_empty()
+            && config
+                .required_columns
+                .iter()
+                .all(|column| backup_columns.contains_key(column))
+    })
+}
+
+fn can_skip_unrecognized_missing_backup_system_table_column(
+    db_name: &str,
+    table_name: &str,
+    column_name: &str,
+) -> bool {
+    db_name == SystemDB
+        && table_name == sysUserTableName
+        && compatible_missing_backup_system_table_column(table_name, column_name).is_none()
+}
 
 /// `set_of`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
 /// 留意空集合、取消上下文与默认值是否保持一致。
@@ -518,6 +582,89 @@ pub fn checkSysTableColumnCollateCompatibility(
         .unwrap_or(false)
 }
 
+pub fn BuildSystemTableReplaceColumns(
+    db_name: &str,
+    table_name: &str,
+    upstream_table: &model::TableInfo,
+    downstream_table: &model::TableInfo,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let upstream_columns: HashMap<&str, &model::ColumnInfo> = upstream_table
+        .Columns
+        .iter()
+        .map(|column| (column.Name.L.as_str(), column))
+        .collect();
+    let downstream_columns: HashSet<&str> = downstream_table
+        .Columns
+        .iter()
+        .map(|column| column.Name.L.as_str())
+        .collect();
+
+    for column in &upstream_table.Columns {
+        if !downstream_columns.contains(column.Name.L.as_str()) {
+            return Err(berrors::ErrRestoreIncompatibleSys(format!(
+                "missing column in cluster data, table: {}, col: {}",
+                upstream_table.Name.O, column.Name.O
+            )));
+        }
+    }
+
+    let mut column_names = Vec::with_capacity(downstream_table.Columns.len());
+    let mut column_expressions = Vec::with_capacity(downstream_table.Columns.len());
+    for column in &downstream_table.Columns {
+        if upstream_columns.contains_key(column.Name.L.as_str()) {
+            let enclosed = EncloseName(&column.Name.L);
+            column_names.push(enclosed.clone());
+            column_expressions.push(enclosed);
+            continue;
+        }
+
+        if let Some(config) =
+            compatible_missing_backup_system_table_column(table_name, &column.Name.L)
+        {
+            if can_load_system_table_with_missing_backup_column(
+                db_name,
+                table_name,
+                &column.Name.L,
+                &upstream_columns,
+            ) {
+                column_names.push(EncloseName(&column.Name.L));
+                column_expressions.push(config.select_expression.to_string());
+                continue;
+            }
+            return Err(berrors::ErrRestoreIncompatibleSys(format!(
+                "missing column in backup data, table: {}, col: {}",
+                upstream_table.Name.O, column.Name.O
+            )));
+        }
+    }
+
+    if column_names.is_empty() {
+        return Err(berrors::ErrRestoreIncompatibleSys(format!(
+            "no compatible columns for system table restore, table: {}",
+            upstream_table.Name.O
+        )));
+    }
+    Ok((column_names, column_expressions))
+}
+
+pub fn BuildSystemTableReplaceSQL(
+    db_name: &str,
+    temporary_db_name: &str,
+    table_name: &str,
+    upstream_table: &model::TableInfo,
+    downstream_table: &model::TableInfo,
+) -> Result<String> {
+    let (column_names, column_expressions) =
+        BuildSystemTableReplaceColumns(db_name, table_name, upstream_table, downstream_table)?;
+    Ok(format!(
+        "REPLACE INTO {}({}) SELECT {} FROM {};",
+        EncloseDBAndTable(db_name, table_name),
+        column_names.join(","),
+        column_expressions.join(","),
+        EncloseDBAndTable(temporary_db_name, table_name),
+    ))
+}
+
 /// `CheckSysTableCompatibility`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
 /// 留意空集合、取消上下文与默认值是否保持一致。
 pub fn CheckSysTableCompatibility(
@@ -527,67 +674,79 @@ pub fn CheckSysTableCompatibility(
 ) -> Result<bool> {
     let mut can_load = true;
     for up in upstream_tables {
+        if !isRenameableSysTable(SystemDB, &up.Name.L) {
+            continue;
+        }
         let down = downstream_tables
             .iter()
             .find(|table| table.Name.L == up.Name.L)
-            .ok_or_else(|| Error::new(format!("missed system table: {}", up.Name.O)))?;
+            .ok_or_else(|| {
+                berrors::ErrRestoreIncompatibleSys(format!("missed system table: {}", up.Name.O))
+            })?;
 
-        if down.Columns.len() != up.Columns.len() && up.Name.L != sysUserTableName {
-            return Err(Error::new(format!(
-                "column count mismatch, table: {}, col in cluster: {}, col in backup: {}",
-                up.Name.O,
-                down.Columns.len(),
-                up.Columns.len()
-            )));
-        }
+        let upstream_columns: HashMap<&str, &model::ColumnInfo> = up
+            .Columns
+            .iter()
+            .map(|column| (column.Name.L.as_str(), column))
+            .collect();
 
         for down_col in &down.Columns {
-            let Some(up_col) = up
-                .Columns
-                .iter()
-                .find(|column| column.Name.L == down_col.Name.L)
-            else {
-                if up.Name.L == sysUserTableName {
+            let Some(up_col) = upstream_columns.get(down_col.Name.L.as_str()).copied() else {
+                if can_load_system_table_with_missing_backup_column(
+                    SystemDB,
+                    &up.Name.L,
+                    &down_col.Name.L,
+                    &upstream_columns,
+                ) || can_skip_unrecognized_missing_backup_system_table_column(
+                    SystemDB,
+                    &up.Name.L,
+                    &down_col.Name.L,
+                ) {
                     can_load = false;
                     continue;
                 }
-                return Err(Error::new(format!(
+                return Err(berrors::ErrRestoreIncompatibleSys(format!(
                     "missing column in backup data, table: {}, col: {}",
                     up.Name.O, down_col.Name.O
                 )));
             };
 
-            let collate_eq = up_col.Collate == down_col.Collate;
-            can_load = can_load && collate_eq;
+            let mut upstream_type = up_col.FieldType.clone();
+            upstream_type.SetCollate(up_col.Collate.clone());
+            let mut downstream_type = down_col.FieldType.clone();
+            downstream_type.SetCollate(down_col.Collate.clone());
+            let (type_eq, collate_eq) =
+                astersql_br_pkg_utils::misc::IsTypeCompatible(upstream_type, downstream_type);
+            can_load = can_load && type_eq && collate_eq;
             let collate_compatible = collate_eq
-                || (collation_check
+                || (type_eq
+                    && collation_check
                     && checkSysTableColumnCollateCompatibility(
-                        "mysql",
+                        SystemDB,
                         &down.Name.L,
                         &down_col.Name.L,
                         &up_col.Collate,
                         &down_col.Collate,
                     ));
-            if !collate_compatible {
-                return Err(Error::new(format!(
+            if !(type_eq && collate_compatible) {
+                return Err(berrors::ErrRestoreIncompatibleSys(format!(
                     "incompatible column, table: {}, col in cluster: {}, col in backup: {}",
                     up.Name.O, down_col.Name.O, up_col.Name.O
                 )));
             }
         }
 
-        if up.Name.L == sysUserTableName {
-            for up_col in &up.Columns {
-                if !down
-                    .Columns
-                    .iter()
-                    .any(|column| column.Name.L == up_col.Name.L)
-                {
-                    return Err(Error::new(format!(
-                        "missing column in cluster data, table: {}, col: {}",
-                        up.Name.O, up_col.Name.O
-                    )));
-                }
+        let downstream_columns: HashSet<&str> = down
+            .Columns
+            .iter()
+            .map(|column| column.Name.L.as_str())
+            .collect();
+        for up_col in &up.Columns {
+            if !downstream_columns.contains(up_col.Name.L.as_str()) {
+                return Err(berrors::ErrRestoreIncompatibleSys(format!(
+                    "missing column in cluster data, table: {}, col: {}",
+                    up.Name.O, up_col.Name.O
+                )));
             }
         }
     }

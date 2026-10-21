@@ -35,6 +35,9 @@
 
 use std::collections::HashMap;
 
+use astersql_parser_mysql::r#type::{TypeSet, TypeVarchar};
+use astersql_parser_types::NewFieldType;
+
 use crate::client::NewRestoreClientForTest;
 use crate::export_test::NewTemporaryTableChecker;
 use crate::stubs::{Error, TemporaryDBName, model};
@@ -51,6 +54,15 @@ fn col(name: &str, collate: &str) -> model::ColumnInfo {
     model::ColumnInfo {
         Name: model::CIStr::new(name),
         Collate: collate.into(),
+        ..Default::default()
+    }
+}
+
+fn typed_col(name: &str, collate: &str, field_type: u8) -> model::ColumnInfo {
+    model::ColumnInfo {
+        Name: model::CIStr::new(name),
+        Collate: collate.into(),
+        FieldType: NewFieldType(field_type),
     }
 }
 
@@ -142,6 +154,171 @@ fn test_check_sys_table_compatibility() {
     let mut db_unicode = db.clone();
     db_unicode.Columns[1].Collate = "utf8mb4_unicode_ci".into();
     assert!(CheckSysTableCompatibility(&[db], &[db_unicode], true).is_err());
+}
+
+#[test]
+fn system_table_compatibility_only_allows_configured_missing_columns() {
+    let user = table(
+        "user",
+        vec![
+            col("host", "utf8mb4_bin"),
+            col("super_priv", "utf8mb4_bin"),
+            col("operate_view_priv", "utf8mb4_bin"),
+        ],
+    );
+    let old_user = table(
+        "user",
+        vec![col("host", "utf8mb4_bin"), col("super_priv", "utf8mb4_bin")],
+    );
+    assert!(!CheckSysTableCompatibility(&[user.clone()], &[old_user], false).unwrap());
+
+    let old_user_without_dependency = table("user", vec![col("host", "utf8mb4_bin")]);
+    assert!(
+        CheckSysTableCompatibility(&[user], &[old_user_without_dependency], false).is_err(),
+        "operate_view_priv requires super_priv in the backup"
+    );
+
+    let db = table(
+        "db",
+        vec![
+            col("host", "utf8mb4_bin"),
+            col("operate_view_priv", "utf8mb4_bin"),
+        ],
+    );
+    let old_db = table("db", vec![col("host", "utf8mb4_bin")]);
+    assert!(!CheckSysTableCompatibility(&[db], &[old_db], false).unwrap());
+
+    let bind_info = table(
+        "bind_info",
+        vec![
+            col("source", "utf8mb4_bin"),
+            col("last_used_date", "utf8mb4_bin"),
+        ],
+    );
+    let old_bind_info = table("bind_info", vec![col("source", "utf8mb4_bin")]);
+    assert!(!CheckSysTableCompatibility(&[bind_info.clone()], &[old_bind_info], false).unwrap());
+    let bind_info_without_source = table("bind_info", vec![col("last_used_date", "utf8mb4_bin")]);
+    assert!(CheckSysTableCompatibility(&[bind_info], &[bind_info_without_source], false).is_err());
+
+    let mut downstream_table_priv = typed_col("table_priv", "utf8mb4_bin", TypeSet);
+    downstream_table_priv
+        .FieldType
+        .SetElems(vec!["Select".into(), "Operate View".into()]);
+    let mut upstream_table_priv = typed_col("table_priv", "utf8mb4_bin", TypeSet);
+    upstream_table_priv
+        .FieldType
+        .SetElems(vec!["Select".into()]);
+    assert!(
+        CheckSysTableCompatibility(
+            &[table("tables_priv", vec![downstream_table_priv.clone()])],
+            &[table("tables_priv", vec![upstream_table_priv])],
+            false,
+        )
+        .unwrap()
+    );
+
+    let mut future_table_priv = typed_col("table_priv", "utf8mb4_bin", TypeSet);
+    future_table_priv
+        .FieldType
+        .SetElems(vec!["Select".into(), "Future Priv".into()]);
+    assert!(
+        CheckSysTableCompatibility(
+            &[table("tables_priv", vec![downstream_table_priv])],
+            &[table("tables_priv", vec![future_table_priv])],
+            false,
+        )
+        .is_err()
+    );
+
+    let mut downstream_db_name = typed_col("db", "utf8mb4_bin", TypeVarchar);
+    downstream_db_name.FieldType.SetFlen(64);
+    let mut upstream_db_name = downstream_db_name.clone();
+    upstream_db_name.FieldType.SetFlen(2_000);
+    assert!(
+        CheckSysTableCompatibility(
+            &[table("db", vec![downstream_db_name])],
+            &[table("db", vec![upstream_db_name])],
+            true,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn system_table_replace_columns_match_go_compatibility_expressions() {
+    use crate::systable_restore::{BuildSystemTableReplaceColumns, BuildSystemTableReplaceSQL};
+
+    let user = table(
+        "user",
+        vec![
+            col("host", "utf8mb4_bin"),
+            col("super_priv", "utf8mb4_bin"),
+            col("operate_view_priv", "utf8mb4_bin"),
+        ],
+    );
+    let old_user = table(
+        "user",
+        vec![col("host", "utf8mb4_bin"), col("super_priv", "utf8mb4_bin")],
+    );
+    let (column_names, column_expressions) =
+        BuildSystemTableReplaceColumns("mysql", "user", &old_user, &user).unwrap();
+    assert_eq!(column_names.len(), column_expressions.len());
+    assert!(column_names.contains(&"`operate_view_priv`".to_string()));
+    assert!(column_expressions.contains(&"IF(`Super_priv` = 'Y', 'Y', 'N')".to_string()));
+    let sql =
+        BuildSystemTableReplaceSQL("mysql", &TemporaryDBName("mysql"), "user", &old_user, &user)
+            .unwrap();
+    assert!(sql.starts_with("REPLACE INTO `mysql`.`user`("));
+    assert!(sql.contains("IF(`Super_priv` = 'Y', 'Y', 'N')"));
+    assert!(sql.ends_with("FROM `__TiDB_BR_Temporary_mysql`.`user`;"));
+
+    let old_user_without_dependency = table("user", vec![col("host", "utf8mb4_bin")]);
+    assert!(
+        BuildSystemTableReplaceColumns("mysql", "user", &old_user_without_dependency, &user,)
+            .is_err()
+    );
+
+    let db = table(
+        "db",
+        vec![
+            col("host", "utf8mb4_bin"),
+            col("operate_view_priv", "utf8mb4_bin"),
+        ],
+    );
+    let old_db = table("db", vec![col("host", "utf8mb4_bin")]);
+    let (column_names, column_expressions) =
+        BuildSystemTableReplaceColumns("mysql", "db", &old_db, &db).unwrap();
+    assert_eq!(column_names.len(), column_expressions.len());
+    assert!(column_expressions.contains(&"'N'".to_string()));
+
+    let bind_info = table(
+        "bind_info",
+        vec![
+            col("source", "utf8mb4_bin"),
+            col("last_used_date", "utf8mb4_bin"),
+        ],
+    );
+    let old_bind_info = table("bind_info", vec![col("source", "utf8mb4_bin")]);
+    let (_, column_expressions) =
+        BuildSystemTableReplaceColumns("mysql", "bind_info", &old_bind_info, &bind_info).unwrap();
+    assert!(column_expressions.contains(&"NULL".to_string()));
+
+    let mut future_user = user.clone();
+    future_user.Columns.push(col("future_priv", "utf8mb4_bin"));
+    let (column_names, column_expressions) =
+        BuildSystemTableReplaceColumns("mysql", "user", &old_user, &future_user).unwrap();
+    assert_eq!(column_names.len(), column_expressions.len());
+    assert!(!column_names.contains(&"`future_priv`".to_string()));
+
+    let backup_with_future = table(
+        "user",
+        vec![
+            col("host", "utf8mb4_bin"),
+            col("super_priv", "utf8mb4_bin"),
+            col("future_priv", "utf8mb4_bin"),
+        ],
+    );
+    assert!(BuildSystemTableReplaceColumns("mysql", "user", &backup_with_future, &user).is_err());
 }
 
 /// TestCheckPrivilegeTableRowsCollateCompatibility — Go SQL path.

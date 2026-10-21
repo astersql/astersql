@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use astersql_br_pkg_restore_snap_client::stubs::metautil as snap_metautil;
 use astersql_br_pkg_stream::table_history::{LogBackupTableHistoryManager, TableLocationInfo};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -1041,6 +1042,67 @@ fn match_schema(cfg: &RestoreConfig, db: &str) -> bool {
         || cfg.Config.TableFilter.patterns.iter().any(|pattern| {
             pattern == "*.*" || pattern.trim_matches('`').starts_with(&format!("{db}."))
         })
+}
+
+fn match_restore_file_schema(cfg: &RestoreConfig, db: &str) -> bool {
+    let db = astersql_br_pkg_utils::StripTempDBPrefixIfNeeded(db);
+    if astersql_br_pkg_utils::IsSysDB(&db) && !cfg.RestoreCommonConfig.WithSysTable {
+        return false;
+    }
+    match_schema(cfg, &db)
+}
+
+fn match_restore_file_table(cfg: &RestoreConfig, db: &str, table: &str) -> bool {
+    let db = astersql_br_pkg_utils::StripTempDBPrefixIfNeeded(db);
+    if astersql_br_pkg_utils::IsSysDB(&db) && !cfg.RestoreCommonConfig.WithSysTable {
+        return false;
+    }
+    cfg.Config.TableFilter.MatchTable(&db, table)
+}
+
+pub fn FilterRestoreFiles(
+    databases: &mut [snap_metautil::Database],
+    cfg: &RestoreConfig,
+    load_stats_physical: bool,
+) -> Result<(
+    HashMap<i64, snap_metautil::Table>,
+    HashMap<i64, snap_metautil::Database>,
+)> {
+    let mut table_map = HashMap::new();
+    let mut db_map = HashMap::new();
+
+    for database in databases {
+        let db_name = database.Info.Name.O.clone();
+        if astersql_br_pkg_checkpoint::IsCheckpointDB(&db_name) {
+            continue;
+        }
+        if !load_stats_physical && !match_restore_file_schema(cfg, &db_name) {
+            continue;
+        }
+
+        for table in &mut database.Tables {
+            if !(load_stats_physical
+                && astersql_br_pkg_restore_snap_client::IsStatsTemporaryTable(
+                    &db_name,
+                    &table.Info.Name.O,
+                ))
+                && !match_restore_file_table(cfg, &db_name, &table.Info.Name.O)
+            {
+                continue;
+            }
+            if table.Info.MaterializedView.is_some() || table.Info.MaterializedViewLog.is_some() {
+                continue;
+            }
+            table.Info.MaterializedViewBase = None;
+            table_map.insert(table.Info.ID, table.clone());
+        }
+        db_map.insert(database.Info.ID, database.clone());
+    }
+
+    if db_map.is_empty() && !table_map.is_empty() {
+        return Err(Error::new("contains tables but no databases"));
+    }
+    Ok((table_map, db_map))
 }
 
 fn get_db_name_from_backup<'a>(

@@ -146,6 +146,10 @@ pub mod berrors {
         Error::with_code("BR:Common:ErrUnknown", msg)
     }
 
+    pub fn ErrRestoreIncompatibleSys(msg: impl Into<String>) -> Error {
+        Error::with_code("BR:Restore:ErrRestoreIncompatibleSys", msg)
+    }
+
     /// `ErrRestoreNotFreshCluster`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
     /// 留意空集合、取消上下文与默认值是否保持一致。
     pub fn ErrRestoreNotFreshCluster(msg: impl Into<String>) -> Error {
@@ -838,6 +842,8 @@ pub mod metapb {
 pub mod model {
     use std::fmt;
 
+    use astersql_parser_types::FieldType;
+
     #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
     /// `CIStr`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
     pub struct CIStr {
@@ -868,6 +874,23 @@ pub mod model {
     pub struct ColumnInfo {
         pub Name: CIStr,
         pub Collate: String,
+        pub FieldType: FieldType,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MaterializedViewBaseInfo {
+        pub MLogID: i64,
+        pub MViewIDs: Vec<i64>,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MaterializedViewInfo {
+        pub BaseTableIDs: Vec<i64>,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MaterializedViewLogInfo {
+        pub BaseTableID: i64,
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -900,6 +923,9 @@ pub mod model {
         pub Partition: Option<PartitionInfo>,
         pub Indices: Vec<IndexInfo>,
         pub IsCommonHandle: bool,
+        pub MaterializedViewBase: Option<MaterializedViewBaseInfo>,
+        pub MaterializedView: Option<MaterializedViewInfo>,
+        pub MaterializedViewLog: Option<MaterializedViewLogInfo>,
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq)]

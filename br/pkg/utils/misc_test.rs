@@ -66,19 +66,26 @@ fn test_is_type_compatible() {
         assert!(collate_eq);
     }
     {
-        // NOT NULL 标志不一致。
-        let mut src = NewFieldType(TypeInt24);
+        // Backup NOT NULL data can restore into a nullable target.
+        let mut src = NewFieldType(TypeTimestamp);
         src.AddFlag(NotNullFlag);
-        let target = NewFieldType(TypeInt24);
+        let target = NewFieldType(TypeTimestamp);
+        let (type_eq, collate_eq) = IsTypeCompatible(src.clone(), target.clone());
+        assert!(type_eq);
+        assert!(collate_eq);
+
+        // The reverse direction could put NULL into a NOT NULL target.
+        src.DelFlag(NotNullFlag);
+        let mut target = NewFieldType(TypeTimestamp);
+        target.AddFlag(NotNullFlag);
         let (type_eq, collate_eq) = IsTypeCompatible(src.clone(), target.clone());
         assert!(!type_eq);
         assert!(collate_eq);
 
-        src.DelFlag(NotNullFlag);
-        let mut target = NewFieldType(TypeInt24);
-        target.AddFlag(NotNullFlag);
+        // Matching NOT NULL flags remain compatible.
+        src.AddFlag(NotNullFlag);
         let (type_eq, collate_eq) = IsTypeCompatible(src, target);
-        assert!(!type_eq);
+        assert!(type_eq);
         assert!(collate_eq);
     }
     {

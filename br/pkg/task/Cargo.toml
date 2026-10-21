@@ -17,6 +17,7 @@ lane = 1
 [dependencies]
 astersql-metaservice = { path = "../../../pkg/metaservice" }
 astersql-br-pkg-restore = { path = "../restore" }
+astersql-br-pkg-restore-snap-client = { path = "../restore/snap_client" }
 astersql-br-pkg-gc = { path = "../gc" }
 astersql-br-pkg-aws = { package = "astersql-br-pkg-aws", path = "../aws" }
 astersql-br-pkg-common = { package = "astersql-br-pkg-common", path = "../common" }

@@ -67,8 +67,8 @@ pub const LabelRuleBatchSize: usize = 50;
 /// 返回 `(类型兼容, collation 是否相等)`；collation 独立于类型结果。
 pub fn IsTypeCompatible(src: FieldType, target: FieldType) -> (bool, bool) {
     let collate_eq = src.GetCollate() == target.GetCollate();
-    // NOT NULL / UNSIGNED / EvalType 任一不一致即类型不兼容。
-    if HasNotNullFlag(src.GetFlag()) != HasNotNullFlag(target.GetFlag()) {
+    // Backup NOT NULL data can fit a nullable target, but not the reverse.
+    if !HasNotNullFlag(src.GetFlag()) && HasNotNullFlag(target.GetFlag()) {
         return (false, collate_eq);
     }
     if HasUnsignedFlag(src.GetFlag()) != HasUnsignedFlag(target.GetFlag()) {
