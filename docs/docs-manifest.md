@@ -2400,11 +2400,11 @@
 - [x] [`pkg/types/context.rs.md`](../pkg/types/context.rs.md) @todo
 - [x] [`pkg/types/convert.rs.md`](../pkg/types/convert.rs.md) @todo
 - [x] [`pkg/types/core_time.rs.md`](../pkg/types/core_time.rs.md) @todo
-- [ ] [`pkg/types/datum.rs.md`](../pkg/types/datum.rs.md)
-- [ ] [`pkg/types/datum_eval.rs.md`](../pkg/types/datum_eval.rs.md)
-- [ ] [`pkg/types/enum.rs.md`](../pkg/types/enum.rs.md)
-- [ ] [`pkg/types/errors.rs.md`](../pkg/types/errors.rs.md)
-- [ ] [`pkg/types/etc.rs.md`](../pkg/types/etc.rs.md)
+- [x] [`pkg/types/datum.rs.md`](../pkg/types/datum.rs.md) @todo
+- [x] [`pkg/types/datum_eval.rs.md`](../pkg/types/datum_eval.rs.md) @todo
+- [x] [`pkg/types/enum.rs.md`](../pkg/types/enum.rs.md) @todo
+- [x] [`pkg/types/errors.rs.md`](../pkg/types/errors.rs.md) @todo
+- [x] [`pkg/types/etc.rs.md`](../pkg/types/etc.rs.md)
 - [ ] [`pkg/types/eval_type.rs.md`](../pkg/types/eval_type.rs.md)
 - [ ] [`pkg/types/explain_format.rs.md`](../pkg/types/explain_format.rs.md)
 - [ ] [`pkg/types/field_name.rs.md`](../pkg/types/field_name.rs.md)
