@@ -404,6 +404,11 @@ impl Manager {
         plan_digest: String,
         start_time: Timestamp,
     ) -> Option<Checker> {
+        // Diagnostic queries must not enforce runaway rules or enqueue records
+        // for maintenance workers that were intentionally not started.
+        if astersql_config::diagnosticmode::Enabled() {
+            return None;
+        }
         let resource_group = self.resourceGroup(group).ok().flatten()?;
         // 无 plan digest，或既无设置也无活跃 watch 时跳过。
         if plan_digest.is_empty()

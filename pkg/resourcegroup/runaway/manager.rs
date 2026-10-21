@@ -61,6 +61,8 @@ struct ManagerInner {
     quarantine_records: Mutex<Vec<QuarantineRecord>>,
     stale_records: Mutex<Vec<QuarantineRecord>>,
     syncer: Mutex<Syncer>,
+    /// Whether background maintenance was enabled when the manager was created.
+    in_normal_mode: bool,
     stopped: AtomicBool,
 }
 
@@ -86,8 +88,14 @@ impl Manager {
             runaway_records: Mutex::new(Vec::new()),
             quarantine_records: Mutex::new(Vec::new()),
             stale_records: Mutex::new(Vec::new()),
+            in_normal_mode: !astersql_config::diagnosticmode::Enabled(),
             stopped: AtomicBool::new(false),
         }))
+    }
+
+    /// Reports whether this manager was initialized with maintenance enabled.
+    pub fn inNormalMode(&self) -> bool {
+        self.0.in_normal_mode
     }
 
     /// 从目录查询资源组。

@@ -1,6 +1,7 @@
 // Copyright 2026 AsterSQL.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::manager::{Manager, ManualSource};
 use crate::record::QuarantineRecord;
@@ -16,6 +17,17 @@ impl ResourceGroupCatalog for EmptyCatalog {
     }
 }
 
+struct ConfiguredCatalog;
+
+impl ResourceGroupCatalog for ConfiguredCatalog {
+    fn GetResourceGroup(&self, name: &str) -> Result<Option<ResourceGroup>> {
+        Ok(Some(ResourceGroup {
+            name: name.into(),
+            runaway_settings: Some(Default::default()),
+        }))
+    }
+}
+
 fn manager() -> Manager {
     Manager::NewRunawayManager(
         Arc::new(EmptyCatalog),
@@ -23,6 +35,65 @@ fn manager() -> Manager {
         Arc::new(NoopExecutor),
         Arc::new(AllSystemTables),
     )
+}
+
+#[test]
+fn diagnostic_mode_suppresses_runaway_manager_work() {
+    struct RestoreInTest(bool);
+    impl Drop for RestoreInTest {
+        fn drop(&mut self) {
+            astersql_util_intest::InTest.store(self.0, Ordering::SeqCst);
+        }
+    }
+
+    struct RestoreMode<F: FnOnce()>(Option<F>);
+    impl<F: FnOnce()> Drop for RestoreMode<F> {
+        fn drop(&mut self) {
+            if let Some(restore) = self.0.take() {
+                restore();
+            }
+        }
+    }
+
+    let previous = astersql_util_intest::InTest.swap(true, Ordering::SeqCst);
+    let _restore_in_test = RestoreInTest(previous);
+    let _restore_mode = RestoreMode(Some(astersql_config::diagnosticmode::SetForTest(false)));
+
+    let normal = Manager::NewRunawayManager(
+        Arc::new(ConfiguredCatalog),
+        "server-1",
+        Arc::new(NoopExecutor),
+        Arc::new(AllSystemTables),
+    );
+    assert!(normal.inNormalMode());
+    assert!(
+        normal
+            .DeriveChecker(
+                "default",
+                "select 1".into(),
+                "sql-digest".into(),
+                "plan-digest".into(),
+                0,
+            )
+            .is_some()
+    );
+
+    let _restore_diagnostic = RestoreMode(Some(astersql_config::diagnosticmode::SetForTest(true)));
+    let diagnostic = manager();
+    assert!(!diagnostic.inNormalMode());
+    assert!(
+        normal
+            .DeriveChecker(
+                "default",
+                "select 1".into(),
+                "sql-digest".into(),
+                "plan-digest".into(),
+                0,
+            )
+            .is_none()
+    );
+    diagnostic.Stop();
+    assert!(diagnostic.stopped());
 }
 
 fn watch(id: i64, source: &str, cause: &str) -> QuarantineRecord {

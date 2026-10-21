@@ -11,6 +11,12 @@ path = "lib.rs"
 go-package = "pkg/resourcegroup/runaway"
 legacy-tasks = ["task-1041", "task-1044", "task-1045"]
 
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+
+[dev-dependencies]
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+
 [target.'cfg(windows)'.dependencies]
 "astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
 "astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }

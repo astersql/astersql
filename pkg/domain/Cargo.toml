@@ -50,6 +50,7 @@ zip = { version = "0.6.6", default-features = false }
 [dev-dependencies]
 serde_json = "1"
 tonic = { version = "0.12", default-features = false }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }
 "astersql-store-mockstore-mockstorage" = { package = "astersql-store-mockstore-mockstorage", path = "../store/mockstore/mockstorage" }
 
 [target.'cfg(windows)'.dependencies]

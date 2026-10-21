@@ -7856,6 +7856,7 @@ dependencies = [
 name = "astersql-resourcegroup-runaway"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-ddl",
  "astersql-infoschema",
  "astersql-kv",
@@ -7873,6 +7874,7 @@ dependencies = [
  "astersql-util-chunk",
  "astersql-util-dbterror-exeerrors",
  "astersql-util-generic",
+ "astersql-util-intest",
  "astersql-util-logutil",
  "astersql-util-mock",
  "astersql-util-sqlexec",
