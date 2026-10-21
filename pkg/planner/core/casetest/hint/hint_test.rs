@@ -475,37 +475,59 @@ fn test_optimizer_cost_factor_hints_set_var_parses_into_stmt_hints() {
     }
 }
 
-// test_optimize_hint_on_partition_table_unknown_hint_warnings 对应 Go 用例结尾的
-// MAX_EXECUTION_TIME + 未知 hint warning 计数断言。Go 里 `dtc(name=tt)`、
-// `unknow(t1,t2)` 之所以产生 warning，是因为 hint 注释在词法/语法层就无法识别这些
-// hint 名——这一步发生在 `astersql-parser::Parser::Parse` 里，不依赖 optimizer/
-// executor，因此可以在不执行 SQL 的情况下如实复现同一条生产代码路径。
-/// 回归：未知 hint 名在 Parser 层降级为 warning，计数与 Go 一致。
+// test_optimize_hint_on_partition_table_unknown_hint_warnings 对应 Go
+// TestOptimizeHintOnPartitionTable/off 结尾的 MAX_EXECUTION_TIME + 未知 hint
+// warning 计数断言。每个 case 都使用新 Parser，保持 Go 子测试的语句隔离；
+// 真实 TestKit 执行则在 mockStmtSlow 将语句准备延迟 20 ms 时验证显式
+// MAX_EXECUTION_TIME(0) 不会沿用旧的 10 ms 超时。
+/// 回归：禁用 deadline 时仍记录 MAX_EXECUTION_TIME hint，且 warning 逐语句隔离。
 #[test]
 fn test_optimize_hint_on_partition_table_unknown_hint_warnings() {
-    let mut parser = New();
-    let (_statements, warnings) = parser
-        .Parse("SELECT /*+ MAX_EXECUTION_TIME(10) */ 1", "", "")
-        .expect("fully recognized hint list should parse cleanly");
-    assert_eq!(warnings.len(), 0);
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let tk = TestKit::new(store);
+    let _slow_statement = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/session/mockStmtSlow",
+        "return(20)",
+    );
 
-    let mut parser = New();
-    let (_statements, warnings) = parser
-        .Parse(
-            "SELECT /*+ MAX_EXECUTION_TIME(10), dtc(name=tt) */ 1",
-            "",
-            "",
-        )
-        .expect("unknown hint name degrades to a warning, not a parse error");
-    assert_eq!(warnings.len(), 1, "warnings={warnings:?}");
+    for (warning_count, sql) in [
+        (
+            0,
+            "SELECT /*+ MAX_EXECUTION_TIME(0) */ /* sleep */ SLEEP(0.001)",
+        ),
+        (
+            1,
+            "SELECT /*+ MAX_EXECUTION_TIME(0), dtc(name=tt) */ /* sleep */ SLEEP(0.001)",
+        ),
+        (
+            2,
+            "SELECT /*+ MAX_EXECUTION_TIME(0), dtc(name=tt) unknow(t1,t2) */ /* sleep */ SLEEP(0.001)",
+        ),
+    ] {
+        tk.MustQuery(sql, Vec::new()).Check(vec![vec!["0"]]);
 
-    let mut parser = New();
-    let (_statements, warnings) = parser
-        .Parse(
-            "SELECT /*+ MAX_EXECUTION_TIME(10), dtc(name=tt) unknow(t1,t2) */ 1",
-            "",
-            "",
-        )
-        .expect("multiple unknown hint names each degrade to their own warning");
-    assert_eq!(warnings.len(), 2, "warnings={warnings:?}");
+        let mut parser = New();
+        let (statements, warnings) = parser
+            .Parse(sql, "", "")
+            .unwrap_or_else(|error| panic!("parse `{sql}`: {error}"));
+        assert_eq!(warnings.len(), warning_count, "sql={sql}: {warnings:?}");
+
+        let statement = statements
+            .first()
+            .unwrap_or_else(|| panic!("sql={sql}: parser returned no statement"));
+        let hints = select_table_hints(statement.as_ref());
+        let (stmt_hints, _offs, hint_warnings) =
+            ParseStmtHints(hints, allow_any_set_var, no_hypo_index, "test".into(), 0);
+        assert!(
+            hint_warnings.is_empty(),
+            "sql={sql}: unexpected statement-hint warnings {hint_warnings:?}"
+        );
+        assert!(stmt_hints.HasMaxExecutionTime, "sql={sql}");
+        assert_eq!(stmt_hints.MaxExecutionTime, 0, "sql={sql}");
+        assert_eq!(
+            tk.Session().LastStatementHintsForTest().MaxExecutionTime,
+            0,
+            "sql={sql}"
+        );
+    }
 }
