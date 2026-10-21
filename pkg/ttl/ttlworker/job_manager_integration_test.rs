@@ -136,19 +136,18 @@ fn submission_enforces_leader_enabled_and_table_identity() {
 }
 
 #[test]
-fn index_scan_submission_obeys_version_gate_and_persists_choice() {
+fn ttl_job_index_scan_waits_for_finalization_after_reading_persisted_choice() {
     let mut manager = JobManager::new("manager-1", 1);
     manager.is_leader = true;
-    manager.refresh_tables([ttl_table(10, 11, true)]);
-    manager.set_ttl_index(
-        11,
-        Some(ScanIndex {
-            id: 9,
-            name: "ttl_idx".into(),
-            columns: vec!["created_at".into()],
-            unique: false,
-        }),
-    );
+    let table = ttl_table(10, 11, true);
+    manager.refresh_tables([table.clone()]);
+    let index = ScanIndex {
+        id: 9,
+        name: "ttl_idx".into(),
+        columns: vec!["created_at".into()],
+        unique: false,
+    };
+    manager.set_ttl_index(11, Some(index.clone()));
     let local = ServerInfo {
         version: VersionInfo {
             version: "v1".into(),
@@ -179,7 +178,40 @@ fn index_scan_submission_obeys_version_gate_and_persists_choice() {
     assert!(manager.submit_job(10, 11, "cached", 130).is_err());
     manager.submit_job(10, 11, "ready", 161).unwrap();
     let job_id = "11-161-ready";
+
+    manager.store.tasks_by_job.insert(job_id.to_owned(), 1);
+    manager
+        .task_manager
+        .push_waiting(crate::job_manager::initial_managed_task(TtlScanTask {
+            job_id: job_id.to_owned(),
+            scan_id: 0,
+            table,
+            expire_time: 101,
+            range_start: None,
+            range_end: None,
+            batch_size: 128,
+            scan_index: Some(index),
+        }));
+    assert_eq!(manager.task_manager.reschedule(161).len(), 1);
+    assert!(manager.task_manager.report_finished(ScanResult {
+        job_id: job_id.to_owned(),
+        scan_id: 0,
+        reason: TaskTerminateReason::Finished,
+        error: None,
+        scanned_rows: 2,
+    }));
+
+    // Go holds ttl-finish here so the task row (and scan_index_id) is still
+    // readable. Rust finalization is synchronous, so keep it explicitly after
+    // the persisted-choice assertion rather than racing it in the background.
+    assert!(manager.store.active_jobs.contains_key(&11));
+    assert_eq!(manager.store.history[job_id].finish_time, None);
     assert_eq!(manager.job_scan_indexes[job_id].as_ref().unwrap().id, 9);
+
+    assert_eq!(manager.finish_completed_jobs(162), vec![job_id]);
+    assert!(!manager.store.active_jobs.contains_key(&11));
+    assert!(!manager.store.tasks_by_job.contains_key(job_id));
+    assert_eq!(manager.store.history[job_id].finish_time, Some(162));
 }
 
 /// 对应 Go 心跳和 `TestRescheduleJobs`：本地 job 续约，失联外部 job 可被接管。
