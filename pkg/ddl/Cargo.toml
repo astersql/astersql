@@ -46,8 +46,6 @@ astersql-ddl-schemaver = { path = "schemaver" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
 "astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
 "astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }
-"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../util/dbterror/plannererrors" }
-"astersql-util-sem-compat" = { package = "astersql-util-sem-compat", path = "../util/sem/compat" }
 
 [features]
 default = []
@@ -162,7 +160,6 @@ astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage"
 "astersql-util-context" = { package = "astersql-util-context", path = "../util/context" }
 "astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }
 "astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../util/dbterror/exeerrors" }
-"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../util/dbterror/plannererrors" }
 "astersql-util-dbutil" = { package = "astersql-util-dbutil", path = "../util/dbutil" }
 "astersql-util-domainutil" = { package = "astersql-util-domainutil", path = "../util/domainutil" }
 "astersql-util-engine" = { package = "astersql-util-engine", path = "../util/engine" }
@@ -220,4 +217,3 @@ astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage"
 "astersql-testkit-testutil" = { package = "astersql-testkit-testutil", path = "../testkit/testutil" }
 "astersql-util-deeptest" = { package = "astersql-util-deeptest", path = "../util/deeptest" }
 "astersql-util-mock" = { package = "astersql-util-mock", path = "../util/mock" }
-"astersql-util-sem-compat" = { package = "astersql-util-sem-compat", path = "../util/sem/compat" }
