@@ -20214,7 +20214,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "tipb"
 version = "0.0.1"
-source = "git+https://github.com/pingcap/tipb.git?rev=07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf#07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf"
+source = "git+https://github.com/pingcap/tipb.git?rev=59b678398b175538bba2599a1aefd3b4ecb1fd3d#59b678398b175538bba2599a1aefd3b4ecb1fd3d"
 dependencies = [
  "futures",
  "grpcio",

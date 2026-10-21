@@ -36,6 +36,7 @@ mod merge_global;
 mod row_sampler;
 mod runtime_stats_builder;
 mod sample;
+mod sampled_ndv;
 mod scalar;
 mod table;
 
@@ -55,6 +56,7 @@ pub use merge_global::*;
 pub use row_sampler::*;
 pub use runtime_stats_builder::*;
 pub use sample::*;
+pub(crate) use sampled_ndv::*;
 pub use scalar::*;
 pub use table::*;
 

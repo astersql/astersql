@@ -19,7 +19,7 @@
 // 集合超限时扩大 `mask` 并压缩，估算 NDV ≈ `(mask + 1) * hashset.len()`。
 // 另提供 tipb protobuf 编解码，供分布式 ANALYZE 合并草图。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use protobuf::Message as _;
 
@@ -29,18 +29,21 @@ pub const MaxSketchSize: usize = 10_000;
 /// Flajolet–Martin 草图：用稀疏哈希集合近似基数。
 #[derive(Clone, Debug)]
 pub struct FMSketch {
-    /// 当前保留的哈希值集合（均满足 `hash & mask == 0`）。
-    hashset: HashSet<u64>,
+    /// 当前保留的哈希值；sampled sketch 中的 `true` 表示该 hash 在样本里出现多次。
+    pub(crate) hashset: HashMap<u64, bool>,
+    /// sampled sketch 使用的总行数、样本行数和 NULL 行数。
+    pub(crate) ndvCounts: Option<crate::sampled_ndv::NdvCounts>,
     /// 低位掩码；越大表示采样越稀疏，NDV 放大倍数越高。
-    mask: u64,
+    pub(crate) mask: u64,
     /// 允许保留的最大哈希个数，超过则扩大 mask 并压缩。
-    maxSize: usize,
+    pub(crate) maxSize: usize,
 }
 
 /// 创建空的 FMSketch，预分配 `max_size` 容量。
 pub fn NewFMSketch(max_size: usize) -> FMSketch {
     FMSketch {
-        hashset: HashSet::with_capacity(max_size),
+        hashset: HashMap::with_capacity(max_size),
+        ndvCounts: None,
         mask: 0,
         maxSize: max_size,
     }
@@ -54,16 +57,30 @@ impl FMSketch {
 
     /// 估算 NDV：`(mask + 1) * 当前哈希集合大小`。
     pub fn NDV(&self) -> i64 {
+        if self.ndvCounts.is_some() {
+            return self.sampledNDV();
+        }
         (self.mask + 1) as i64 * self.hashset.len() as i64
     }
 
     /// 插入一个哈希值；不满足 mask 过滤则丢弃，超限则扩大 mask 并压缩集合。
     fn insertHashValue(&mut self, hash_value: u64) {
+        self.mergeHashValue(hash_value, false);
+    }
+
+    /// 合并单个 hash，并在 sampled sketch 中保留“样本内重复”状态。
+    fn mergeHashValue(&mut self, hash_value: u64, repeated: bool) {
         // 仅保留低位与 mask 按位与为 0 的哈希（等价于按 2^k 抽样）。
         if hash_value & self.mask != 0 {
             return;
         }
-        self.hashset.insert(hash_value);
+        if let Some(already_repeated) = self.hashset.get_mut(&hash_value) {
+            if self.ndvCounts.is_some() && !*already_repeated {
+                *already_repeated = true;
+            }
+            return;
+        }
+        self.hashset.insert(hash_value, repeated);
         if self.hashset.len() > self.maxSize {
             // mask = mask*2+1：多约束一位，过滤掉约一半元素。
             self.mask = self.mask * 2 + 1;
@@ -72,7 +89,7 @@ impl FMSketch {
     }
 
     fn filterHashes(&mut self) {
-        self.hashset.retain(|value| value & self.mask == 0);
+        self.hashset.retain(|value, _| value & self.mask == 0);
     }
 
     /// 将单个 Datum 编码哈希后插入草图。
@@ -101,14 +118,20 @@ impl FMSketch {
             self.mask = other.mask;
             self.filterHashes();
         }
-        for value in &other.hashset {
-            self.insertHashValue(*value);
+        if let Some(other_counts) = other.ndvCounts {
+            let counts = self.ndvCounts.get_or_insert_default();
+            counts.rows += other_counts.rows;
+            counts.samples += other_counts.samples;
+            counts.nulls += other_counts.nulls;
+        }
+        for (value, repeated) in &other.hashset {
+            self.mergeHashValue(*value, *repeated);
         }
     }
 
-    /// 粗略内存占用：固定头 16 字节 + 每个哈希 8 字节。
+    /// 对齐 Go 估算：结构/map 固定 80 字节，每个条目约 30 字节，sampled counts 24 字节。
     pub fn MemoryUsage(&self) -> i64 {
-        16 + 8 * self.hashset.len() as i64
+        80 + 30 * self.hashset.len() as i64 + if self.ndvCounts.is_some() { 24 } else { 0 }
     }
 
     /// 返回当前 mask。
@@ -118,7 +141,7 @@ impl FMSketch {
 
     /// 返回排序后的哈希值列表（便于稳定序列化/断言）。
     pub fn hash_values(&self) -> Vec<u64> {
-        let mut values = self.hashset.iter().copied().collect::<Vec<_>>();
+        let mut values = self.hashset.keys().copied().collect::<Vec<_>>();
         values.sort_unstable();
         values
     }
@@ -243,7 +266,17 @@ pub fn FMSketchToProto(sketch: Option<&FMSketch>) -> tipb::FmSketch {
     let mut proto = tipb::FmSketch::new();
     if let Some(sketch) = sketch {
         proto.set_mask(sketch.mask);
-        proto.set_hashset(sketch.hash_values());
+        let mut singles = Vec::new();
+        let mut repeated = Vec::new();
+        for (hash, is_repeated) in &sketch.hashset {
+            if *is_repeated {
+                repeated.push(*hash);
+            } else {
+                singles.push(*hash);
+            }
+        }
+        proto.set_hashset(singles);
+        proto.set_multi_hashset(repeated);
     }
     proto
 }
@@ -252,7 +285,13 @@ pub fn FMSketchToProto(sketch: Option<&FMSketch>) -> tipb::FmSketch {
 pub fn FMSketchFromProto(proto: Option<&tipb::FmSketch>) -> Option<FMSketch> {
     let proto = proto?;
     Some(FMSketch {
-        hashset: proto.get_hashset().iter().copied().collect(),
+        hashset: proto
+            .get_hashset()
+            .iter()
+            .copied()
+            .map(|hash| (hash, false))
+            .collect(),
+        ndvCounts: None,
         mask: proto.get_mask(),
         maxSize: 0,
     })

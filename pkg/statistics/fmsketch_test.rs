@@ -45,7 +45,7 @@ fn fm_sketch_deduplicates_and_respects_max_size() {
     sketch.InsertValue(&context, types::NewIntDatum(1)).unwrap();
     sketch.InsertValue(&context, types::NewIntDatum(1)).unwrap();
     assert_eq!(sketch.NDV(), 1);
-    assert_eq!(sketch.MemoryUsage(), 24);
+    assert_eq!(sketch.MemoryUsage(), 110);
 
     sketch.InsertValue(&context, types::NewIntDatum(2)).unwrap();
     assert_eq!(sketch.hash_values().len(), 2);
@@ -65,7 +65,7 @@ fn fm_sketch_proto_and_nil_contracts_match_go() {
     assert_eq!(sketch.mask(), 3);
     assert_eq!(sketch.hash_values(), vec![4, 8]);
     assert_eq!(sketch.NDV(), 8);
-    assert_eq!(sketch.MemoryUsage(), 32);
+    assert_eq!(sketch.MemoryUsage(), 140);
 
     let converted = FMSketchToProto(Some(&sketch));
     assert_eq!(converted.get_mask(), 3);
@@ -99,4 +99,140 @@ fn fm_sketch_merge_aligns_to_the_larger_mask() {
     assert_eq!(left.mask(), 3);
     assert_eq!(left.hash_values(), vec![4, 8, 12]);
     assert_eq!(left.NDV(), 12);
+}
+
+/// Go `SubTestSampledNDV`：合并 sampled sketches 时保留 singleton/repeated 状态，
+/// 累加行数并用 GEE 公式估算 NDV。
+#[test]
+fn sampled_ndv_merges_hash_multiplicity_and_row_counts() {
+    fn sampled(singles: Vec<u64>, repeated: Vec<u64>, counts: NdvCounts) -> FMSketch {
+        let mut proto = tipb::FmSketch::new();
+        proto.set_hashset(singles);
+        proto.set_multi_hashset(repeated);
+        newSampledFMSketch(&proto, counts)
+    }
+
+    let left = sampled(
+        vec![1, 3],
+        vec![2],
+        NdvCounts {
+            rows: 50,
+            samples: 5,
+            nulls: 10,
+        },
+    );
+    let right = sampled(
+        vec![1, 4],
+        vec![],
+        NdvCounts {
+            rows: 30,
+            samples: 3,
+            nulls: 10,
+        },
+    );
+
+    for (first, second) in [(&left, &right), (&right, &left)] {
+        let mut merged = first.Copy();
+        merged.MergeFMSketch(second);
+        assert_eq!(
+            merged.hashset,
+            [(1, true), (2, true), (3, false), (4, false)]
+                .into_iter()
+                .collect::<std::collections::HashMap<u64, bool>>()
+        );
+        assert_eq!(merged.NDV(), 8);
+        assert_eq!(merged.ndvCounts.unwrap().nulls, 20);
+        assert_eq!(merged.MemoryUsage(), 224);
+    }
+
+    // ANALYZE 先分配普通空 sketch，首个 sampled 响应会把它升级为 sampled。
+    let mut root = NewFMSketch(MaxSketchSize);
+    root.MergeFMSketch(&left);
+    root.MergeFMSketch(&NewFMSketch(MaxSketchSize));
+    root.MergeFMSketch(&right);
+    assert_eq!(root.ndvCounts.unwrap().rows, 80);
+    assert_eq!(root.NDV(), 8);
+
+    let mut empty = sampled(
+        vec![],
+        vec![],
+        NdvCounts {
+            rows: 10,
+            samples: 0,
+            nulls: 0,
+        },
+    );
+    assert_eq!(empty.NDV(), 0);
+    empty.MergeFMSketch(&left);
+    assert_eq!(empty.ndvCounts.unwrap().rows, 60);
+    assert_eq!(empty.ndvCounts.unwrap().samples, 5);
+    assert_eq!(empty.NDV(), 8);
+
+    // sample count 字段的“存在性”区分普通与 sampled sketch，值为 0 也仍是 sampled。
+    for sampled_input in [false, true] {
+        let mut proto = tipb::RowSampleCollector::new();
+        proto.set_count(1);
+        proto.set_null_counts(vec![0]);
+        proto.set_total_size(vec![0]);
+        proto.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+            tipb::FmSketch::new(),
+        ]));
+        if sampled_input {
+            proto.set_ndv_sample_count(0);
+        }
+        let restored = baseCollector::FromProto(&proto);
+        assert_eq!(restored.FMSketches[0].ndvCounts.is_some(), sampled_input);
+    }
+
+    // 无样本行或没有非 NULL 行时 NDV 为 0。
+    assert_eq!(
+        sampled(
+            vec![],
+            vec![],
+            NdvCounts {
+                rows: 200,
+                samples: 0,
+                nulls: 0
+            }
+        )
+        .NDV(),
+        0
+    );
+    assert_eq!(
+        sampled(
+            vec![],
+            vec![],
+            NdvCounts {
+                rows: 10,
+                samples: 2,
+                nulls: 10
+            }
+        )
+        .NDV(),
+        0
+    );
+
+    // schema 保证唯一时，BuildHistAndTopN 使用行数而不是 sampled sketch 估算。
+    let context = stmtctx::NewStmtCtx();
+    let mut collector = SampleCollector::New(15, MaxSketchSize);
+    collector.FMSketch = sampled(
+        (1..=14).collect(),
+        vec![],
+        NdvCounts {
+            rows: 3_000,
+            samples: 15,
+            nulls: 0,
+        },
+    );
+    for value in 0..15 {
+        collector
+            .Collect(&context, types::NewIntDatum(value))
+            .unwrap();
+    }
+    collector.Count = 3_000;
+    collector.Unique = true;
+    let field_type = types::NewFieldType(types::mysql::TypeLonglong);
+    let (histogram, _) =
+        BuildHistAndTopN(&context, 256, 0, 1, &mut collector, &field_type, true).unwrap();
+    assert_eq!(histogram.NDV, 3_000);
 }

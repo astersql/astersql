@@ -21,7 +21,9 @@ use std::mem::size_of;
 
 use protobuf::RepeatedField;
 
-use crate::{FMSketch, FMSketchFromProto, FMSketchToProto, NewFMSketch};
+use crate::{
+    FMSketch, FMSketchFromProto, FMSketchToProto, NdvCounts, NewFMSketch, newSampledFMSketch,
+};
 
 /// 行采样收集器接口：合并、采样单行、访问基础字段。
 pub trait RowSampleCollector {
@@ -162,7 +164,20 @@ impl baseCollector {
             FMSketches: proto
                 .get_fm_sketch()
                 .iter()
-                .filter_map(|sketch| FMSketchFromProto(Some(sketch)))
+                .enumerate()
+                .filter_map(|(index, sketch)| {
+                    if proto.has_ndv_sample_count() {
+                        return Some(newSampledFMSketch(
+                            sketch,
+                            NdvCounts {
+                                rows: proto.get_count(),
+                                samples: proto.get_ndv_sample_count(),
+                                nulls: proto.get_null_counts()[index],
+                            },
+                        ));
+                    }
+                    FMSketchFromProto(Some(sketch))
+                })
                 .collect(),
             TotalSizes: proto.get_total_size().to_vec(),
             Count: proto.get_count(),

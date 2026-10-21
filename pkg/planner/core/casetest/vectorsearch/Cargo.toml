@@ -25,4 +25,4 @@ legacy-tasks = ["task-1429"]
 "astersql-types" = { package = "astersql-types", path = "../../../../types" }
 "astersql-util-codec" = { package = "astersql-util-codec", path = "../../../../util/codec" }
 protobuf = "=2.8.0"
-tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "59b678398b175538bba2599a1aefd3b4ecb1fd3d", default-features = false, features = ["protobuf-codec"] }

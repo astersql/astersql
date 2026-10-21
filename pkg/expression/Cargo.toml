@@ -75,7 +75,7 @@ serde_json = "1"
 sem-dependency = { package = "astersql-util-sem", path = "../util/sem" }
 session-variable-dependency = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
 thiserror = "2"
-tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "59b678398b175538bba2599a1aefd3b4ecb1fd3d", default-features = false, features = ["protobuf-codec"] }
 unicode-general-category = "1"
 uuid = { version = "1", features = ["v1", "v4", "v7"] }
 
