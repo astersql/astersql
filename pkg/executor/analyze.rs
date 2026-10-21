@@ -186,6 +186,7 @@ pub enum analyzeOptionType {
     SampleRate,
     NumBuckets,
     NumTopN,
+    NDVRate,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -250,6 +251,10 @@ pub struct analyzeColumnsExec {
     pub tableID: analyzeTableID,
     pub samplingStatsConcurrency: Arc<AtomicUsize>,
     pub memTracker: Option<Arc<dyn memoryTracker>>,
+    /// Raw statement/saved options, used to distinguish a requested NDVRATE.
+    pub opts: BTreeMap<analyzeOptionType, u64>,
+    /// Rate actually sent to storage; `None` means full-input NDV.
+    pub ndvRate: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -630,6 +635,11 @@ impl AnalyzeExec {
         let (tasks, analyze_count, skipped) =
             filterAndCollectTasks(&self.tasks, self.runtime.as_ref())?;
         warnLockedTableMsg(self.runtime.as_ref(), analyze_count, &skipped);
+        warnUnusedNDVRate(
+            self.runtime.as_ref(),
+            &tasks,
+            astersql_sessionctx_vardef::AnalyzeSampledNDVThreshold.Load(),
+        );
         if tasks.is_empty() {
             return Ok(());
         }
@@ -812,6 +822,9 @@ impl AnalyzeExec {
             });
             let buckets = saved_value(analyzeOptionType::NumBuckets, |value| value.to_string());
             let topn = saved_value(analyzeOptionType::NumTopN, |value| value.to_string());
+            let ndv_rate = saved_value(analyzeOptionType::NDVRate, |value| {
+                f64::from_bits(value).to_string()
+            });
             let column_ids = option
                 .columnList
                 .iter()
@@ -819,13 +832,13 @@ impl AnalyzeExec {
                 .collect::<Vec<_>>()
                 .join(",");
             values.push(format!(
-                "({},{sample_num},{sample_rate},{buckets},{topn},'{}','{column_ids}')",
+                "({},{sample_num},{sample_rate},{buckets},{topn},'{}','{column_ids}',{ndv_rate})",
                 option.physicalTableID,
                 option.columnChoice.replace('\'', "''")
             ));
         }
         let sql = format!(
-            "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids) VALUES {}",
+            "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids,ndv_rate) VALUES {}",
             values.join(",")
         );
         self.runtime.execute_internal_sql(&sql)?;
@@ -835,6 +848,7 @@ impl AnalyzeExec {
                 (analyzeOptionType::SampleRate, "sample_rate"),
                 (analyzeOptionType::NumBuckets, "buckets"),
                 (analyzeOptionType::NumTopN, "topn"),
+                (analyzeOptionType::NDVRate, "ndv_rate"),
             ]
             .into_iter()
             .filter(|(option_type, _)| reset_options.contains(option_type))
@@ -1163,6 +1177,45 @@ pub fn warnLockedTableMsg(
         format!("skip analyze locked table: {tables}")
     };
     runtime.append_warning(AnalyzeError(message));
+}
+
+/// Warn when NDVRATE was requested but every remaining column task uses full input.
+fn warnUnusedNDVRate(runtime: &dyn analyzeRuntime, tasks: &[Arc<analyzeTask>], threshold: i64) {
+    if threshold == 0 {
+        return;
+    }
+    let mut requested = false;
+    let mut used = false;
+    for task in tasks {
+        if task.taskType != taskType::colTask {
+            continue;
+        }
+        let executor = task
+            .colExec
+            .as_ref()
+            .expect("column analyze task requires column executor");
+        used |= executor.ndvRate.is_some();
+        requested |= executor
+            .opts
+            .get(&analyzeOptionType::NDVRate)
+            .map(|bits| f64::from_bits(*bits))
+            .is_some_and(|rate| rate > 0.0 && rate < 1.0);
+    }
+    if requested && !used {
+        runtime.append_warning(AnalyzeError(format!(
+            "NDVRATE is not used because no table or partition has more rows than {}({threshold})",
+            astersql_sessionctx_vardef::TiDBAnalyzeSampledNDVThreshold
+        )));
+    }
+}
+
+/// Test seam for the post-lock filtering warning decision.
+pub fn warnUnusedNDVRateForTest(
+    runtime: &dyn analyzeRuntime,
+    tasks: &[Arc<analyzeTask>],
+    threshold: i64,
+) {
+    warnUnusedNDVRate(runtime, tasks, threshold);
 }
 
 /// 从列或索引执行器取出 analyzeTableID。

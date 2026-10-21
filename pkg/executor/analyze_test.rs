@@ -25,12 +25,109 @@ use crate::analyze::{
     analyzeOptionType, analyzePlan, analyzeResultPart, analyzeResults, analyzeRuntime,
     analyzeTableID, analyzeTask, columnInfo, globalStatsKey, globalStatsMap, handleGlobalStats,
     histogram, killSignal, memoryTracker, statsObject, taskType, v2AnalyzeOptions,
+    warnUnusedNDVRateForTest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+
+struct NoopGlobalAccessor;
+
+impl astersql_sessionctx_variable::GlobalVarAccessor for NoopGlobalAccessor {
+    fn get_global_sys_var(
+        &self,
+        name: &str,
+    ) -> Result<String, astersql_sessionctx_variable::VariableError> {
+        Err(astersql_sessionctx_variable::VariableError::unknown(name))
+    }
+
+    fn set_global_sys_var_only(
+        &mut self,
+        _ctx: &astersql_sessionctx_variable::Context,
+        _name: &str,
+        _value: &str,
+        _update_local: bool,
+    ) -> Result<(), astersql_sessionctx_variable::VariableError> {
+        Ok(())
+    }
+
+    fn get_tidb_table_value(
+        &self,
+        name: &str,
+    ) -> Result<String, astersql_sessionctx_variable::VariableError> {
+        Err(astersql_sessionctx_variable::VariableError::unknown(name))
+    }
+
+    fn set_tidb_table_value(
+        &mut self,
+        _name: &str,
+        _value: &str,
+        _comment: &str,
+    ) -> Result<(), astersql_sessionctx_variable::VariableError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct BootstrapUpgradeState {
+    globals: BTreeMap<String, String>,
+    added_ndv_rate_column: bool,
+}
+
+impl astersql_session::upgrade_run::BootstrapVariableUpgradeRuntime for BootstrapUpgradeState {
+    type Error = String;
+
+    fn insert_global_if_missing(&mut self, name: &str, value: &str) -> Result<(), Self::Error> {
+        self.globals
+            .entry(name.to_owned())
+            .or_insert_with(|| value.to_owned());
+        Ok(())
+    }
+
+    fn delete_global_if_equal(&mut self, name: &str, value: &str) -> Result<(), Self::Error> {
+        if self.globals.get(name).is_some_and(|stored| stored == value) {
+            self.globals.remove(name);
+        }
+        Ok(())
+    }
+
+    fn update_global_if_equal(
+        &mut self,
+        name: &str,
+        old_value: &str,
+        new_value: &str,
+    ) -> Result<(), Self::Error> {
+        if self
+            .globals
+            .get(name)
+            .is_some_and(|stored| stored == old_value)
+        {
+            self.globals.insert(name.to_owned(), new_value.to_owned());
+        }
+        Ok(())
+    }
+
+    fn upsert_tidb_variable(
+        &mut self,
+        name: &str,
+        value: &str,
+        _comment: &str,
+    ) -> Result<(), Self::Error> {
+        self.globals.insert(name.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    fn migrate_legacy_txn_file_variable(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn add_analyze_options_ndv_rate(&mut self) -> Result<(), Self::Error> {
+        self.added_ndv_rate_column = true;
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 /// 测试用 kill 信号：可用 Condvar 唤醒等待方。
@@ -78,6 +175,7 @@ struct RuntimeState {
     broadcasts: AtomicUsize,
     finished: Mutex<Vec<Option<String>>>,
     executed_sql: Mutex<Vec<String>>,
+    warnings: Mutex<Vec<String>>,
 }
 
 /// 实现 `analyzeRuntime` 的可控假运行时。
@@ -127,7 +225,9 @@ impl analyzeRuntime for TestRuntime {
         self.state.broadcasts.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
-    fn append_warning(&self, _: AnalyzeError) {}
+    fn append_warning(&self, warning: AnalyzeError) {
+        self.state.warnings.lock().unwrap().push(warning.0);
+    }
     fn all_server_rpc_info(
         &self,
         _: &analyzeContext,
@@ -256,6 +356,8 @@ fn column_task(table_id: i64, tracker: Option<Arc<dyn memoryTracker>>) -> Arc<an
             },
             samplingStatsConcurrency: Arc::new(AtomicUsize::new(0)),
             memTracker: tracker,
+            opts: BTreeMap::new(),
+            ndvRate: None,
         }),
         job: Some(analyzeJob {
             id: table_id as u64,
@@ -515,7 +617,7 @@ fn save_analyze_options_uses_defaults_for_unset_values() {
         .unwrap();
     assert_eq!(
         sql,
-        "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids) VALUES (10,DEFAULT,DEFAULT,DEFAULT,0,'','')"
+        "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids,ndv_rate) VALUES (10,DEFAULT,DEFAULT,DEFAULT,0,'','',DEFAULT)"
     );
 }
 
@@ -564,5 +666,159 @@ fn save_analyze_options_resets_dynamic_partition_overrides() {
     assert_eq!(
         sql[1],
         "UPDATE mysql.analyze_options SET buckets=DEFAULT,topn=DEFAULT WHERE table_id IN (11,12)"
+    );
+}
+
+#[test]
+fn analyze_ndv_rate_matches_go_validation_sampling_persistence_and_bootstrap_contract() {
+    use astersql_planner_core::planbuilder::{AnalyzeOptionType, handleAnalyzeOptions};
+    use astersql_sessionctx_variable::{Context, GetSysVar, SessionVars, vardef};
+
+    for invalid in [0.0_f64, 1.01] {
+        assert!(handleAnalyzeOptions(&[(AnalyzeOptionType::NDVRate, invalid.to_bits())]).is_err());
+    }
+    let error = handleAnalyzeOptions(&[
+        (AnalyzeOptionType::NDVRate, 0.1_f64.to_bits()),
+        (AnalyzeOptionType::SampleRate, 0.2_f64.to_bits()),
+    ])
+    .unwrap_err();
+    assert!(
+        error
+            .0
+            .contains("0.1 NDVRATE must not be smaller than 0.2 SAMPLERATE")
+    );
+    assert!(
+        handleAnalyzeOptions(&[
+            (AnalyzeOptionType::NDVRate, 0.2_f64.to_bits()),
+            (AnalyzeOptionType::SampleRate, 0.1_f64.to_bits()),
+        ])
+        .is_ok()
+    );
+
+    let choose = crate::builder::chooseNDVRateForTest;
+    assert_eq!(choose(0, -1.0, 0, 40_000_000_000.0, 0.01), (None, false));
+    assert_eq!(
+        choose(500_000_000, -1.0, 0, 500_000_000.0, 0.01),
+        (None, false)
+    );
+    assert_eq!(
+        choose(500_000_000, -1.0, 0, 2_000_000_000.0, 0.01),
+        (Some(0.25), false)
+    );
+    assert_eq!(
+        choose(500_000_000, -1.0, 0, 40_000_000_000.0, 0.01),
+        (Some(0.05), false)
+    );
+    assert_eq!(
+        choose(500_000_000, 0.001, 0, 40_000_000_000.0, 0.01),
+        (Some(0.01), true)
+    );
+    assert_eq!(
+        choose(500_000_000, 0.0001, 5_000_000, 40_000_000_000.0, 1.0),
+        (Some(0.000125), true)
+    );
+    assert_eq!(
+        choose(1_000_000, 1.0, 5_000_000, 2_000_000.0, 1.0),
+        (None, false)
+    );
+    assert!(crate::builder::statsCountFarBehindPD(1.0, 40_000_000_000.0));
+
+    let saved = std::collections::HashMap::from([(
+        10,
+        (
+            std::collections::HashMap::from([(AnalyzeOptionType::NDVRate, 0.5_f64.to_bits())]),
+            astersql_planner_core::planbuilder::ColumnChoice::Default,
+            Vec::new(),
+        ),
+    )]);
+    let (loaded, _, _) =
+        astersql_planner_core::planbuilder::PlanBuilder::default().getSavedAnalyzeOpts(&saved, 10);
+    assert_eq!(f64::from_bits(loaded[&AnalyzeOptionType::NDVRate]), 0.5);
+
+    let runtime = Arc::new(TestRuntime::new(1));
+    let mut requested_but_unused = column_task(1, None);
+    Arc::get_mut(&mut requested_but_unused)
+        .unwrap()
+        .colExec
+        .as_mut()
+        .unwrap()
+        .opts
+        .insert(analyzeOptionType::NDVRate, 0.1_f64.to_bits());
+    warnUnusedNDVRateForTest(runtime.as_ref(), &[requested_but_unused.clone()], 2);
+    assert_eq!(
+        runtime.state.warnings.lock().unwrap().as_slice(),
+        [
+            "NDVRATE is not used because no table or partition has more rows than tidb_analyze_sampled_ndv_threshold(2)"
+        ]
+    );
+    runtime.state.warnings.lock().unwrap().clear();
+    Arc::get_mut(&mut requested_but_unused)
+        .unwrap()
+        .colExec
+        .as_mut()
+        .unwrap()
+        .ndvRate = Some(0.1);
+    warnUnusedNDVRateForTest(runtime.as_ref(), &[requested_but_unused], 2);
+    assert!(runtime.state.warnings.lock().unwrap().is_empty());
+
+    let runtime = Arc::new(TestRuntime {
+        persist_options: true,
+        ..TestRuntime::new(1)
+    });
+    let mut analyze = executor(runtime.clone(), Vec::new());
+    analyze.OptionsMap.insert(
+        10,
+        v2AnalyzeOptions {
+            physicalTableID: 10,
+            rawOptions: BTreeMap::from([(analyzeOptionType::NDVRate, 0.5_f64.to_bits())]),
+            ..Default::default()
+        },
+    );
+    analyze.saveAnalyzeOptions().unwrap();
+    assert_eq!(
+        runtime.state.executed_sql.lock().unwrap()[0],
+        "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids,ndv_rate) VALUES (10,DEFAULT,DEFAULT,DEFAULT,DEFAULT,'','',0.5)"
+    );
+
+    astersql_sessionctx_variable::register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBAnalyzeSampledNDVThreshold).unwrap();
+    assert_eq!(variable.Value, "0");
+    assert!(variable.HasGlobalScope());
+    assert!(!variable.HasSessionScope());
+    assert!(!variable.IsSensitive);
+    let mut vars = SessionVars::new(Box::new(NoopGlobalAccessor));
+    variable
+        .SetGlobalFromHook(&Context, &mut vars, "500000000", false)
+        .unwrap();
+    assert_eq!(vardef::AnalyzeSampledNDVThreshold.Load(), 500_000_000);
+    assert_eq!(
+        variable.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+        "500000000"
+    );
+    assert_eq!(
+        astersql_sessionctx_variable::sysvar::GlobalSystemVariableInitialValue(
+            vardef::TiDBAnalyzeSampledNDVThreshold,
+            "0",
+        ),
+        "500000000"
+    );
+    vardef::AnalyzeSampledNDVThreshold.Store(vardef::DefTiDBAnalyzeSampledNDVThreshold);
+
+    assert!(
+        astersql_meta_metadef::CreateAnalyzeOptionsTable
+            .contains("ndv_rate DOUBLE NOT NULL DEFAULT -1")
+    );
+    assert_eq!(astersql_session::upgrade_def::version319, 319);
+    assert_eq!(
+        // SAFETY: this test only reads the compatibility version variable.
+        unsafe { astersql_session::upgrade_def::currentBootstrapVersion },
+        319
+    );
+    let mut upgraded = BootstrapUpgradeState::default();
+    astersql_session::upgrade_run::upgrade_bootstrap_variables(&mut upgraded, 318).unwrap();
+    assert!(upgraded.added_ndv_rate_column);
+    assert_eq!(
+        upgraded.globals[vardef::TiDBAnalyzeSampledNDVThreshold],
+        "0"
     );
 }

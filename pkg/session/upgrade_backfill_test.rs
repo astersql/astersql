@@ -22,7 +22,7 @@ use crate::upgrade_run::{
 };
 
 #[derive(Default)]
-struct VariableStore(BTreeMap<String, String>);
+struct VariableStore(BTreeMap<String, String>, bool);
 
 impl BootstrapVariableUpgradeRuntime for VariableStore {
     type Error = crate::SessionError;
@@ -62,6 +62,11 @@ impl BootstrapVariableUpgradeRuntime for VariableStore {
             };
             self.0.insert("tidb_enable_txn_file".into(), enabled.into());
         }
+        Ok(())
+    }
+
+    fn add_analyze_options_ndv_rate(&mut self) -> SessionResult<()> {
+        self.1 = true;
         Ok(())
     }
 }
@@ -316,4 +321,25 @@ fn range_count_threshold_upgrade_backfills_default_without_overwriting() {
     let mut current = VariableStore::default();
     upgrade_bootstrap_variables(&mut current, 318).unwrap();
     assert!(!current.0.contains_key("tidb_opt_range_max_count"));
+}
+
+#[test]
+fn sampled_ndv_upgrade_adds_column_and_defaults_upgraded_clusters_to_disabled() {
+    let mut store = VariableStore::default();
+    upgrade_bootstrap_variables(&mut store, 318).unwrap();
+    assert!(store.1);
+    assert_eq!(store.0["tidb_analyze_sampled_ndv_threshold"], "0");
+
+    let mut preserved = VariableStore::default();
+    preserved
+        .0
+        .insert("tidb_analyze_sampled_ndv_threshold".into(), "12".into());
+    upgrade_bootstrap_variables(&mut preserved, 318).unwrap();
+    assert!(preserved.1);
+    assert_eq!(preserved.0["tidb_analyze_sampled_ndv_threshold"], "12");
+
+    let mut current = VariableStore::default();
+    upgrade_bootstrap_variables(&mut current, 319).unwrap();
+    assert!(!current.1);
+    assert!(!current.0.contains_key("tidb_analyze_sampled_ndv_threshold"));
 }

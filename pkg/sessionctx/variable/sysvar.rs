@@ -260,6 +260,9 @@ pub fn GlobalSystemVariableInitialValueWithRuntime(
         // New clusters enable adaptive LIMIT admission; upgraded clusters are
         // materialized as OFF by the version-287 migration.
         vardef::TiDBEnableAdaptiveLimitScan => vardef::On.to_owned(),
+        // New clusters sample NDV only for very large tables. Upgraded clusters
+        // remain disabled until every node can read the sampled sketches.
+        vardef::TiDBAnalyzeSampledNDVThreshold => "500000000".to_owned(),
         // next-gen 关闭悲观事务公平锁；经典路径默认开启。
         vardef::TiDBPessimisticTransactionFairLocking if runtime.next_gen => vardef::Off.to_owned(),
         vardef::TiDBPessimisticTransactionFairLocking => vardef::On.to_owned(),

@@ -1330,6 +1330,9 @@ pub const TiDBEnableEnhancedSecurity: &str = "tidb_enable_enhanced_security";
 pub const TiDBEnableHistoricalStats: &str = "tidb_enable_historical_stats";
 // TiDBPersistAnalyzeOptions persists analyze options for later analyze and auto-analyze
 pub const TiDBPersistAnalyzeOptions: &str = "tidb_persist_analyze_options";
+/// Row-count threshold above which ANALYZE estimates NDV from sampled rows.
+/// Zero disables sampled NDV.
+pub const TiDBAnalyzeSampledNDVThreshold: &str = "tidb_analyze_sampled_ndv_threshold";
 // TiDBEnableColumnTracking enables collecting predicate columns.
 // DEPRECATED: This variable is deprecated, please do not use this variable.
 pub const TiDBEnableColumnTracking: &str = "tidb_enable_column_tracking";
@@ -1833,6 +1836,7 @@ pub const DefTiDBEnableNoBackslashEscapesInLike: bool = true;
 pub const DefEnableLegacyInstanceScope: bool = true;
 pub const DefTiDBTableCacheLease: i64 = 3; // 3s;
 pub const DefTiDBPersistAnalyzeOptions: bool = true;
+pub const DefTiDBAnalyzeSampledNDVThreshold: i64 = 0;
 pub const DefTiDBStatsLoadSyncWait: i64 = 100;
 pub const DefTiDBStatsLoadPseudoTimeout: bool = true;
 pub const DefSysdateIsNow: bool = false;
@@ -2103,6 +2107,8 @@ pub static RestrictedReadOnly: AtomicBoolValue = AtomicBoolValue::new(DefTiDBRes
 pub static VarTiDBSuperReadOnly: AtomicBoolValue = AtomicBoolValue::new(DefTiDBSuperReadOnly);
 pub static PersistAnalyzeOptions: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBPersistAnalyzeOptions);
+pub static AnalyzeSampledNDVThreshold: AtomicI64Value =
+    AtomicI64Value::new(DefTiDBAnalyzeSampledNDVThreshold);
 pub static TableCacheLease: AtomicI64Value = AtomicI64Value::new((DefTiDBTableCacheLease) as i64);
 pub static StatsLoadSyncWait: AtomicI64Value =
     AtomicI64Value::new((DefTiDBStatsLoadSyncWait) as i64);

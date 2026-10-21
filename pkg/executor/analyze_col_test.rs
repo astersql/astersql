@@ -3,8 +3,8 @@
 use crate::analyze_col::{
     AnalyzeColumnResult, AnalyzeColumnsExec, analyzeColumnRuntime, analyzeContext, analyzeInfo,
     analyzeJob, analyzeRequest, analyzeRequestSpec, analyzeTransportSpec, baseAnalyzeExec,
-    columnInfo, keyRange, memoryTracker, notifyErrorWaitGroupWrapper, selectResult, tableInfo,
-    virtualColumnSchema, waitGroupWrapper,
+    columnInfo, keyRange, memoryTracker, notifyErrorWaitGroupWrapper, prepareAnalyzeColumnsJobInfo,
+    selectResult, tableInfo, virtualColumnSchema, waitGroupWrapper,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -81,6 +81,44 @@ fn column(name: &str, changing: bool, removing: bool) -> columnInfo {
     }
 }
 
+fn analyze_columns_executor(runtime: Arc<RecordingAnalyzeRuntime>) -> AnalyzeColumnsExec {
+    AnalyzeColumnsExec {
+        baseAnalyzeExec: baseAnalyzeExec {
+            tableID: 42,
+            concurrency: 6,
+            analyzeStoreBatchSize: 4,
+            analyzeRequest: analyzeRequest::default(),
+            options: BTreeMap::new(),
+            job: Some(analyzeJob::default()),
+            snapshot: 0,
+            planID: 7,
+            enableAnalyzeSnapshot: false,
+            resourceGroupTagger: Vec::new(),
+            resourceGroupName: String::new(),
+            explicitRequestSourceType: String::new(),
+            restrictedSQL: true,
+            clientID: "test".into(),
+            kvVariables: BTreeMap::new(),
+            distSQLContextID: 9,
+            runtime,
+        },
+        tableInfo: tableInfo::default(),
+        colsInfo: Vec::new(),
+        handleCols: None,
+        commonHandle: None,
+        resultHandler: None,
+        indexes: Vec::new(),
+        analyzeInfo: analyzeInfo::default(),
+        samplingBuilderWg: notifyErrorWaitGroupWrapper::default(),
+        samplingMergeWg: waitGroupWrapper::default(),
+        schemaForVirtualColEval: virtualColumnSchema::default(),
+        baseCount: 0,
+        baseModifyCnt: 0,
+        samplingStatsConcurrency: 0,
+        memTracker: None,
+    }
+}
+
 #[test]
 fn non_temporary_column_count_matches_go_modify_column_semantics() {
     let table = tableInfo {
@@ -99,41 +137,7 @@ fn non_temporary_column_count_matches_go_modify_column_semantics() {
 #[test]
 fn analyze_request_is_unordered_for_store_batching() {
     let runtime = Arc::new(RecordingAnalyzeRuntime::default());
-    let mut executor = AnalyzeColumnsExec {
-        baseAnalyzeExec: baseAnalyzeExec {
-            tableID: 42,
-            concurrency: 6,
-            analyzeStoreBatchSize: 4,
-            analyzeRequest: analyzeRequest::default(),
-            options: BTreeMap::new(),
-            job: Some(analyzeJob::default()),
-            snapshot: 0,
-            planID: 7,
-            enableAnalyzeSnapshot: false,
-            resourceGroupTagger: Vec::new(),
-            resourceGroupName: String::new(),
-            explicitRequestSourceType: String::new(),
-            restrictedSQL: true,
-            clientID: "test".into(),
-            kvVariables: BTreeMap::new(),
-            distSQLContextID: 9,
-            runtime: runtime.clone(),
-        },
-        tableInfo: tableInfo::default(),
-        colsInfo: Vec::new(),
-        handleCols: None,
-        commonHandle: None,
-        resultHandler: None,
-        indexes: Vec::new(),
-        analyzeInfo: analyzeInfo::default(),
-        samplingBuilderWg: notifyErrorWaitGroupWrapper::default(),
-        samplingMergeWg: waitGroupWrapper::default(),
-        schemaForVirtualColEval: virtualColumnSchema::default(),
-        baseCount: 0,
-        baseModifyCnt: 0,
-        samplingStatsConcurrency: 0,
-        memTracker: None,
-    };
+    let mut executor = analyze_columns_executor(runtime.clone());
 
     executor
         .open(
@@ -163,4 +167,32 @@ fn analyze_request_is_unordered_for_store_batching() {
     assert_eq!(requests[1].storeBatchSize, 0);
     assert!(!requests[1].allowBatchTaskDataMerge);
     assert!(!requests[1].executeBatchTasksSerially);
+}
+
+#[test]
+fn analyze_ndv_rate_is_rendered_in_job_info_when_sent_to_storage() {
+    let runtime = Arc::new(RecordingAnalyzeRuntime::default());
+    let mut executor = analyze_columns_executor(runtime);
+    executor
+        .baseAnalyzeExec
+        .analyzeRequest
+        .columnRequest
+        .sampleRate = 0.01;
+    executor
+        .baseAnalyzeExec
+        .analyzeRequest
+        .columnRequest
+        .ndvRate = Some(0.25);
+
+    prepareAnalyzeColumnsJobInfo(Some(&mut executor));
+
+    assert!(
+        executor
+            .baseAnalyzeExec
+            .job
+            .as_ref()
+            .unwrap()
+            .jobInfo
+            .ends_with("with 0.01 samplerate, 0.25 ndvrate")
+    );
 }

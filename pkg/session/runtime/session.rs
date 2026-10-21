@@ -2200,6 +2200,13 @@ impl crate::upgrade_run::BootstrapVariableUpgradeRuntime for CanonicalBootstrapV
             }
         }
     }
+
+    fn add_analyze_options_ndv_rate(&mut self) -> Result<(), Self::Error> {
+        self.session.execute(
+            "ALTER TABLE mysql.analyze_options ADD COLUMN IF NOT EXISTS ndv_rate DOUBLE NOT NULL DEFAULT -1",
+        )?;
+        Ok(())
+    }
 }
 
 fn upgrade_canonical_domain(

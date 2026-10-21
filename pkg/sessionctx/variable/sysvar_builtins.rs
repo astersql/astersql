@@ -2278,6 +2278,25 @@ fn register_global_vars() {
     }));
     RegisterSysVar(persist_analyze_options);
 
+    let mut sampled_ndv_threshold = unsigned_var(
+        vardef::TiDBAnalyzeSampledNDVThreshold,
+        vardef::DefTiDBAnalyzeSampledNDVThreshold as u64,
+        vardef::ScopeGlobal,
+        0,
+        i64::MAX as u64,
+    );
+    sampled_ndv_threshold.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(vardef::AnalyzeSampledNDVThreshold.Load().to_string())
+    }));
+    sampled_ndv_threshold.SetGlobal = Some(Arc::new(|_, _, value| {
+        let threshold = value
+            .parse::<i64>()
+            .map_err(|_| VariableError::wrong_type(vardef::TiDBAnalyzeSampledNDVThreshold))?;
+        vardef::AnalyzeSampledNDVThreshold.Store(threshold);
+        Ok(())
+    }));
+    RegisterSysVar(sampled_ndv_threshold);
+
     RegisterSysVar(enum_var(
         "tiflash_replica_read",
         "all_replicas",

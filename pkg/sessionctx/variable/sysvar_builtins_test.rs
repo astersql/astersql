@@ -48,6 +48,31 @@ fn range_count_threshold_sysvar_matches_go_contract() {
 }
 
 #[test]
+fn sampled_ndv_threshold_sysvar_updates_global_atomic_state() {
+    crate::register_builtin_sysvars();
+    let variable =
+        GetSysVar(vardef::TiDBAnalyzeSampledNDVThreshold).expect("sampled NDV threshold sysvar");
+    assert_eq!(variable.Value, "0");
+    assert!(variable.HasGlobalScope());
+    assert!(!variable.HasSessionScope());
+    assert_eq!(variable.Type, vardef::TypeUnsigned);
+    assert_eq!(variable.MinValue, 0);
+    assert_eq!(variable.MaxValue, i64::MAX as u64);
+    assert!(!variable.IsSensitive);
+
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+    variable
+        .SetGlobalFromHook(&Context, &mut vars, "500000000", false)
+        .unwrap();
+    assert_eq!(vardef::AnalyzeSampledNDVThreshold.Load(), 500_000_000);
+    assert_eq!(
+        variable.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+        "500000000"
+    );
+    vardef::AnalyzeSampledNDVThreshold.Store(vardef::DefTiDBAnalyzeSampledNDVThreshold);
+}
+
+#[test]
 fn hash_join_concurrency_accepts_explicit_and_auto_values() {
     crate::register_builtin_sysvars();
     let var = GetSysVar(vardef::TiDBHashJoinConcurrency).unwrap();

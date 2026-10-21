@@ -177,6 +177,7 @@ pub enum analyzeOptionType {
     NumTopN,
     NumSamples,
     SampleRate,
+    NDVRate,
 }
 
 impl analyzeOptionType {
@@ -187,6 +188,7 @@ impl analyzeOptionType {
             Self::NumTopN => "topn",
             Self::NumSamples => "samples",
             Self::SampleRate => "samplerate",
+            Self::NDVRate => "ndvrate",
         }
     }
 }
@@ -195,6 +197,8 @@ impl analyzeOptionType {
 /// 下推到存储层的列采样/直方图收集请求参数。
 pub struct columnAnalyzeRequest {
     pub sampleRate: f64,
+    /// Fraction of input rows used to estimate NDV; absent means full input.
+    pub ndvRate: Option<f64>,
     pub sampleSize: u64,
     pub bucketCount: u64,
     pub topNSize: u64,
@@ -608,6 +612,14 @@ pub fn prepareAnalyzeColumnsJobInfo(executor: Option<&mut AnalyzeColumnsExec>) {
         }
     } else {
         rendered.push(format!("{sample_rate} samplerate"));
+    }
+    if let Some(rate) = executor
+        .baseAnalyzeExec
+        .analyzeRequest
+        .columnRequest
+        .ndvRate
+    {
+        rendered.push(format!("{rate} ndvrate"));
     }
     builder.push_str(&rendered.join(", "));
     if let Some(job) = executor.baseAnalyzeExec.job.as_mut() {

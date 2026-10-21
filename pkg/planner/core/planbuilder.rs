@@ -431,6 +431,7 @@ pub enum AnalyzeOptionType {
     TopN,
     SampleNum,
     SampleRate,
+    NDVRate,
     CmsketchDepth,
     CmsketchWidth,
     NumSamples,
@@ -990,6 +991,16 @@ impl PlanBuilder {
     /// 构建Analyze（对应同名 Go 逻辑）。
     pub fn buildAnalyze(&mut self, analyze: &AnalyzeStatement) -> Result<BuiltPlan> {
         let explicit = handleAnalyzeOptions(&analyze.options)?;
+        if explicit
+            .get(&AnalyzeOptionType::NDVRate)
+            .is_some_and(|bits| f64::from_bits(*bits) < 1.0)
+            && vardef_dependency::AnalyzeSampledNDVThreshold.Load() == 0
+        {
+            return Err(BuilderError(format!(
+                "sampled NDV is disabled because {} is 0",
+                vardef_dependency::TiDBAnalyzeSampledNDVThreshold
+            )));
+        }
         let resets = analyze.reset_options.iter().copied().collect();
         let opts = fillAnalyzeOptions(mergeAnalyzeOptionsWithResets(
             explicit,
@@ -2401,6 +2412,7 @@ pub fn AnalyzeOptionDefault() -> HashMap<AnalyzeOptionType, u64> {
         (AnalyzeOptionType::CmsketchDepth, 5),
         (AnalyzeOptionType::NumSamples, 0),
         (AnalyzeOptionType::SampleRate, (-1.0_f64).to_bits()),
+        (AnalyzeOptionType::NDVRate, (-1.0_f64).to_bits()),
     ]
     .into_iter()
     .collect()
@@ -2416,7 +2428,7 @@ pub fn handleAnalyzeOptions(
 ) -> Result<HashMap<AnalyzeOptionType, u64>> {
     use vardef_dependency as vardef;
     let mut result = HashMap::new();
-    let (mut sample_num, mut sample_rate) = (0, 0.0);
+    let (mut sample_num, mut sample_rate, mut ndv_rate) = (0, 0.0, 0.0);
     for &(key, value) in options {
         let (name, limit) = match key {
             AnalyzeOptionType::Buckets => ("BUCKETS", vardef::MaxTiDBAnalyzeDefaultNumBuckets),
@@ -2425,6 +2437,7 @@ pub fn handleAnalyzeOptions(
             AnalyzeOptionType::CmsketchDepth => ("CMSKETCH DEPTH", CMSketchSizeLimit),
             AnalyzeOptionType::NumSamples | AnalyzeOptionType::SampleNum => ("SAMPLES", 5_000_000),
             AnalyzeOptionType::SampleRate => ("SAMPLERATE", 1.0_f64.to_bits()),
+            AnalyzeOptionType::NDVRate => ("NDVRATE", 1.0_f64.to_bits()),
         };
         match key {
             AnalyzeOptionType::TopN => {
@@ -2434,14 +2447,18 @@ pub fn handleAnalyzeOptions(
                     )));
                 }
             }
-            AnalyzeOptionType::SampleRate => {
+            AnalyzeOptionType::SampleRate | AnalyzeOptionType::NDVRate => {
                 let rate = f64::from_bits(value);
                 if rate <= 0.0 || rate > 1.0 {
                     return Err(BuilderError(format!(
                         "Value of analyze option {name} should not larger than 1.000000, and should be greater than 0"
                     )));
                 }
-                sample_rate = rate;
+                if key == AnalyzeOptionType::SampleRate {
+                    sample_rate = rate;
+                } else {
+                    ndv_rate = rate;
+                }
             }
             _ => {
                 if matches!(
@@ -2466,6 +2483,11 @@ pub fn handleAnalyzeOptions(
     }
     if sample_num > 0 && sample_rate > 0.0 {
         return Err(BuilderError("You can only either set the value of the sample num or set the value of the sample rate. Don't set both of them".into()));
+    }
+    if ndv_rate > 0.0 && ndv_rate < sample_rate {
+        return Err(BuilderError(format!(
+            "{ndv_rate} NDVRATE must not be smaller than {sample_rate} SAMPLERATE, because TopN and histograms sample only the rows selected for NDV"
+        )));
     }
     Ok(result)
 }

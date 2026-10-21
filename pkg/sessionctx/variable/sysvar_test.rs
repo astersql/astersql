@@ -1760,6 +1760,7 @@ fn TestGlobalSystemVariableInitialValue() {
         ),
         (vardef::TiDBEnableMutationChecker, "OFF", vardef::On),
         (vardef::TiDBEnableAdaptiveLimitScan, vardef::Off, vardef::On),
+        (vardef::TiDBAnalyzeSampledNDVThreshold, "0", "500000000"),
         (
             vardef::TiDBPessimisticTransactionFairLocking,
             "OFF",

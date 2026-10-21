@@ -15,7 +15,7 @@
 #[test]
 fn upgrade_functions_match_go_order_and_current_version() {
     let functions = &*crate::upgrade_def::upgradeToVerFunctions;
-    assert_eq!(functions.len(), 178);
+    assert_eq!(functions.len(), 179);
 
     let mut previous = 0;
     for entry in functions {
@@ -27,5 +27,5 @@ fn upgrade_functions_match_go_order_and_current_version() {
         // SAFETY: the test only reads the compatibility variable.
         unsafe { crate::upgrade_def::currentBootstrapVersion },
     );
-    assert_eq!(previous, 318);
+    assert_eq!(previous, 319);
 }

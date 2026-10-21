@@ -212,6 +212,8 @@ pub const version316: i64 = 316;
 pub const version317: i64 = 317;
 /// Adds `tidb_opt_range_max_count` with a persisted default for upgraded clusters.
 pub const version318: i64 = 318;
+/// Adds `ndv_rate` to mysql.analyze_options and keeps sampled NDV disabled on upgrades.
+pub const version319: i64 = 319;
 
 /// 版本号与升级函数指针的配对（对应 Go upgradeToVerFunctions 表项）。
 pub struct VersionedUpgradeFunction {
@@ -266,7 +268,7 @@ pub struct bindingDigestPair {
     pub planDigest: String,
 }
 /// 当前代码支持的最新 bootstrap 版本。
-pub static mut currentBootstrapVersion: i64 = version318;
+pub static mut currentBootstrapVersion: i64 = version319;
 /// 有序升级函数表，对应 Go `upgradeToVerFunctions`。
 pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = LazyLock::new(|| {
     macro_rules! upgrade_function {
@@ -804,6 +806,9 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (318) => {
             upgradeToVer318
         };
+        (319) => {
+            upgradeToVer319
+        };
     }
     macro_rules! upgrades {
         ($($version:tt),+ $(,)?) => {
@@ -825,7 +830,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 277, 278, 279, 280, 281, 282, 283, 284, 285, 316, 317, 318,
+        256, 277, 278, 279, 280, 281, 282, 283, 284, 285, 316, 317, 318, 319,
     ]
 });
 
@@ -1640,4 +1645,9 @@ pub fn upgradeToVer317(_s: &sessionapi::Session, _version: i64) {
 /// Dispatch the range-count threshold sysvar migration.
 pub fn upgradeToVer318(_s: &sessionapi::Session, _version: i64) {
     upgrade_action("upgradeToVer318");
+}
+
+/// Dispatch the sampled-NDV analyze-options schema and sysvar migration.
+pub fn upgradeToVer319(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer319");
 }

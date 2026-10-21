@@ -1493,6 +1493,12 @@ pub trait AnalyzeIndexTaskData: Send + Sync {}
 pub trait AnalyzeColumnsTaskData: Send + Sync {
     /// configuredsamplerate。
     fn configured_sample_rate(&self) -> f64;
+    /// Configured NDVRATE; non-positive means use the row-count rule.
+    fn configured_ndv_rate(&self) -> f64;
+    /// Explicit sample count; zero means SAMPLERATE is active.
+    fn configured_sample_count(&self) -> u64;
+    /// Qualified table or partition name used in the raised-rate note.
+    fn display_name(&self) -> String;
 }
 
 /// 统计信息收集计划的构建数据接口。
@@ -1529,6 +1535,8 @@ pub struct AnalyzeSamplingConfig {
     pub sample_rate_reason: String,
     pub base_count: i64,
     pub base_modify_count: i64,
+    /// Rate sent to storage for sampled NDV; `None` means full input.
+    pub ndv_rate: Option<f64>,
 }
 
 /// 分布式计划的构建数据接口。
@@ -2160,6 +2168,8 @@ pub trait ExecutorBuilderDependencies: Send + Sync {
         task: &dyn AnalyzeColumnsTaskData,
         config: AnalyzeSamplingConfig,
     ) -> Result<Box<dyn AnalyzeTask>, BuildError>;
+    /// Append the note emitted when histogram sampling forces a higher NDV rate.
+    fn append_analyze_note(&self, note: &str);
     /// 构建analyzeexecutor执行器。
     fn build_analyze_executor(
         &self,
@@ -4199,12 +4209,34 @@ impl executorBuilder {
                 }
             }
         }
+        let mut rows = counts.stats_meta_count.unwrap_or(counts.base_count).max(0) as f64;
+        if let Some(approximate) = counts.approximate_storage_count
+            && statsCountFarBehindPD(rows, approximate)
+        {
+            rows = approximate;
+        }
+        let (ndv_rate, raised) = chooseNDVRateForTest(
+            astersql_sessionctx_vardef::AnalyzeSampledNDVThreshold.Load(),
+            task.configured_ndv_rate(),
+            task.configured_sample_count(),
+            rows,
+            sample_rate,
+        );
+        if raised {
+            self.dependencies.append_analyze_note(&format!(
+                "Analyze raised the NDV rate from {} to {} for table {}, because TopN and histograms sample only the rows selected for NDV",
+                task.configured_ndv_rate(),
+                ndv_rate.expect("a raised NDV rate is always sent"),
+                task.display_name(),
+            ));
+        }
         let config = AnalyzeSamplingConfig {
             snapshot_ts,
             sample_rate,
             sample_rate_reason,
             base_count: counts.base_count,
             base_modify_count: counts.base_modify_count,
+            ndv_rate,
         };
         match self.dependencies.build_analyze_columns_task(task, config) {
             Ok(task) => Some(task),
@@ -4252,7 +4284,7 @@ impl executorBuilder {
             ));
         }
         if let Some(approximate_count) = approximate
-            && (realtime_count as f64) * 5.0 < approximate_count
+            && statsCountFarBehindPD(realtime_count as f64, approximate_count)
         {
             let rate = (150_000.0 / approximate_count).min(1.0);
             return Ok((
@@ -4274,6 +4306,22 @@ impl executorBuilder {
             rate,
             format!("use min(1, {DESIRED_ROWS}/{realtime_count}) as the sample-rate={rate}"),
         ))
+    }
+
+    /// Select the sampled-NDV rate using the same inputs as the Go executor.
+    pub fn chooseNDVRate(
+        &self,
+        task: &dyn AnalyzeColumnsTaskData,
+        rows: f64,
+        sample_rate: f64,
+    ) -> (Option<f64>, bool) {
+        chooseNDVRateForTest(
+            astersql_sessionctx_vardef::AnalyzeSampledNDVThreshold.Load(),
+            task.configured_ndv_rate(),
+            task.configured_sample_count(),
+            rows,
+            sample_rate,
+        )
     }
 
     /// 获取Approximate表CountFrom存储。
@@ -4464,6 +4512,40 @@ impl executorBuilder {
             .dependencies
             .finalize_table_reader(plan, reader, partition_ids);
         self.finish(result)
+    }
+}
+
+/// Whether stats_meta is so far behind PD that the approximate storage count is preferred.
+pub fn statsCountFarBehindPD(stats_count: f64, pd_count: f64) -> bool {
+    stats_count * 5.0 < pd_count
+}
+
+/// Pure sampling-rate selector used by the executor builder and focused tests.
+pub fn chooseNDVRateForTest(
+    threshold: i64,
+    configured_rate: f64,
+    sample_count: u64,
+    rows: f64,
+    sample_rate: f64,
+) -> (Option<f64>, bool) {
+    const MIN_NDV_RATE: f64 = 0.05;
+    if threshold == 0 || configured_rate >= 1.0 || rows <= threshold as f64 {
+        return (None, false);
+    }
+    let rate = if configured_rate > 0.0 {
+        configured_rate
+    } else {
+        MIN_NDV_RATE.max(threshold as f64 / rows)
+    };
+    let needed = if sample_count > 0 {
+        (sample_count as f64 / rows).min(1.0)
+    } else {
+        sample_rate
+    };
+    if rate >= needed {
+        (Some(rate), false)
+    } else {
+        (Some(needed), true)
     }
 }
 
