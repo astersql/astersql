@@ -383,15 +383,21 @@ fn TestGlobalMemArbitrator() {
 
     let mut expected_task_fail = 0;
     let mut expected_wait_averse = 0;
-    tk.MustExec("set tidb_mem_arbitrator_wait_averse=1", Vec::new());
+    let mut out_of_quota_connection_ids = Vec::with_capacity(6);
+    let store = tk.Store();
+    let mut run_out_of_quota_query = |sql: String, expected_error: &str| {
+        let mut query_tk = TestKit::new(store.clone());
+        query_tk.MustExec("use test", Vec::new());
+        query_tk.MustExec("set tidb_mem_arbitrator_wait_averse=1", Vec::new());
+        out_of_quota_connection_ids.push(query_tk.ConnectionID());
+        let error = query_tk.QueryToErr(&sql);
+        assert!(error.message().contains(expected_error), "{error}");
+    };
     for group in ["rg1", "rg2", "rg3"] {
-        let error = tk.QueryToErr(&query(group, MAX_SERVER_LIMIT));
-        assert!(
-            error.message().contains(
-                "[executor:8180]Query execution was stopped by the global memory arbitrator \
-                 [reason=CANCEL(out-of-quota & wait-averse)] [conn="
-            ),
-            "{error}"
+        run_out_of_quota_query(
+            query(group, MAX_SERVER_LIMIT),
+            "[executor:8180]Query execution was stopped by the global memory arbitrator \
+             [reason=CANCEL(out-of-quota & wait-averse)] [conn=",
         );
         expected_task_fail += 1;
         expected_wait_averse += 1;
@@ -407,13 +413,10 @@ fn TestGlobalMemArbitrator() {
     tk.MustExec("set global tidb_mem_arbitrator_mode = standard", Vec::new());
     let mut expected_standard_cancel = 0;
     for group in ["rg1", "rg2", "rg3"] {
-        let error = tk.QueryToErr(&query(group, MAX_SERVER_LIMIT));
-        assert!(
-            error.message().contains(
-                "[executor:8180]Query execution was stopped by the global memory arbitrator \
-                 [reason=CANCEL(out-of-quota & standard-mode)] [conn="
-            ),
-            "{error}"
+        run_out_of_quota_query(
+            query(group, MAX_SERVER_LIMIT),
+            "[executor:8180]Query execution was stopped by the global memory arbitrator \
+             [reason=CANCEL(out-of-quota & standard-mode)] [conn=",
         );
         expected_task_fail += 1;
         expected_standard_cancel += 1;
@@ -426,4 +429,7 @@ fn TestGlobalMemArbitrator() {
         assert_eq!(metrics.Cancel.WaitAverse, expected_wait_averse);
         assert_eq!(metrics.Cancel.StandardMode, expected_standard_cancel);
     }
+    out_of_quota_connection_ids.sort_unstable();
+    out_of_quota_connection_ids.dedup();
+    assert_eq!(out_of_quota_connection_ids.len(), 6);
 }
