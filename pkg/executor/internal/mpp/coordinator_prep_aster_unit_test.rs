@@ -313,6 +313,7 @@ fn dispatch_request_preparation_updates_partition_and_serializes_real_dag() {
     )]);
     let session = DispatchSessionInfo {
         time_zone_name: "UTC".to_owned(),
+        enable_chunk_rpc: true,
         schema_version: 67,
         resource_group_name: "rg".to_owned(),
         connection_id: 71,

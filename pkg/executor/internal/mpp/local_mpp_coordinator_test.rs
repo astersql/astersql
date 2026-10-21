@@ -27,7 +27,10 @@ use astersql_planner_core_operator_physicalop::{
     PhysicalTableReader, PhysicalTableScan,
 };
 
-use crate::local_mpp_coordinator::{TaskZoneInfoHelper, need_report_execution_summary};
+use crate::local_mpp_coordinator::{
+    DispatchSessionInfo, TaskZoneInfoHelper, TiFlashStoreInfo, need_report_execution_summary,
+    prepare_dispatch_requests_from_root,
+};
 
 /// 最小 PlanContext：只分配 plan id 与内置函数计数，其余接口 panic。
 struct TestPlanContext(
@@ -210,6 +213,75 @@ fn test_zone_helper_try_quick_fill() {
         helper
             .try_quick_fill_with_uncertain_zones("ExchangeReceiver_2", false, slots)
             .is_none()
+    );
+}
+
+#[derive(Clone)]
+struct EncodeTypeTaskMeta;
+
+impl astersql_kv::MPPTaskMeta for EncodeTypeTaskMeta {
+    fn GetAddress(&self) -> String {
+        "tiflash:3930".to_owned()
+    }
+
+    fn CloneBox(&self) -> Box<dyn astersql_kv::MPPTaskMeta> {
+        Box::new(self.clone())
+    }
+}
+
+fn prepared_encode_type(enable_chunk_rpc: bool, is_root: bool) -> tipb::EncodeType {
+    let mut scan = tipb::TableScan::new();
+    scan.set_table_id(1);
+    let mut root = tipb::Executor::new();
+    root.set_tp(tipb::ExecType::TypeTableScan);
+    root.set_tbl_scan(scan);
+    let tasks = [astersql_kv::MPPTask {
+        Meta: Some(Box::new(EncodeTypeTaskMeta)),
+        ID: 1,
+        ..Default::default()
+    }];
+    let stores = HashMap::from([(
+        "tiflash:3930".to_owned(),
+        TiFlashStoreInfo {
+            zone: String::new(),
+            store_id: 1,
+        },
+    )]);
+    let prepared = prepare_dispatch_requests_from_root(
+        &root,
+        1,
+        is_root,
+        &tasks,
+        &stores,
+        &DispatchSessionInfo {
+            enable_chunk_rpc,
+            ..DispatchSessionInfo::default()
+        },
+        "tidb:4000",
+        false,
+    )
+    .unwrap();
+    let dag: tipb::DagRequest = protobuf::parse_from_bytes(&prepared.requests[0].Data).unwrap();
+    dag.get_encode_type()
+}
+
+#[test]
+fn test_set_mpp_encode_type_respects_chunk_rpc_setting() {
+    assert_eq!(
+        prepared_encode_type(false, true),
+        tipb::EncodeType::TypeDefault
+    );
+    assert_eq!(
+        prepared_encode_type(true, true),
+        tipb::EncodeType::TypeChunk
+    );
+    assert_eq!(
+        prepared_encode_type(false, false),
+        tipb::EncodeType::TypeChBlock
+    );
+    assert_eq!(
+        prepared_encode_type(true, false),
+        tipb::EncodeType::TypeChBlock
     );
 }
 

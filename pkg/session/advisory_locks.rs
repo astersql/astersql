@@ -105,13 +105,18 @@ impl advisoryLock {
     /// 悲观事务（PESSIMISTIC）在执行阶段即加锁，插入冲突表示名称已被占用。
     pub fn GetLock(&mut self, lock_name: &str, timeout: i64) -> SessionResult {
         self.ctx.source = InternalSourceType::InternalTxnOthers;
-        self.session.ExecuteInternalWithInt(
+        if let Err(error) = self.session.ExecuteInternalWithInt(
             &self.ctx,
             "SET innodb_lock_wait_timeout = %?",
             timeout,
-        )?;
-        self.session
-            .ExecuteInternal(&self.ctx, "BEGIN PESSIMISTIC")?;
+        ) {
+            self.Close();
+            return Err(error);
+        }
+        if let Err(error) = self.session.ExecuteInternal(&self.ctx, "BEGIN PESSIMISTIC") {
+            self.Close();
+            return Err(error);
+        }
         // 插入失败说明锁已被占用，关闭事务后向上返回错误。
         if let Err(error) = self.session.ExecuteInternalWithString(
             &self.ctx,

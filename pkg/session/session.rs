@@ -23,6 +23,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{SessionError, SessionResult};
 
@@ -139,6 +140,9 @@ pub trait DDLOwnerManager: Send + Sync {
     fn IsOwner(&self) -> bool;
 }
 
+const INTERNAL_ADVISORY_LOCK_OWNER_ID_BASE: u64 = 1_u64 << 32;
+static INTERNAL_ADVISORY_LOCK_OWNER_ID_ALLOC: AtomicU64 = AtomicU64::new(0);
+
 /// Production boundary for commit options, cached-table lease handling, plan-cache
 /// cleanup and session-owned resource shutdown. Every method is mandatory.
 ///
@@ -172,9 +176,42 @@ pub struct session {
     pub sessionVars: SessionVars,
     pub lockedTables: HashMap<i64, TableLockTpInfo>,
     pub ddlOwnerManager: Option<Arc<dyn DDLOwnerManager>>,
+    /// Stable owner ID shared by every advisory lock acquired by this session.
+    pub advisoryLockOwnerID: AtomicU64,
 }
 
 impl session {
+    /// Returns the stable advisory-lock owner for this session.
+    ///
+    /// A visible process uses its connection ID. Internal sessions without
+    /// process information receive an even process-local ID above `u32`, kept
+    /// stable if process information appears later.
+    pub fn getAdvisoryLockOwner(&self) -> u64 {
+        let cached = self.advisoryLockOwnerID.load(Ordering::Acquire);
+        if cached != 0 {
+            return cached;
+        }
+
+        let mut owner = if self.processInfo.is_some() {
+            self.sessionVars.ConnectionID
+        } else {
+            0
+        };
+        if owner == 0 {
+            owner = INTERNAL_ADVISORY_LOCK_OWNER_ID_BASE
+                + (INTERNAL_ADVISORY_LOCK_OWNER_ID_ALLOC.fetch_add(1, Ordering::Relaxed) + 1) * 2;
+        }
+        match self.advisoryLockOwnerID.compare_exchange(
+            0,
+            owner,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => owner,
+            Err(existing) => existing,
+        }
+    }
+
     /// 返回当前跟踪上下文标识（若有）。
     pub fn GetTraceCtx(&self) -> Option<&str> {
         self.currentCtx.as_deref()
@@ -336,6 +373,7 @@ impl session {
         let _ = self.RollbackTxn();
         self.runtime.CloseCursorTracker();
         self.runtime.CloseSessionVars();
+        self.advisoryLockOwnerID.store(0, Ordering::Release);
     }
 }
 

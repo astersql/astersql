@@ -492,6 +492,7 @@ mod session_parity {
             sessionVars: vars,
             lockedTables: Default::default(),
             ddlOwnerManager: None::<Arc<dyn DDLOwnerManager>>,
+            advisoryLockOwnerID: Default::default(),
         };
         (value, txn_state, runtime_state)
     }
@@ -544,6 +545,30 @@ mod session_parity {
         assert_eq!(runtime.cursor_closes, 1);
         assert_eq!(runtime.vars_closes, 1);
     }
+
+    #[test]
+    fn advisory_lock_without_process_info_keeps_stable_owner() {
+        let (mut session, _, _) = new_session(SessionVars::default());
+        let owner = session.getAdvisoryLockOwner();
+        assert!(owner > u32::MAX as u64);
+        assert_eq!(owner % 2, 0);
+
+        session.SetConnectionID(12_345);
+        session.processInfo = Some("select 1".to_owned());
+        assert_eq!(session.getAdvisoryLockOwner(), owner);
+
+        session.Close();
+        assert_eq!(session.getAdvisoryLockOwner(), 12_345);
+    }
+
+    #[test]
+    fn advisory_lock_uses_process_info_owner() {
+        let (mut session, _, _) = new_session(SessionVars::default());
+        session.SetConnectionID(12_345);
+        session.processInfo = Some("select 1".to_owned());
+        assert_eq!(session.getAdvisoryLockOwner(), 12_345);
+        assert_eq!(session.getAdvisoryLockOwner(), 12_345);
+    }
 }
 
 #[test]
@@ -572,4 +597,93 @@ fn compile_memory_tokens_follow_normalized_sql() {
     );
     assert_eq!(count("select @@version @a", true), 0);
     assert_eq!(count("select @@version @a", false), 3);
+}
+
+mod advisory_lock_alignment {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use crate::advisory_locks::{
+        AdvisoryContext, AdvisorySession, InternalSourceType, advisoryLock,
+    };
+    use crate::{SessionError, SessionResult};
+
+    #[derive(Clone, Copy)]
+    enum SetupFailure {
+        SetTimeout,
+        Begin,
+    }
+
+    struct SetupSession {
+        failure: SetupFailure,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl AdvisorySession for SetupSession {
+        fn ExecuteInternal(&mut self, _: &AdvisoryContext, sql: &str) -> SessionResult {
+            self.calls.lock().unwrap().push(sql.to_owned());
+            if sql == "BEGIN PESSIMISTIC" && matches!(self.failure, SetupFailure::Begin) {
+                return Err(SessionError::new("advisory lock BEGIN failed"));
+            }
+            Ok(())
+        }
+
+        fn ExecuteInternalWithInt(
+            &mut self,
+            _: &AdvisoryContext,
+            sql: &str,
+            _: i64,
+        ) -> SessionResult {
+            self.calls.lock().unwrap().push(sql.to_owned());
+            if matches!(self.failure, SetupFailure::SetTimeout) {
+                return Err(SessionError::new("advisory lock SET failed"));
+            }
+            Ok(())
+        }
+
+        fn ExecuteInternalWithString(
+            &mut self,
+            _: &AdvisoryContext,
+            sql: &str,
+            _: &str,
+        ) -> SessionResult {
+            self.calls.lock().unwrap().push(sql.to_owned());
+            Ok(())
+        }
+
+        fn LogCloseError(&self, _: &SessionError) {}
+    }
+
+    #[test]
+    fn advisory_lock_setup_failure_releases_session() {
+        for failure in [SetupFailure::SetTimeout, SetupFailure::Begin] {
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let cleaned_by_callback = cleaned.clone();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut lock = advisoryLock {
+                ctx: AdvisoryContext {
+                    source: InternalSourceType::None,
+                },
+                session: Box::new(SetupSession {
+                    failure,
+                    calls: calls.clone(),
+                }),
+                clean: Some(Box::new(move || {
+                    cleaned_by_callback.store(true, Ordering::SeqCst);
+                })),
+                reference_count: 0,
+                owner: 0,
+            };
+
+            assert!(lock.GetLock("setup-failure", 1).is_err());
+            assert!(
+                cleaned.load(Ordering::SeqCst),
+                "failed lock setup must return the borrowed session"
+            );
+            assert_eq!(
+                calls.lock().unwrap().last().map(String::as_str),
+                Some("ROLLBACK")
+            );
+        }
+    }
 }

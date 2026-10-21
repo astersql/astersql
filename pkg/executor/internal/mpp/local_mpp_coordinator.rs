@@ -867,6 +867,7 @@ pub(crate) struct DispatchSessionInfo {
     pub(crate) time_zone_offset: i64,
     pub(crate) flags: u64,
     pub(crate) collect_execution_summaries: bool,
+    pub(crate) enable_chunk_rpc: bool,
     pub(crate) div_precision_increment: Option<u32>,
     pub(crate) schema_version: i64,
     pub(crate) resource_group_name: String,
@@ -1035,11 +1036,7 @@ pub(crate) fn prepare_dispatch_requests_from_root(
             dag_request.set_div_precision_increment(increment);
         }
         dag_request.set_output_offsets((0..output_column_count as u32).collect());
-        dag_request.set_encode_type(if is_root {
-            tipb::EncodeType::TypeChunk
-        } else {
-            tipb::EncodeType::TypeChBlock
-        });
+        set_mpp_encode_type(session.enable_chunk_rpc, &mut dag_request, is_root);
         dag_request.set_root_executor(executor);
         let data = dag_request
             .write_to_bytes()
@@ -1071,6 +1068,26 @@ pub(crate) fn prepare_dispatch_requests_from_root(
         });
     }
     Ok(prepared)
+}
+
+fn set_mpp_encode_type(enable_chunk_rpc: bool, dag_request: &mut tipb::DagRequest, is_root: bool) {
+    if !is_root {
+        dag_request.set_encode_type(tipb::EncodeType::TypeChBlock);
+        return;
+    }
+    if !enable_chunk_rpc || !astersql_distsql::distsql::checkAlignment() {
+        dag_request.set_encode_type(tipb::EncodeType::TypeDefault);
+        return;
+    }
+
+    dag_request.set_encode_type(tipb::EncodeType::TypeChunk);
+    let mut layout = tipb::ChunkMemoryLayout::new();
+    layout.set_endian(if cfg!(target_endian = "big") {
+        tipb::Endian::BigEndian
+    } else {
+        tipb::Endian::LittleEndian
+    });
+    dag_request.set_chunk_memory_layout(layout);
 }
 
 /// 将 Fragment Sink 转为 protobuf root，再调用 prepare_dispatch_requests_from_root。
@@ -1424,6 +1441,7 @@ pub struct MppDispatchSession {
     pub time_zone_offset: i64,
     pub flags: u64,
     pub collect_execution_summaries: bool,
+    pub enable_chunk_rpc: bool,
     pub div_precision_increment: Option<u32>,
     pub schema_version: i64,
     pub resource_group_name: String,
@@ -1518,6 +1536,7 @@ pub fn NewLocalMppCoordinator(
         time_zone_offset: session.time_zone_offset,
         flags: session.flags,
         collect_execution_summaries: session.collect_execution_summaries,
+        enable_chunk_rpc: session.enable_chunk_rpc,
         div_precision_increment: session.div_precision_increment,
         schema_version: session.schema_version,
         resource_group_name: session.resource_group_name,
