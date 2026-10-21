@@ -123,45 +123,49 @@ fn non_commit_decisions_do_not_touch_transaction() {
 fn non_prepared_cache_initial_qualification_matches_go() {
     let mut vars = SessionVars::new();
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, false),
+        initialNonPreparedCacheEligibility(&vars, true, false, false),
         InitialNonPreparedCacheEligibility::Bypass
     );
 
     vars.EnableNonPreparedPlanCache = true;
     vars.DisableTxnAutoRetry = true;
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, false),
+        initialNonPreparedCacheEligibility(&vars, true, false, false),
         InitialNonPreparedCacheEligibility::Eligible
     );
 
     vars.StmtCtx.InRestrictedSQL = true;
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, false),
+        initialNonPreparedCacheEligibility(&vars, true, false, false),
         InitialNonPreparedCacheEligibility::Bypass
     );
     vars.StmtCtx.InRestrictedSQL = false;
 
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, true),
+        initialNonPreparedCacheEligibility(&vars, true, true, false),
         InitialNonPreparedCacheEligibility::Bypass
     );
 
     vars.DisableTxnAutoRetry = false;
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, false),
+        initialNonPreparedCacheEligibility(&vars, true, false, false),
         InitialNonPreparedCacheEligibility::Bypass
     );
     vars.DisableTxnAutoRetry = true;
 
     vars.InMultiStmts = true;
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, true, false),
+        initialNonPreparedCacheEligibility(&vars, true, false, false),
+        InitialNonPreparedCacheEligibility::Eligible
+    );
+    assert_eq!(
+        initialNonPreparedCacheEligibility(&vars, true, false, true),
         InitialNonPreparedCacheEligibility::Bypass
     );
     vars.InMultiStmts = false;
 
     assert_eq!(
-        initialNonPreparedCacheEligibility(&vars, false, false),
+        initialNonPreparedCacheEligibility(&vars, false, false, false),
         InitialNonPreparedCacheEligibility::Bypass
     );
 }

@@ -450,6 +450,10 @@ impl<R: OptimizeRuntimeService> OptimizeRuntimeService for DefaultOptimizeSessio
 /// storage and the plan-cache implementation that already belong to core.
 pub trait NonPreparedPlanCacheService: Send + Sync {
     fn is_statement(&self, node: &dyn ast::Node) -> bool;
+    /// Reports whether the current multi-statement item already owns a
+    /// prebuilt point plan. Such plans contain literal values and must not be
+    /// cached under the parameterized SQL key.
+    fn has_prebuilt_point_plan(&self, sctx: &base::ContextRef) -> bool;
     fn binding_contains_use_plan_cache_hint(
         &self,
         sctx: &base::ContextRef,
@@ -713,13 +717,14 @@ fn initialNonPreparedCacheEligibility(
     vars: &SessionVars,
     is_statement: bool,
     is_explain: bool,
+    has_prebuilt_point_plan: bool,
 ) -> InitialNonPreparedCacheEligibility {
     if !vars.EnableNonPreparedPlanCache
         || !is_statement
         || vars.StmtCtx.InRestrictedSQL
         || is_explain
         || !vars.DisableTxnAutoRetry
-        || vars.InMultiStmts
+        || (vars.InMultiStmts && has_prebuilt_point_plan)
     {
         InitialNonPreparedCacheEligibility::Bypass
     } else {
@@ -779,17 +784,15 @@ fn getPlanFromNonPreparedPlanCache(
         .node
         .with_node(|node| node.as_any().is::<ast::ExplainStmt>())
         .unwrap_or(false);
-    if initialNonPreparedCacheEligibility(vars, true, is_explain)
-        == InitialNonPreparedCacheEligibility::Bypass
-    {
-        return Ok(None);
-    }
     let service = nonPreparedPlanCacheService()?;
     let is_statement = node
         .node
         .with_node(|node| service.is_statement(node))
         .unwrap_or(false);
-    if !is_statement {
+    let has_prebuilt_point_plan = vars.InMultiStmts && service.has_prebuilt_point_plan(sctx);
+    if initialNonPreparedCacheEligibility(vars, is_statement, is_explain, has_prebuilt_point_plan)
+        == InitialNonPreparedCacheEligibility::Bypass
+    {
         return Ok(None);
     }
 
@@ -1834,3 +1837,7 @@ pub fn allowInReadOnlyMode(
 #[cfg(test)]
 #[path = "optimize_aster_unit_test.rs"]
 mod optimize_aster_unit_test;
+
+#[cfg(test)]
+#[path = "multi_statement_test.rs"]
+mod multi_statement_test;
