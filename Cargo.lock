@@ -2771,6 +2771,7 @@ dependencies = [
 name = "astersql-dumpformat-parquetfile"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-dumpformat-parsedef",
  "astersql-dumpformat-testutils",
  "astersql-ingestor-simplesst",
@@ -5657,6 +5658,7 @@ dependencies = [
 name = "astersql-lightning-mydump"
 version = "0.1.0"
 dependencies = [
+ "astersql-dumpformat-parsedef",
  "encoding_rs",
  "hex 0.4.3",
  "libm",

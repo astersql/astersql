@@ -192,6 +192,34 @@ fn TestMoreEmptyFiles() {
     }
 }
 
+/// SQL source text may be twice the decoded binary size, but anything larger
+/// must be rejected while blocks are still being accumulated.
+#[test]
+fn chunk_parser_too_large_row() {
+    use std::sync::atomic::Ordering;
+
+    let _guard = crate::csv_parser_test::LARGEST_ENTRY_LIMIT_TEST_LOCK
+        .lock()
+        .unwrap();
+    let old = LargestEntryLimit.swap(1_024, Ordering::SeqCst);
+    let accepted = format!("INSERT INTO t VALUES (0x{})", "ab".repeat(512));
+    assert!(accepted.len() > 1_024 && accepted.len() < 2_048);
+    let mut accepted_parser = parser(&accepted, 64, false);
+    accepted_parser.ReadRow().unwrap();
+    assert_eq!(
+        accepted_parser.LastRow().row[0],
+        Datum::Binary(vec![0xab; 512])
+    );
+
+    let rejected = format!("INSERT INTO t VALUES ('{}')", "d".repeat(2_048));
+    let mut rejected_parser = parser(&rejected, 64, false);
+    assert_eq!(
+        rejected_parser.ReadRow(),
+        Err(Error::Configuration(ERR_ROW_TOO_LARGE.into()))
+    );
+    LargestEntryLimit.store(old, Ordering::SeqCst);
+}
+
 /// Go 的四态解析器会提取并小写化列名，同时在下一条无列清单的 INSERT 重置列名。
 #[test]
 fn insert_state_machine_tracks_columns_and_rejects_invalid_tokens() {

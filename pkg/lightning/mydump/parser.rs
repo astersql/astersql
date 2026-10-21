@@ -20,12 +20,12 @@
 // 尺寸切分并行导入单元。
 
 use crate::{
-    CsvConfig, FileInfo, MakePooledReader, MydumpError, PooledReader, ReadSeekCloser, Storage,
-    WorkerPool,
+    CsvConfig, FileInfo, LargestEntryLimit, MakePooledReader, MydumpError, PooledReader,
+    ReadSeekCloser, Storage, WorkerPool,
 };
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 /// 本模块错误别名，等同于 `MydumpError`。
 pub type Error = MydumpError;
 /// 读块缓冲相对请求 size 的放大倍数。
@@ -75,6 +75,8 @@ pub struct BlockParser {
     pub pos: i64,
     pub check_row_len: bool,
     pub row_start_pos: i64,
+    /// Maximum source-text bytes allowed while a row is being accumulated.
+    pub max_row_size: i64,
     pub logger: crate::Logger,
     row_pool: Vec<Vec<Datum>>,
 }
@@ -83,6 +85,7 @@ pub fn makeBlockParser(
     reader: Box<dyn ReadSeekCloser>,
     size: i64,
     workers: Option<Arc<WorkerPool>>,
+    max_row_size: i64,
 ) -> BlockParser {
     BlockParser {
         reader: MakePooledReader(reader, workers),
@@ -94,6 +97,7 @@ pub fn makeBlockParser(
         pos: 0,
         check_row_len: false,
         row_start_pos: 0,
+        max_row_size,
         logger: crate::Logger::default(),
         row_pool: Vec::new(),
     }
@@ -103,8 +107,9 @@ pub fn make_block_parser(
     reader: Box<dyn ReadSeekCloser>,
     size: i64,
     workers: Option<Arc<WorkerPool>>,
+    max_row_size: i64,
 ) -> BlockParser {
-    makeBlockParser(reader, size, workers)
+    makeBlockParser(reader, size, workers, max_row_size)
 }
 impl BlockParser {
     /// 开始统计当前行占用的字节长度。
@@ -115,6 +120,13 @@ impl BlockParser {
     /// 结束行长度统计。
     pub fn endRowLenCheck(&mut self) {
         self.check_row_len = false
+    }
+    /// Reject a row once its source text exceeds the configured limit.
+    fn row_len_exceeds_limit(&self, row_bytes: i64) -> Result<(), Error> {
+        if self.max_row_size > 0 && self.check_row_len && row_bytes > self.max_row_size {
+            return Err(Error::Configuration(crate::ERR_ROW_TOO_LARGE.into()));
+        }
+        Ok(())
     }
     /// Seek 到指定字节偏移并重置缓冲，同步 row_id。
     pub fn SetPos(&mut self, pos: i64, row_id: i64) -> Result<(), Error> {
@@ -199,6 +211,11 @@ impl BlockParser {
             self.pos += 3
         }
         self.buf.extend(block);
+        self.row_len_exceeds_limit(
+            self.pos
+                .saturating_sub(self.row_start_pos)
+                .saturating_add(self.buf.len() as i64),
+        )?;
         Ok(())
     }
 }
@@ -231,7 +248,15 @@ pub fn NewChunkParser(
     no_backslash_escapes: bool,
 ) -> ChunkParser {
     ChunkParser {
-        block_parser: makeBlockParser(reader, size, workers),
+        block_parser: makeBlockParser(
+            reader,
+            size,
+            workers,
+            LargestEntryLimit
+                .load(Ordering::Relaxed)
+                .saturating_mul(2)
+                .min(i64::MAX as usize) as i64,
+        ),
         esc_flavor: if no_backslash_escapes {
             EscapeFlavor::None
         } else {
@@ -321,6 +346,13 @@ pub fn unescapeString(input: &[u8], delimiter: u8, flavor: EscapeFlavor, escape:
 impl ChunkParser {
     /// 词法驱动读一行 VALUES：括号嵌套、NULL/布尔/进制/引号字段。
     pub fn ReadRow(&mut self) -> Result<(), Error> {
+        self.block_parser.beginRowLenCheck();
+        let result = self.read_row_checked();
+        self.block_parser.endRowLenCheck();
+        result
+    }
+
+    fn read_row_checked(&mut self) -> Result<(), Error> {
         if self.block_parser.buf.is_empty() && !self.block_parser.is_last_chunk {
             self.block_parser.read_block()?
         }

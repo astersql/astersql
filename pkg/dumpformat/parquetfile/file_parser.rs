@@ -14,6 +14,7 @@ use parquet::column::reader::ColumnReader;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 
 /// Logical annotations take precedence; legacy annotations are normalized once.
 /// parquet-rs calls the Parquet NULL annotation `Unknown`.
@@ -518,7 +519,13 @@ impl astersql_lightning_mydump::Parser for ImportParser {
         self.last.row_id += 1;
         self.last.length = 0;
         let row = self.inner.read_row().map_err(mydump_error)?;
-        self.last.length = datum_row_size(&row);
+        let row_size = datum_row_size(&row);
+        if row_size > crate::parser::MAX_ROW_SIZE.load(Ordering::Relaxed) {
+            return Err(astersql_lightning_mydump::MydumpError::Configuration(
+                astersql_dumpformat_parsedef::ERR_ROW_TOO_LARGE.into(),
+            ));
+        }
+        self.last.length = row_size;
         let mut buffer = self.row_pool.pop().unwrap_or_default();
         buffer.clear();
         for (index, value) in row.into_iter().enumerate() {

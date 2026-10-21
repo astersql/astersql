@@ -25,6 +25,10 @@ use std::convert::Infallible;
 
 pub use types_crate::datum::Datum;
 
+/// Deterministic error returned when a parser rejects an oversized row.
+pub const ERR_ROW_TOO_LARGE: &str =
+    "size of row cannot exceed the max value of txn-entry-size-limit";
+
 /// Rust 日志后端实现此接口即可接收 Go zapcore.ArrayEncoder 的 AppendString 调用。
 pub trait ArrayEncoder {
     /// 追加一个字符串到日志数组编码器。

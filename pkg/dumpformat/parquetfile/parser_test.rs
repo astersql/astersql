@@ -677,6 +677,43 @@ fn logical_parquet_source(bytes: Vec<u8>) -> crate::source_reader::SourceReader 
     SourceReader::prepare(size as i64, || Ok(size), open).unwrap()
 }
 
+#[test]
+fn parquet_parser_too_large_row() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use crate::parser::MAX_ROW_SIZE;
+    use astersql_dumpformat_parsedef::ERR_ROW_TOO_LARGE;
+    use astersql_lightning_mydump::{MydumpError, Parser as _};
+    use parquet::data_type::{ByteArray, ByteArrayType};
+    use parquet::file::writer::SerializedFileWriter;
+    use std::sync::atomic::Ordering;
+
+    let schema = Arc::new(
+        parquet::schema::parser::parse_message_type(
+            "message schema { REQUIRED BYTE_ARRAY value (UTF8); }",
+        )
+        .unwrap(),
+    );
+    let mut writer = SerializedFileWriter::new(Vec::new(), schema, Default::default()).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    column
+        .typed::<ByteArrayType>()
+        .write_batch(&[ByteArray::from(vec![b'd'; 2_048])], None, None)
+        .unwrap();
+    column.close().unwrap();
+    group.close().unwrap();
+
+    let old = MAX_ROW_SIZE.swap(1_024, Ordering::SeqCst);
+    let mut parser = ImportParser::new(
+        FileParser::new(logical_parquet_source(writer.into_inner().unwrap())).unwrap(),
+    );
+    assert_eq!(
+        parser.ReadRow(),
+        Err(MydumpError::Configuration(ERR_ROW_TOO_LARGE.into()))
+    );
+    MAX_ROW_SIZE.store(old, Ordering::SeqCst);
+}
+
 fn logical_int64_file(annotation: &str, values: &[i64], metadata: Option<&str>) -> Vec<u8> {
     use parquet::data_type::Int64Type;
     use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};

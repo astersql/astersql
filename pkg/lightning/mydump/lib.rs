@@ -14,6 +14,7 @@
 )]
 
 mod common;
+pub use astersql_dumpformat_parsedef::ERR_ROW_TOO_LARGE;
 pub use common::*;
 mod bytes;
 pub use bytes::*;

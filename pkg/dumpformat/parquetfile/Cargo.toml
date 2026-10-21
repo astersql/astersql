@@ -8,6 +8,8 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+astersql-config = { path = "../../config" }
+astersql-dumpformat-parsedef = { path = "../parsedef" }
 chrono = "0.4"
 chrono-tz = "0.10"
 astersql-lightning-mydump = { path = "../../lightning/mydump" }

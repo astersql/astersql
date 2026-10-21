@@ -858,6 +858,7 @@ use crate::column_type::{LogicalType, PhysicalType};
 use crate::column_value::{ColumnValue, account_column_value_memory_bytes};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 /// 默认 skip buffer 大小：云存储上小跨度前跳时可避免重新 Open。
 pub const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
 /// 单次从 column reader 读取的行批大小（测试中可改）。
@@ -916,6 +917,8 @@ pub struct ParsedRow {
     pub row_id: i64,
     pub length: usize,
 }
+/// Maximum estimated encoded bytes accepted for one imported row.
+pub static MAX_ROW_SIZE: AtomicU64 = AtomicU64::new(astersql_config::MAX_TXN_ENTRY_SIZE_LIMIT);
 /// 估算行大小：字节列按实际长度，其它非空值粗略按 8 字节。
 pub fn estimate_row_size(row: &[Option<ColumnValue>]) -> usize {
     row.iter()
@@ -1001,6 +1004,11 @@ impl Parser {
         self.current_row += 1;
         self.total_read_rows += 1;
         let length = estimate_row_size(&row);
+        if length as u64 > MAX_ROW_SIZE.load(Ordering::Relaxed) {
+            return Err(Error(
+                astersql_dumpformat_parsedef::ERR_ROW_TOO_LARGE.into(),
+            ));
+        }
         Ok(ParsedRow {
             row,
             row_id: 0,

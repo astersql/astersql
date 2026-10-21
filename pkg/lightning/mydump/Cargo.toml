@@ -8,6 +8,7 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+astersql-dumpformat-parsedef = { path = "../../dumpformat/parsedef" }
 encoding_rs = "0.8"
 hex = "0.4"
 libm = "0.2"

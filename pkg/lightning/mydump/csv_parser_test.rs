@@ -24,7 +24,7 @@ use std::sync::{Mutex, atomic::Ordering};
 
 /// Go's tests mutate LargestEntryLimit without parallel execution. Keep the
 /// corresponding Rust tests isolated from readers that expect the default.
-static LARGEST_ENTRY_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static LARGEST_ENTRY_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// 用内存 StringReader 构造 CsvParser。
 fn make_parser(input: &[u8], cfg: CsvConfig, header: bool) -> Result<CsvParser, Error> {
