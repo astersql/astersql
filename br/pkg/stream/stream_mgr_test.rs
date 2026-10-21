@@ -260,6 +260,7 @@ impl ObserveDataSource for Catalog {
                     O: "app".into(),
                     L: "app".into(),
                 },
+                ..Default::default()
             },
             DBInfo {
                 ID: 2,
@@ -267,6 +268,7 @@ impl ObserveDataSource for Catalog {
                     O: "INFORMATION_SCHEMA".into(),
                     L: "information_schema".into(),
                 },
+                ..Default::default()
             },
         ])
     }

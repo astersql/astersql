@@ -30,6 +30,10 @@ pub mod misc;
 #[path = "restorer.rs"]
 pub mod restorer;
 
+/// Exact schema/table routing used by snapshot restore and PiTR.
+#[path = "nameroute/lib.rs"]
+pub mod nameroute;
+
 #[cfg(test)]
 #[path = "parity_test.rs"]
 mod parity_test;

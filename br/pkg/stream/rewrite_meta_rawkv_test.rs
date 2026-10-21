@@ -56,6 +56,7 @@ fn produce_db_info_value(db_name: &str, db_id: i64) -> Vec<u8> {
             O: db_name.into(),
             L: db_name.into(),
         },
+        ..Default::default()
     })
     .unwrap()
 }

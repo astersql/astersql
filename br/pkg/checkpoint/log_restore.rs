@@ -167,6 +167,14 @@ pub struct CheckpointMetadataForLogRestore {
         skip_serializing_if = "is_zero"
     )]
     pub SnapshotRestoreDataSize: u64,
+    /// Stable fingerprint of the canonical restore name routes. Checkpoint
+    /// resume must reject a different route set even when filters are equal.
+    #[serde(
+        rename = "route-fingerprint",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub RouteFingerprint: String,
     /// 快照恢复阶段记录的 TiFlash 副本信息；空 map 时省略序列化（对齐 omitempty）
     #[serde(
         rename = "tiflash-recorder",

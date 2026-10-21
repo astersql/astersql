@@ -137,8 +137,8 @@ use crate::stubs::{
     ClusterConfig, CollectTableIDs, ComputeSortedIDsHash, Context, CreatedTable, DbSession, Error,
     ExternalStorage, ImporterClient, MemDb, MemDomain, MemImporterClient, MemPdClient,
     MemSplitClient, MemStorage, MergeOptionRule, PdClient, PdController, PreallocIDs, Result,
-    SnapshotCheckpointManager, SstRestorer, StoreMeta, TemporaryDBName, TlsConfig, UniqueTableName,
-    backuppb, import_sstpb, metapb, metautil, model, tablecodec,
+    SnapshotCheckpointManager, SstRestorer, StoreMeta, TableRestorePlan, TemporaryDBName,
+    TlsConfig, UniqueTableName, backuppb, import_sstpb, metapb, metautil, model, tablecodec,
 };
 
 fn decode_table_id(key: &[u8]) -> i64 {
@@ -281,6 +281,50 @@ fn test_create_tables() {
     for i in 0..tables.len() {
         assert!(old_exist.contains_key(&(i as i64)), "missing rule for {i}");
     }
+}
+
+#[test]
+fn test_create_tables_with_plan_preserves_source_metadata() {
+    let source = mk_table("source", 1, "orders", 10);
+    let source_before = source.clone();
+    let plan = TableRestorePlan {
+        Source: source,
+        TargetDB: model::DBInfo {
+            ID: 2,
+            Name: model::CIStr::new("archive"),
+        },
+        TargetInfo: model::TableInfo {
+            ID: 10,
+            Name: model::CIStr::new("orders_copy"),
+            ..Default::default()
+        },
+    };
+    let dom = Arc::new(MemDomain {
+        empty: true,
+        tables: Mutex::new(HashMap::from([(
+            ("archive".to_string(), "orders_copy".to_string()),
+            model::TableInfo {
+                ID: 110,
+                Name: model::CIStr::new("orders_copy"),
+                ..Default::default()
+            },
+        )])),
+    });
+    let mut client = NewRestoreClientForTest();
+    client
+        .InitConnections(dom, Box::new(MemDb::default()))
+        .unwrap();
+
+    let created = client
+        .CreateTablesWithPlan(&Context::Background(), std::slice::from_ref(&plan), 0)
+        .unwrap();
+    assert_eq!(plan.Source.DB.Name, source_before.DB.Name);
+    assert_eq!(plan.Source.Info.Name, source_before.Info.Name);
+    assert_eq!(plan.Source.Info.ID, source_before.Info.ID);
+    assert_eq!(created[0].OldTable.Info.Name.O, "orders");
+    assert_eq!(created[0].TargetDBName().O, "archive");
+    assert_eq!(created[0].Table.Name.O, "orders_copy");
+    assert_eq!(created[0].Table.ID, 110);
 }
 
 struct RecordingCreateDb {

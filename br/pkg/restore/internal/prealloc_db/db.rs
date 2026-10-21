@@ -655,22 +655,27 @@ impl DB {
     ) -> Result<bool> {
         eprintln!("create database name={}", schema.Name);
 
+        // Keep backup metadata immutable. The downstream DDL path is allowed
+        // to drop unsupported placement settings, but callers still need the
+        // source DBInfo for routing, checksums and PiTR ID-map construction.
+        let mut target_schema = schema.clone();
+
         if !support_policy {
             eprintln!(
                 "set placementPolicyRef to nil when target tidb not support policy database={}",
                 schema.Name
             );
-            schema.PlacementPolicyRef = None;
+            target_schema.PlacementPolicyRef = None;
         }
 
-        if let Some(policy_ref) = &schema.PlacementPolicyRef {
+        if let Some(policy_ref) = &target_schema.PlacementPolicyRef {
             if let Some(policy_map) = policy_map {
                 self.ensurePlacementPolicy(ctx, &policy_ref.Name, policy_map)
                     .map_err(errors::Trace)?;
             }
         }
 
-        match self.se.CreateDatabaseOnExistError(ctx, schema) {
+        match self.se.CreateDatabaseOnExistError(ctx, &target_schema) {
             Ok(()) => Ok(false),
             Err(err) if infoschema::ErrDatabaseExists().Equal(&err) => Ok(true),
             Err(err) => {
@@ -806,22 +811,23 @@ impl DB {
         }
 
         let mut cloned_infos: HashMap<String, Vec<model::TableInfo>> = HashMap::new();
-        for table in tables.iter_mut() {
+        for table in tables.iter() {
+            let mut target_info = table.Info.clone();
             if !support_policy {
                 eprintln!(
                     "set placementPolicyRef to nil when target tidb not support policy table={} db={}",
                     table.Info.Name, table.DB.Name
                 );
-                table.Info.ClearPlacement();
+                target_info.ClearPlacement();
             } else if let Some(policy_map) = policy_map {
-                self.ensureTablePlacementPolicies(ctx, &table.Info, policy_map)
+                self.ensureTablePlacementPolicies(ctx, &target_info, policy_map)
                     .map_err(errors::Trace)?;
             }
 
-            if let Some(ttl_info) = &mut table.Info.TTLInfo {
+            if let Some(ttl_info) = &mut target_info.TTLInfo {
                 ttl_info.Enable = false;
             }
-            let info_clone = rewrite_table_info(&prealloced_ids, &table.Info)?;
+            let info_clone = rewrite_table_info(&prealloced_ids, &target_info)?;
             cloned_infos
                 .entry(table.DB.Name.L.clone())
                 .or_default()
@@ -853,18 +859,19 @@ impl DB {
         support_policy: bool,
         policy_map: Option<&Mutex<HashMap<String, model::PolicyInfo>>>,
     ) -> Result<()> {
+        let mut target_info = table.Info.clone();
         if !support_policy {
             eprintln!(
                 "set placementPolicyRef to nil when target tidb not support policy table={} db={}",
                 table.Info.Name, table.DB.Name
             );
-            table.Info.ClearPlacement();
+            target_info.ClearPlacement();
         } else if let Some(policy_map) = policy_map {
-            self.ensureTablePlacementPolicies(ctx, &table.Info, policy_map)
+            self.ensureTablePlacementPolicies(ctx, &target_info, policy_map)
                 .map_err(errors::Trace)?;
         }
 
-        if let Some(ttl_info) = &mut table.Info.TTLInfo {
+        if let Some(ttl_info) = &mut target_info.TTLInfo {
             ttl_info.Enable = false;
         }
 
@@ -872,7 +879,7 @@ impl DB {
             .prealloced_ids
             .as_ref()
             .expect("preallocedIDs must be registered before CreateTable");
-        let info_clone = rewrite_table_info(prealloced_ids, &table.Info)?;
+        let info_clone = rewrite_table_info(prealloced_ids, &target_info)?;
         if let Err(err) =
             self.se
                 .CreateTable(ctx, &table.DB.Name, &info_clone, &[WithIDAllocated(true)])

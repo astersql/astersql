@@ -155,7 +155,7 @@ impl SchemasReplace {
                     .Annotatef(berrors::ErrInvalidArgument));
             }
         };
-        if dbMap.FilteredOut || dbMap.Reused {
+        if !dbMap.RestoresDatabaseMetadata() || dbMap.Reused {
             return Ok(None);
         }
         rawMetaKey.UpdateField(meta::DBkey(dbMap.DbID));
@@ -181,10 +181,16 @@ impl SchemasReplace {
                 );
             }
         };
-        if dbMap.FilteredOut || dbMap.Reused {
+        if !dbMap.RestoresDatabaseMetadata() || dbMap.Reused {
             return Ok(None);
         }
         dbInfo.ID = dbMap.DbID;
+        if !dbMap.Name.is_empty() {
+            dbInfo.Name = model::CIStr {
+                O: dbMap.Name.clone(),
+                L: dbMap.Name.to_lowercase(),
+            };
+        }
         serde_json::to_vec(&dbInfo)
             .map(Some)
             .map_err(|e| Error::new(format!("{e}")))
@@ -355,6 +361,15 @@ impl SchemasReplace {
         let Some(newKey) = newKey else {
             return Ok(None);
         };
+        if r.Deleted
+            && self
+                .DbReplaceMap
+                .get(&dbID)
+                .and_then(|db| db.TableMap.get(&old_table_id))
+                .is_some_and(|table| table.SkipMetaDelete)
+        {
+            return Ok(None);
+        }
         if r.Deleted {
             self.deletedTables
                 .entry(dbID)
@@ -429,11 +444,13 @@ impl SchemasReplace {
                 );
             }
         };
-        if tableReplace.FilteredOut || utils::IsSysOrTempSysDB(&dbReplace.Name) {
+        if tableReplace.FilteredOut
+            || utils::IsSysOrTempSysDB(tableReplace.EffectiveDBName(dbReplace))
+        {
             return Ok(None);
         }
         // Key/Field 双侧替换为下游 ID。
-        rawMetaKey.UpdateKey(meta::DBkey(dbReplace.DbID));
+        rawMetaKey.UpdateKey(meta::DBkey(tableReplace.EffectiveDBID(dbReplace)));
         rawMetaKey.UpdateField(encode_field(tableReplace.TableID));
         if cf == WriteCF {
             rawMetaKey.UpdateTS(self.RewriteTS);
@@ -536,6 +553,12 @@ impl SchemasReplace {
             }
         };
         tableInfo.ID = tableMap.TableID;
+        if !tableMap.Name.is_empty() {
+            tableInfo.Name = model::CIStr {
+                O: tableMap.Name.clone(),
+                L: tableMap.Name.to_lowercase(),
+            };
+        }
         if let Some(partitions) = tableInfo.Partition.as_mut() {
             for def in &mut partitions.Definitions {
                 // 缺映射保留原 ID，由后续完整路径或校验兜底。

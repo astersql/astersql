@@ -584,6 +584,9 @@ impl Domain for TestDomain {
 fn sample_info() -> RegistrationInfo {
     RegistrationInfo {
         FilterStrings: vec!["test.t1".into()],
+        RouteStrings: Vec::new(),
+        RouteHash: String::new(),
+        FilterHashInput: String::new(),
         StartTS: 100,
         RestoredTS: 200,
         UpstreamClusterID: 1,

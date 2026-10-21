@@ -1333,6 +1333,11 @@ dependencies = [
 [[package]]
 name = "astersql-br-pkg-registry"
 version = "0.1.0"
+dependencies = [
+ "astersql-br-pkg-restore",
+ "hex 0.4.3",
+ "serde_json",
+]
 
 [[package]]
 name = "astersql-br-pkg-restore"

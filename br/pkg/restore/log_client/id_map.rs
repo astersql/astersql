@@ -53,6 +53,60 @@ pub fn PitrIDMapsFilename(clusterID: u64, restoredTS: u64) -> String {
     format!("pitr_id_maps/pitr_id_map.cluster_id:{clusterID}.restored_ts:{restoredTS}")
 }
 
+pub fn PitrIDMapsFilenameForTask(
+    clusterID: u64,
+    upstreamClusterID: u64,
+    restoredTS: u64,
+    restoreID: u64,
+) -> String {
+    format!(
+        "{}restore-{restoreID}.meta",
+        pitr_id_maps_prefix(clusterID, upstreamClusterID, restoredTS)
+    )
+}
+
+fn pitr_id_maps_prefix(clusterID: u64, upstreamClusterID: u64, restoredTS: u64) -> String {
+    format!(
+        "pitr_id_maps/v2/cluster-{clusterID}/upstream-{upstreamClusterID}/restored-{restoredTS}/"
+    )
+}
+
+pub fn FindUniquePitrIDMapFile(
+    ctx: &Context,
+    storage: &dyn Storage,
+    clusterID: u64,
+    upstreamClusterID: u64,
+    restoredTS: u64,
+) -> Result<String> {
+    let prefix = pitr_id_maps_prefix(clusterID, upstreamClusterID, restoredTS);
+    let files = storage.WalkDir(ctx, &prefix)?;
+    let mut owner_file = String::new();
+    for file in files {
+        let Some(owner) = file
+            .strip_prefix(&prefix)
+            .and_then(|name| name.strip_prefix("restore-"))
+            .and_then(|name| name.strip_suffix(".meta"))
+            .and_then(|owner| owner.parse::<u64>().ok())
+        else {
+            return Err(Error::new(format!(
+                "invalid PiTR ID map owner filename {file:?}"
+            )));
+        };
+        if file != PitrIDMapsFilenameForTask(clusterID, upstreamClusterID, restoredTS, owner) {
+            return Err(Error::new(format!(
+                "invalid PiTR ID map owner filename {file:?}"
+            )));
+        }
+        if !owner_file.is_empty() {
+            return Err(Error::new(format!(
+                "multiple PiTR ID maps exist at restored TS {restoredTS} for upstream cluster {upstreamClusterID}; cannot choose a predecessor task"
+            )));
+        }
+        owner_file = file;
+    }
+    Ok(owner_file)
+}
+
 impl LogClient {
     /// 探测目标集群是否已有 `mysql.tidb_pitr_id_map`；无 domain 时视为不存在。
     pub fn pitrIDMapTableExists(&self) -> bool {
@@ -91,6 +145,7 @@ impl LogClient {
         ctx: &Context,
         manager: &TableMappingManager,
         logCheckpointMetaManager: &LogMetaManagerT,
+        routeFingerprint: &str,
     ) -> Result<()> {
         // ToProto 把内存 TableMapping 转成可序列化的 PitrDBMap 列表。
         let dbmaps = manager.ToProto();
@@ -99,10 +154,10 @@ impl LogClient {
             log::Info(
                 "checkpoint storage is specified, load pitr id map from the checkpoint storage.",
             );
-            self.saveIDMap2Storage(ctx, checkpointStorage.as_ref(), &dbmaps)?;
+            self.saveIDMap2Storage(ctx, checkpointStorage.as_ref(), &dbmaps, routeFingerprint)?;
         } else if self.pitrIDMapTableExists() {
             // 系统表路径：适合无独立检查点仓、但仍有 TiDB 元数据能力的集群。
-            self.saveIDMap2Table(ctx, &dbmaps)?;
+            self.saveIDMap2Table(ctx, &dbmaps, routeFingerprint)?;
         } else {
             // 旧集群无系统表时回退到备份存储，避免任务无法继续。
             log::Info(
@@ -112,7 +167,7 @@ impl LogClient {
                 .storage
                 .as_ref()
                 .ok_or_else(|| Error::new("storage is nil"))?;
-            self.saveIDMap2Storage(ctx, storage.as_ref(), &dbmaps)?;
+            self.saveIDMap2Storage(ctx, storage.as_ref(), &dbmaps, routeFingerprint)?;
         }
 
         // 进度落盘必须在 id map 写成功之后，防止恢复侧误判“映射已就绪”。
@@ -134,15 +189,22 @@ impl LogClient {
         ctx: &Context,
         storage: &dyn Storage,
         dbMaps: &[PitrDBMap],
+        routeFingerprint: &str,
     ) -> Result<()> {
         // 文件名含 restoreTS，同一集群多次 PiTR 互不覆盖。
         let clusterID = self.GetClusterID(ctx);
-        let metaFileName = PitrIDMapsFilename(clusterID, self.restoreTS);
+        let metaFileName = PitrIDMapsFilenameForTask(
+            clusterID,
+            self.upstreamClusterID,
+            self.restoreTS,
+            self.restoreID,
+        );
         // 复用 BackupMeta 容器承载 DbMaps，与 Go marshal 形状对齐。
         let meta = BackupMeta {
             ClusterId: clusterID,
             DbMaps: dbMaps.to_vec(),
             BackupSchemaVersion: backuppb::BackupSchemaVersion,
+            PitrIdMapRouteFingerprint: routeFingerprint.to_string(),
             ..Default::default()
         };
         let data = meta.Marshal()?;
@@ -151,10 +213,16 @@ impl LogClient {
 
     /// 按段 REPLACE 写入系统表；先 DELETE 同键旧行，保证幂等覆盖。
     /// 有 `restore_id` 时键含 restore_id，否则只按 restored_ts + upstream_cluster_id。
-    pub fn saveIDMap2Table(&self, ctx: &Context, dbMaps: &[PitrDBMap]) -> Result<()> {
+    pub fn saveIDMap2Table(
+        &self,
+        ctx: &Context,
+        dbMaps: &[PitrDBMap],
+        routeFingerprint: &str,
+    ) -> Result<()> {
         let backupmeta = BackupMeta {
             BackupSchemaVersion: backuppb::BackupSchemaVersion,
             DbMaps: dbMaps.to_vec(),
+            PitrIdMapRouteFingerprint: routeFingerprint.to_string(),
             ..Default::default()
         };
         // 先整包序列化，再按块切段，保证各段拼接后仍是合法 BackupMeta。
@@ -241,17 +309,23 @@ impl LogClient {
         ctx: &Context,
         restoredTS: u64,
         logCheckpointMetaManager: &LogMetaManagerT,
-    ) -> Result<Vec<PitrDBMap>> {
+        loadPreviousTask: bool,
+    ) -> Result<Option<BackupMeta>> {
         // 读优先级与 saveIDMap 完全对称，避免写到 A 却从 B 读。
         if let Some(checkpointStorage) = self.tryGetCheckpointStorage(logCheckpointMetaManager) {
             log::Info(
                 "checkpoint storage is specified, load pitr id map from the checkpoint storage.",
             );
-            return self.loadSchemasMapFromStorage(ctx, checkpointStorage.as_ref(), restoredTS);
+            return self.loadSchemasMapFromStorage(
+                ctx,
+                checkpointStorage.as_ref(),
+                restoredTS,
+                loadPreviousTask,
+            );
         }
         if self.pitrIDMapTableExists() {
             // 表存在即优先表，即使备份存储也有同名文件。
-            return self.loadSchemasMapFromTable(ctx, restoredTS);
+            return self.loadSchemasMapFromTable(ctx, restoredTS, loadPreviousTask);
         }
         log::Info(
             "the table mysql.tidb_pitr_id_map does not exist, maybe the cluster version is old.",
@@ -260,7 +334,7 @@ impl LogClient {
             .storage
             .as_ref()
             .ok_or_else(|| Error::new("storage is nil"))?;
-        self.loadSchemasMapFromStorage(ctx, storage.as_ref(), restoredTS)
+        self.loadSchemasMapFromStorage(ctx, storage.as_ref(), restoredTS, loadPreviousTask)
     }
 
     /// 反序列化 BackupMeta；若为 stub 的 `BM` 简易格式则手工还原 DbMaps。
@@ -302,6 +376,18 @@ impl LogClient {
             }
             backupMeta.ClusterId = cluster;
             backupMeta.DbMaps = maps;
+            if off + 4 <= metaData.len() {
+                let len = u32::from_le_bytes(metaData[off..off + 4].try_into().unwrap()) as usize;
+                off += 4;
+                let end = off
+                    .checked_add(len)
+                    .ok_or_else(|| Error::new("invalid overflowing route fingerprint length"))?;
+                if end > metaData.len() {
+                    return Err(Error::new("invalid truncated route fingerprint"));
+                }
+                backupMeta.PitrIdMapRouteFingerprint =
+                    String::from_utf8_lossy(&metaData[off..end]).into_owned();
+            }
         }
         if let Err(err) = metautil::CheckBackupMetaCompatibilityFromBytes(metaData, &backupMeta) {
             if self.checkRequirements {
@@ -319,9 +405,30 @@ impl LogClient {
         ctx: &Context,
         storage: &dyn Storage,
         restoredTS: u64,
-    ) -> Result<Vec<PitrDBMap>> {
+        loadPreviousTask: bool,
+    ) -> Result<Option<BackupMeta>> {
         let clusterID = self.GetClusterID(ctx);
-        let metaFileName = PitrIDMapsFilename(clusterID, restoredTS);
+        let task_file = PitrIDMapsFilenameForTask(
+            clusterID,
+            self.upstreamClusterID,
+            restoredTS,
+            self.restoreID,
+        );
+        let legacy_file = PitrIDMapsFilename(clusterID, restoredTS);
+        let legacy_exists = storage.FileExists(ctx, &legacy_file)?;
+        let metaFileName = if loadPreviousTask {
+            if legacy_exists {
+                return Err(Error::new(format!(
+                    "legacy PiTR ID map at restored TS {restoredTS} has no task owner or upstream identity; cannot safely choose a predecessor"
+                )));
+            }
+            FindUniquePitrIDMapFile(ctx, storage, clusterID, self.upstreamClusterID, restoredTS)?
+        } else {
+            task_file
+        };
+        if metaFileName.is_empty() {
+            return Ok(None);
+        }
         // FileExists 失败与“文件不存在”区分：前者是存储故障，需上抛。
         let exist = storage.FileExists(ctx, &metaFileName).map_err(|err| {
             Error::Annotatef(err, format!("failed to check filename:{metaFileName} "))
@@ -329,12 +436,18 @@ impl LogClient {
         if !exist {
             // 首次还原或映射尚未写出时返回空列表，由调用方决定是否新建。
             log::Info("pitr id map does not exist");
-            return Ok(Vec::new());
+            if legacy_exists {
+                return Err(Error::new(format!(
+                    "legacy PiTR ID map at restored TS {restoredTS} has no task owner; cannot safely resume restore ID {}",
+                    self.restoreID
+                )));
+            }
+            return Ok(None);
         }
         // 读全量字节后再统一走 loadPITRIDMapBackupMeta。
         let metaData = storage.ReadFile(ctx, &metaFileName)?;
         let backupMeta = self.loadPITRIDMapBackupMeta(&metaData)?;
-        Ok(backupMeta.GetDbMaps())
+        Ok(Some(backupMeta))
     }
 
     /// 按 segment_id 有序读出各段并拼接；缺段或空段视为损坏并报错。
@@ -342,14 +455,39 @@ impl LogClient {
         &self,
         ctx: &Context,
         restoredTS: u64,
-    ) -> Result<Vec<PitrDBMap>> {
+        loadPreviousTask: bool,
+    ) -> Result<Option<BackupMeta>> {
         let hasRestoreIDColumn = self.pitrIDMapHasRestoreIDColumn();
         // SQL 条件与 save 路径对称，保证读写同一逻辑键。
+        let session = self
+            .unsafeSession
+            .as_ref()
+            .ok_or_else(|| Error::new("unsafeSession is nil"))?;
+        let execCtx = session.GetSessionCtx().GetRestrictedSQLExecutor();
+        let mut restore_id = self.restoreID;
+        if hasRestoreIDColumn && loadPreviousTask {
+            let owners = execCtx.ExecRestrictedSQL(
+                &kv::WithInternalSourceType(ctx.clone(), kv::InternalTxnBR),
+                None,
+                "SELECT DISTINCT restore_id FROM mysql.tidb_pitr_id_map WHERE restored_ts = %? AND upstream_cluster_id = %? LIMIT 2;",
+                &[SqlArg::U64(restoredTS), SqlArg::U64(self.upstreamClusterID)],
+            )?;
+            match owners.as_slice() {
+                [] => return Ok(None),
+                [owner] => restore_id = owner.GetUint64(0),
+                _ => {
+                    return Err(Error::new(format!(
+                        "multiple PiTR ID maps exist at restored TS {restoredTS} for upstream cluster {}; cannot choose a predecessor task",
+                        self.upstreamClusterID
+                    )));
+                }
+            }
+        }
         let (sql, args): (&str, Vec<SqlArg>) = if hasRestoreIDColumn {
             (
                 "SELECT segment_id, id_map FROM mysql.tidb_pitr_id_map WHERE restore_id = %? and restored_ts = %? and upstream_cluster_id = %? ORDER BY segment_id;",
                 vec![
-                    SqlArg::U64(self.restoreID),
+                    SqlArg::U64(restore_id),
                     SqlArg::U64(restoredTS),
                     SqlArg::U64(self.upstreamClusterID),
                 ],
@@ -363,11 +501,6 @@ impl LogClient {
                 vec![SqlArg::U64(restoredTS), SqlArg::U64(self.upstreamClusterID)],
             )
         };
-        let session = self
-            .unsafeSession
-            .as_ref()
-            .ok_or_else(|| Error::new("unsafeSession is nil"))?;
-        let execCtx = session.GetSessionCtx().GetRestrictedSQLExecutor();
         // 标记 InternalTxnBR，避免内部查询干扰用户事务统计。
         let rows = execCtx
             .ExecRestrictedSQL(
@@ -382,7 +515,7 @@ impl LogClient {
         if rows.is_empty() {
             // 与存储路径一致：空结果不是错误。
             log::Info("pitr id map does not exist");
-            return Ok(Vec::new());
+            return Ok(None);
         }
         // 预分配近似容量，减少段拼接时的反复扩容。
         let mut metaData = Vec::with_capacity(rows.len() * PITRIdMapBlockSize);
@@ -405,6 +538,6 @@ impl LogClient {
         }
         // 拼接完成后与文件路径共用同一反序列化入口。
         let backupMeta = self.loadPITRIDMapBackupMeta(&metaData)?;
-        Ok(backupMeta.GetDbMaps())
+        Ok(Some(backupMeta))
     }
 }

@@ -23,7 +23,8 @@ use crate::backup_raw::{
 };
 use crate::common::{GetKeepalive, NewMgr, ReadBackupMeta};
 use crate::restore::{
-    DefineRestoreCommonFlags, RestoreCommonConfig, defaultRestoreConcurrency, flagOnline,
+    DefineRestoreCommonFlags, FlagRename, RestoreCommonConfig, defaultRestoreConcurrency,
+    flagOnline,
 };
 use crate::stubs::{
     ArchiveSize, Error, FlagSet, Glue, MemStorage, MetaFile, RangeStats, Result, SetSuccessStatus,
@@ -61,6 +62,12 @@ pub fn DefineRawRestoreFlags(flags: &mut FlagSet) {
 impl RestoreRawConfig {
     /// 从 FlagSet 填充 Online 与 Raw/Common 子配置。
     pub fn ParseFromFlags(&mut self, flags: &FlagSet) -> Result<()> {
+        if flags.Lookup(FlagRename).is_some() && flags.Changed(FlagRename) {
+            return Err(Error::Annotatef(
+                berrors::ErrInvalidArgument,
+                format!("--{FlagRename} is not supported by raw or transactional KV restore"),
+            ));
+        }
         self.RestoreCommonConfig.Online = flags.GetBool(flagOnline)?;
         // Online 单独读取后再 ParseFromFlags。
         self.RestoreCommonConfig.ParseFromFlags(flags)?;

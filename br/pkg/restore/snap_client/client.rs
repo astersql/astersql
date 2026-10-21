@@ -137,13 +137,13 @@ use crate::import::{
 use crate::pitr_collector::{PiTRCollDep, newPiTRColl};
 use crate::stubs::{
     CheckpointRunner, ChecksumClient, ChecksumItem, ClusterConfig, Context, CreatedTable,
-    DbSession, DefaultRegionIndexStep, DomainLike, Error, GetAllTiKVStoresWithRetry,
-    ImporterClient, IsSysOrTempSysDB, MemDb, MemDomain, MemImporterClient, MemPdClient,
-    MemSplitClient, MergeOptionRule, NewAndPreallocTableIDs, NormalizeRegionIndexStep, PdClient,
-    PdController, PreallocIDs, Result, ReusePreallocatedTableIDs, SimpleRestorer,
-    SnapshotCheckpointManager, SplitClient, SstRestorer, StoreMeta, SysDB, SystemDB,
-    TableLocationInfo, TemporaryDBName, TlsConfig, UniqueTableName, WorkloadSchema, backuppb,
-    berrors, log, metautil, model,
+    DatabaseRestorePlan, DbSession, DefaultRegionIndexStep, DomainLike, Error,
+    GetAllTiKVStoresWithRetry, ImporterClient, IsSysOrTempSysDB, MemDb, MemDomain,
+    MemImporterClient, MemPdClient, MemSplitClient, MergeOptionRule, NewAndPreallocTableIDs,
+    NormalizeRegionIndexStep, PdClient, PdController, PreallocIDs, Result,
+    ReusePreallocatedTableIDs, SimpleRestorer, SnapshotCheckpointManager, SplitClient, SstRestorer,
+    StoreMeta, SysDB, SystemDB, TableLocationInfo, TableRestorePlan, TemporaryDBName, TlsConfig,
+    UniqueTableName, WorkloadSchema, backuppb, berrors, log, metautil, model,
 };
 use crate::systable_restore::TemporaryTableChecker;
 
@@ -919,6 +919,29 @@ impl SnapClient {
     }
 
     pub fn CreateDatabases(&mut self, ctx: &Context, dbs: &[metautil::Database]) -> Result<()> {
+        let mut plans: Vec<_> = dbs
+            .iter()
+            .cloned()
+            .map(|source| DatabaseRestorePlan {
+                Target: source.Info.clone(),
+                Source: source,
+                Reused: false,
+            })
+            .collect();
+        self.CreateDatabasesWithPlan(ctx, &mut plans)?;
+        for (database, plan) in dbs.iter().zip(plans) {
+            if plan.Reused {
+                database.SetReusedByPITR();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn CreateDatabasesWithPlan(
+        &mut self,
+        ctx: &Context,
+        plans: &mut [DatabaseRestorePlan],
+    ) -> Result<()> {
         if self.IsSkipCreateSQL() {
             log::Info("skip create database");
             return Ok(());
@@ -927,52 +950,79 @@ impl SnapClient {
             let Some(session) = self.db.as_mut() else {
                 return Err(Error::new("database session is not initialized"));
             };
-            for db in dbs {
-                if session.CreateDatabase(ctx, db, self.supportPolicy)? {
-                    db.SetReusedByPITR();
-                }
+            for plan in plans {
+                let target = metautil::Database {
+                    Info: plan.Target.clone(),
+                    ..Default::default()
+                };
+                plan.Reused = session.CreateDatabase(ctx, &target, self.supportPolicy)?;
             }
             return Ok(());
         }
 
-        let worker_count = self.dbPool.len().min(dbs.len());
-        let mut assignments = vec![Vec::<metautil::Database>::new(); worker_count];
-        for (index, database) in dbs.iter().cloned().enumerate() {
-            assignments[index % worker_count].push(database);
+        let worker_count = self.dbPool.len().min(plans.len());
+        let mut assignments = vec![Vec::<(usize, model::DBInfo)>::new(); worker_count];
+        for (index, plan) in plans.iter().enumerate() {
+            assignments[index % worker_count].push((index, plan.Target.clone()));
         }
-        let support_policy = self.supportPolicy;
-        std::thread::scope(|scope| {
+        let reused = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(worker_count);
             for (session, databases) in self.dbPool.iter_mut().take(worker_count).zip(assignments) {
                 let ctx = ctx.clone();
+                let support_policy = self.supportPolicy;
                 handles.push(scope.spawn(move || {
-                    for database in databases {
+                    let mut reused = Vec::new();
+                    for (index, info) in databases {
+                        let database = metautil::Database {
+                            Info: info,
+                            ..Default::default()
+                        };
                         if session.CreateDatabase(&ctx, &database, support_policy)? {
-                            database.SetReusedByPITR();
+                            reused.push(index);
                         }
                     }
-                    Ok::<_, Error>(())
+                    Ok::<_, Error>(reused)
                 }));
             }
+            let mut reused = Vec::new();
             for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| Error::new("create database worker panicked"))??;
+                reused.extend(
+                    handle
+                        .join()
+                        .map_err(|_| Error::new("create database worker panicked"))??,
+                );
             }
-            Ok(())
-        })
+            Ok::<_, Error>(reused)
+        })?;
+        for index in reused {
+            plans[index].Reused = true;
+        }
+        Ok(())
     }
 
     pub fn generateRebasedTables(&mut self, tables: &[metautil::Table]) {
+        let plans: Vec<_> = tables
+            .iter()
+            .cloned()
+            .map(|source| TableRestorePlan {
+                TargetDB: source.DB.clone(),
+                TargetInfo: source.Info.clone(),
+                Source: source,
+            })
+            .collect();
+        self.generateRebasedTablesWithPlan(&plans);
+    }
+
+    pub fn generateRebasedTablesWithPlan(&mut self, plans: &[TableRestorePlan]) {
         self.rebasedTablesMap.clear();
         if !self.IsIncremental() {
             return;
         }
-        for t in tables {
+        for plan in plans {
             self.rebasedTablesMap.insert(
                 UniqueTableName {
-                    DB: t.DB.Name.O.clone(),
-                    Table: t.Info.Name.O.clone(),
+                    DB: plan.TargetDB.Name.O.clone(),
+                    Table: plan.TargetInfo.Name.O.clone(),
                 },
                 true,
             );
@@ -989,9 +1039,27 @@ impl SnapClient {
         tables: &[metautil::Table],
         new_ts: u64,
     ) -> Result<Vec<CreatedTable>> {
-        self.generateRebasedTables(tables);
+        let plans: Vec<_> = tables
+            .iter()
+            .cloned()
+            .map(|source| TableRestorePlan {
+                TargetDB: source.DB.clone(),
+                TargetInfo: source.Info.clone(),
+                Source: source,
+            })
+            .collect();
+        self.CreateTablesWithPlan(ctx, &plans, new_ts)
+    }
+
+    pub fn CreateTablesWithPlan(
+        &mut self,
+        ctx: &Context,
+        plans: &[TableRestorePlan],
+        new_ts: u64,
+    ) -> Result<Vec<CreatedTable>> {
+        self.generateRebasedTablesWithPlan(plans);
         if self.batchDdlSize > MIN_BATCH_DDL_SIZE as u32 && !self.dbPool.is_empty() {
-            match self.createTablesBatch(ctx, tables, new_ts) {
+            match self.createTablesBatch(ctx, plans, new_ts) {
                 Ok(created) => return Ok(created),
                 Err(err) if fallBack2CreateTable(&err) => {
                     log::Info("fall back to the sequential create table");
@@ -1000,13 +1068,13 @@ impl SnapClient {
             }
         }
 
-        self.createTablesSingle(ctx, tables, new_ts)
+        self.createTablesSingle(ctx, plans, new_ts)
     }
 
     fn createTables(
         ctx: &Context,
         db: &mut dyn DbSession,
-        tables: &[metautil::Table],
+        plans: &[TableRestorePlan],
         new_ts: u64,
         skip_create_sql: bool,
         support_policy: bool,
@@ -1014,9 +1082,10 @@ impl SnapClient {
         dom: &Arc<dyn DomainLike>,
     ) -> Result<Vec<CreatedTable>> {
         if !skip_create_sql {
-            db.CreateTables(ctx, tables, rebased, support_policy)?;
+            let targets: Vec<_> = plans.iter().map(TableRestorePlan::TargetTable).collect();
+            db.CreateTables(ctx, &targets, rebased, support_policy)?;
         }
-        let created = Self::buildCreatedTables(dom, tables, new_ts)?;
+        let created = Self::buildCreatedTables(dom, plans, new_ts)?;
         Self::setMergeOptionForTables(ctx, dom, &created)?;
         Ok(created)
     }
@@ -1076,20 +1145,20 @@ impl SnapClient {
 
     fn buildCreatedTables(
         dom: &Arc<dyn DomainLike>,
-        tables: &[metautil::Table],
+        plans: &[TableRestorePlan],
         new_ts: u64,
     ) -> Result<Vec<CreatedTable>> {
-        let mut created = Vec::with_capacity(tables.len());
-        for table in tables {
-            let new_info = dom.TableInfoByName(&table.DB.Name.O, &table.Info.Name.O)?;
-            if new_info.IsCommonHandle != table.Info.IsCommonHandle {
+        let mut created = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let new_info = dom.TableInfoByName(&plan.TargetDB.Name.O, &plan.TargetInfo.Name.O)?;
+            if new_info.IsCommonHandle != plan.Source.Info.IsCommonHandle {
                 return Err(Error::Annotate(
                     berrors::ErrRestoreModeMismatch("mode mismatch"),
                     "Clustered index option mismatch",
                 ));
             }
             let mut rewrite_rules = crate::stubs::RewriteRules::new_prefix(
-                &crate::stubs::tablecodec::EncodeTablePrefix(table.Info.ID),
+                &crate::stubs::tablecodec::EncodeTablePrefix(plan.Source.Info.ID),
                 &crate::stubs::tablecodec::EncodeTablePrefix(new_info.ID),
             );
             for rule in &mut rewrite_rules.Data {
@@ -1098,7 +1167,8 @@ impl SnapClient {
             created.push(CreatedTable {
                 RewriteRule: Some(rewrite_rules),
                 Table: new_info,
-                OldTable: table.clone(),
+                OldTable: plan.Source.clone(),
+                TargetDB: plan.TargetDB.Name.clone(),
             });
         }
         Ok(created)
@@ -1107,17 +1177,18 @@ impl SnapClient {
     fn createTablesBatch(
         &mut self,
         ctx: &Context,
-        tables: &[metautil::Table],
+        plans: &[TableRestorePlan],
         new_ts: u64,
     ) -> Result<Vec<CreatedTable>> {
         let batch_size = self.batchDdlSize as usize;
-        let ordered = SortTablesBySchemaID(tables.to_vec());
-        let batches: Vec<Vec<metautil::Table>> = ordered
+        let mut ordered = plans.to_vec();
+        ordered.sort_by_key(|plan| plan.TargetDB.ID);
+        let batches: Vec<Vec<TableRestorePlan>> = ordered
             .chunks(batch_size)
-            .map(<[metautil::Table]>::to_vec)
+            .map(<[TableRestorePlan]>::to_vec)
             .collect();
         let worker_count = self.dbPool.len().min(batches.len());
-        let mut assignments = vec![Vec::<Vec<metautil::Table>>::new(); worker_count];
+        let mut assignments = vec![Vec::<Vec<TableRestorePlan>>::new(); worker_count];
         for (index, batch) in batches.into_iter().enumerate() {
             assignments[index % worker_count].push(batch);
         }
@@ -1151,7 +1222,7 @@ impl SnapClient {
                     Ok::<_, Error>(worker_created)
                 }));
             }
-            let mut created = Vec::with_capacity(tables.len());
+            let mut created = Vec::with_capacity(plans.len());
             for handle in handles {
                 let worker_created = handle
                     .join()
@@ -1165,7 +1236,7 @@ impl SnapClient {
     fn createTable(
         ctx: &Context,
         db: &mut dyn DbSession,
-        table: &metautil::Table,
+        plan: &TableRestorePlan,
         new_ts: u64,
         skip_create_sql: bool,
         support_policy: bool,
@@ -1173,9 +1244,9 @@ impl SnapClient {
         dom: &Arc<dyn DomainLike>,
     ) -> Result<CreatedTable> {
         if !skip_create_sql {
-            db.CreateTable(ctx, table, rebased, support_policy)?;
+            db.CreateTable(ctx, &plan.TargetTable(), rebased, support_policy)?;
         }
-        Self::buildCreatedTables(dom, std::slice::from_ref(table), new_ts).map(|mut tables| {
+        Self::buildCreatedTables(dom, std::slice::from_ref(plan), new_ts).map(|mut tables| {
             tables
                 .pop()
                 .expect("one input table produces one created table")
@@ -1185,7 +1256,7 @@ impl SnapClient {
     fn createTablesSingle(
         &mut self,
         ctx: &Context,
-        tables: &[metautil::Table],
+        plans: &[TableRestorePlan],
         new_ts: u64,
     ) -> Result<Vec<CreatedTable>> {
         let dom = self
@@ -1200,12 +1271,12 @@ impl SnapClient {
                 .db
                 .as_mut()
                 .ok_or_else(|| Error::new("database session is not initialized"))?;
-            let mut created = Vec::with_capacity(tables.len());
-            for table in tables {
+            let mut created = Vec::with_capacity(plans.len());
+            for plan in plans {
                 created.push(Self::createTable(
                     ctx,
                     db.as_mut(),
-                    table,
+                    plan,
                     new_ts,
                     skip,
                     support_policy,
@@ -1216,10 +1287,10 @@ impl SnapClient {
             return Ok(created);
         }
 
-        let worker_count = self.dbPool.len().min(tables.len());
-        let mut assignments = vec![Vec::<metautil::Table>::new(); worker_count];
-        for (index, table) in tables.iter().cloned().enumerate() {
-            assignments[index % worker_count].push(table);
+        let worker_count = self.dbPool.len().min(plans.len());
+        let mut assignments = vec![Vec::<TableRestorePlan>::new(); worker_count];
+        for (index, plan) in plans.iter().cloned().enumerate() {
+            assignments[index % worker_count].push(plan);
         }
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(worker_count);
@@ -1229,11 +1300,11 @@ impl SnapClient {
                 let rebased = rebased.clone();
                 handles.push(scope.spawn(move || {
                     let mut created = Vec::with_capacity(worker_tables.len());
-                    for table in worker_tables {
+                    for plan in worker_tables {
                         created.push(Self::createTable(
                             &ctx,
                             db.as_mut(),
-                            &table,
+                            &plan,
                             new_ts,
                             skip,
                             support_policy,
@@ -1244,7 +1315,7 @@ impl SnapClient {
                     Ok::<_, Error>(created)
                 }));
             }
-            let mut created = Vec::with_capacity(tables.len());
+            let mut created = Vec::with_capacity(plans.len());
             for handle in handles {
                 let worker_created = handle
                     .join()

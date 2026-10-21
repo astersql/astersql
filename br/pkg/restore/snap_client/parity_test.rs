@@ -145,6 +145,7 @@ fn created(old_id: i64, new_id: i64, files: Vec<backuppb::File>) -> CreatedTable
             ..Default::default()
         },
         OldTable: old,
+        TargetDB: model::CIStr::new("test"),
     }
 }
 

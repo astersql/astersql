@@ -66,9 +66,9 @@ use crate::config::{
 };
 use crate::stubs::{
     BRServiceSafePoint, BackupMeta, CIStr, ChecksumExecutor, ComposeTS, ConnMgr, DIAL_HOOKS,
-    DefaultBRGCSafePointTTL, Domain, Error, ExecutorBuilder, GetStorage, GetTSWithRetry, Glue,
-    MakeSafePointID, MetaReader, MetaTable, NewMgr, PitrDBMap, PitrIDMapsFilename, Result,
-    StartServiceSafePointKeeper, TableInfo,
+    DefaultBRGCSafePointTTL, Domain, Error, ExecutorBuilder, FindUniquePitrIDMapFile, GetStorage,
+    GetTSWithRetry, Glue, MakeSafePointID, MetaReader, MetaTable, NewMgr, PitrDBMap,
+    PitrIDMapsFilename, Result, StartServiceSafePointKeeper, TableInfo,
 };
 
 /// 单次 checksum 运行上下文：配置、连接、Domain 与最终 checksumTS。
@@ -242,13 +242,22 @@ impl checksumTableCtx {
         &self,
         g: &dyn Glue,
         restoredTS: u64,
-        clusterID: u64,
+        upstreamClusterID: u64,
     ) -> Result<Vec<PitrDBMap>> {
         // 外部存储模式：文件名由 clusterID+restoredTS 决定。
         if !self.cfg.Config.Storage.is_empty() {
             let (_, stg) = GetStorage(&self.cfg.Config.Storage, &self.cfg.Config)
                 .map_err(|err| Error::Annotate(err.msg, "failed to create storage"))?;
-            let metaFileName = PitrIDMapsFilename(clusterID, restoredTS);
+            let downstream_cluster_id = self.mgr.as_ref().unwrap().GetPDClient().GetClusterID();
+            let mut metaFileName = FindUniquePitrIDMapFile(
+                stg.as_ref(),
+                downstream_cluster_id,
+                upstreamClusterID,
+                restoredTS,
+            )?;
+            if metaFileName.is_empty() {
+                metaFileName = PitrIDMapsFilename(downstream_cluster_id, restoredTS);
+            }
             eprintln!("get pitr id map from the external storage file name={metaFileName}");
             let metaData = stg
                 .ReadFile(&metaFileName)
@@ -282,8 +291,22 @@ impl checksumTableCtx {
         let se = g
             .CreateSession(self.mgr.as_ref().unwrap().GetStorage().as_ref())
             .map_err(|err| Error::Annotate(err.msg, "failed to create session"))?;
+        if hasRestoreIDColumn {
+            let owners = se.ExecRestrictedSQL(
+                "SELECT DISTINCT restore_id FROM mysql.tidb_pitr_id_map WHERE restored_ts = %? AND upstream_cluster_id = %? LIMIT 2;",
+                &[restoredTS, upstreamClusterID],
+            )?;
+            ensureUniquePitrIDMapOwner(
+                &owners
+                    .iter()
+                    .map(|row| row.GetUint64(0))
+                    .collect::<Vec<_>>(),
+                restoredTS,
+                upstreamClusterID,
+            )?;
+        }
         let rows = se
-            .ExecRestrictedSQL(getPitrIDMapSQL, &[restoredTS, clusterID])
+            .ExecRestrictedSQL(getPitrIDMapSQL, &[restoredTS, upstreamClusterID])
             .map_err(|err| {
                 Error::Annotate(
                     err.msg,
@@ -412,10 +435,18 @@ impl checksumTableCtx {
         let mut router: HashMap<String, HashMap<String, HashMap<i64, i64>>> = HashMap::new();
         // 删除安全点失败只告警，不覆盖业务错误。
         for dbidmap in idmaps {
-            let tableRouter = router.entry(dbidmap.Name.clone()).or_default();
             // 首错保留但继续等待，避免残留线程。
             for tableidmap in &dbidmap.Tables {
-                let down2upmap = tableRouter.entry(tableidmap.Name.clone()).or_default();
+                let db_name = if tableidmap.TargetDbName.is_empty() {
+                    dbidmap.Name.to_lowercase()
+                } else {
+                    tableidmap.TargetDbName.to_lowercase()
+                };
+                let down2upmap = router
+                    .entry(db_name)
+                    .or_default()
+                    .entry(tableidmap.Name.to_lowercase())
+                    .or_default();
                 down2upmap.insert(tableidmap.IdMap.DownstreamId, tableidmap.IdMap.UpstreamId);
                 // 作用域守卫保证异常时归还并发槽。
                 for phyidmap in &tableidmap.Partitions {
@@ -434,7 +465,7 @@ impl checksumTableCtx {
             let tableRouter = router.get(&t.dbName).ok_or_else(|| {
                 Error::Errorf(format!("no db map found by db name: {}", t.dbName))
             })?;
-            let idRouter = tableRouter.get(&t.info.Name.O).ok_or_else(|| {
+            let idRouter = tableRouter.get(&t.info.Name.L).ok_or_else(|| {
                 Error::Errorf(format!(
                     "no table map found by table name: {}",
                     t.info.Name.O
@@ -620,6 +651,20 @@ struct request {
     copReq: ChecksumExecutor,
     tableName: String,
     dbName: String,
+}
+
+pub fn ensureUniquePitrIDMapOwner(
+    owners: &[u64],
+    restored_ts: u64,
+    upstream_cluster_id: u64,
+) -> Result<()> {
+    let unique: std::collections::HashSet<_> = owners.iter().copied().collect();
+    if unique.len() > 1 {
+        return Err(Error::new(format!(
+            "multiple PiTR ID maps exist at restored TS {restored_ts} for upstream cluster {upstream_cluster_id}; cannot choose a unique task owner"
+        )));
+    }
+    Ok(())
 }
 
 /// 对外 JSON 结果字段，命名与 Go 结构体 json tag 对齐。

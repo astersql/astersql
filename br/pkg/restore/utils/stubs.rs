@@ -147,13 +147,33 @@ pub mod model {
         pub Partition: Option<PartitionInfo>,
         pub Indices: Vec<IndexInfo>,
     }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct DBInfo {
+        pub ID: i64,
+        pub Name: CIStr,
+        pub Charset: String,
+        pub Collate: String,
+        pub PlacementPolicyRef: Option<CIStr>,
+    }
 }
 
 /// metautil.Table 占位：本包算法路径几乎不触达，仅满足类型引用。
 pub mod metautil {
+    use super::model;
+
     // 空结构体占位，避免牵出真实 metautil 依赖图。
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Table;
+    pub struct Table {
+        pub DB: model::DBInfo,
+        pub Info: model::TableInfo,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Database {
+        pub Info: model::DBInfo,
+        pub Tables: Vec<Table>,
+    }
 }
 
 /// tablecodec 精简：表/行/索引前缀编码，对齐 TiDB memcomparable 整数布局。

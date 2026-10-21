@@ -12,7 +12,7 @@ use std::sync::Arc;
 use astersql_br_pkg_task::{
     Config, DBRestoreCmd, DefineDatabaseFlags, DefineFilterFlags, DefineRawRestoreFlags,
     DefineRestoreFlags, DefineRestoreSnapshotFlags, DefineStreamRestoreFlags, DefineTableFlags,
-    FullBackupTypeEBS, FullRestoreCmd, IsStreamRestore, PointRestoreCmd, RawRestoreCmd,
+    FlagRename, FullBackupTypeEBS, FullRestoreCmd, IsStreamRestore, PointRestoreCmd, RawRestoreCmd,
     RestoreConfig, RestoreRawConfig, RunResolveKvData, RunRestore, RunRestoreEBSMetaWithDefaults,
     RunRestoreRaw, RunRestoreTxn, TableRestoreCmd, TxnRestoreCmd,
 };
@@ -169,6 +169,7 @@ fn runRestoreRawCommand(command: &mut Command, cmdName: &str) -> Result<()> {
         ..Default::default()
     };
     let flags = effective_task_flags(command);
+    rejectRestoreRenameFlag(&flags, cmdName)?;
     if let Err(err) = cfg.ParseFromFlags(&flags) {
         command.SilenceUsage = false;
         return Err(Error::Trace(err.into()));
@@ -196,6 +197,7 @@ fn runRestoreTxnCommand(command: &mut Command, cmdName: &str) -> Result<()> {
         ..Default::default()
     };
     let flags = effective_task_flags(command);
+    rejectRestoreRenameFlag(&flags, cmdName)?;
     if let Err(err) = cfg.ParseFromFlags(&flags) {
         command.SilenceUsage = false;
         return Err(Error::Trace(err.into()));
@@ -210,6 +212,18 @@ fn runRestoreTxnCommand(command: &mut Command, cmdName: &str) -> Result<()> {
         log::Error("failed to restore txn kv", &[zap::Error(&err)]);
         Error::Trace(err)
     })
+}
+
+fn rejectRestoreRenameFlag(
+    flags: &astersql_br_pkg_task::stubs::FlagSet,
+    cmd_name: &str,
+) -> Result<()> {
+    if flags.Lookup(FlagRename).is_some() && flags.Changed(FlagRename) {
+        return Err(Error::new(format!(
+            "--{FlagRename} is not supported by {cmd_name}"
+        )));
+    }
+    Ok(())
 }
 
 /// NewRestoreCommand returns a restore subcommand.

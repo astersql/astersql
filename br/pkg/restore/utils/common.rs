@@ -22,6 +22,29 @@
 use crate::rewrite_rule::RewriteRules;
 use crate::stubs::{metautil, model};
 
+#[derive(Clone, Debug, Default)]
+pub struct DatabaseRestorePlan {
+    pub Source: metautil::Database,
+    pub Target: model::DBInfo,
+    pub Reused: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TableRestorePlan {
+    pub Source: metautil::Table,
+    pub TargetDB: model::DBInfo,
+    pub TargetInfo: model::TableInfo,
+}
+
+impl TableRestorePlan {
+    pub fn TargetTable(&self) -> metautil::Table {
+        metautil::Table {
+            DB: self.TargetDB.clone(),
+            Info: self.TargetInfo.clone(),
+        }
+    }
+}
+
 /// 恢复建表后的占位：RewriteRule 映射旧→新键前缀；
 /// Table 为集群侧新表元数据，OldTable 保留备份侧表信息以便对照分区/索引 ID。
 /// CreatedTable is a table created on restore process, but not yet filled with data.
@@ -29,4 +52,30 @@ pub struct CreatedTable {
     pub RewriteRule: Option<Box<RewriteRules>>,
     pub Table: Option<Box<model::TableInfo>>,
     pub OldTable: Option<Box<metautil::Table>>,
+    pub TargetDB: model::CIStr,
+}
+
+impl CreatedTable {
+    pub fn TargetDBName(&self) -> &model::CIStr {
+        if self.TargetDB.O.is_empty() {
+            self.OldTable
+                .as_ref()
+                .map(|table| &table.DB.Name)
+                .unwrap_or(&self.TargetDB)
+        } else {
+            &self.TargetDB
+        }
+    }
+}
+
+pub fn DatabaseSettingsCompatible(first: &model::DBInfo, second: &model::DBInfo) -> bool {
+    first.Charset.eq_ignore_ascii_case(&second.Charset)
+        && first.Collate.eq_ignore_ascii_case(&second.Collate)
+        && first.PlacementPolicyRef.as_ref().map(|policy| &policy.L)
+            == second.PlacementPolicyRef.as_ref().map(|policy| &policy.L)
+}
+
+pub fn SourceDBPrecedes(candidate: &model::DBInfo, existing: &model::DBInfo) -> bool {
+    candidate.Name.L < existing.Name.L
+        || (candidate.Name.L == existing.Name.L && candidate.ID < existing.ID)
 }

@@ -47,6 +47,13 @@ pub const InitialTempId: i64 = 0;
 // WriteCF 有 PUT 但找不到对应 DefaultCF 时的错误前缀，对齐 Go。
 const errMsgDefaultCFKVLost: &str = "the default cf kv is lost when there is its write cf kv";
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TargetDatabase {
+    pub Name: String,
+    pub ID: DownstreamID,
+    pub SourceDBInfo: Option<model::DBInfo>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 // DefaultCF 表 meta 暂存键：(db, table, startTs)。
 struct tableMetaKey {
@@ -64,7 +71,7 @@ struct dbMetaKey {
 
 // 暂存库名与引用计数；WriteCF 消费时递减。
 struct dbMetaValue {
-    name: String,
+    info: model::DBInfo,
     count: i32,
 }
 
@@ -139,6 +146,21 @@ impl TableMappingManager {
         }
         // None 视为空 map。
         self.DBReplaceMap = dbReplaceMap.unwrap_or_default();
+        self.globalIdMap.clear();
+        self.tempIDCounter = InitialTempId;
+        for (db_id, db) in &self.DBReplaceMap {
+            self.globalIdMap.insert(*db_id, db.DbID);
+            self.tempIDCounter = self.tempIDCounter.min(db.DbID);
+            for (table_id, table) in &db.TableMap {
+                self.globalIdMap.insert(*table_id, table.TableID);
+                self.tempIDCounter = self.tempIDCounter.min(table.TableID);
+                self.tempIDCounter = self.tempIDCounter.min(table.TargetDBID);
+                for (partition_id, downstream_id) in &table.PartitionMap {
+                    self.globalIdMap.insert(*partition_id, *downstream_id);
+                    self.tempIDCounter = self.tempIDCounter.min(*downstream_id);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -235,7 +257,7 @@ impl TableMappingManager {
         startTs: u64,
     ) -> Result<(), Error> {
         // JSON DBInfo → 原始库名。
-        let dbName = model::db_name_from_value(value).map_err(Error::new)?;
+        let db_info = model::db_info_from_value(value).map_err(Error::new)?;
         let key = dbMetaKey { dbId, ts: startTs };
         // 同 startTs 重复 DefaultCF：增加引用，避免过早清除。
         if let Some(existingValue) = self.tempDefaultKVDbMap.get_mut(&key) {
@@ -245,7 +267,7 @@ impl TableMappingManager {
         self.tempDefaultKVDbMap.insert(
             key,
             dbMetaValue {
-                name: dbName,
+                info: db_info,
                 count: 1,
             },
         );
@@ -278,16 +300,16 @@ impl TableMappingManager {
         let startTs = rawWriteCFValue.GetStartTs();
         // short value 内嵌库名，无需 DefaultCF。
         if rawWriteCFValue.HasShortValue() {
-            let dbName =
-                model::db_name_from_value(&rawWriteCFValue.GetShortValue()).map_err(Error::new)?;
-            return self.parseDBValueAndUpdateIdMapping(dbId, dbName, commitTs, collector);
+            let db_info =
+                model::db_info_from_value(&rawWriteCFValue.GetShortValue()).map_err(Error::new)?;
+            return self.parseDBValueAndUpdateIdMapping(dbId, db_info, commitTs, collector);
         }
         let idx = dbMetaKey { dbId, ts: startTs };
         // 配对成功：递减 count 并落地名称。
         if let Some(dbValue) = self.tempDefaultKVDbMap.get_mut(&idx) {
             dbValue.count -= 1;
-            let name = dbValue.name.clone();
-            return self.parseDBValueAndUpdateIdMapping(dbId, name, commitTs, collector);
+            let info = dbValue.info.clone();
+            return self.parseDBValueAndUpdateIdMapping(dbId, info, commitTs, collector);
         }
         // 有 Write 无 Default：延迟报错，允许后续 CleanError。
         self.noDefaultKVErrorMap.insert(
@@ -305,16 +327,18 @@ impl TableMappingManager {
     fn parseDBValueAndUpdateIdMapping(
         &mut self,
         dbId: i64,
-        dbName: String,
+        db_info: model::DBInfo,
         commitTs: u64,
         collector: &mut dyn MetaInfoCollector,
     ) -> Result<(), Error> {
         let dbReplace = self.getOrCreateDBReplace(dbId)?;
         // 空名不覆盖已有 Name。
-        if !dbName.is_empty() {
-            dbReplace.Name = dbName.clone();
+        if !db_info.Name.O.is_empty() {
+            dbReplace.Name = db_info.Name.O.clone();
+            dbReplace.SourceName = db_info.Name.O.clone();
+            dbReplace.SourceDBInfo = Some(db_info.clone());
         }
-        collector.OnDatabaseInfo(dbId, dbName, commitTs);
+        collector.OnDatabaseInfo(dbId, db_info.Name.O, commitTs);
         Ok(())
     }
 
@@ -505,6 +529,14 @@ impl TableMappingManager {
         // 非空表名才覆盖。
         if !tableSimpleInfo.Name.is_empty() {
             tableReplace.Name = tableSimpleInfo.Name.clone();
+            tableReplace.SourceName = tableSimpleInfo.Name.clone();
+        }
+        tableReplace.HasForeignKeys |= tableSimpleInfo.HasForeignKeys;
+        tableReplace.IsView |= tableSimpleInfo.IsView;
+        for reference in &tableSimpleInfo.ForeignKeyReferences {
+            if !tableReplace.ForeignKeyReferences.contains(reference) {
+                tableReplace.ForeignKeyReferences.push(reference.clone());
+            }
         }
         for (part_id, new_id) in new_partitions {
             tableReplace.PartitionMap.insert(part_id, new_id);
@@ -628,14 +660,221 @@ impl TableMappingManager {
     /// Filtered databases and mappings that already own a positive ID are skipped.
     pub fn ReuseExistingDatabaseIDs(&mut self, schemas: &impl DatabaseSchemaLookup) {
         for db_replace in self.DBReplaceMap.values_mut() {
-            if db_replace.FilteredOut || db_replace.DbID > 0 || db_replace.Name.is_empty() {
+            if db_replace.FilteredOut {
                 continue;
             }
-            if let Some(db_id) = schemas.SchemaIDByName(&db_replace.Name) {
-                db_replace.DbID = db_id;
-                db_replace.Reused = true;
+            if db_replace.DbID <= 0 && !db_replace.Name.is_empty() {
+                if let Some(db_id) = schemas.SchemaIDByName(&db_replace.Name) {
+                    db_replace.DbID = db_id;
+                    db_replace.Reused = true;
+                }
+            }
+            for table in db_replace.TableMap.values_mut() {
+                if table.FilteredOut || table.TargetDBName.is_empty() || table.TargetDBID > 0 {
+                    continue;
+                }
+                if let Some(db_id) = schemas.SchemaIDByName(&table.TargetDBName) {
+                    table.TargetDBID = db_id;
+                }
             }
         }
+    }
+
+    pub fn BindUnresolvedTableRoutes<F>(&mut self, mut route: F) -> Result<(), Error>
+    where
+        F: FnMut(&str, &str) -> (String, String, bool),
+    {
+        let mut target_ids = HashMap::<String, DownstreamID>::new();
+        for db_replace in self.DBReplaceMap.values_mut() {
+            let source_db = if db_replace.SourceName.is_empty() {
+                db_replace.Name.clone()
+            } else {
+                db_replace.SourceName.clone()
+            };
+            let (schema_target, _, schema_routed) = route(&source_db, "");
+            if schema_routed {
+                db_replace.Name = schema_target;
+                db_replace.SchemaRouted = true;
+            }
+            for table in db_replace.TableMap.values_mut() {
+                let source_table = if table.SourceName.is_empty() {
+                    table.Name.clone()
+                } else {
+                    table.SourceName.clone()
+                };
+                let (target_db, target_table, matched) = route(&source_db, &source_table);
+                if !matched {
+                    continue;
+                }
+                table.Name = target_table;
+                if !target_db.eq_ignore_ascii_case(&db_replace.Name) {
+                    let key = target_db.to_lowercase();
+                    let id = *target_ids.entry(key).or_insert(0);
+                    table.TargetDBName = target_db;
+                    table.TargetDBID = id;
+                }
+            }
+        }
+        let unresolved: Vec<_> = target_ids
+            .iter()
+            .filter_map(|(name, id)| (*id == 0).then_some(name.clone()))
+            .collect();
+        for name in unresolved {
+            target_ids.insert(name, self.generateTempID());
+        }
+        for db_replace in self.DBReplaceMap.values_mut() {
+            for table in db_replace.TableMap.values_mut() {
+                if !table.TargetDBName.is_empty() && table.TargetDBID == 0 {
+                    table.TargetDBID = target_ids[&table.TargetDBName.to_lowercase()];
+                }
+            }
+        }
+        self.assignSharedTargetDatabaseIDs()
+    }
+
+    pub fn ValidateRoutedDependencies(&self) -> Result<(), Error> {
+        self.validateRoutedDependencies::<fn(&str, &str) -> (String, String, bool)>(None)
+    }
+
+    pub fn ValidateRoutedDependenciesWithRoute<F>(&self, route: F) -> Result<(), Error>
+    where
+        F: Fn(&str, &str) -> (String, String, bool),
+    {
+        self.validateRoutedDependencies(Some(route))
+    }
+
+    fn validateRoutedDependencies<F>(&self, route: Option<F>) -> Result<(), Error>
+    where
+        F: Fn(&str, &str) -> (String, String, bool),
+    {
+        let has_table_route = self.DBReplaceMap.values().any(|db| {
+            !db.FilteredOut
+                && db
+                    .TableMap
+                    .values()
+                    .any(|table| !table.FilteredOut && !table.TargetDBName.is_empty())
+        });
+        if !has_table_route {
+            return Ok(());
+        }
+        for (db_id, db) in &self.DBReplaceMap {
+            if db.FilteredOut {
+                continue;
+            }
+            for (table_id, table) in &db.TableMap {
+                if table.FilteredOut {
+                    continue;
+                }
+                if table.IsView {
+                    return Err(Error::new(format!(
+                        "restore rename does not support routed view with upstream database ID {db_id} and table ID {table_id}"
+                    )).Annotate(berrors::ErrInvalidArgument));
+                }
+                if table.HasForeignKeys {
+                    let Some(route) = route.as_ref() else {
+                        return Err(Error::new(format!(
+                            "restore rename does not support routed table with foreign keys, upstream database ID {db_id} and table ID {table_id}"
+                        )).Annotate(berrors::ErrInvalidArgument));
+                    };
+                    if table.ForeignKeyReferences.is_empty() {
+                        return Err(Error::new(format!(
+                            "restore rename does not support routed table with foreign keys, upstream database ID {db_id} and table ID {table_id}"
+                        )).Annotate(berrors::ErrInvalidArgument));
+                    }
+                    for reference in &table.ForeignKeyReferences {
+                        let (target_db, target_table, matched) =
+                            route(&reference.Schema, &reference.Table);
+                        if matched
+                            && (!target_db.eq_ignore_ascii_case(&reference.Schema)
+                                || !target_table.eq_ignore_ascii_case(&reference.Table))
+                        {
+                            return Err(Error::new(format!(
+                                "restore rename does not support selected table with foreign key reference {}.{}",
+                                reference.Schema, reference.Table
+                            )).Annotate(berrors::ErrInvalidArgument));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn assignSharedTargetDatabaseIDs(&mut self) -> Result<(), Error> {
+        let mut names = Vec::new();
+        for db in self.DBReplaceMap.values() {
+            if db.FilteredOut {
+                continue;
+            }
+            if db.SchemaRouted && !db.Name.is_empty() {
+                names.push(db.Name.to_lowercase());
+            }
+            for table in db.TableMap.values() {
+                if !table.FilteredOut && !table.TargetDBName.is_empty() {
+                    names.push(table.TargetDBName.to_lowercase());
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        let mut chosen = HashMap::new();
+        for name in names {
+            let mut positive = Vec::new();
+            let mut negative = Vec::new();
+            for db in self.DBReplaceMap.values() {
+                if db.Name.eq_ignore_ascii_case(&name) {
+                    match db.DbID.cmp(&0) {
+                        std::cmp::Ordering::Greater => positive.push(db.DbID),
+                        std::cmp::Ordering::Less => negative.push(db.DbID),
+                        _ => {}
+                    }
+                }
+                for table in db.TableMap.values() {
+                    if table.TargetDBName.eq_ignore_ascii_case(&name) {
+                        match table.TargetDBID.cmp(&0) {
+                            std::cmp::Ordering::Greater => positive.push(table.TargetDBID),
+                            std::cmp::Ordering::Less => negative.push(table.TargetDBID),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            positive.sort();
+            positive.dedup();
+            if positive.len() > 1 {
+                return Err(Error::new(format!(
+                    "target database {name} has conflicting downstream IDs {} and {}",
+                    positive[0], positive[1]
+                ))
+                .Annotate(berrors::ErrRestoreInvalidRewrite));
+            }
+            negative.sort_by(|a, b| b.cmp(a));
+            chosen.insert(
+                name,
+                positive
+                    .first()
+                    .copied()
+                    .or_else(|| negative.first().copied()),
+            );
+        }
+        for (name, id) in chosen.iter_mut() {
+            if id.is_none() {
+                *id = Some(self.generateTempID());
+            }
+            let id = id.unwrap();
+            for (upstream_db, db) in &mut self.DBReplaceMap {
+                if db.Name.eq_ignore_ascii_case(name) {
+                    db.DbID = id;
+                    self.globalIdMap.insert(*upstream_db, id);
+                }
+                for table in db.TableMap.values_mut() {
+                    if table.TargetDBName.eq_ignore_ascii_case(name) {
+                        table.TargetDBID = id;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 收集负临时 ID，排序后批量换成 genGlobalIDs 结果；重复临时 ID 冲突则失败。
@@ -643,11 +882,16 @@ impl TableMappingManager {
         &mut self,
         genGlobalIDs: fn(usize) -> Result<Vec<i64>, Error>,
     ) -> Result<(), Error> {
+        self.assignSharedTargetDatabaseIDs()?;
         let mut usedTempIDs: HashMap<DownstreamID, UpstreamID> = HashMap::new();
-        let mut addTempIDIfNeeded = |downID: DownstreamID, upID: UpstreamID| -> Result<(), Error> {
+        fn add_temp_id_if_needed(
+            used: &mut HashMap<DownstreamID, UpstreamID>,
+            downID: DownstreamID,
+            upID: UpstreamID,
+        ) -> Result<(), Error> {
             // 仅负 ID 视为临时；正 ID 已是正式下游。
             if downID < 0 {
-                if let Some(prevUpID) = usedTempIDs.get(&downID) {
+                if let Some(prevUpID) = used.get(&downID) {
                     if *prevUpID == upID {
                         return Ok(());
                     }
@@ -657,19 +901,36 @@ impl TableMappingManager {
                     ))
                     .Annotate(berrors::ErrRestoreInvalidRewrite));
                 }
-                usedTempIDs.insert(downID, upID);
+                used.insert(downID, upID);
             }
             Ok(())
-        };
+        }
         for (upDBId, dr) in &self.DBReplaceMap {
             // 收集库级临时 ID。
-            addTempIDIfNeeded(dr.DbID, *upDBId)?;
+            add_temp_id_if_needed(&mut usedTempIDs, dr.DbID, *upDBId)?;
             for (upTableID, tr) in &dr.TableMap {
                 // 收集表级临时 ID。
-                addTempIDIfNeeded(tr.TableID, *upTableID)?;
+                add_temp_id_if_needed(&mut usedTempIDs, tr.TableID, *upTableID)?;
+                if tr.TargetDBID < 0 {
+                    if let Some(previous) = usedTempIDs.get(&tr.TargetDBID) {
+                        let shared_database = self.DBReplaceMap.values().any(|candidate| {
+                            candidate.DbID == tr.TargetDBID
+                                && candidate.Name.eq_ignore_ascii_case(&tr.TargetDBName)
+                        });
+                        if *previous != 0 && !shared_database {
+                            return Err(Error::new(format!(
+                                "found duplicate temporary ID {}, existing upstream ID: {}, new target database {}",
+                                tr.TargetDBID, previous, tr.TargetDBName
+                            ))
+                            .Annotate(berrors::ErrRestoreInvalidRewrite));
+                        }
+                    } else {
+                        usedTempIDs.insert(tr.TargetDBID, 0);
+                    }
+                }
                 // 分区下游也可能是临时 ID。
                 for (upPartID, partID) in &tr.PartitionMap {
-                    addTempIDIfNeeded(*partID, *upPartID)?;
+                    add_temp_id_if_needed(&mut usedTempIDs, *partID, *upPartID)?;
                 }
             }
         }
@@ -695,6 +956,9 @@ impl TableMappingManager {
                 if let Some(newID) = idMapping.get(&tr.TableID) {
                     tr.TableID = *newID;
                 }
+                if let Some(newID) = idMapping.get(&tr.TargetDBID) {
+                    tr.TargetDBID = *newID;
+                }
                 for tempPID in tr.PartitionMap.values_mut() {
                     // 分区下游临时 ID 一并替换。
                     if let Some(newID) = idMapping.get(tempPID) {
@@ -715,6 +979,9 @@ impl TableMappingManager {
             // 逐库展开为 proto；分区列表扁平存放。
             let mut dbm = PitrDBMap {
                 Name: dr.Name.clone(),
+                SourceName: dr.SourceName.clone(),
+                SchemaRouted: dr.SchemaRouted,
+                Reused: dr.Reused,
                 IdMap: crate::stubs::backuppb::IDMap {
                     UpstreamId: *dbID,
                     DownstreamId: dr.DbID,
@@ -725,6 +992,12 @@ impl TableMappingManager {
             for (tblID, tr) in &dr.TableMap {
                 let mut tm = PitrTableMap {
                     Name: tr.Name.clone(),
+                    SourceName: tr.SourceName.clone(),
+                    TargetDbName: tr.TargetDBName.clone(),
+                    TargetDbId: tr.TargetDBID,
+                    HasForeignKeys: tr.HasForeignKeys,
+                    ForeignKeyReferences: tr.ForeignKeyReferences.clone(),
+                    IsView: tr.IsView,
                     IdMap: crate::stubs::backuppb::IDMap {
                         UpstreamId: *tblID,
                         DownstreamId: tr.TableID,
@@ -758,6 +1031,124 @@ impl TableMappingManager {
     pub fn SetPreallocatedRange(&mut self, start: i64, end: i64) {
         self.PreallocatedRange = [start, end];
     }
+
+    pub fn TableRouteTargetDatabases(&self) -> Result<Vec<TargetDatabase>, Error> {
+        let mut targets = HashMap::<String, TargetDatabase>::new();
+        for db in self.DBReplaceMap.values() {
+            if db.FilteredOut {
+                continue;
+            }
+            let mut merge = |name: &str, id: i64| -> Result<(), Error> {
+                let key = name.to_lowercase();
+                let target = targets.entry(key).or_insert_with(|| TargetDatabase {
+                    Name: name.to_string(),
+                    ID: id,
+                    SourceDBInfo: db.SourceDBInfo.clone(),
+                });
+                if target.ID != 0 && id != 0 && target.ID != id {
+                    return Err(Error::new(format!(
+                        "target database {name} has conflicting downstream IDs {} and {id}",
+                        target.ID
+                    ))
+                    .Annotate(berrors::ErrRestoreInvalidRewrite));
+                }
+                if id != 0 {
+                    target.ID = id;
+                }
+                if let (Some(first), Some(second)) =
+                    (target.SourceDBInfo.as_ref(), db.SourceDBInfo.as_ref())
+                {
+                    if !first.Charset.eq_ignore_ascii_case(&second.Charset)
+                        || !first.Collate.eq_ignore_ascii_case(&second.Collate)
+                    {
+                        return Err(Error::new(format!(
+                            "source schemas {} and {} routed to target schema {} have incompatible charset or collation",
+                            first.Name.O, second.Name.O, name
+                        ))
+                        .Annotate(berrors::ErrRestoreInvalidRewrite));
+                    }
+                    let first_key = (first.Name.O.to_lowercase(), first.ID);
+                    let second_key = (second.Name.O.to_lowercase(), second.ID);
+                    if second_key < first_key {
+                        target.SourceDBInfo = Some(second.clone());
+                    }
+                } else if target.SourceDBInfo.is_none() {
+                    target.SourceDBInfo = db.SourceDBInfo.clone();
+                }
+                Ok(())
+            };
+            if db.SchemaRouted {
+                merge(&db.Name, db.DbID)?;
+            }
+            for table in db.TableMap.values() {
+                if table.FilteredOut || table.TargetDBName.is_empty() {
+                    continue;
+                }
+                if table.TargetDBID == db.DbID && table.TargetDBName.eq_ignore_ascii_case(&db.Name)
+                {
+                    continue;
+                }
+                merge(&table.TargetDBName, table.TargetDBID)?;
+            }
+        }
+        let mut result: Vec<_> = targets.into_values().collect();
+        for target in &result {
+            if target.ID <= 0 {
+                return Err(Error::new(format!(
+                    "target database {} has unresolved downstream ID {}",
+                    target.Name, target.ID
+                ))
+                .Annotate(berrors::ErrRestoreInvalidRewrite));
+            }
+        }
+        result.sort_by_key(|target| target.Name.to_lowercase());
+        Ok(result)
+    }
+
+    pub fn RebindTableRouteTargetDatabaseID(
+        &mut self,
+        target_name: &str,
+        expected_id: DownstreamID,
+        actual_id: DownstreamID,
+    ) -> Result<(), Error> {
+        let mut found = false;
+        for (upstream_db, db) in &mut self.DBReplaceMap {
+            if db.Name.eq_ignore_ascii_case(target_name) {
+                if db.DbID != expected_id && db.DbID != actual_id {
+                    return Err(Error::new(format!(
+                        "target database {target_name} has downstream ID {}, expected provisional ID {expected_id} or actual ID {actual_id}",
+                        db.DbID
+                    ))
+                    .Annotate(berrors::ErrRestoreInvalidRewrite));
+                }
+                if db.SchemaRouted {
+                    found = true;
+                }
+                db.DbID = actual_id;
+                self.globalIdMap.insert(*upstream_db, actual_id);
+            }
+            for table in db.TableMap.values_mut() {
+                if table.TargetDBName.eq_ignore_ascii_case(target_name) {
+                    if table.TargetDBID != expected_id && table.TargetDBID != actual_id {
+                        return Err(Error::new(format!(
+                            "target database {target_name} has downstream ID {}, expected provisional ID {expected_id} or actual ID {actual_id}",
+                            table.TargetDBID
+                        ))
+                        .Annotate(berrors::ErrRestoreInvalidRewrite));
+                    }
+                    table.TargetDBID = actual_id;
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            return Err(Error::new(format!(
+                "target database {target_name} has no routed tables"
+            ))
+            .Annotate(berrors::ErrRestoreInvalidRewrite));
+        }
+        Ok(())
+    }
 }
 
 /// meta 解析侧回调：库/表信息变更时通知历史管理器等。
@@ -790,10 +1181,19 @@ pub fn FromDBMapProto(dbMaps: Vec<PitrDBMap>) -> HashMap<UpstreamID, DBReplace> 
     for db in dbMaps {
         // 还原 FilteredOut，供恢复过滤。
         let mut dr = NewDBReplace(db.Name.clone(), db.IdMap.DownstreamId);
+        dr.SourceName = db.SourceName;
+        dr.SchemaRouted = db.SchemaRouted;
+        dr.Reused = db.Reused;
         dr.FilteredOut = db.FilteredOut;
         for tbl in db.Tables {
             // 表级 FilteredOut 同步。
             let mut tr = NewTableReplace(tbl.Name.clone(), tbl.IdMap.DownstreamId);
+            tr.SourceName = tbl.SourceName;
+            tr.TargetDBName = tbl.TargetDbName;
+            tr.TargetDBID = tbl.TargetDbId;
+            tr.HasForeignKeys = tbl.HasForeignKeys;
+            tr.ForeignKeyReferences = tbl.ForeignKeyReferences;
+            tr.IsView = tbl.IsView;
             tr.FilteredOut = tbl.FilteredOut;
             // 还原分区上下游对。
             for p in tbl.Partitions {

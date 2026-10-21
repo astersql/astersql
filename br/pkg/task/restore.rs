@@ -83,6 +83,8 @@ pub const FlagPiTRBatchCount: &str = "pitr-batch-count";
 pub const FlagPiTRBatchSize: &str = "pitr-batch-size";
 pub const FlagPiTRConcurrency: &str = "pitr-concurrency";
 pub const FlagRetainLatestMVCCVersion: &str = "retain-latest-mvcc-version";
+/// Maps an exact source schema or table name to a target name.
+pub const FlagRename: &str = "rename";
 /// 粗粒度恢复粒度字面量。
 pub const CoarseGrained: &str = "coarse-grained";
 /// 默认导入协程数。
@@ -211,6 +213,7 @@ pub struct RestoreConfig {
     pub RestoreCommonConfig: RestoreCommonConfig,
     pub UpstreamClusterID: u64,
     pub NoSchema: bool,
+    pub Rename: Vec<String>,
     pub LoadStats: bool,
     pub FastLoadSysTables: bool,
     pub PDConcurrency: u32,
@@ -294,6 +297,8 @@ impl RestoreConfig {
             storage: String,
             #[serde(rename = "FilterStr")]
             filter: &'a [String],
+            #[serde(rename = "RenameRules", skip_serializing_if = "string_slice_is_empty")]
+            rename_rules: &'a [String],
             #[serde(rename = "WithSysTable")]
             with_sys_table: bool,
             #[serde(rename = "FastLoadSysTables")]
@@ -301,11 +306,13 @@ impl RestoreConfig {
             #[serde(rename = "LoadStats")]
             load_stats: bool,
         }
+        let router = self.get_name_router()?;
         let data = serde_json::to_vec(&Imm {
             cmd: cmdName,
             upstream_cluster_id: self.UpstreamClusterID,
             storage: redact_storage_url(&self.Config.Storage),
             filter: &self.Config.FilterStr,
+            rename_rules: router.canonical_rules(),
             with_sys_table: self.RestoreCommonConfig.WithSysTable,
             fast_load_sys_tables: self.FastLoadSysTables,
             load_stats: self.LoadStats,
@@ -387,6 +394,7 @@ impl RestoreConfig {
     /// 从 FlagSet 填充字段并做基础校验。
     pub fn ParseFromFlags(&mut self, flags: &FlagSet, skipCommonConfig: bool) -> Result<()> {
         self.NoSchema = flags.GetBool(flagNoSchema)?;
+        self.Rename = flags.GetStringArray(FlagRename)?;
         self.LoadStats = flags.GetBool(flagLoadStats)?;
         self.FastLoadSysTables = flags.GetBool(flagFastLoadSysTables)?;
         self.RestoreCommonConfig.ParseFromFlags(flags)?;
@@ -437,7 +445,7 @@ impl RestoreConfig {
                 ),
             ));
         }
-        Ok(())
+        self.validate_name_routing("")
     }
 
     /// 方法：保持与 Go 同名方法可对照的行为。
@@ -446,6 +454,10 @@ impl RestoreConfig {
             manager.Close();
         }
     }
+}
+
+fn string_slice_is_empty(value: &&[String]) -> bool {
+    value.is_empty()
 }
 
 /// Minimal setter surface used by `configureRestoreClient`.
@@ -508,6 +520,7 @@ pub fn VerifyDBAndTableInBackup(
 /// 注册全量恢复 flag。
 pub fn DefineRestoreFlags(flags: &mut FlagSet) {
     flags.DefineBool(flagNoSchema, false);
+    flags.DefineStringArray(FlagRename, Vec::new());
     flags.DefineBool(flagLoadStats, true);
     flags.DefineBool(flagFastLoadSysTables, true);
     let _ = flags.MarkHidden(flagNoSchema);
@@ -1305,7 +1318,15 @@ pub fn RunRestore(g: &dyn Glue, cmdName: &str, cfg: &mut RestoreConfig) -> Resul
             lifecycle.ValidateFiles(&backupMeta.Files)?;
             let incremental =
                 backupMeta.StartVersion != 0 && backupMeta.StartVersion != backupMeta.EndVersion;
-            if (isFullRestore(cmdName) && !cfg.Config.ExplicitFilter) || incremental {
+            if incremental && cfg.has_name_routing() {
+                return Err(Error::Annotatef(
+                    berrors::ErrInvalidArgument,
+                    "restore rename is not supported for incremental snapshot backups",
+                ));
+            }
+            if (isFullRestore(cmdName) && !cfg.Config.ExplicitFilter && !cfg.has_name_routing())
+                || incremental
+            {
                 lifecycle.key_ranges = None;
             } else if lifecycle.key_ranges.is_none() {
                 return Err(Error::new(

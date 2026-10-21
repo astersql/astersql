@@ -259,6 +259,31 @@ fn bootstrap_variable_backfills_stop_at_their_renumbered_versions() {
 }
 
 #[test]
+fn upgrade_to_ver320_adds_restore_route_identity() {
+    use crate::upgrade_def::{currentBootstrapVersion, upgradeToVerFunctions, version320};
+
+    // SAFETY: the test only reads the compatibility variable.
+    assert_eq!(unsafe { currentBootstrapVersion }, version320);
+    let latest = upgradeToVerFunctions.last().expect("latest upgrade");
+    assert_eq!(latest.version, version320);
+
+    let sql = astersql_meta_metadef::CreateTiDBRestoreRegistryTable;
+    for fragment in [
+        "source_filter_strings MEDIUMTEXT NOT NULL DEFAULT ''",
+        "route_strings MEDIUMTEXT NOT NULL DEFAULT ''",
+        "route_hash VARCHAR(64) NOT NULL DEFAULT ''",
+        "UNIQUE KEY unique_registration_params_v2",
+        "filter_hash,\n\t\t\troute_hash",
+    ] {
+        assert!(
+            sql.contains(fragment),
+            "missing route identity fragment: {fragment}"
+        );
+    }
+    assert!(!sql.contains("UNIQUE KEY unique_registration_params ("));
+}
+
+#[test]
 fn upgrade_to_ver284_replaces_new_switch_from_legacy_inverse_value() {
     for (legacy, existing, expected) in [
         (Some("ON"), Some("ON"), Some("OFF")),

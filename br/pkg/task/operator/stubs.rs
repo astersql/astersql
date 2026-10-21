@@ -878,6 +878,9 @@ pub trait PDClient: Send + Sync {
     fn GetTS(&self) -> Result<(i64, i64)>;
     /// 返回配置的最小 resolved TS。
     fn GetMinResolvedTS(&self) -> Result<u64>;
+    fn GetClusterID(&self) -> u64 {
+        0
+    }
     /// 移除 PD 调度器并返回 undo 闭包（可空）。
     fn RemoveAllPDSchedulers(&self) -> Result<Option<Box<dyn Fn() -> Result<()> + Send + Sync>>>;
 }
@@ -1651,6 +1654,8 @@ pub struct IdMap {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PitrTableMap {
     pub Name: String,
+    #[serde(default)]
+    pub TargetDbName: String,
     pub IdMap: IdMap,
     pub Partitions: Vec<IdMap>,
 }
@@ -1692,7 +1697,64 @@ impl BackupMeta {
 
 /// 桩函数：语义贴近同名 Go API，真实网络/磁盘能力可能未接通。
 pub fn PitrIDMapsFilename(cluster_id: u64, restored_ts: u64) -> String {
-    format!("pitr_id_map/cluster-{cluster_id}-ts-{restored_ts}")
+    format!("pitr_id_maps/pitr_id_map.cluster_id:{cluster_id}.restored_ts:{restored_ts}")
+}
+
+pub fn PitrIDMapsFilenameForTask(
+    cluster_id: u64,
+    upstream_cluster_id: u64,
+    restored_ts: u64,
+    restore_id: u64,
+) -> String {
+    format!(
+        "pitr_id_maps/v2/cluster-{cluster_id}/upstream-{upstream_cluster_id}/restored-{restored_ts}/restore-{restore_id}.meta"
+    )
+}
+
+pub fn FindUniquePitrIDMapFile(
+    storage: &dyn ExternalStorage,
+    cluster_id: u64,
+    upstream_cluster_id: u64,
+    restored_ts: u64,
+) -> Result<String> {
+    let prefix = format!(
+        "pitr_id_maps/v2/cluster-{cluster_id}/upstream-{upstream_cluster_id}/restored-{restored_ts}/"
+    );
+    let mut selected = String::new();
+    storage.WalkDir(
+        &WalkOption {
+            SubDir: prefix.clone(),
+            ..Default::default()
+        },
+        &mut |path, _| {
+            let owner = path
+                .strip_prefix(&prefix)
+                .and_then(|name| name.strip_prefix("restore-"))
+                .and_then(|name| name.strip_suffix(".meta"))
+                .and_then(|owner| owner.parse::<u64>().ok())
+                .ok_or_else(|| Error::new(format!("invalid PiTR ID map owner filename {path:?}")))?;
+            if path
+                != PitrIDMapsFilenameForTask(
+                    cluster_id,
+                    upstream_cluster_id,
+                    restored_ts,
+                    owner,
+                )
+            {
+                return Err(Error::new(format!(
+                    "invalid PiTR ID map owner filename {path:?}"
+                )));
+            }
+            if !selected.is_empty() {
+                return Err(Error::new(format!(
+                    "multiple PiTR ID maps exist at restored TS {restored_ts} for upstream cluster {upstream_cluster_id}; cannot choose a unique task owner"
+                )));
+            }
+            selected = path.to_string();
+            Ok(())
+        },
+    )?;
+    Ok(selected)
 }
 
 /// 桩类型：为 operator 编译/测试提供最小字段，非生产实现。

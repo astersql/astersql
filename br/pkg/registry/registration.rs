@@ -203,8 +203,11 @@
 //! 阅读顺序建议先看公开 API 与状态机，再下钻到 SQL/过滤/错误分支。
 //! 中文注释索引结束
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use astersql_br_pkg_restore::nameroute::Router;
 
 use crate::heartbeat::{HeartbeatManager, NewHeartbeatManager, update_heartbeat};
 use crate::stubs::{
@@ -237,6 +240,18 @@ const lookupRegistrationSQLTemplate: &str = "
 		ORDER BY id DESC
 		FOR UPDATE";
 
+const routedLookupRegistrationSQLTemplate: &str = "
+		SELECT id, status FROM {}.{}
+		WHERE filter_hash = SHA2(%?, 256)
+		AND route_hash = %?
+		AND start_ts = %?
+		AND restored_ts = %?
+		AND upstream_cluster_id = %?
+		AND with_sys_table = %?
+		AND cmd = %?
+		ORDER BY id DESC
+		FOR UPDATE";
+
 const updateStatusSQLTemplate: &str = "
 		UPDATE {}.{}
 		SET status = %?
@@ -261,11 +276,27 @@ const selectRegistrationsByMaxIDSQLTemplate: &str = "
 		WHERE id < %?
 		ORDER BY id ASC";
 
+const routedSelectRegistrationsByMaxIDSQLTemplate: &str = "
+		SELECT
+		id, filter_strings, source_filter_strings, route_strings, route_hash, start_ts, restored_ts,
+		upstream_cluster_id, with_sys_table, status, cmd, filter_hash
+		FROM {}.{}
+		WHERE id < %?
+		ORDER BY id ASC";
+
 const createNewTaskSQLTemplate: &str = "
 		INSERT INTO {}.{}
 		(filter_strings, filter_hash, start_ts, restored_ts, upstream_cluster_id,
 		 with_sys_table, status, cmd, task_start_time, last_heartbeat_time)
 		VALUES (%?, MD5(%?), %?, %?, %?, %?, 'running', %?, FROM_UNIXTIME(%?), FROM_UNIXTIME(%?))";
+
+const routedCreateNewTaskSQLTemplate: &str = "
+		INSERT INTO {}.{}
+		(filter_strings, filter_hash, source_filter_strings, route_strings, route_hash,
+		 start_ts, restored_ts, upstream_cluster_id, with_sys_table, status, cmd,
+		 task_start_time, last_heartbeat_time)
+		VALUES (%?, SHA2(%?, 256), %?, %?, %?, %?, %?, %?, %?, 'running', %?,
+		 FROM_UNIXTIME(%?), FROM_UNIXTIME(%?))";
 
 const selectTaskHeartbeatSQLTemplate: &str = "
 		SELECT CAST(UNIX_TIMESTAMP(last_heartbeat_time) AS UNSIGNED INTEGER)
@@ -275,6 +306,17 @@ const selectTaskHeartbeatSQLTemplate: &str = "
 const selectConflictingTaskSQLTemplate: &str = "
 		SELECT id, restored_ts, status, CAST(UNIX_TIMESTAMP(last_heartbeat_time) AS UNSIGNED INTEGER) FROM {}.{}
 		WHERE filter_hash = MD5(%?)
+		AND start_ts = %?
+		AND upstream_cluster_id = %?
+		AND with_sys_table = %?
+		AND cmd = %?
+		ORDER BY id DESC
+		LIMIT 1";
+
+const routedSelectConflictingTaskSQLTemplate: &str = "
+		SELECT id, restored_ts, status, CAST(UNIX_TIMESTAMP(last_heartbeat_time) AS UNSIGNED INTEGER) FROM {}.{}
+		WHERE filter_hash = SHA2(%?, 256)
+		AND route_hash = %?
 		AND start_ts = %?
 		AND upstream_cluster_id = %?
 		AND with_sys_table = %?
@@ -327,11 +369,93 @@ fn render_sql(template: &str, args: &[&str]) -> String {
 #[derive(Clone, Debug, Default)]
 pub struct RegistrationInfo {
     pub FilterStrings: Vec<String>,
+    pub RouteStrings: Vec<String>,
+    pub RouteHash: String,
+    pub FilterHashInput: String,
     pub StartTS: u64,
     pub RestoredTS: u64,
     pub UpstreamClusterID: u64,
     pub WithSysTable: bool,
     pub Cmd: String,
+}
+
+pub fn NormalizeRegistrationRoutes(info: &mut RegistrationInfo) -> Result<()> {
+    if info.RouteStrings.is_empty() {
+        if !info.RouteHash.is_empty() {
+            return Err(berrors::ErrInvalidArgument(
+                "restore route hash is set without route rules".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    let router = Router::parse(&info.RouteStrings).map_err(|error| {
+        Error::Annotate(
+            Error::new(error.to_string()),
+            "invalid restore routes in registry identity",
+        )
+    })?;
+    info.RouteStrings = router.canonical_rules().to_vec();
+    let expected = hex::encode(router.fingerprint());
+    if !info.RouteHash.is_empty() && info.RouteHash != expected {
+        return Err(berrors::ErrInvalidArgument(format!(
+            "restore route hash {:?} does not match route rules",
+            info.RouteHash
+        )));
+    }
+    info.RouteHash = expected;
+    Ok(())
+}
+
+fn registration_claims_target(
+    router: &Router,
+    filter: &dyn Filter,
+    target_db: &str,
+    target_table: &str,
+    with_sys_table: bool,
+) -> bool {
+    let target_matches = |source_db: &str, source_table: &str| {
+        let (routed_db, routed_table, _) = router.route(source_db, source_table);
+        routed_db.eq_ignore_ascii_case(target_db) && routed_table.eq_ignore_ascii_case(target_table)
+    };
+
+    for rule in router.rules() {
+        if rule.source.is_table() {
+            if rule.target.schema.eq_ignore_ascii_case(target_db)
+                && (target_table.is_empty() || rule.target.table.eq_ignore_ascii_case(target_table))
+                && MatchTable(
+                    filter,
+                    &rule.source.schema,
+                    &rule.source.table,
+                    with_sys_table,
+                )
+            {
+                return true;
+            }
+            continue;
+        }
+        if target_table.is_empty() {
+            if rule.target.schema.eq_ignore_ascii_case(target_db)
+                && MatchSchema(filter, &rule.source.schema, with_sys_table)
+            {
+                return true;
+            }
+            continue;
+        }
+        if target_matches(&rule.source.schema, target_table)
+            && MatchTable(filter, &rule.source.schema, target_table, with_sys_table)
+        {
+            return true;
+        }
+    }
+
+    if !target_matches(target_db, target_table) {
+        return false;
+    }
+    if target_table.is_empty() {
+        MatchSchema(filter, target_db, with_sys_table)
+    } else {
+        MatchTable(filter, target_db, target_table, with_sys_table)
+    }
 }
 
 /// Registration plus registry row id.
@@ -348,6 +472,7 @@ pub struct Registry {
     heartbeat_manager: Option<HeartbeatManager>,
     wait_ids: Vec<u64>,
     table_exists: bool,
+    route_schema_ready: bool,
 }
 
 /// Creates a new registry using TiDB's session (Go `NewRestoreRegistry`).
@@ -365,12 +490,14 @@ pub fn NewRestoreRegistry(ctx: &Context, g: &dyn Glue, dom: &dyn Domain) -> Resu
         }
         table_exists = false;
     }
+    let route_schema_ready = table_exists && dom.InfoSchema().RestoreRegistryRouteSchemaReady();
     Ok(Registry {
         se: Some(Arc::new(Mutex::new(se))),
         heartbeat_session: Some(Arc::new(Mutex::new(heartbeat_session))),
         heartbeat_manager: None,
         wait_ids: Vec::new(),
         table_exists,
+        route_schema_ready,
     })
 }
 
@@ -387,11 +514,25 @@ impl Registry {
             heartbeat_manager: None,
             wait_ids: Vec::new(),
             table_exists,
+            route_schema_ready: table_exists,
         }
     }
 
     pub fn table_exists(&self) -> bool {
         self.table_exists
+    }
+
+    pub fn set_route_schema_ready_for_test(&mut self, ready: bool) {
+        self.route_schema_ready = ready;
+    }
+
+    fn checkRouteColumnCompatibility(&self, info: &RegistrationInfo) -> Result<()> {
+        if !info.RouteStrings.is_empty() && !self.route_schema_ready {
+            return Err(berrors::ErrInvalidArgument(
+                "restore rename requires a target TiDB whose mysql.tidb_restore_registry route schema is ready".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn wait_ids(&self) -> &[u64] {
@@ -459,6 +600,8 @@ impl Registry {
         mut info: RegistrationInfo,
         is_restored_ts_user_specified: bool,
     ) -> Result<(u64, u64)> {
+        NormalizeRegistrationRoutes(&mut info)?;
+        self.checkRouteColumnCompatibility(&info)?;
         let resolved_restore_ts =
             self.resolveRestoreTS(ctx, &info, is_restored_ts_user_specified)?;
         if resolved_restore_ts != info.RestoredTS {
@@ -466,26 +609,50 @@ impl Registry {
         }
 
         let filter_strings = info.FilterStrings.join(FilterSeparator);
+        let filter_hash_input = if info.FilterHashInput.is_empty() {
+            filter_strings.clone()
+        } else {
+            info.FilterHashInput.clone()
+        };
+        let route_strings = serde_json::to_string(&info.RouteStrings)
+            .map_err(|error| Error::new(error.to_string()))?;
         let mut task_id = 0_u64;
 
         self.execute_in_transaction(ctx, |ctx, exec| {
             let lookup_sql = render_sql(
-                lookupRegistrationSQLTemplate,
+                if info.RouteStrings.is_empty() {
+                    lookupRegistrationSQLTemplate
+                } else {
+                    routedLookupRegistrationSQLTemplate
+                },
                 &[RestoreRegistryDBName, RestoreRegistryTableName],
             );
+            let lookup_args = if info.RouteStrings.is_empty() {
+                vec![
+                    SqlValue::Str(filter_hash_input.clone()),
+                    SqlValue::U64(info.StartTS),
+                    SqlValue::U64(info.RestoredTS),
+                    SqlValue::U64(info.UpstreamClusterID),
+                    SqlValue::Bool(info.WithSysTable),
+                    SqlValue::Str(info.Cmd.clone()),
+                ]
+            } else {
+                vec![
+                    SqlValue::Str(filter_hash_input.clone()),
+                    SqlValue::Str(info.RouteHash.clone()),
+                    SqlValue::U64(info.StartTS),
+                    SqlValue::U64(info.RestoredTS),
+                    SqlValue::U64(info.UpstreamClusterID),
+                    SqlValue::Bool(info.WithSysTable),
+                    SqlValue::Str(info.Cmd.clone()),
+                ]
+            };
             let rows = exec
                 .ExecRestrictedSQL(
                     ctx,
                     &[OptionFuncAlias::ExecOptionUseCurSession],
                     &lookup_sql,
-                    &[
-                        SqlValue::Str(filter_strings.clone()),
-                        SqlValue::U64(info.StartTS),
-                        SqlValue::U64(info.RestoredTS),
-                        SqlValue::U64(info.UpstreamClusterID),
-                        SqlValue::Bool(info.WithSysTable),
-                        SqlValue::Str(info.Cmd.clone()),
-                    ],
+                    &lookup_args,
                 )
                 .map_err(|err| Error::Annotate(err, "failed to look up existing task"))?;
 
@@ -522,17 +689,22 @@ impl Registry {
             }
 
             let current_time = unix_now();
+            let routed = !info.RouteStrings.is_empty();
             let insert_sql = render_sql(
-                createNewTaskSQLTemplate,
+                if routed {
+                    routedCreateNewTaskSQLTemplate
+                } else {
+                    createNewTaskSQLTemplate
+                },
                 &[RestoreRegistryDBName, RestoreRegistryTableName],
             );
-            exec.ExecRestrictedSQL(
-                ctx,
-                &[OptionFuncAlias::ExecOptionUseCurSession],
-                &insert_sql,
-                &[
+            let insert_args = if routed {
+                vec![
+                    SqlValue::Str("*.*".to_string()),
+                    SqlValue::Str(filter_hash_input.clone()),
                     SqlValue::Str(filter_strings.clone()),
-                    SqlValue::Str(filter_strings.clone()),
+                    SqlValue::Str(route_strings.clone()),
+                    SqlValue::Str(info.RouteHash.clone()),
                     SqlValue::U64(info.StartTS),
                     SqlValue::U64(info.RestoredTS),
                     SqlValue::U64(info.UpstreamClusterID),
@@ -540,7 +712,25 @@ impl Registry {
                     SqlValue::Str(info.Cmd.clone()),
                     SqlValue::I64(current_time),
                     SqlValue::I64(current_time),
-                ],
+                ]
+            } else {
+                vec![
+                    SqlValue::Str(filter_strings.clone()),
+                    SqlValue::Str(filter_hash_input.clone()),
+                    SqlValue::U64(info.StartTS),
+                    SqlValue::U64(info.RestoredTS),
+                    SqlValue::U64(info.UpstreamClusterID),
+                    SqlValue::Bool(info.WithSysTable),
+                    SqlValue::Str(info.Cmd.clone()),
+                    SqlValue::I64(current_time),
+                    SqlValue::I64(current_time),
+                ]
+            };
+            exec.ExecRestrictedSQL(
+                ctx,
+                &[OptionFuncAlias::ExecOptionUseCurSession],
+                &insert_sql,
+                &insert_args,
             )
             .map_err(|err| Error::Annotate(err, "failed to create new registration"))?;
 
@@ -680,7 +870,11 @@ impl Registry {
         max_id: u64,
     ) -> Result<Vec<RegistrationInfoWithID>> {
         let select_sql = render_sql(
-            selectRegistrationsByMaxIDSQLTemplate,
+            if self.route_schema_ready {
+                routedSelectRegistrationsByMaxIDSQLTemplate
+            } else {
+                selectRegistrationsByMaxIDSQLTemplate
+            },
             &[RestoreRegistryDBName, RestoreRegistryTableName],
         );
         let se = self
@@ -700,23 +894,59 @@ impl Registry {
 
         let mut registrations = Vec::new();
         for row in rows {
-            let filter_strings = row.GetString(1);
-            let start_ts = row.GetUint64(2);
-            let restored_ts = row.GetUint64(3);
-            let upstream_cluster_id = row.GetUint64(4);
-            let with_sys_table = row.GetInt64(5) != 0;
-            let cmd = row.GetString(7);
-            let info = RegistrationInfo {
+            let mut filter_strings = row.GetString(1);
+            let mut route_strings = Vec::new();
+            let mut route_hash = String::new();
+            let column_offset = if self.route_schema_ready {
+                let source_filter_strings = row.GetString(2);
+                if !source_filter_strings.is_empty() {
+                    filter_strings = source_filter_strings;
+                }
+                let encoded = row.GetString(3);
+                if !encoded.is_empty() {
+                    route_strings = serde_json::from_str(&encoded).map_err(|error| {
+                        Error::Annotatef(
+                            Error::new(error.to_string()),
+                            format!(
+                                "invalid routes in restore registration {}",
+                                row.GetUint64(0)
+                            ),
+                        )
+                    })?;
+                }
+                route_hash = row.GetString(4);
+                3
+            } else {
+                0
+            };
+            let start_ts = row.GetUint64(2 + column_offset);
+            let restored_ts = row.GetUint64(3 + column_offset);
+            let upstream_cluster_id = row.GetUint64(4 + column_offset);
+            let with_sys_table = row.GetInt64(5 + column_offset) != 0;
+            let cmd = row.GetString(7 + column_offset);
+            let mut info = RegistrationInfo {
                 FilterStrings: filter_strings
                     .split(FilterSeparator)
                     .map(|s| s.to_string())
                     .collect(),
+                RouteStrings: route_strings,
+                RouteHash: route_hash,
+                FilterHashInput: String::new(),
                 StartTS: start_ts,
                 RestoredTS: restored_ts,
                 UpstreamClusterID: upstream_cluster_id,
                 WithSysTable: with_sys_table,
                 Cmd: cmd,
             };
+            NormalizeRegistrationRoutes(&mut info).map_err(|error| {
+                Error::Annotatef(
+                    error,
+                    format!(
+                        "invalid routes in restore registration {}",
+                        row.GetUint64(0)
+                    ),
+                )
+            })?;
             registrations.push(RegistrationInfoWithID {
                 RegistrationInfo: info,
                 restoreID: row.GetUint64(0),
@@ -734,19 +964,56 @@ impl Registry {
         dbs: &[Database],
         tables: &[Table],
     ) -> Result<()> {
+        self.CheckTablesWithRegisteredTasksAndRoutes(ctx, restore_id, tracker, dbs, tables, &[])
+    }
+
+    pub fn CheckTablesWithRegisteredTasksAndRoutes(
+        &self,
+        ctx: &Context,
+        restore_id: u64,
+        tracker: Option<&PiTRIdTracker>,
+        dbs: &[Database],
+        tables: &[Table],
+        current_routes: &[String],
+    ) -> Result<()> {
         let registrations = self
             .GetRegistrationsByMaxID(ctx, restore_id)
             .map_err(|err| Error::Annotatef(err, "failed to query existing registrations"))?;
         if registrations.is_empty() {
             return Ok(());
         }
+        let current_router = Router::parse(current_routes).map_err(|error| {
+            Error::Annotate(
+                Error::new(error.to_string()),
+                "invalid current restore routes",
+            )
+        })?;
         for reg_info in &registrations {
             let f = match ParseFilter(&reg_info.RegistrationInfo.FilterStrings) {
                 Ok(f) => f,
                 Err(_) => continue,
             };
             let f = CaseInsensitive(f);
-            self.checkForTableConflicts(tracker, dbs, tables, reg_info, f.as_ref(), restore_id)?;
+            let registered_router = Router::parse(&reg_info.RegistrationInfo.RouteStrings)
+                .map_err(|error| {
+                    Error::Annotatef(
+                        Error::new(error.to_string()),
+                        format!(
+                            "invalid routes in restore registration {}",
+                            reg_info.restoreID
+                        ),
+                    )
+                })?;
+            self.checkForTableConflicts(
+                tracker,
+                dbs,
+                tables,
+                reg_info,
+                f.as_ref(),
+                &current_router,
+                &registered_router,
+                restore_id,
+            )?;
         }
         Ok(())
     }
@@ -758,6 +1025,8 @@ impl Registry {
         tables: &[Table],
         reg_info: &RegistrationInfoWithID,
         f: &dyn Filter,
+        current_router: &Router,
+        registered_router: &Router,
         cur_restore_id: u64,
     ) -> Result<()> {
         let handle_table_conflict = |db_name: &str, table_name: &str| -> Result<()> {
@@ -781,21 +1050,51 @@ because it is already being restored by task (restoreId: {}, time range: {}->{},
             )))
         };
 
+        let mut checked_target_schemas = HashSet::new();
+        let mut check_schema = |name: &str| -> Result<()> {
+            let key = name.to_lowercase();
+            if !checked_target_schemas.insert(key) {
+                return Ok(());
+            }
+            if registration_claims_target(
+                registered_router,
+                f,
+                name,
+                "",
+                reg_info.RegistrationInfo.WithSysTable,
+            ) {
+                return handle_schema_conflict(name);
+            }
+            Ok(())
+        };
+
+        for db in dbs {
+            let (target_db, _, routed) = current_router.route(&db.Info.Name.O, "");
+            if routed {
+                check_schema(&target_db)?;
+            }
+        }
+
         if let Some(tracker) = tracker {
             let map = tracker.GetDBNameToTableName();
             if !map.is_empty() {
                 for (db_name, table_names) in map {
-                    if MatchSchema(f, db_name, reg_info.RegistrationInfo.WithSysTable) {
-                        return handle_schema_conflict(db_name);
+                    let (schema_target, _, schema_routed) = current_router.route(db_name, "");
+                    if schema_routed || table_names.is_empty() {
+                        check_schema(&schema_target)?;
                     }
                     for table_name in table_names {
-                        if MatchTable(
+                        let (target_db, target_table, _) =
+                            current_router.route(db_name, table_name);
+                        check_schema(&target_db)?;
+                        if registration_claims_target(
+                            registered_router,
                             f,
-                            db_name,
-                            table_name,
+                            &target_db,
+                            &target_table,
                             reg_info.RegistrationInfo.WithSysTable,
                         ) {
-                            return handle_table_conflict(db_name, table_name);
+                            return handle_table_conflict(&target_db, &target_table);
                         }
                     }
                 }
@@ -805,21 +1104,21 @@ because it is already being restored by task (restoreId: {}, time range: {}->{},
 
         if reg_info.RegistrationInfo.Cmd == "Point Restore" {
             for db in dbs {
-                if MatchSchema(f, &db.Info.Name.O, reg_info.RegistrationInfo.WithSysTable) {
-                    return handle_schema_conflict(&db.Info.Name.O);
-                }
+                let (target_db, _, _) = current_router.route(&db.Info.Name.O, "");
+                check_schema(&target_db)?;
             }
         }
         for table in tables {
-            let db_name = &table.DB.Name.O;
-            let table_name = &table.Info.Name.O;
-            if MatchTable(
+            let (db_name, table_name, _) =
+                current_router.route(&table.DB.Name.O, &table.Info.Name.O);
+            if registration_claims_target(
+                registered_router,
                 f,
-                db_name,
-                table_name,
+                &db_name,
+                &table_name,
                 reg_info.RegistrationInfo.WithSysTable,
             ) {
-                return handle_table_conflict(db_name, table_name);
+                return handle_table_conflict(&db_name, &table_name);
             }
         }
         Ok(())
@@ -858,22 +1157,37 @@ because it is already being restored by task (restoreId: {}, time range: {}->{},
         let mut guard = se.lock().unwrap();
         let ctx = WithInternalSourceType(ctx.clone(), InternalTxnBR);
         let check_sql = render_sql(
-            selectConflictingTaskSQLTemplate,
+            if info.RouteStrings.is_empty() {
+                selectConflictingTaskSQLTemplate
+            } else {
+                routedSelectConflictingTaskSQLTemplate
+            },
             &[RestoreRegistryDBName, RestoreRegistryTableName],
         );
+        let check_args = if info.RouteStrings.is_empty() {
+            vec![
+                SqlValue::Str(filter_strings),
+                SqlValue::U64(info.StartTS),
+                SqlValue::U64(info.UpstreamClusterID),
+                SqlValue::Bool(info.WithSysTable),
+                SqlValue::Str(info.Cmd.clone()),
+            ]
+        } else {
+            vec![
+                SqlValue::Str(if info.FilterHashInput.is_empty() {
+                    filter_strings
+                } else {
+                    info.FilterHashInput.clone()
+                }),
+                SqlValue::Str(info.RouteHash.clone()),
+                SqlValue::U64(info.StartTS),
+                SqlValue::U64(info.UpstreamClusterID),
+                SqlValue::Bool(info.WithSysTable),
+                SqlValue::Str(info.Cmd.clone()),
+            ]
+        };
         let rows = guard
-            .ExecRestrictedSQL(
-                &ctx,
-                &[],
-                &check_sql,
-                &[
-                    SqlValue::Str(filter_strings),
-                    SqlValue::U64(info.StartTS),
-                    SqlValue::U64(info.UpstreamClusterID),
-                    SqlValue::Bool(info.WithSysTable),
-                    SqlValue::Str(info.Cmd.clone()),
-                ],
-            )
+            .ExecRestrictedSQL(&ctx, &[], &check_sql, &check_args)
             .map_err(|err| {
                 Error::Annotate(
                     err,
@@ -1100,6 +1414,8 @@ because it is already being restored by task (restoreId: {}, time range: {}->{},
         mut info: RegistrationInfo,
         is_restored_ts_user_specified: bool,
     ) -> Result<u64> {
+        NormalizeRegistrationRoutes(&mut info)?;
+        self.checkRouteColumnCompatibility(&info)?;
         let resolved_restore_ts =
             self.resolveRestoreTS(ctx, &info, is_restored_ts_user_specified)?;
         if resolved_restore_ts != info.RestoredTS {
@@ -1110,22 +1426,43 @@ because it is already being restored by task (restoreId: {}, time range: {}->{},
 
         self.execute_in_transaction(ctx, |ctx, exec| {
             let lookup_sql = render_sql(
-                lookupRegistrationSQLTemplate,
+                if info.RouteStrings.is_empty() {
+                    lookupRegistrationSQLTemplate
+                } else {
+                    routedLookupRegistrationSQLTemplate
+                },
                 &[RestoreRegistryDBName, RestoreRegistryTableName],
             );
+            let lookup_args = if info.RouteStrings.is_empty() {
+                vec![
+                    SqlValue::Str(filter_strings.clone()),
+                    SqlValue::U64(info.StartTS),
+                    SqlValue::U64(info.RestoredTS),
+                    SqlValue::U64(info.UpstreamClusterID),
+                    SqlValue::Bool(info.WithSysTable),
+                    SqlValue::Str(info.Cmd.clone()),
+                ]
+            } else {
+                vec![
+                    SqlValue::Str(if info.FilterHashInput.is_empty() {
+                        filter_strings.clone()
+                    } else {
+                        info.FilterHashInput.clone()
+                    }),
+                    SqlValue::Str(info.RouteHash.clone()),
+                    SqlValue::U64(info.StartTS),
+                    SqlValue::U64(info.RestoredTS),
+                    SqlValue::U64(info.UpstreamClusterID),
+                    SqlValue::Bool(info.WithSysTable),
+                    SqlValue::Str(info.Cmd.clone()),
+                ]
+            };
             let rows = exec
                 .ExecRestrictedSQL(
                     ctx,
                     &[OptionFuncAlias::ExecOptionUseCurSession],
                     &lookup_sql,
-                    &[
-                        SqlValue::Str(filter_strings.clone()),
-                        SqlValue::U64(info.StartTS),
-                        SqlValue::U64(info.RestoredTS),
-                        SqlValue::U64(info.UpstreamClusterID),
-                        SqlValue::Bool(info.WithSysTable),
-                        SqlValue::Str(info.Cmd.clone()),
-                    ],
+                    &lookup_args,
                 )
                 .map_err(|err| Error::Annotate(err, "failed to lookup matching task"))?;
 

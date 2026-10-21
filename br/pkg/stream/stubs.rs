@@ -35,6 +35,15 @@ pub struct TableSimpleInfo {
     pub Name: String,
     // 逻辑表下的分区 ID；无分区则为空。
     pub PartitionIds: Vec<i64>,
+    pub HasForeignKeys: bool,
+    pub ForeignKeyReferences: Vec<ForeignKeyReference>,
+    pub IsView: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ForeignKeyReference {
+    pub Schema: String,
+    pub Table: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -42,11 +51,36 @@ pub struct TableSimpleInfo {
 pub struct TableReplace {
     pub Name: String,
     pub TableID: DownstreamID,
+    pub TargetDBName: String,
+    pub TargetDBID: DownstreamID,
+    pub HasForeignKeys: bool,
+    pub SourceName: String,
+    pub SkipMetaDelete: bool,
+    pub ForeignKeyReferences: Vec<ForeignKeyReference>,
+    pub IsView: bool,
     // 分区上游→下游。
     pub PartitionMap: HashMap<UpstreamID, DownstreamID>,
     pub IndexMap: HashMap<UpstreamID, DownstreamID>,
     // 被 filter 排除时为真。
     pub FilteredOut: bool,
+}
+
+impl TableReplace {
+    pub fn EffectiveDBName<'a>(&'a self, parent: &'a DBReplace) -> &'a str {
+        if self.TargetDBName.is_empty() {
+            &parent.Name
+        } else {
+            &self.TargetDBName
+        }
+    }
+
+    pub fn EffectiveDBID(&self, parent: &DBReplace) -> DownstreamID {
+        if self.TargetDBID == 0 {
+            parent.DbID
+        } else {
+            self.TargetDBID
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -59,6 +93,33 @@ pub struct DBReplace {
     pub FilteredOut: bool,
     // 下游复用已有库时为真。
     pub Reused: bool,
+    pub SourceName: String,
+    pub SchemaRouted: bool,
+    pub SourceDBInfo: Option<model::DBInfo>,
+}
+
+impl DBReplace {
+    pub fn SchemaRouteTarget(&self) -> Option<&str> {
+        (!self.FilteredOut && self.SchemaRouted && !self.Name.is_empty()).then_some(&self.Name)
+    }
+
+    pub fn RestoresDatabaseMetadata(&self) -> bool {
+        if self.FilteredOut {
+            return false;
+        }
+        if self.SchemaRouted {
+            return true;
+        }
+        let mut selected = false;
+        for table in self.TableMap.values().filter(|table| !table.FilteredOut) {
+            selected = true;
+            if table.TargetDBName.is_empty() || table.TargetDBName.eq_ignore_ascii_case(&self.Name)
+            {
+                return true;
+            }
+        }
+        !selected
+    }
 }
 
 /// 构造空分区/索引映射的 TableReplace。
@@ -538,6 +599,10 @@ pub mod model {
         pub ID: i64,
         #[serde(default)]
         pub Name: CIStr,
+        #[serde(default)]
+        pub Charset: String,
+        #[serde(default)]
+        pub Collate: String,
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,7 +654,22 @@ pub mod model {
         pub TiFlashReplica: Option<TiFlashReplicaInfo>,
         #[serde(default)]
         pub TTLInfo: Option<TTLInfo>,
+        #[serde(default)]
+        pub ForeignKeys: Vec<ForeignKeyInfo>,
+        #[serde(default)]
+        pub View: Option<ViewInfo>,
     }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ForeignKeyInfo {
+        #[serde(default)]
+        pub RefSchema: CIStr,
+        #[serde(default)]
+        pub RefTable: CIStr,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ViewInfo {}
 
     impl TableInfo {
         /// 取分区信息引用。
@@ -612,6 +692,16 @@ pub mod model {
             TableSimpleInfo {
                 Name: table_info.Name.O,
                 PartitionIds: partition_ids,
+                HasForeignKeys: !table_info.ForeignKeys.is_empty(),
+                ForeignKeyReferences: table_info
+                    .ForeignKeys
+                    .iter()
+                    .map(|foreign_key| super::ForeignKeyReference {
+                        Schema: foreign_key.RefSchema.O.clone(),
+                        Table: foreign_key.RefTable.O.clone(),
+                    })
+                    .collect(),
+                IsView: table_info.View.is_some(),
             },
         ))
     }
@@ -620,6 +710,10 @@ pub mod model {
     pub fn db_name_from_value(value: &[u8]) -> Result<String, String> {
         let db_info: DBInfo = serde_json::from_slice(value).map_err(|e| e.to_string())?;
         Ok(db_info.Name.O)
+    }
+
+    pub fn db_info_from_value(value: &[u8]) -> Result<DBInfo, String> {
+        serde_json::from_slice(value).map_err(|e| e.to_string())
     }
 
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -666,6 +760,18 @@ pub mod backuppb {
     /// PITR 表级映射。
     pub struct PitrTableMap {
         pub Name: String,
+        #[serde(default)]
+        pub SourceName: String,
+        #[serde(default)]
+        pub TargetDbName: String,
+        #[serde(default)]
+        pub TargetDbId: i64,
+        #[serde(default)]
+        pub HasForeignKeys: bool,
+        #[serde(default)]
+        pub ForeignKeyReferences: Vec<super::ForeignKeyReference>,
+        #[serde(default)]
+        pub IsView: bool,
         pub IdMap: IDMap,
         #[serde(default)]
         pub Partitions: Vec<IDMap>,
@@ -677,6 +783,12 @@ pub mod backuppb {
     /// PITR 库级映射。
     pub struct PitrDBMap {
         pub Name: String,
+        #[serde(default)]
+        pub SourceName: String,
+        #[serde(default)]
+        pub SchemaRouted: bool,
+        #[serde(default)]
+        pub Reused: bool,
         pub IdMap: IDMap,
         #[serde(default)]
         pub Tables: Vec<PitrTableMap>,

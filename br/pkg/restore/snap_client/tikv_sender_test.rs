@@ -271,6 +271,7 @@ fn test_sort_and_validate_file_ranges() {
                 ..Default::default()
             },
             RewriteRule: Some(rewrite_rules_for(&pairs)),
+            TargetDB: model::CIStr::new("test"),
         }
     };
 

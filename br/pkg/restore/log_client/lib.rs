@@ -71,7 +71,9 @@ pub use batch_meta_processor::*;
 pub use client::*;
 pub use compacted_file_strategy::*;
 // id_map 仅导出块大小与文件名常量，避免拖入内部细节。
-pub use id_map::{PITRIdMapBlockSize, PitrIDMapsFilename};
+pub use id_map::{
+    FindUniquePitrIDMapFile, PITRIdMapBlockSize, PitrIDMapsFilename, PitrIDMapsFilenameForTask,
+};
 pub use import::*;
 pub use import_retry::*;
 pub use log_file_manager::*;

@@ -481,8 +481,9 @@ impl LogClient {
         ctx: &Context,
         manager: &TableMappingManager,
         logCheckpointMetaManager: &LogMetaManagerT,
+        routeFingerprint: &str,
     ) -> Result<()> {
-        self.saveIDMap(ctx, manager, logCheckpointMetaManager)
+        self.saveIDMap(ctx, manager, logCheckpointMetaManager, routeFingerprint)
     }
 
     /// 边界桩：完整 schema 版本重载尚未移植。
@@ -560,13 +561,41 @@ impl LogClient {
         &self,
         ctx: &Context,
         restoredTS: u64,
+        loadSavedIDMap: bool,
+        hasFullBackupStorageConfig: bool,
         logCheckpointMetaManager: &LogMetaManagerT,
         manager: &mut TableMappingManager,
+        currentRouteFingerprint: &str,
     ) -> Result<()> {
-        // TiFlash 副本校验在 Rust 侧恒成功（桩）。
-        self.validateNoTiFlashReplica()?;
-        let dbMaps = self.loadSchemasMap(ctx, restoredTS, logCheckpointMetaManager)?;
-        manager.MergeBaseDBReplace(&dbMaps);
+        let backup_meta = if loadSavedIDMap {
+            self.loadSchemasMap(ctx, self.restoreTS, logCheckpointMetaManager, false)?
+        } else if !hasFullBackupStorageConfig {
+            self.loadSchemasMap(ctx, restoredTS, logCheckpointMetaManager, true)?
+        } else {
+            None
+        };
+        if loadSavedIDMap && backup_meta.is_none() {
+            return Err(Error::new(format!(
+                "saved PiTR ID map is missing for restore ID {} at restored TS {}; cannot resume with a predecessor map",
+                self.restoreID, self.restoreTS
+            )));
+        }
+        if let Some(meta) = backup_meta {
+            if meta.PitrIdMapRouteFingerprint != currentRouteFingerprint {
+                return Err(Error::new(format!(
+                    "restore rename rules do not match the previous PiTR ID map: persisted fingerprint {:?}, current fingerprint {:?}",
+                    meta.PitrIdMapRouteFingerprint, currentRouteFingerprint
+                )));
+            }
+            self.validateNoTiFlashReplica()?;
+            manager.MergeBaseDBReplace(&meta.DbMaps);
+            return Ok(());
+        }
+        if !hasFullBackupStorageConfig {
+            return Err(Error::new(
+                "no base id map found from saved id or last restored PiTR",
+            ));
+        }
         Ok(())
     }
 
@@ -941,6 +970,7 @@ impl LogClient {
         items: HashMap<i64, astersql_br_pkg_checkpoint::TiFlashReplicaInfo>,
         manager: &dyn astersql_br_pkg_checkpoint::LogMetaManager,
         snapshotBytes: u64,
+        routeFingerprint: String,
     ) -> Result<(String, String, u64)> {
         self.useCheckpoint = true;
         if manager
@@ -950,6 +980,12 @@ impl LogClient {
             let metadata = manager
                 .LoadCheckpointMetadata(ctx)
                 .map_err(|e| Error::new(e.to_string()))?;
+            if metadata.RouteFingerprint != routeFingerprint {
+                return Err(Error::new(format!(
+                    "restore rename rules do not match the log restore checkpoint: checkpoint fingerprint {:?}, current fingerprint {:?}",
+                    metadata.RouteFingerprint, routeFingerprint
+                )));
+            }
             if !metadata.RocksDBMaxBackgroundJobs.is_empty() {
                 jobs = metadata.RocksDBMaxBackgroundJobs;
             }
@@ -967,6 +1003,7 @@ impl LogClient {
                     GcRatio: gcRatio.clone(),
                     RocksDBMaxBackgroundJobs: jobs.clone(),
                     SnapshotRestoreDataSize: snapshotBytes,
+                    RouteFingerprint: routeFingerprint,
                     TiFlashItems: items,
                 },
             )

@@ -1034,6 +1034,7 @@ pub mod backuppb {
         pub BackupSchemaVersion: i32,
         pub StartVersion: u64,
         pub EndVersion: u64,
+        pub PitrIdMapRouteFingerprint: String,
     }
 
     /// `BackupMeta` 的 impl：方法语义、错误传播与并发约束对齐 Go。
@@ -1062,6 +1063,9 @@ pub mod backuppb {
                 out.extend_from_slice(&(name.len() as u32).to_le_bytes());
                 out.extend_from_slice(name);
             }
+            let fingerprint = self.PitrIdMapRouteFingerprint.as_bytes();
+            out.extend_from_slice(&(fingerprint.len() as u32).to_le_bytes());
+            out.extend_from_slice(fingerprint);
             Ok(out)
         }
         /// `GetDbMaps`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。

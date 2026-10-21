@@ -114,6 +114,7 @@ impl MetaInfoCollector for MockMetaInfoCollector {
                         O: db_name.clone(),
                         L: db_name,
                     },
+                    ..Default::default()
                 },
             );
             self.db_timestamps.insert(db_id, commit_ts);
@@ -359,6 +360,7 @@ fn test_parse_meta_kv_and_update_id_mapping() {
             O: db_name.into(),
             L: db_name.into(),
         },
+        ..Default::default()
     })
     .unwrap();
     // DefaultCF：start_ts=100 的事务 meta 键。

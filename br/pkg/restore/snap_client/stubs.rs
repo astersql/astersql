@@ -1270,6 +1270,30 @@ pub mod metautil {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct DatabaseRestorePlan {
+    pub Source: metautil::Database,
+    pub Target: model::DBInfo,
+    pub Reused: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TableRestorePlan {
+    pub Source: metautil::Table,
+    pub TargetDB: model::DBInfo,
+    pub TargetInfo: model::TableInfo,
+}
+
+impl TableRestorePlan {
+    pub fn TargetTable(&self) -> metautil::Table {
+        metautil::Table {
+            DB: self.TargetDB.clone(),
+            Info: self.TargetInfo.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 /// `TableIDRemap`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
 pub struct TableIDRemap {
@@ -1311,6 +1335,17 @@ pub struct CreatedTable {
     pub RewriteRule: Option<RewriteRules>,
     pub Table: model::TableInfo,
     pub OldTable: metautil::Table,
+    pub TargetDB: model::CIStr,
+}
+
+impl CreatedTable {
+    pub fn TargetDBName(&self) -> &model::CIStr {
+        if self.TargetDB.O.is_empty() {
+            &self.OldTable.DB.Name
+        } else {
+            &self.TargetDB
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]

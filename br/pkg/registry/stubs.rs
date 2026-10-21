@@ -498,6 +498,10 @@ pub fn NewCIStr(s: impl Into<String>) -> CIStr {
 /// InfoSchema.TableByName stand-in: Ok(()) means table exists.
 pub trait InfoSchema: Send + Sync {
     fn TableByName(&self, ctx: &Context, db: &CIStr, table: &CIStr) -> Result<()>;
+
+    fn RestoreRegistryRouteSchemaReady(&self) -> bool {
+        false
+    }
 }
 
 /// Domain stand-in: Store + InfoSchema.

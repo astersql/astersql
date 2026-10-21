@@ -502,12 +502,12 @@ fn go_rust_public_contract_matches() {
         storage: Some(storage.clone()),
         ..Default::default()
     };
-    client.TEST_saveIDMap(&ctx, &map_mgr, &cpt).unwrap();
+    client.TEST_saveIDMap(&ctx, &map_mgr, &cpt, "").unwrap();
     assert_eq!(
         *cpt.progress.lock().unwrap(),
         Some(InLogRestoreAndIdMapPersisted)
     );
-    let loaded = client.TEST_initSchemasMap(&ctx, 1000, &cpt).unwrap();
+    let loaded = client.TEST_initSchemasMap(&ctx, 1000, &cpt, false).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].Name, "test");
 
@@ -534,7 +534,7 @@ fn go_rust_public_contract_matches() {
         .insert(("mysql".into(), "tidb_pitr_id_map".into()));
     client2.dom = Some(dom);
     client2.unsafeSession = Some(Box::new(session));
-    let err = client2.loadSchemasMapFromTable(&ctx, 2).unwrap_err();
+    let err = client2.loadSchemasMapFromTable(&ctx, 2, false).unwrap_err();
     assert!(err.msg.contains("segment_id"));
 
     // ---- resource: Close cleans managers ----

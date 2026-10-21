@@ -191,6 +191,7 @@ fn contract_normal_config_and_helpers() {
         // 构造集合承载中间数据。
         Tables: vec![PitrTableMap {
             Name: "t1".into(),
+            TargetDbName: String::new(),
             IdMap: IdMap {
                 DownstreamId: 100,
                 UpstreamId: 200,

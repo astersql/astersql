@@ -173,8 +173,9 @@ impl LogClient {
         ctx: &Context,
         manager: &TableMappingManager,
         log_checkpoint_meta_manager: &LogMetaManagerT,
+        route_fingerprint: &str,
     ) -> Result<()> {
-        self.SaveIdMapWithFailPoints(ctx, manager, log_checkpoint_meta_manager)
+        self.SaveIdMapWithFailPoints(ctx, manager, log_checkpoint_meta_manager, route_fingerprint)
     }
 
     /// Test-visible wrapper matching Go `TEST_initSchemasMap`.
@@ -183,8 +184,17 @@ impl LogClient {
         ctx: &Context,
         restore_ts: u64,
         log_checkpoint_meta_manager: &LogMetaManagerT,
+        load_previous_task: bool,
     ) -> Result<Vec<backuppb::PitrDBMap>> {
-        self.loadSchemasMap(ctx, restore_ts, log_checkpoint_meta_manager)
+        Ok(self
+            .loadSchemasMap(
+                ctx,
+                restore_ts,
+                log_checkpoint_meta_manager,
+                load_previous_task,
+            )?
+            .map(|meta| meta.DbMaps)
+            .unwrap_or_default())
     }
 
     /// `SetUseCheckpoint`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。

@@ -1017,6 +1017,7 @@ where
                     control.tiFlashItems.clone(),
                     metadata.as_ref(),
                     cfg.snapshotRestoreDataSize,
+                    cfg.name_route_fingerprint()?,
                 )
                 .map_err(|e| Error::new(e.to_string()))?;
             persisted = true;

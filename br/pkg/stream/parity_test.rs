@@ -195,6 +195,7 @@ fn go_rust_public_contract_matches() {
             O: db_name.into(),
             L: db_name.into(),
         },
+        ..Default::default()
     })
     .unwrap();
     let default_key = EncodeTxnMetaKey(b"DBs", &meta::DBkey(db_id), 100);

@@ -1,5 +1,5 @@
-// Copyright 2026 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -781,6 +781,9 @@ pub const CreateTiDBRestoreRegistryTable: &str = r###"CREATE TABLE IF NOT EXISTS
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 		filter_strings TEXT NOT NULL,
 		filter_hash VARCHAR(64) NOT NULL,
+		source_filter_strings MEDIUMTEXT NOT NULL DEFAULT '',
+		route_strings MEDIUMTEXT NOT NULL DEFAULT '',
+		route_hash VARCHAR(64) NOT NULL DEFAULT '',
 		start_ts BIGINT UNSIGNED NOT NULL,
 		restored_ts BIGINT UNSIGNED NOT NULL,
 		upstream_cluster_id BIGINT UNSIGNED,
@@ -789,8 +792,9 @@ pub const CreateTiDBRestoreRegistryTable: &str = r###"CREATE TABLE IF NOT EXISTS
 		cmd TEXT,
 		task_start_time TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
 		last_heartbeat_time TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
-		UNIQUE KEY unique_registration_params (
+		UNIQUE KEY unique_registration_params_v2 (
 			filter_hash,
+			route_hash,
 			start_ts,
 			restored_ts,
 			upstream_cluster_id,

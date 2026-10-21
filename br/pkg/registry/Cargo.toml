@@ -15,3 +15,6 @@ lane = 0
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Local traits for SQL/session/storage only.
 [dependencies]
+astersql-br-pkg-restore = { path = "../restore" }
+hex = "0.4"
+serde_json = "1"

@@ -540,13 +540,17 @@ fn test_pitr_id_map() {
         storage: Some(storage.clone()),
         ..Default::default()
     };
-    client.saveIDMap(&ctx, &map_mgr, &cpt).unwrap();
+    client.saveIDMap(&ctx, &map_mgr, &cpt, "route-a").unwrap();
     // 写成功后进度必须标记 IdMap 已持久化。
     assert_eq!(
         *cpt.progress.lock().unwrap(),
         Some(InLogRestoreAndIdMapPersisted)
     );
-    let loaded = client.loadSchemasMap(&ctx, 1000, &cpt).unwrap();
+    let loaded = client
+        .loadSchemasMap(&ctx, 1000, &cpt, false)
+        .unwrap()
+        .unwrap()
+        .DbMaps;
     assert_eq!(loaded.len(), 1);
     // 文件名约定与 Go 格式字符串一致。
     assert_eq!(
@@ -680,7 +684,7 @@ fn test_init_schemas_and_repair_ingest_smoke() {
     client.unsafeSession = Some(Box::new(MemSession::default()));
     // load empty schemas from table path should error or return empty depending on rows
     // 空表时返回空或错误均可；此处只保证不 panic。
-    let _ = client.loadSchemasMapFromTable(&ctx, 2);
+    let _ = client.loadSchemasMapFromTable(&ctx, 2, false);
 }
 
 /// Go `TestRestoreBatchMetaKVFiles` smoke.

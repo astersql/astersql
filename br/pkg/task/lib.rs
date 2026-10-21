@@ -53,6 +53,9 @@ pub mod backup_txn;
 #[path = "restore.rs"]
 pub mod restore;
 
+#[path = "restore_name_route.rs"]
+pub mod restore_name_route;
+
 // 数据文件恢复。
 #[path = "restore_data.rs"]
 pub mod restore_data;
@@ -128,6 +131,10 @@ mod restore_ebs_meta_test;
 mod restore_test;
 
 #[cfg(test)]
+#[path = "restore_name_route_test.rs"]
+mod restore_name_route_test;
+
+#[cfg(test)]
 #[path = "restore_raw_test.rs"]
 mod restore_raw_test;
 
@@ -158,6 +165,7 @@ pub use encryption::*;
 pub use restore::*;
 pub use restore_data::*;
 pub use restore_ebs_meta::*;
+pub use restore_name_route::*;
 pub use restore_raw::*;
 pub use restore_txn::*;
 pub use stream::*;
