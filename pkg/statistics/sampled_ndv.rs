@@ -45,7 +45,44 @@ pub(crate) fn newSampledFMSketch(proto: &tipb::FmSketch, counts: NdvCounts) -> F
     }
 }
 
+/// 从持久化/ANALYZE 的 sampled protobuf 与计数构造 sketch。
+pub fn NewSampledFMSketch(proto: &tipb::FmSketch, rows: i64, samples: i64, nulls: i64) -> FMSketch {
+    newSampledFMSketch(
+        proto,
+        NdvCounts {
+            rows,
+            samples,
+            nulls,
+        },
+    )
+}
+
+/// 用 singleton/repeated hashes 构造 sampled sketch，供分区统计接线使用。
+pub fn NewSampledFMSketchFromHashes(
+    singles: &[u64],
+    multis: &[u64],
+    rows: i64,
+    samples: i64,
+    nulls: i64,
+) -> FMSketch {
+    let mut proto = tipb::FmSketch::new();
+    proto.set_hashset(singles.to_vec());
+    proto.set_multi_hashset(multis.to_vec());
+    NewSampledFMSketch(&proto, rows, samples, nulls)
+}
+
 impl FMSketch {
+    /// 是否由 sampled rows 估算 NDV。
+    pub fn Sampled(&self) -> bool {
+        self.ndvCounts.is_some()
+    }
+
+    /// ANALYZE 观察到的非 NULL 行数；完整输入草图退化为自身 NDV。
+    pub fn NotNullRows(&self) -> i64 {
+        self.ndvCounts
+            .map_or_else(|| self.NDV(), |counts| counts.rows - counts.nulls)
+    }
+
     pub(crate) fn sampledNDV(&self) -> i64 {
         let counts = self.ndvCounts.expect("sampled NDV requires row counts");
         if counts.samples == 0 {
@@ -60,4 +97,50 @@ impl FMSketch {
             .round() as i64;
         estimate.min(counts.rows - counts.nulls)
     }
+
+    pub(crate) fn encodeSampled(&self) -> Result<Vec<u8>, astersql_errors::SharedError> {
+        let counts = self.ndvCounts.expect("sampled NDV requires row counts");
+        let mut collector = tipb::RowSampleCollector::new();
+        collector.set_count(counts.rows);
+        collector.set_ndv_sample_count(counts.samples);
+        collector.set_null_counts(vec![counts.nulls]);
+        collector.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+            crate::FMSketchToProto(Some(self)),
+        ]));
+        let payload = protobuf::Message::write_to_bytes(&collector)
+            .map_err(|error| astersql_errors::New(error.to_string()))?;
+        let mut data = Vec::with_capacity(sampledFMSketchHeaderSize + payload.len());
+        data.extend([sampledFMSketchMarker, sampledFMSketchVersion]);
+        data.extend(payload);
+        Ok(data)
+    }
+}
+
+pub(crate) const sampledFMSketchMarker: u8 = 0;
+const sampledFMSketchVersion: u8 = 1;
+const sampledFMSketchHeaderSize: usize = 2;
+
+pub(crate) fn decodeSampledFMSketch(data: &[u8]) -> Result<FMSketch, astersql_errors::SharedError> {
+    if data.len() < sampledFMSketchHeaderSize || data[1] != sampledFMSketchVersion {
+        return Err(astersql_errors::New(
+            "unsupported sampled NDV sketch format",
+        ));
+    }
+    let collector =
+        protobuf::parse_from_bytes::<tipb::RowSampleCollector>(&data[sampledFMSketchHeaderSize..])
+            .map_err(|error| astersql_errors::New(error.to_string()))?;
+    if collector.get_fm_sketch().len() != 1
+        || !collector.has_ndv_sample_count()
+        || collector.get_null_counts().len() != 1
+    {
+        return Err(astersql_errors::New("invalid sampled NDV sketch payload"));
+    }
+    Ok(newSampledFMSketch(
+        &collector.get_fm_sketch()[0],
+        NdvCounts {
+            rows: collector.get_count(),
+            samples: collector.get_ndv_sample_count(),
+            nulls: collector.get_null_counts()[0],
+        },
+    ))
 }

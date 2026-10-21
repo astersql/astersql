@@ -22,6 +22,7 @@
 use crate::{
     CmSketch, FmSketch, Histogram, TopN, merge_global_top_n_by_concurrency, merge_partition_top_n,
 };
+use astersql_statistics::PartitionNDVMerger;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 并发合并 TopN 时每个 worker 批次大小上限。
@@ -229,6 +230,13 @@ pub fn merge_partition_stats_to_global(
             fms.merge(&item.fm_sketch);
             cms.merge(&item.cmsketch);
         }
+        let mut ndv_merger = PartitionNDVMerger::default();
+        let has_complete_sketches = items.iter().all(|item| item.fm_sketch.detailed.is_some());
+        if has_complete_sketches {
+            for item in &items {
+                ndv_merger.Merge(item.fm_sketch.detailed.as_ref().unwrap().clone());
+            }
+        }
         let mut histograms = items
             .iter()
             .map(|item| item.histogram.clone())
@@ -259,11 +267,35 @@ pub fn merge_partition_stats_to_global(
                 cancelled,
             )?
         };
-        let ndv = if is_local_unique(&options, index) {
+        let mut ndv = if is_local_unique(&options, index) {
             unique_global_ndv(&items, output.count)
+        } else if has_complete_sketches {
+            ndv_merger.NDV().min(output.count)
         } else {
             fms.ndv.min(output.count)
         };
+        if has_complete_sketches && ndv_merger.Sampled() && !is_local_unique(&options, index) {
+            let observed_not_null = items
+                .iter()
+                .map(|item| {
+                    let histogram_rows = item
+                        .histogram
+                        .buckets
+                        .last()
+                        .map_or(0, |bucket| bucket.count);
+                    let top_n_rows = item.top_n.total_count() as i64;
+                    if histogram_rows + top_n_rows == 0 {
+                        item.fm_sketch
+                            .detailed
+                            .as_ref()
+                            .map_or(0, |sketch| sketch.NotNullRows())
+                    } else {
+                        histogram_rows + top_n_rows
+                    }
+                })
+                .sum::<i64>();
+            ndv = ndv.min(observed_not_null).min(output.count);
+        }
         let mut merged = Histogram {
             id: histograms[0].id,
             // NDV 不超过全局行数。

@@ -67,7 +67,10 @@ fn item(top: &[(&[u8], u64)], ndv: i64, exact: &[(&[u8], f64)]) -> PartitionItem
                 })
                 .collect(),
         },
-        fm_sketch: FmSketch { ndv },
+        fm_sketch: FmSketch {
+            ndv,
+            ..FmSketch::default()
+        },
         analyzed: true,
     }
 }
@@ -245,6 +248,51 @@ fn test_ddl_partition_4_global_stats() {
 #[test]
 fn test_global_stats_ndv() {
     let result = merged(1);
+    assert_eq!(result.histograms[0].as_ref().unwrap().ndv, 7);
+}
+
+#[test]
+fn global_stats_sampled_ndv() {
+    fn sampled(rows: i64, singles: Vec<u64>, multis: Vec<u64>) -> FmSketch {
+        FmSketch::from_detailed(astersql_statistics::NewSampledFMSketchFromHashes(
+            &singles, &multis, rows, 100, 0,
+        ))
+    }
+
+    let make_item = |sketch: FmSketch, observed: i64| PartitionItemStats {
+        histogram: Histogram {
+            id: 1,
+            ndv: 0,
+            buckets: (observed > 0)
+                .then_some(crate::Bucket {
+                    count: observed,
+                    ndv: 0,
+                })
+                .into_iter()
+                .collect(),
+            ..Histogram::default()
+        },
+        fm_sketch: sketch,
+        analyzed: true,
+        ..PartitionItemStats::default()
+    };
+    let input = TestProvider(vec![
+        PartitionStats {
+            name: "p0".into(),
+            count: 400,
+            items: vec![Some(make_item(sampled(400, vec![1, 2], vec![3]), 4))],
+            ..PartitionStats::default()
+        },
+        PartitionStats {
+            name: "p1".into(),
+            count: 900,
+            items: vec![Some(make_item(sampled(900, vec![2, 4], vec![]), 3))],
+            ..PartitionStats::default()
+        },
+    ]);
+    let result =
+        merge_partition_stats_to_global(&input, 42, 1, options(1), &AtomicBool::new(false))
+            .unwrap();
     assert_eq!(result.histograms[0].as_ref().unwrap().ndv, 7);
 }
 

@@ -11,6 +11,9 @@ path = "lib.rs"
 go-package = "pkg/statistics/handle/globalstats"
 legacy-tasks = ["task-951", "task-1486"]
 
+[dependencies]
+"astersql-statistics" = { package = "astersql-statistics", path = "../.." }
+
 [target.'cfg(any())'.dependencies]
 "astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }

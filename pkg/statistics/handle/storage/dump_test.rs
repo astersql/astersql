@@ -149,6 +149,24 @@ fn fm_sketch_dump_load_persists_columns_and_indices() {
 }
 
 #[test]
+fn sampled_fm_sketch_dump_load_preserves_envelope() {
+    let sketch = astersql_statistics::NewSampledFMSketchFromHashes(&[1, 3], &[2], 10, 3, 3);
+    let encoded = astersql_statistics::EncodeFMSketch(Some(&sketch)).unwrap();
+    assert_eq!(encoded[..2], [0, 1]);
+
+    let mut table = complete_json_table();
+    table.stats.columns.get_mut("a").unwrap().fm_sketch = Some(encoded.clone());
+    let loaded = blocks_to_json_table(&json_table_to_blocks(&table, 11).unwrap()).unwrap();
+    let restored = loaded.stats.columns["a"].fm_sketch.as_deref().unwrap();
+    assert_eq!(restored, encoded);
+    let decoded = astersql_statistics::DecodeFMSketch(Some(restored))
+        .unwrap()
+        .unwrap();
+    assert!(decoded.Sampled());
+    assert_eq!(decoded.NotNullRows(), 7);
+}
+
+#[test]
 fn fm_sketch_dump_without_sketches_clears_stale_rows() {
     let mut json = complete_json_table();
     json.stats.columns.get_mut("a").unwrap().fm_sketch = None;

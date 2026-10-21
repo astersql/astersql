@@ -236,3 +236,137 @@ fn sampled_ndv_merges_hash_multiplicity_and_row_counts() {
         BuildHistAndTopN(&context, 256, 0, 1, &mut collector, &field_type, true).unwrap();
     assert_eq!(histogram.NDV, 3_000);
 }
+
+/// Go `SubTestSampledNDV` and global-stats merge coverage added by 6e7213df:
+/// sampled sketches survive storage encoding and retain each partition's scale.
+#[test]
+fn global_stats_sampled_ndv() {
+    fn sampled(rows: i64, samples: i64, nulls: i64, singles: &[u64], multis: &[u64]) -> FMSketch {
+        let mut proto = tipb::FmSketch::new();
+        proto.set_hashset(singles.to_vec());
+        proto.set_multi_hashset(multis.to_vec());
+        newSampledFMSketch(
+            &proto,
+            NdvCounts {
+                rows,
+                samples,
+                nulls,
+            },
+        )
+    }
+
+    let merged = sampled(80, 8, 20, &[1, 3], &[2]);
+    let encoded = EncodeFMSketch(Some(&merged)).unwrap();
+    assert_eq!(encoded[..2], [0, 1]);
+    assert!(protobuf::parse_from_bytes::<tipb::FmSketch>(&encoded).is_err());
+    let restored = DecodeFMSketch(Some(&encoded)).unwrap().unwrap();
+    assert_eq!(restored.hashset, merged.hashset);
+    assert_eq!(restored.ndvCounts.unwrap().rows, 80);
+    assert_eq!(restored.ndvCounts.unwrap().samples, 8);
+    assert_eq!(restored.ndvCounts.unwrap().nulls, 20);
+
+    let mut unsupported = encoded.clone();
+    unsupported[1] = 2;
+    assert_eq!(
+        DecodeFMSketch(Some(&unsupported)).unwrap_err().to_string(),
+        "unsupported sampled NDV sketch format"
+    );
+    let mut missing_sketch = tipb::RowSampleCollector::new();
+    missing_sketch.set_ndv_sample_count(0);
+    missing_sketch.set_null_counts(vec![0]);
+    let mut missing_sample_count = tipb::RowSampleCollector::new();
+    missing_sample_count.set_null_counts(vec![0]);
+    missing_sample_count.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+        tipb::FmSketch::new(),
+    ]));
+    let mut missing_null_count = tipb::RowSampleCollector::new();
+    missing_null_count.set_ndv_sample_count(0);
+    missing_null_count.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+        tipb::FmSketch::new(),
+    ]));
+    let mut extra_sketches = tipb::RowSampleCollector::new();
+    extra_sketches.set_ndv_sample_count(0);
+    extra_sketches.set_null_counts(vec![0]);
+    extra_sketches.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+        tipb::FmSketch::new(),
+        tipb::FmSketch::new(),
+    ]));
+    let mut extra_null_counts = tipb::RowSampleCollector::new();
+    extra_null_counts.set_ndv_sample_count(0);
+    extra_null_counts.set_null_counts(vec![0, 0]);
+    extra_null_counts.set_fm_sketch(protobuf::RepeatedField::from_vec(vec![
+        tipb::FmSketch::new(),
+    ]));
+    let mut invalid_payloads = vec![vec![0, 1]];
+    for collector in [
+        missing_sketch,
+        missing_sample_count,
+        missing_null_count,
+        extra_sketches,
+        extra_null_counts,
+    ] {
+        let mut invalid = vec![0, 1];
+        invalid.extend(collector.write_to_bytes().unwrap());
+        invalid_payloads.push(invalid);
+    }
+    for invalid in invalid_payloads {
+        assert_eq!(
+            DecodeFMSketch(Some(&invalid)).unwrap_err().to_string(),
+            "invalid sampled NDV sketch payload"
+        );
+    }
+
+    let full = {
+        let mut sketch = NewFMSketch(MaxSketchSize);
+        sketch.insertHashValue(1);
+        sketch.insertHashValue(5);
+        sketch
+    };
+    let partitions = [
+        sampled(400, 100, 0, &[1, 2], &[3]),
+        sampled(900, 100, 0, &[2, 4], &[]),
+        full.clone(),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut merger = PartitionNDVMerger::default();
+        for index in order {
+            merger.Merge(partitions[index].clone());
+        }
+        assert!(merger.Sampled());
+        assert_eq!(merger.NDV(), 7);
+    }
+
+    let mut plain = PartitionNDVMerger::default();
+    plain.Merge(full.clone());
+    plain.Merge(full);
+    assert!(!plain.Sampled());
+    assert_eq!(plain.NDV(), 2);
+
+    let mut small = sampled(400, 100, 0, &[1, 2], &[]);
+    small.maxSize = 2;
+    let mut leveled = PartitionNDVMerger::default();
+    leveled.Merge(small);
+    leveled.Merge(sampled(900, 100, 0, &[4], &[]));
+    assert_eq!(leveled.NDV(), 10);
+    assert_eq!(leveled.mask(), 1);
+
+    let mut coarser = sampled(1600, 100, 0, &[4, 8], &[]);
+    coarser.mask = 3;
+    leveled.Merge(coarser);
+    assert_eq!(leveled.mask(), 3);
+    assert_eq!(leveled.NDV(), 20);
+
+    let mut single = PartitionNDVMerger::default();
+    assert_eq!(single.NDV(), 0);
+    assert!(!single.Sampled());
+    single.Merge(sampled(10, 1, 9, &[1], &[]));
+    assert_eq!(single.NDV(), 1);
+    assert!(single.Sampled());
+}

@@ -66,7 +66,10 @@ fn item(name: &[u8], top_count: u64, ndv: i64, exact: &[(&[u8], f64)]) -> Partit
                 }]
             },
         },
-        fm_sketch: FmSketch { ndv },
+        fm_sketch: FmSketch {
+            ndv,
+            ..FmSketch::default()
+        },
         analyzed: true,
     }
 }

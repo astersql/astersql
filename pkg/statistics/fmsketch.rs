@@ -64,7 +64,7 @@ impl FMSketch {
     }
 
     /// 插入一个哈希值；不满足 mask 过滤则丢弃，超限则扩大 mask 并压缩集合。
-    fn insertHashValue(&mut self, hash_value: u64) {
+    pub(crate) fn insertHashValue(&mut self, hash_value: u64) {
         self.mergeHashValue(hash_value, false);
     }
 
@@ -302,6 +302,9 @@ pub fn EncodeFMSketch(sketch: Option<&FMSketch>) -> Result<Vec<u8>, astersql_err
     let Some(sketch) = sketch else {
         return Ok(Vec::new());
     };
+    if sketch.ndvCounts.is_some() {
+        return sketch.encodeSampled();
+    }
     FMSketchToProto(Some(sketch))
         .write_to_bytes()
         .map_err(|error| astersql_errors::New(error.to_string()))
@@ -314,6 +317,9 @@ pub fn DecodeFMSketch(
     let Some(data) = data else {
         return Ok(None);
     };
+    if data.first() == Some(&crate::sampled_ndv::sampledFMSketchMarker) {
+        return crate::sampled_ndv::decodeSampledFMSketch(data).map(Some);
+    }
     let proto = protobuf::parse_from_bytes::<tipb::FmSketch>(data)
         .map_err(|error| astersql_errors::New(error.to_string()))?;
     let mut sketch = FMSketchFromProto(Some(&proto));

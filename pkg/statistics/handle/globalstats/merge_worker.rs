@@ -81,12 +81,22 @@ impl CmSketch {
 /// Flajolet–Martin Sketch：用于估计 NDV；合并时取较大估计值。
 pub struct FmSketch {
     pub ndv: i64,
+    /// 完整 FM sketch；新 sampled merge 路径需要 hash、mask 与采样计数。
+    pub detailed: Option<astersql_statistics::FMSketch>,
 }
 impl FmSketch {
     /// 合并另一份 FMSketch：NDV 取两者较大值。
     pub fn merge(&mut self, other: &Self) {
         // 合并 NDV 估计时取 max，避免重复计数导致过高估计。
         self.ndv = self.ndv.max(other.ndv)
+    }
+
+    /// 从真实 FM sketch 建立 global-stats 输入。
+    pub fn from_detailed(sketch: astersql_statistics::FMSketch) -> Self {
+        Self {
+            ndv: sketch.NDV(),
+            detailed: Some(sketch),
+        }
     }
 }
 
