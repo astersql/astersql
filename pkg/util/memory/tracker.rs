@@ -699,6 +699,10 @@ impl Tracker {
     // exceeds its bytesSoftLimit/bytesHardLimit, the tracker calls its action, so does each of its ancestors.
     // Consume 是 tracker 的核心路径：沿父链更新内存、仲裁预算、maxConsumed、metrics，并在超限时触发动作。
     pub fn Consume(&self, bs: i64) {
+        self.consume(bs, true);
+    }
+
+    fn consume(&self, bs: i64, enforce: bool) {
         if bs == 0 {
             return;
         }
@@ -722,10 +726,10 @@ impl Tracker {
                         // Budget fast path: prefer small budget on positive consumption, fall back to big budget.
                         if bs > 0 {
                             if m.useBigBudget() {
-                                if m.addBigBudgetUsed(bs) > m.bigBudgetGrowThreshold() {
+                                if m.addBigBudgetUsed(bs) > m.bigBudgetGrowThreshold() && enforce {
                                     m.growBigBudget();
                                 }
-                            } else if m.addSmallBudget(bs) > m.small_limit {
+                            } else if m.addSmallBudget(bs) > m.small_limit && enforce {
                                 m.intoBigBudget();
                             }
                         } else if m.useBigBudget() {
@@ -819,6 +823,10 @@ impl Tracker {
                     }
                 }
             }
+        }
+
+        if !enforce {
+            return;
         }
 
         if bs > 0 && !sessionRootTracker.is_null() {
@@ -1189,6 +1197,13 @@ impl Tracker {
     // ReplaceBytesUsed 用目标值和当前值的差额调用 Consume，确保父链同步更新。
     pub fn ReplaceBytesUsed(&self, bytes: i64) {
         self.Consume(bytes - self.BytesConsumed());
+    }
+
+    // ReplaceBytesUsedForCleanup reconciles memory already allocated while statement cleanup is
+    // running. Accounting and peak usage still propagate through the tracker tree, but pending
+    // cancellation, quota actions, and new arbitrator reservations must wait until cleanup ends.
+    pub fn ReplaceBytesUsedForCleanup(&self, bytes: i64) {
+        self.consume(bytes - self.BytesConsumed(), false);
     }
 
     // Reset detach the tracker from the old parent and clear the old children. The label and byteLimit would not be reset.

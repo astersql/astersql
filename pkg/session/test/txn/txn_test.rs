@@ -16,6 +16,7 @@
 use astersql_domain::Domain;
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::{DbValue, TestKit};
+use astersql_util_memory::tracker::{LabelForMemDB, LabelForSession, NewTracker};
 use std::sync::{Arc, Barrier, Mutex, MutexGuard, mpsc};
 use std::thread;
 
@@ -30,6 +31,44 @@ fn transaction_test_lock() -> MutexGuard<'static, ()> {
     TXN_TEST_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[test]
+fn statement_cleanup_memory_reconciliation_ignores_pending_cancellation() {
+    let mut root = NewTracker(LabelForSession, -1);
+    root.IsRootTrackerOfSess = true;
+    root.Killer = Some(Box::new(
+        astersql_util_memory::sqlkiller::SQLKiller::default(),
+    ));
+    let mut footprint = NewTracker(LabelForMemDB, -1);
+    footprint.AttachTo(&mut *root);
+    root.Killer
+        .as_ref()
+        .unwrap()
+        .SendKillSignal(astersql_util_memory::sqlkiller::QueryInterrupted);
+
+    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        footprint.ReplaceBytesUsedForCleanup(4_096);
+    }));
+    assert!(
+        cleanup.is_ok(),
+        "statement cleanup must finish before cancellation propagates"
+    );
+    assert_eq!(
+        (footprint.BytesConsumed(), root.BytesConsumed()),
+        (4_096, 4_096)
+    );
+    assert_eq!(
+        root.Killer.as_ref().unwrap().GetKillSignal(),
+        astersql_util_memory::sqlkiller::QueryInterrupted
+    );
+
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            footprint.Consume(1);
+        }))
+        .is_err()
+    );
 }
 
 /// 从 Domain 统计句柄读取表的 realtime_count，用于断言提交/回滚后的行可见性。

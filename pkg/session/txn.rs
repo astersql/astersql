@@ -108,6 +108,8 @@ pub struct LazyTxn {
     pub txnFuture: Option<Box<dyn TransactionFuture>>,
     pub initCnt: usize,
     pub stagingHandle: StagingHandle,
+    /// True only while statement-buffer cleanup synchronously reports its footprint.
+    pub inStmtBufCleanup: bool,
     pub enterFairLockingOnValid: bool,
     pub lazyUniquenessCheckEnabled: bool,
     pub lastCommitTS: u64,
@@ -123,6 +125,7 @@ impl Default for LazyTxn {
             txnFuture: None,
             initCnt: 0,
             stagingHandle: InvalidStagingHandle,
+            inStmtBufCleanup: false,
             enterFairLockingOnValid: false,
             lazyUniquenessCheckEnabled: false,
             lastCommitTS: 0,
@@ -207,7 +210,15 @@ impl LazyTxn {
         }
         if let Some(transaction) = self.Transaction.as_mut() {
             if !transaction.IsPipelined() {
-                transaction.CleanupStage(self.stagingHandle);
+                let previous = self.inStmtBufCleanup;
+                self.inStmtBufCleanup = true;
+                let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    transaction.CleanupStage(self.stagingHandle);
+                }));
+                self.inStmtBufCleanup = previous;
+                if let Err(payload) = cleanup {
+                    std::panic::resume_unwind(payload);
+                }
             }
             self.initCnt = transaction.Len();
             self.txnInfo.EntriesCount = transaction.Len() as u64;

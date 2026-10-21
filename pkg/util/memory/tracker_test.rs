@@ -29,8 +29,8 @@ use super::global_arbitrator::{
     parse_soft_limit,
 };
 use super::tracker::{
-    ActionOnExceed, EnableGCAwareMemoryTrack, FormatBytes, NewGlobalTracker, NewTracker,
-    TrackMemWhenExceeds, Tracker,
+    ActionOnExceed, EnableGCAwareMemoryTrack, FormatBytes, LabelForSession, NewGlobalTracker,
+    NewTracker, TrackMemWhenExceeds, Tracker,
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -167,6 +167,85 @@ fn TestConsume() {
         thread.join().unwrap();
     }
     assert_eq!(tracker.BytesConsumed(), 100);
+}
+
+#[test]
+fn replace_bytes_used_for_cleanup_preserves_kill_and_resumes_enforcement() {
+    let mut root = NewTracker(super::tracker::LabelForSession, 100);
+    root.IsRootTrackerOfSess = true;
+    root.Killer = Some(Box::new(super::sqlkiller::SQLKiller::default()));
+    let (hard_action, hard_state) = MockAction::new(0);
+    root.SetActionOnExceed(Some(hard_action));
+
+    let mut leaf = NewTracker(super::tracker::LabelForMemDB, -1);
+    leaf.AttachTo(ptr(&mut root));
+    root.Killer
+        .as_ref()
+        .unwrap()
+        .SendKillSignal(super::sqlkiller::QueryInterrupted);
+
+    let cleanup = catch_unwind(AssertUnwindSafe(|| {
+        leaf.ReplaceBytesUsedForCleanup(200);
+    }));
+    assert!(
+        cleanup.is_ok(),
+        "cleanup accounting must not propagate cancellation"
+    );
+    assert_eq!((leaf.BytesConsumed(), root.BytesConsumed()), (200, 200));
+    assert_eq!(hard_state.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        root.Killer.as_ref().unwrap().GetKillSignal(),
+        super::sqlkiller::QueryInterrupted
+    );
+
+    let ordinary = catch_unwind(AssertUnwindSafe(|| leaf.Consume(1)));
+    assert!(
+        ordinary.is_err(),
+        "ordinary accounting must resume cancellation checks"
+    );
+    assert_eq!(hard_state.calls.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "mem-arbitrator")]
+#[test]
+fn replace_bytes_used_for_cleanup_defers_arbitrator_growth() {
+    let core = Arc::new(NewMemArbitrator(1_000_000_000));
+    let mut tracker = NewTracker(LabelForSession, -1);
+    tracker.IsRootTrackerOfSess = true;
+    tracker.SessionID.Store(947);
+    tracker.Killer = Some(Box::new(super::sqlkiller::SQLKiller::default()));
+    assert!(tracker.InitMemArbitrator(
+        Some(core.clone()),
+        None,
+        0,
+        ArbitrationPriorityMedium,
+        false,
+        0,
+        false,
+    ));
+    tracker
+        .Killer
+        .as_ref()
+        .unwrap()
+        .SendKillSignal(super::sqlkiller::QueryInterrupted);
+
+    let cleanup_bytes = core.PoolAllocProfile().SmallPoolLimit + 1;
+    let cleanup = catch_unwind(AssertUnwindSafe(|| {
+        tracker.ReplaceBytesUsedForCleanup(cleanup_bytes);
+    }));
+    assert!(cleanup.is_ok());
+    let arbitrator = tracker.MemArbitrator.as_ref().unwrap();
+    assert!(!arbitrator.useBigBudget());
+    assert_eq!(arbitrator.smallBudgetUsed(), cleanup_bytes);
+    assert_eq!(tracker.BytesConsumed(), cleanup_bytes);
+
+    tracker.Killer.as_ref().unwrap().Reset();
+    tracker.Consume(1);
+    assert!(arbitrator.useBigBudget());
+    assert_eq!(arbitrator.bigBudgetUsed(), cleanup_bytes + 1);
+    assert_eq!(arbitrator.smallBudgetUsed(), 0);
+    assert!(tracker.DetachMemArbitrator(true));
+    core.RemoveRootPoolByID(947);
 }
 
 #[test]
