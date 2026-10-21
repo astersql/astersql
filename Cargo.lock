@@ -6565,6 +6565,7 @@ dependencies = [
  "astersql-planner-core-resolve",
  "astersql-planner-core-rule",
  "astersql-planner-core-rule-util",
+ "astersql-planner-planctx",
  "astersql-planner-property",
  "astersql-planner-util",
  "astersql-planner-util-coreusage",

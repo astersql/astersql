@@ -39,6 +39,7 @@ memory-dependency = { package = "astersql-util-memory", path = "../../util/memor
 model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
 parser-ast-dependency = { package = "astersql-parser-ast", path = "../../parser/ast" }
 physicalop-dependency = { package = "astersql-planner-core-operator-physicalop", path = "operator/physicalop" }
+planctx-dependency = { package = "astersql-planner-planctx", path = "../planctx" }
 planner-util-dependency = { package = "astersql-planner-util", path = "../util" }
 plannererrors-dependency = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors" }
 property-dependency = { package = "astersql-planner-property", path = "../property" }

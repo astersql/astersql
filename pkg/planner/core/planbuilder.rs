@@ -37,6 +37,8 @@ pub enum Privilege {
     Grant,
     Reload,
     Super,
+    OperateView,
+    ShowView,
     Dynamic(String),
 }
 
@@ -365,6 +367,13 @@ pub enum Statement {
         job_ids: Vec<i64>,
         options: Vec<AlterDDLJobOpt>,
     },
+    RefreshMaterializedView(crate::RefreshRequest),
+    RefreshMaterializedViewImplement {
+        mode: crate::RefreshImplementMode,
+        definition: crate::MViewDefinition,
+        options: crate::MViewBuildOptions,
+        target_refresh_read_ts: u64,
+    },
     Simple(String),
 }
 
@@ -533,6 +542,9 @@ pub enum BuiltPlan {
         schema: Schema,
         arguments: Vec<String>,
     },
+    RefreshMaterializedView(crate::RefreshPlan),
+    MViewDeltaMerge(crate::MViewDeltaMerge),
+    MViewCompleteDeltaApply(crate::MViewCompleteDeltaApply),
 }
 
 #[derive(Clone, Debug)]
@@ -748,6 +760,59 @@ impl PlanBuilder {
             Statement::AlterDdlJob { job_ids, options } => {
                 self.buildAdminAlterDDLJob(job_ids, options)
             }
+            Statement::RefreshMaterializedView(request) => {
+                let plan = crate::BuildRefreshMaterializedView(request).map_err(BuilderError)?;
+                let (database, view) = match &plan {
+                    crate::RefreshPlan::Refresh(plan) => (&plan.database, &plan.view),
+                    crate::RefreshPlan::DryRun(plan) => {
+                        (&plan.statement.database, &plan.statement.view)
+                    }
+                    crate::RefreshPlan::Profile(plan) => {
+                        (&plan.statement.database, &plan.statement.view)
+                    }
+                };
+                self.visitInfo.push(visitInfo {
+                    privilege: Privilege::OperateView,
+                    db: database.clone(),
+                    table: view.clone(),
+                    column: String::new(),
+                    error: String::new(),
+                    alterWritable: false,
+                    dynamicPrivs: Vec::new(),
+                    dynamicWithGrant: false,
+                });
+                if request.observe != crate::RefreshObserveType::None {
+                    self.visitInfo.push(visitInfo {
+                        privilege: Privilege::ShowView,
+                        db: database.clone(),
+                        table: view.clone(),
+                        column: String::new(),
+                        error: String::new(),
+                        alterWritable: false,
+                        dynamicPrivs: Vec::new(),
+                        dynamicWithGrant: false,
+                    });
+                }
+                Ok(BuiltPlan::RefreshMaterializedView(plan))
+            }
+            Statement::RefreshMaterializedViewImplement {
+                mode,
+                definition,
+                options,
+                target_refresh_read_ts,
+            } => match crate::BuildRefreshMaterializedViewImplement(
+                *mode,
+                definition,
+                *options,
+                *target_refresh_read_ts,
+            )
+            .map_err(BuilderError)?
+            {
+                crate::RefreshImplementPlan::Fast(plan) => Ok(BuiltPlan::MViewDeltaMerge(plan)),
+                crate::RefreshImplementPlan::CompleteDeltaApply(plan) => {
+                    Ok(BuiltPlan::MViewCompleteDeltaApply(plan))
+                }
+            },
             Statement::Simple(name) => self.buildSimple(name),
         }
     }

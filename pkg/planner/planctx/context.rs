@@ -134,6 +134,28 @@ pub trait PlanContext: Common + tablelock::TableLockReadContext {
     fn Reset(&mut self);
 }
 
+/// Retained mlog commit-ts window active while a FAST refresh source is planned.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MLogCommitTSEstimation {
+    pub MLogTableID: i64,
+    pub RetainedLowerTSO: u64,
+    pub RetainedUpperTSO: u64,
+}
+
+/// Optional mview-specific planning state.  It remains outside `PlanContext`
+/// because ordinary planner contexts do not need materialized-view state.
+pub trait MLogCommitTSEstimationContext {
+    fn GetMLogCommitTSEstimation(&self) -> Option<&MLogCommitTSEstimation>;
+
+    fn WithMLogCommitTSEstimation<T, F>(
+        &mut self,
+        estimation: MLogCommitTSEstimation,
+        callback: F,
+    ) -> Result<T, GoError>
+    where
+        F: FnOnce(&mut Self) -> Result<T, GoError>;
+}
+
 /// EmptyPlanContextExtended：为不需要扩展行为的 mock 提供空操作实现。
 /// EmptyPlanContextExtended supplies no-op implementations to mock contexts
 /// that embed it and do not need the extended PlanContext behavior.

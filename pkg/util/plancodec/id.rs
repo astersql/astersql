@@ -92,6 +92,10 @@ pub const TypeInsert: &str = "Insert";
 pub const TypeUpdate: &str = "Update";
 // TypeDelete is the type of Delete.
 pub const TypeDelete: &str = "Delete";
+/// Materialized-view FAST refresh merge operator.
+pub const TypeMViewDeltaMerge: &str = "MViewDeltaMerge";
+/// Materialized-view COMPLETE DELTA APPLY operator.
+pub const TypeMViewCompleteDeltaApply: &str = "MViewCompleteDeltaApply";
 // TypeIndexLookUp is the type of IndexLookUp.
 pub const TypeIndexLookUp: &str = "IndexLookUp";
 // TypeLocalIndexLookUp is the type of LocalIndexLookUp.
@@ -227,6 +231,8 @@ const typeLocalIndexLookUpID: isize = 61;
 const typePhysicalCTESinkID: isize = 62;
 const typePhysicalCTESourceID: isize = 63;
 const typeAnalyzeID: isize = 64;
+const typeMViewDeltaMergeID: isize = 65;
+const typeMViewCompleteDeltaApplyID: isize = 66;
 
 // TypeStringToPhysicalID converts the plan type string to plan id.
 // TypeStringToPhysicalID 对应 Go 的同名函数，把计划类型字符串转换成稳定的物理计划 ID。
@@ -265,6 +271,8 @@ pub fn TypeStringToPhysicalID(tp: &str) -> isize {
         x if x == TypeInsert => typeInsertID,
         x if x == TypeUpdate => typeUpdateID,
         x if x == TypeDelete => typeDeleteID,
+        x if x == TypeMViewDeltaMerge => typeMViewDeltaMergeID,
+        x if x == TypeMViewCompleteDeltaApply => typeMViewCompleteDeltaApplyID,
         x if x == TypeIndexLookUp => typeIndexLookUpID,
         x if x == TypeLocalIndexLookUp => typeLocalIndexLookUpID,
         x if x == TypeTableReader => typeTableReaderID,
@@ -344,6 +352,8 @@ pub fn PhysicalIDToTypeString(id: isize) -> String {
         x if x == typeInsertID => TypeInsert.to_string(),
         x if x == typeUpdateID => TypeUpdate.to_string(),
         x if x == typeDeleteID => TypeDelete.to_string(),
+        x if x == typeMViewDeltaMergeID => TypeMViewDeltaMerge.to_string(),
+        x if x == typeMViewCompleteDeltaApplyID => TypeMViewCompleteDeltaApply.to_string(),
         x if x == typeIndexLookUpID => TypeIndexLookUp.to_string(),
         x if x == typeLocalIndexLookUpID => TypeLocalIndexLookUp.to_string(),
         x if x == typeTableReaderID => TypeTableReader.to_string(),

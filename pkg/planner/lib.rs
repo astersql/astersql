@@ -7,6 +7,8 @@
 
 #![allow(dead_code, non_snake_case, non_camel_case_types)]
 
+#[path = "mview/mview.rs"]
+pub mod mview;
 /// 逻辑与物理计划优化核心实现（会话服务、计划缓存、诊断运行时等）。
 mod optimize;
 /// 再导出 Optimize 入口、会话服务、计划摘要与代价查询等公共 API。

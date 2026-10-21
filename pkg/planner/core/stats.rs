@@ -20,6 +20,7 @@
 // Values）表示列或分组的不同值个数，用于基数估计。
 
 use crate::{PlanKind, PlanNode};
+use planctx_dependency::MLogCommitTSEstimation;
 
 /// 算子输出的统计摘要：行数、列 NDV 与分组 NDV。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -139,4 +140,139 @@ pub fn deriveStatsByFilter(source: &mut DataSourceStats, conditions: usize) -> S
     source.selectivity = 0.8_f64.powi(conditions as i32);
     source.stats.row_count = source.table_rows * source.selectivity;
     source.stats.clone()
+}
+
+/// Comparison operators accepted for the mlog commit-ts window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MLogFilterOp {
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+}
+
+/// One normalized scalar predicate involving `_tidb_commit_ts`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MLogFilterBound {
+    pub column_on_left: bool,
+    pub op: MLogFilterOp,
+    pub value: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MLogCommitTSFilterWindow {
+    pub lower_tso: u64,
+    pub has_lower: bool,
+    pub upper_tso: u64,
+    pub has_upper: bool,
+}
+
+fn reverse_filter_op(op: MLogFilterOp) -> MLogFilterOp {
+    match op {
+        MLogFilterOp::Greater => MLogFilterOp::Less,
+        MLogFilterOp::GreaterOrEqual => MLogFilterOp::LessOrEqual,
+        MLogFilterOp::Less => MLogFilterOp::Greater,
+        MLogFilterOp::LessOrEqual => MLogFilterOp::GreaterOrEqual,
+    }
+}
+
+/// Normalize an inclusive SQL lower bound to the previous physical
+/// millisecond because selectivity models the interval as `(lower, upper]`.
+pub fn NormalizeMLogCommitTSInclusiveLower(value: u64) -> u64 {
+    let physical = value >> 18;
+    if physical == 0 {
+        value
+    } else {
+        (physical - 1) << 18
+    }
+}
+
+impl MLogCommitTSFilterWindow {
+    pub fn AddBound(&mut self, bound: MLogFilterBound) {
+        let op = if bound.column_on_left {
+            bound.op
+        } else {
+            reverse_filter_op(bound.op)
+        };
+        let value = if op == MLogFilterOp::GreaterOrEqual {
+            NormalizeMLogCommitTSInclusiveLower(bound.value)
+        } else {
+            bound.value
+        };
+        match op {
+            MLogFilterOp::Greater | MLogFilterOp::GreaterOrEqual => {
+                if !self.has_lower || value > self.lower_tso {
+                    self.lower_tso = value;
+                    self.has_lower = true;
+                }
+            }
+            MLogFilterOp::Less | MLogFilterOp::LessOrEqual => {
+                if !self.has_upper || value < self.upper_tso {
+                    self.upper_tso = value;
+                    self.has_upper = true;
+                }
+            }
+        }
+    }
+}
+
+/// Estimate the intersection between an mlog predicate and the retained
+/// commit-ts window.  A missing explicit retained lower bound falls back to
+/// the mlog table UpdateTS but cannot prove an empty range on its own.
+pub fn EstimateMLogCommitTSSelectivity(
+    estimation: &MLogCommitTSEstimation,
+    table_update_tso: u64,
+    filter: MLogCommitTSFilterWindow,
+) -> Option<f64> {
+    if estimation.RetainedUpperTSO == 0 {
+        return None;
+    }
+    let retained_lower = if estimation.RetainedLowerTSO == 0 {
+        table_update_tso
+    } else {
+        estimation.RetainedLowerTSO
+    };
+    if retained_lower == 0 {
+        return None;
+    }
+    let lower_from_fallback = estimation.RetainedLowerTSO == 0;
+    let filter_lower = if filter.has_lower {
+        retained_lower.max(filter.lower_tso)
+    } else {
+        retained_lower
+    };
+    let filter_upper = if filter.has_upper {
+        estimation.RetainedUpperTSO.min(filter.upper_tso)
+    } else {
+        estimation.RetainedUpperTSO
+    };
+    if filter_lower >= filter_upper {
+        if lower_from_fallback && (!filter.has_lower || filter.lower_tso <= retained_lower) {
+            return None;
+        }
+        return Some(0.0);
+    }
+    let retained_duration =
+        (estimation.RetainedUpperTSO >> 18).saturating_sub(retained_lower >> 18);
+    let filter_duration = (filter_upper >> 18).saturating_sub(filter_lower >> 18);
+    if retained_duration == 0 || filter_duration == 0 {
+        return None;
+    }
+    Some((filter_duration as f64 / retained_duration as f64).clamp(0.0, 1.0))
+}
+
+/// Apply the mlog window selectivity before remaining generic conditions.
+pub fn DeriveMLogStatsByFilter(
+    table_rows: f64,
+    remaining_conditions: usize,
+    estimation: &MLogCommitTSEstimation,
+    table_update_tso: u64,
+    filter: MLogCommitTSFilterWindow,
+) -> Option<StatsInfo> {
+    let mlog_selectivity = EstimateMLogCommitTSSelectivity(estimation, table_update_tso, filter)?;
+    let selectivity = mlog_selectivity * 0.8_f64.powi(remaining_conditions as i32);
+    Some(StatsInfo {
+        row_count: table_rows * selectivity,
+        ..Default::default()
+    })
 }

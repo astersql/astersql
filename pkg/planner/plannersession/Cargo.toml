@@ -11,9 +11,11 @@ path = "lib.rs"
 go-package = "pkg/planner/plannersession"
 legacy-tasks = ["task-892"]
 
+[dependencies]
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../planctx" }
+
 [target.'cfg(any())'.dependencies]
 "astersql-expression-exprctx" = { package = "astersql-expression-exprctx", path = "../../expression/exprctx" }
-"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../planctx" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
 "astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../sessiontxn" }
 "astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }

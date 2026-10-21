@@ -158,6 +158,8 @@ pub enum PlanKind {
     FKCheck,
     FKCascade,
     ScalarSubQuery,
+    MViewDeltaMerge,
+    MViewCompleteDeltaApply,
     Generic(String),
 }
 
@@ -212,6 +214,8 @@ impl PlanKind {
             Self::FKCheck => "FKCheck",
             Self::FKCascade => "FKCascade",
             Self::ScalarSubQuery => "ScalarSubQuery",
+            Self::MViewDeltaMerge => "MViewDeltaMerge",
+            Self::MViewCompleteDeltaApply => "MViewCompleteDeltaApply",
             Self::Generic(name) => name,
         }
     }
@@ -276,6 +280,180 @@ impl PlanNode {
             PlanKind::DataSource { .. } | PlanKind::Join { .. }
         )
     }
+}
+
+/// Aggregate kinds supported by incremental materialized-view maintenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MViewAggKind {
+    CountStar,
+    Count,
+    Sum,
+    Min,
+    Max,
+}
+
+/// One aggregate output and the merge-source offsets it depends on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MViewAggInfo {
+    pub kind: MViewAggKind,
+    pub mv_offset: usize,
+    pub arg_col_name: String,
+    pub arg_not_null: bool,
+    pub dependencies: Vec<usize>,
+}
+
+impl MViewAggInfo {
+    fn display_name(&self) -> String {
+        match self.kind {
+            MViewAggKind::CountStar => "count(*)".to_owned(),
+            MViewAggKind::Count => format!("count({})", self.arg_col_name),
+            MViewAggKind::Sum => format!("sum({})", self.arg_col_name),
+            MViewAggKind::Min => format!("min({})", self.arg_col_name),
+            MViewAggKind::Max => format!("max({})", self.arg_col_name),
+        }
+    }
+}
+
+/// Snapshot attached to the MIN/MAX full-recompute lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DataReaderSnapshot {
+    pub ts: u64,
+}
+
+/// Physical FAST-refresh merge operator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MViewDeltaMerge {
+    pub source: PlanNode,
+    pub full_update_inner_source: Option<PlanNode>,
+    pub full_update_inner_column_count: usize,
+    pub full_update_index_ranges: Vec<Vec<String>>,
+    pub full_update_key_off_to_index_off: Vec<usize>,
+    pub full_update_key_result_col_indexes: Vec<usize>,
+    pub full_update_output_mv_offsets: Vec<usize>,
+    pub full_update_snapshot: Option<DataReaderSnapshot>,
+    pub mv_table_id: i64,
+    pub base_table_id: i64,
+    pub mlog_table_id: i64,
+    pub mv_column_count: usize,
+    pub delta_column_count: usize,
+    pub mv_table_pk_cols: Vec<usize>,
+    pub group_key_mv_offsets: Vec<usize>,
+    pub count_star_mv_offset: usize,
+    pub agg_infos: Vec<MViewAggInfo>,
+}
+
+impl MViewDeltaMerge {
+    /// Aggregate dependency layout and optional full-update strategy shown by EXPLAIN.
+    pub fn ExplainInfo(&self) -> String {
+        let dependencies = self
+            .agg_infos
+            .iter()
+            .map(|info| {
+                let offsets = info
+                    .dependencies
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{}@{}->[{}]", info.display_name(), info.mv_offset, offsets)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut result = format!("agg_deps:[{dependencies}]");
+        if self.full_update_inner_source.is_some() {
+            result.push_str(", full_update:index_lookup");
+        }
+        result
+    }
+
+    /// Convert the executor-facing plan data into the generic physical plan tree.
+    pub fn IntoPlanNode(self, id: i32) -> PlanNode {
+        let info = self.ExplainInfo();
+        let mut children = vec![self.source];
+        if let Some(full_update) = self.full_update_inner_source {
+            children.push(full_update);
+        }
+        let mut node = PlanNode::New(id, PlanKind::MViewDeltaMerge, children);
+        node.operator_info = info;
+        node
+    }
+}
+
+/// Physical COMPLETE DELTA APPLY sink.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MViewCompleteDeltaApply {
+    pub source: PlanNode,
+    pub mv_table_id: i64,
+    pub mv_column_count: usize,
+    pub op_col_offset: usize,
+    pub marker_mv_offset: usize,
+    pub group_key_mv_offsets: Vec<usize>,
+    pub current_handle_cols: Vec<usize>,
+    pub current_row_input_col_ids: Vec<usize>,
+    pub recomputed_row_input_col_ids: Vec<usize>,
+}
+
+impl MViewCompleteDeltaApply {
+    /// Row-image offsets consumed by the delta-apply executor.
+    pub fn ExplainInfo(&self) -> String {
+        let format_offsets = |values: &[usize]| {
+            format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        let current_group_keys = self
+            .group_key_mv_offsets
+            .iter()
+            .map(|offset| self.current_row_input_col_ids[*offset])
+            .collect::<Vec<_>>();
+        let recomputed_group_keys = self
+            .group_key_mv_offsets
+            .iter()
+            .map(|offset| self.recomputed_row_input_col_ids[*offset])
+            .collect::<Vec<_>>();
+        format!(
+            "op_offset:{}, current_marker_offset:{}, recomputed_marker_offset:{}, current_group_keys_offset:{}, recomputed_group_keys_offset:{}, current_handle_offset:{}, current_row_offset:{}, recomputed_row_offset:{}",
+            self.op_col_offset,
+            self.current_row_input_col_ids[self.marker_mv_offset],
+            self.recomputed_row_input_col_ids[self.marker_mv_offset],
+            format_offsets(&current_group_keys),
+            format_offsets(&recomputed_group_keys),
+            format_offsets(&self.current_handle_cols),
+            format_offsets(&self.current_row_input_col_ids),
+            format_offsets(&self.recomputed_row_input_col_ids),
+        )
+    }
+
+    pub fn IntoPlanNode(self, id: i32) -> PlanNode {
+        let info = self.ExplainInfo();
+        let mut node = PlanNode::New(id, PlanKind::MViewCompleteDeltaApply, vec![self.source]);
+        node.operator_info = info;
+        node
+    }
+}
+
+/// User-visible REFRESH MATERIALIZED VIEW plan and its observe variants.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshMaterializedView {
+    pub database: String,
+    pub view: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DryRunRefreshMaterializedView {
+    pub statement: RefreshMaterializedView,
+    pub schema: SchemaProducer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileRefreshMaterializedView {
+    pub statement: RefreshMaterializedView,
+    pub schema: SchemaProducer,
 }
 
 /// 会话变量子集：事务、大小写、脏表等，供计划侧决策。

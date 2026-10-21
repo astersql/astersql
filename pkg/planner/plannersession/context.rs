@@ -94,6 +94,8 @@ pub struct PlanCtxExtended {
     nullRejectCheckExprCtx: NullRejectCheckExprContext,
     /// 只读用户变量名集合；None 表示未设置。
     readonlyUserVars: Option<HashMap<String, ()>>,
+    /// Scoped mlog estimation state used only while planning a FAST refresh.
+    mlogCommitTSEstimation: Option<astersql_planner_planctx::MLogCommitTSEstimation>,
 }
 
 /// 由会话上下文构造 PlanCtxExtended，并固定 null-reject 包装。
@@ -103,6 +105,7 @@ pub fn NewPlanCtxExtended(sctx: Arc<dyn SessionContext>) -> PlanCtxExtended {
         sctx,
         nullRejectCheckExprCtx: null_reject_check_expr_ctx,
         readonlyUserVars: None,
+        mlogCommitTSEstimation: None,
     }
 }
 
@@ -137,5 +140,28 @@ impl PlanCtxExtended {
     /// 清除只读用户变量映射。
     pub fn Reset(&mut self) {
         self.readonlyUserVars = None;
+        self.mlogCommitTSEstimation = None;
+    }
+}
+
+impl astersql_planner_planctx::MLogCommitTSEstimationContext for PlanCtxExtended {
+    fn GetMLogCommitTSEstimation(
+        &self,
+    ) -> Option<&astersql_planner_planctx::MLogCommitTSEstimation> {
+        self.mlogCommitTSEstimation.as_ref()
+    }
+
+    fn WithMLogCommitTSEstimation<T, F>(
+        &mut self,
+        estimation: astersql_planner_planctx::MLogCommitTSEstimation,
+        callback: F,
+    ) -> Result<T, astersql_planner_planctx::GoError>
+    where
+        F: FnOnce(&mut Self) -> Result<T, astersql_planner_planctx::GoError>,
+    {
+        let original = self.mlogCommitTSEstimation.replace(estimation);
+        let result = callback(self);
+        self.mlogCommitTSEstimation = original;
+        result
     }
 }

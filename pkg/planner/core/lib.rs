@@ -157,6 +157,8 @@ mod memtable_infoschema_extractor;
 mod memtable_predicate_extractor;
 #[cfg(test)]
 mod memtable_predicate_extractor_test;
+pub mod mview_refresh_builder;
+pub mod mview_refresh_lookup;
 mod optimizer;
 mod optimizer_runtime;
 mod pb_to_plan;
@@ -219,6 +221,8 @@ pub use initialize::*;
 pub use logical_plan_builder_runtime::{appendDynamicVisitInfo, resetCTECheckForSubQuery};
 pub use memtable_infoschema_extractor::*;
 pub use memtable_predicate_extractor::*;
+pub use mview_refresh_builder::*;
+pub use mview_refresh_lookup::*;
 pub use optimizer_runtime::{
     DoOptimize, InstallOptimizeAstNode, LogicalOptimizeForMpp, LogicalOptimizeForTest,
     MaxMemoryLimitForOverlongType, OptimizeAstNodeFn, PhysicalOptimizeForMpp,
@@ -248,6 +252,10 @@ pub use stringer::*;
 pub use telemetry::*;
 pub use trace::*;
 pub use util::*;
+
+#[cfg(test)]
+#[path = "casetest/mview/mv_refresh_test.rs"]
+mod mview_refresh_test;
 
 /// 规划器侧的简单表达式构建入口；安装工厂后再委托 expression 包。
 ///

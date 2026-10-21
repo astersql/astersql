@@ -83,6 +83,8 @@ fn test_plan_id_changed() {
         (TypeImportInto, 59),
         (TypeLocalIndexLookUp, 61),
         (TypeAnalyze, 64),
+        (TypeMViewDeltaMerge, 65),
+        (TypeMViewCompleteDeltaApply, 66),
     ];
 
     for (plan_type, expected) in test_cases {
@@ -91,9 +93,9 @@ fn test_plan_id_changed() {
 }
 
 #[test]
-/// 校验 ID 1..=64 的编码/解码往返一致。
+/// 校验 ID 1..=66 的编码/解码往返一致。
 fn test_reverse() {
-    for id in 1..=64 {
+    for id in 1..=66 {
         assert_eq!(TypeStringToPhysicalID(&PhysicalIDToTypeString(id)), id);
     }
 }
