@@ -208,6 +208,53 @@ fn scalar_functions_encode_signature_children_return_type_and_list_errors() {
 }
 
 #[test]
+fn unary_minus_is_pushable_to_tiflash_and_encodes_pb_signature() {
+    let integer_type = fts_to_like_kernel::FieldType::integer();
+    let capability_expression = fts_to_like_kernel::Expression::scalar(
+        "unaryminus",
+        fts_to_like_kernel::Signature::Generic("UnaryMinusInt".into()),
+        vec![fts_to_like_kernel::Expression::column(
+            2,
+            0,
+            integer_type.clone(),
+        )],
+        integer_type,
+    );
+    let pushdown_context = infer_pushdown_kernel::PushDownContext::new(false, None, None, 0);
+    assert!(infer_pushdown_kernel::can_expr_push_down(
+        &pushdown_context,
+        &capability_expression,
+        infer_pushdown_kernel::StoreType::TiFlash,
+        false,
+    ));
+
+    let context = exprstatic::NewExprContext(Vec::new());
+    let expression = NewFunctionBase(
+        &context,
+        ast::UnaryMinus,
+        *types::NewFieldType(mysql::TypeLonglong),
+        vec![Box::new(Column::new(
+            *types::NewFieldType(mysql::TypeLonglong),
+            2,
+            2,
+            0,
+        ))],
+    )
+    .unwrap();
+    let encoded = NewPBConverter(&MODERN_CLIENT, context.GetEvalCtx())
+        .ExprToPB(expression.as_ref())
+        .unwrap();
+
+    assert_eq!(encoded.get_tp(), tipb::ExprType::ScalarFunc);
+    assert_eq!(encoded.get_sig(), tipb::ScalarFuncSig::UnaryMinusInt);
+    assert_eq!(encoded.get_children().len(), 1);
+    assert_eq!(
+        encoded.get_children()[0].get_tp(),
+        tipb::ExprType::ColumnRef
+    );
+}
+
+#[test]
 fn group_and_sort_items_preserve_expression_and_direction() {
     let context = exprstatic::NewExprContext(Vec::new());
     let eval = context.GetEvalCtx();

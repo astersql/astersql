@@ -5978,6 +5978,11 @@ pub mod formal_registry {
                 types::ETJson => tipb::ScalarFuncSig::UnaryNotJson as i32,
                 _ => tipb::ScalarFuncSig::UnaryNotReal as i32,
             },
+            CoreBuiltinKind::UnaryMinus(types::ETInt) => tipb::ScalarFuncSig::UnaryMinusInt as i32,
+            CoreBuiltinKind::UnaryMinus(types::ETDecimal) => {
+                tipb::ScalarFuncSig::UnaryMinusDecimal as i32
+            }
+            CoreBuiltinKind::UnaryMinus(_) => tipb::ScalarFuncSig::UnaryMinusReal as i32,
             CoreBuiltinKind::Arithmetic("plus", types::ETInt) => {
                 tipb::ScalarFuncSig::PlusInt as i32
             }

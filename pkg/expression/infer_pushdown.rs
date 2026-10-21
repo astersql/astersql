@@ -459,6 +459,7 @@ const TIFLASH_FUNCTIONS: &[&str] = &[
     "and",
     "not",
     "bitneg",
+    "unaryminus",
     "xor",
     "rightshift",
     "leftshift",
