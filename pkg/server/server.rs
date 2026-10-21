@@ -918,7 +918,7 @@ impl Server {
 
     /// 对外报告的状态服务地址字符串；未开启 report_status 则 None。
     pub fn status_server_addr(&self) -> Option<String> {
-        if !self.config.status.report_status {
+        if !self.full_status_server_enabled() {
             return None;
         }
         Some(
@@ -928,6 +928,11 @@ impl Server {
                     format!("{}:{}", self.config.status.host, self.config.status.port)
                 }),
         )
+    }
+
+    /// Reports whether cluster HTTP APIs and the advertised status identity are available.
+    pub(crate) fn full_status_server_enabled(&self) -> bool {
+        self.config.status.report_status && !astersql_config::diagnosticmode::Enabled()
     }
 
     /// 对全局 capability 做按位异或翻转。
@@ -1112,7 +1117,7 @@ impl Server {
             return Err(error);
         }
         let tls = &self.config.status;
-        if tls.report_status {
+        if self.full_status_server_enabled() {
             *self.advertised_status_check.lock().unwrap() =
                 astersql_server_internal::advertisedstatus::start(
                     astersql_server_internal::advertisedstatus::Options {

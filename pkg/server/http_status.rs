@@ -28,6 +28,7 @@ use std::time::Duration;
 use crate::extract::ExtractTaskServeHandler;
 use crate::http_handler::{HandlerKind, TikvHandlerTool};
 use crate::server::Server;
+use astersql_config::diagnosticmode;
 
 /// 默认 status HTTP 端口。
 pub const DEFAULT_STATUS_PORT: u16 = 10_080;
@@ -234,6 +235,19 @@ impl Router {
             .push(Route {
                 pattern: pattern.into(),
                 method: None,
+                handler,
+                profiling: true,
+            });
+    }
+
+    /// Register a method-constrained profiling route.
+    fn add_profiling_method(&self, method: Method, pattern: &str, handler: Handler) {
+        self.routes
+            .lock()
+            .expect("router lock poisoned")
+            .push(Route {
+                pattern: pattern.into(),
+                method: Some(method),
                 handler,
                 profiling: true,
             });
@@ -2309,6 +2323,35 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
     router
 }
 
+/// Builds the diagnostic-mode allowlist without exposing cluster management APIs.
+fn build_diagnostic_router(server: Arc<Server>) -> Router {
+    let router = Router::default();
+    let method_not_allowed: Handler = Arc::new(|_| Response::text(405, "Method Not Allowed"));
+
+    let status_server = Arc::clone(&server);
+    router.add_method(
+        Method::Get,
+        "/status",
+        Arc::new(move |_| status_response(&status_server)),
+    );
+    router.add("/status", Arc::clone(&method_not_allowed));
+
+    router.add_method(Method::Get, "/metrics", Arc::new(|_| metrics_response()));
+    router.add("/metrics", Arc::clone(&method_not_allowed));
+
+    for path in [
+        "/debug/pprof/cmdline",
+        "/debug/pprof/profile",
+        "/debug/pprof/symbol",
+        "/debug/pprof/trace",
+        "/debug/pprof/*",
+    ] {
+        router.add_profiling_method(Method::Get, path, Arc::new(debug_pprof_response));
+        router.add(path, Arc::clone(&method_not_allowed));
+    }
+    router
+}
+
 impl Server {
     /// 启动 status HTTP 监听与工作线程；report_status 关闭时直接返回。
     pub fn start_status_http(self: &Arc<Self>) -> Result<(), String> {
@@ -2318,8 +2361,9 @@ impl Server {
         if self.status_listener_addr().is_some() {
             return Ok(());
         }
+        let diagnostic = diagnosticmode::Enabled();
         let status = &self.config().status;
-        let tls_config = build_status_tls_config(status)?;
+        let tls_config = build_status_tls_config(status, diagnostic)?;
         // port 为 0 时让 OS 分配临时端口。
         let port = if status.port == 0 { 0 } else { status.port };
         let listener = TcpListener::bind((status.host.as_str(), port))
@@ -2332,7 +2376,11 @@ impl Server {
             .map_err(|error| format!("clone status listener: {error}"))?;
         self.set_status_listener(listener)?;
         let server = Arc::clone(self);
-        let router = build_status_router(Arc::clone(self));
+        let router = if diagnostic {
+            build_diagnostic_router(Arc::clone(self))
+        } else {
+            build_status_router(Arc::clone(self))
+        };
         let worker = thread::Builder::new()
             .name("astersql-status-http".into())
             .spawn(move || serve_status_loop(server, worker_listener, router, tls_config))
@@ -2344,6 +2392,7 @@ impl Server {
 
 fn build_status_tls_config(
     status: &crate::server::StatusConfig,
+    diagnostic: bool,
 ) -> Result<Option<Arc<rustls::ServerConfig>>, String> {
     let certificate = status.tls_certificate.as_deref().unwrap_or_default();
     let key = status.tls_key.as_deref().unwrap_or_default();
@@ -2373,12 +2422,17 @@ fn build_status_tls_config(
             status.tls_verify_common_names.clone(),
         ));
     }
-    astersql_util::security::NewTLSConfig(options)
+    let mut config = astersql_util::security::NewTLSConfig(options)
         .map_err(|error| format!("load status TLS configuration: {error}"))?
         .ok_or_else(|| "status TLS configuration is empty".to_owned())?
         .server_config()
-        .map(Some)
-        .map_err(|error| format!("build status TLS configuration: {error}"))
+        .map_err(|error| format!("build status TLS configuration: {error}"))?;
+    if diagnostic {
+        Arc::get_mut(&mut config)
+            .expect("new status TLS configuration must be uniquely owned")
+            .alpn_protocols = vec![b"http/1.1".to_vec()];
+    }
+    Ok(Some(config))
 }
 
 /// Accept 循环：健康且未强制关闭时处理连接；WouldBlock 则短暂休眠。

@@ -76,6 +76,9 @@ mod conn_stmt_test;
 #[path = "conn_test.rs"]
 mod conn_test;
 #[cfg(test)]
+#[path = "diagnostic_http_test.rs"]
+mod diagnostic_http_test;
+#[cfg(test)]
 #[path = "driver_test.rs"]
 mod driver_test;
 #[cfg(test)]
