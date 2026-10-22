@@ -36,6 +36,10 @@
 
 ## 执行流程
 
+冻结增量中，`checkIndexJoinInnerTaskWithAgg` 改为接收 `&[Expression]`，仅把 `function_count == 0` 且 `column` 非空的直接 GROUP BY 列纳入集合；运行时内表 join key 先按 `data_source_schema` 过滤，再检查是否为该集合的子集。表达式引用列（例如 `mod(col)`）不能证明按探测批次聚合安全。
+
+新增 `admitIndexJoinPropForAgg` 克隆 runtime，只在副本的 `other_conditions` 中保留无列条件、外表列条件和直接分组的内表列条件，其他字段保持原值。它不会把被剔除的条件自动插入聚合上层；调用者必须负责保留这些条件的最终求值。此轻量过滤只查看 `Expression.column`，不遍历完整表达式树。冻结范围内两函数的直接使用证据为独立测试，不能据此声称已接入完整生产候选枚举链。
+
 `exhaustPhysicalPlans` 首先匹配逻辑算子。普通一元算子产生一个子属性与父属性相同的 `PlanAlternative`；Mock 候选以零子节点包装。TopN/Limit 生成两组计划：下推形态把 `offset` 归零并把 `count` 饱和加为 `offset + count`，本地形态保留原值。Aggregation 为同一分组列同时产生 HashAgg 与 StreamAgg，并携带各自 Hint 偏好。
 
 Join 主流程在 `exhaustPhysicalPlans4LogicalJoin` 中完成：
@@ -99,13 +103,12 @@ Rust 当前是摘要化移植而非逐字段等价实现。Go `exhaustPhysicalPl
 
 调整 Index Join 时，优先修改 `enumerateIndexJoinByOuterIdx`、`shouldPruneIndexJoinByScanRatio`、内表准入和 DataSource 转换这一完整链条；统计公式或阈值变化必须对照 Go 同名函数，避免 Rust/Go 选择漂移。路径标签变化还要检查 `find_best_task.rs`、`task.rs` 的消费者。MPP 变化则应从 `canTryMPPJoinForJoin` 到 `preferMppBCJ`、`checkChildFitBC`、`tryToGetMppHashJoin` 成组检查。
 
-测试必须放在独立文件，优先扩展同目录 `pkg/planner/core/exhaust_physical_plans_test.rs`，不要把 `#[cfg(test)]` 测试嵌入本源文件。当前该测试文件直接覆盖的本模块行为只有两个 `getHashJoins` 场景；新增剪枝、MPP、Hint、Apply、Limit/TopN 或路径构造行为时应补相应定向测试，并与 `pkg/planner/core/exhaust_physical_plans_test.go` 及 Go 同名函数的边界保持一致。若未来把顶层入口接入生产 Rust 规划链，还应增加从真实逻辑计划到候选/最优任务的集成级验证。
+测试必须放在独立文件，优先扩展同目录 `pkg/planner/core/exhaust_physical_plans_test.rs`，不要把 `#[cfg(test)]` 测试嵌入本源文件。除既有 `getHashJoins` 场景外，冻结版本还有独立的直接分组列与聚合 runtime 准入回归；新增剪枝、MPP、Hint、Apply、Limit/TopN 或路径构造行为时应补相应定向测试，并与 `pkg/planner/core/exhaust_physical_plans_test.go` 及 Go 同名函数的边界保持一致。若未来把顶层入口接入生产 Rust 规划链，还应增加从真实逻辑计划到候选/最优任务的集成级验证。
 
 ## 验证依据
 
-- 源码全貌：RustCodeGraph `node --file pkg/planner/core/exhaust_physical_plans.rs` 分段读取 1–1099 行；确认常量、类型、函数、分派、剪枝、Hint、MPP 和 Apply/Limit 边界。
-- 符号与调用图：RustCodeGraph `explore "exhaust_physical_plans.rs ExhaustPhysicalPlans physical plan enumeration"`，并对 `exhaustPhysicalPlans`、`exhaustPhysicalPlans4LogicalJoin`、`enumerateIndexJoinByOuterIdx`、`tryToGetMppHashJoin`、`buildDataSource2IndexScanByIndexJoinProp` 执行 `callers`/`callees`。同名 Go/Rust 符号造成 caller 输出不完整，因此再用精确 `rg` 核对生产引用。
-- crate 与模块边界：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- Rust 上游与测试：`pkg/planner/core/find_best_task.rs`、`pkg/planner/core/exhaust_physical_plans_test.rs`；全仓测试符号搜索确认只有该独立测试中的两个测试直接调用本模块 API，其余测试主体属于 `index_join_path`。
-- Go 语义对照：`pkg/planner/core/exhaust_physical_plans.go`、`pkg/planner/core/exhaust_physical_plans_test.go`，重点复核总分派、扫描比例剪枝、Join/Apply、MPP、Hint 与 Limit/TopN 下推。
-- 人工结论：本文件为何存在、候选如何生成和筛选、哪些状态被修改、错误如何表达、尚未接入何处以及安全扩展时需同步哪些独立测试，均可由上述符号和文件反查；未把 Go 的完整生产行为误写为 Rust 现状。
+本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/exhaust_physical_plans.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
+
+`direct_group_by_index_join_test.rs::direct_group_by_index_join` 验证直接列允许、表达式分组拒绝；`index_join_aggregation_test.rs::index_join_aggregation` 验证保留分组列/外表列、剔除非分组内表列与表达式分组列，并保持 join key 和平均行数。测试中的 hash/stream 字符串循环调用相同 helper，不是完整两类物理计划集成验证。
+
+RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

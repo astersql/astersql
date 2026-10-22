@@ -32,6 +32,10 @@
 
 ## 执行流程
 
+冻结增量在轻量 `Update` 中增加 `is_multi_table: bool`，标识 UPDATE 的 join 源可能重复匹配同一目标行；派生默认值为 false。它与 trait 版 `physical_delete::Update::IsMultiTable` 是不同结构中的对应标志，不能混用或从字段存在推断执行器已经实现去重。轻量缓存路径 `plan_clone_generated.rs::CloneForPlanCache for Update` 在无外键动作时使用 `self.clone()`，因而保留该布尔值；有外键动作仍拒绝克隆。
+
+该字段对应 Go `physical_common_plans.go::Update.IsMultiTable` 的意图，不代表新增完整多表列区间、分区路由或目标行身份模型。
+
 公共计划树的典型流程是：上游模块先产生叶子或子树，再根据物理属性包裹节点。例如 `enforce::enforce_property()` 在需要排序时把原计划作为唯一孩子包入 `PhysicalKind::Sort`；`enforce_exchanger()` 依次包入 `ExchangeSender` 和 `ExchangeReceiver`。`task_base::MppTask::convert_to_root_task()` 用同样的发送/接收边界把 MPP 计划收敛到 Root，并在需要时再包一层 `Selection`；`CopTask::convert_to_root_task()` 根据 index/table 子树组合 Reader，再按需添加 `Projection` 和 `Selection`。这些调用点直接读取或复制 `schema`、`stats`，并构造 `required_properties`。
 
 表达式校验从 `PhysicalExpr::resolve_indices()` 开始：列或相关列必须能在 schema ID 列表中找到；标量函数递归处理参数；常量和 DEFAULT 不依赖输入列。`Insert::resolve_indices()` 选择 `select_plan.schema`，无 SELECT 时使用空 schema，随后依次检查 SET、ON DUPLICATE、生成列和生成列重复键表达式；第一个错误通过 `try_for_each` 立即返回。`Update::resolve_indices()` 对 `assignments` 与 `ordered_list` 采用相同的短路流程。
@@ -98,10 +102,8 @@ Go 同路径文件的主体是 `InsertGeneratedColumns`、`Insert`、`Update`、
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`physical_common_plans.rs` 被完整读取为 662 行、75 个符号。精确查询确认 `PhysicalPlanNode` 位于该文件，并定位到 CTE、Sequence、Shuffle、Index Join/Lookup 等构造者；精确 `callers/callees` 无输出的限制已在“依赖与调用关系”说明。
-- 目标实现：`pkg/planner/core/operator/physicalop/physical_common_plans.rs`，重点核对可编译区第 313—662 行；第 16—311 行仅作迁移目标对照。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 和 `pkg/planner/core/operator/physicalop/lib.rs`；前者确认包名、依赖及 Go 包元数据，后者确认公共模块声明和测试模块接线。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_common_plans.go`，核对 DML 字段、内存估算、索引解析、表区间查找、DEFAULT 与重复键处理。
-- 直接调用证据：`enforce.rs`、`task_base.rs`、`physical_cte.rs`、`physical_cte_table.rs`、`physical_sequence.rs`、`physical_shuffle.rs`、`physical_expand.rs`、`physical_lock.rs`、`physical_indexlookup.rs`、`physical_index_hash_join.rs`、`physical_index_merge_join.rs`、`tiflash_predicate_push_down.rs` 和 `plan_clone_generated.rs`。
-- 测试证据：`physical_common_plans_test.rs` 验证裸 DEFAULT；`physical_semantic_aster_unit_test.rs` 验证 Go 风格区间查找和带名 DEFAULT；相邻消费者测试通过精确符号搜索确认覆盖计划树构造。按任务约束未运行 Cargo。
-- 结构验证要求：目标文档必须存在，并且固定的十一个二级标题各出现一次；交付时使用任务文件给定的 `test`/`rg -c` 命令验证。
+本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/physical_common_plans.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
+
+`physical_common_plans_test.rs` 和 `physical_semantic_aster_unit_test.rs` 提供既有轻量模型证据；本次字段通过 `Default`/`Clone` 和 `plan_clone_generated.rs` 静态复核，未发现针对轻量 is_multi_table 的专门执行测试，trait 版测试不能替代该验证。
+
+RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

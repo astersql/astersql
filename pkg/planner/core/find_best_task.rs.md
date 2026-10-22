@@ -37,6 +37,10 @@
 
 ## 执行流程
 
+冻结增量为 `DataSource` 增加 `range_max_count: i64`，手写 `Default` 从 `vardef_dependency::DefTiDBOptRangeMaxCount` 取默认值。`compareCandidates` 将它传入三参数 `compareEqOrIn`：任一候选是 IndexMerge 时返回 0；等值/IN 数较多的一方，仅当阈值大于 0 且自身 `ranges.len()` 严格大于阈值时取消该比较优势。恰好等于阈值仍可比较，较弱方超限不抹去较强方优势，阈值为 0（实现上也包括负值）不限制比较。
+
+该参数只影响 skyline 等值/IN 偏好，既不截断 range 构造，也不直接改写代价；仍需结合其他候选比较维度选路。与 Go `compareEqOrIn`/`RangeMaxCount` 对应，不能描述成扫描范围硬上限。
+
 普通逻辑计划的主流程如下：
 
 1. `findBestTask` 用 `property_key(prop, model_version)` 查 `LogicalPlan.cache`。键包含任务类型、硬/提示排序、期望行数、enforcer、MPP 分区、部分有序、Index Join、向量 TopK 和代价模型版本，防止不同属性错误复用。
@@ -125,13 +129,8 @@ Rust 独立测试与 Go `find_best_task_test.go` 对齐了三类核心回归：�
 
 ## 验证依据
 
-本说明基于以下直接证据：
+本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/find_best_task.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
 
-- 目标源码：`pkg/planner/core/find_best_task.rs`（1–1736 行），包括全部类型、函数、impl 和文件内调用。
-- crate 与装配：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件和 4415 个 Go 文件；`node --file` 读取目标源码；`query findBestTask`、`query skylinePruning`、`query convertToTableScan` 定位 Rust/Go 同名符号；目标文件关系报告列出四个使用文件。关键符号的 `callers`/`callees` 查询未返回明细，此限制已在调用关系章节披露。
-- Rust 上游与测试：`pkg/planner/core/index_join_path.rs`、`pkg/planner/core/index_join_path_test.rs`、`pkg/planner/core/find_best_task_test.rs`；另以全仓调用搜索确认 `findBestTask` 的直接 Rust 调用范围。
-- Go 对照：`pkg/planner/core/find_best_task.go` 的 `findBestTask`、skyline/IndexMerge、`isPointGetPath`、`convertToTableScan` 等段落，以及 `pkg/planner/core/find_best_task_test.go`。
-- 下游接口：源码 import 指向 `pkg/planner/core/task.rs`、`plan_cost_ver1.rs`、`plan_cost_ver2.rs`；RustCodeGraph 查询确认 `GetPlanCost`/计划挂接相关符号存在。
+`find_best_task_test.rs::range_count_threshold_limits_equality_in_preference` 覆盖禁用、阈值下/等于/上、双侧超限、仅弱方超限、同等条件数、单 range、反向比较、IndexMerge 与 skyline 参数传递。
 
-人工复核结论：本文区分了本地精简模型与 canonical planner 接线，覆盖了文件存在原因、主流程、数据/缓存、边界、资源生命周期、Go 差异及安全扩展位置；没有把未返回的调用图边或 Go 的完整能力描述成当前 Rust 已支持。
+RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

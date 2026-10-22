@@ -27,6 +27,10 @@
 
 ## 执行流程
 
+冻结增量在 trait 版 `Update` 增加 `IsMultiTable`，`New` 初始化为 false，`base::Plan::clone_for_plan_cache` 显式复制该标志。`planbuilder_runtime.rs::buildUpdate` 按语句 `TableRefs.Right.is_some()` 识别 join 源并设置标志，随后解析赋值索引；这表示同一目标行可能重复匹配，不是 DELETE 的目标表数量标志。
+
+`Delete` 已有的 `IsMultiTable` 与 `TblColPosInfo::{TblID, HandleCols}` 分别保存语句形态和目标表/行身份；分区场景的 `IndexesRowLayout == None` 表示有意跳过裁剪，不能解释成没有索引或没有待删行。索引布局按索引 ID 查找，不以列表下标代替身份。本次固定差异只新增 UPDATE 标志及其初始化/克隆，不扩写分区删除实现。
+
 DELETE 主链由现有代码证明如下：
 
 1. `planbuilder_runtime.rs::buildDelete` 从语句和逻辑计划收集目标表、公共列、handle 与索引元数据，构造每表的 `TblColPosInfo`。非分区表会建立 `DeleteIndexRowLayout`；分区场景保留 `None`。
@@ -94,8 +98,8 @@ UPDATE 主链相似：`buildUpdate` 重写赋值并优化保留投影的子计�
 
 ## 验证依据
 
-已读取并交叉核对以下路径：目标源码 `pkg/planner/core/operator/physicalop/physical_delete.rs`；crate 声明与模块入口 `Cargo.toml`、`lib.rs`；直接 Rust 测试 `physical_delete_test.rs`；缓存实现与测试 `cache_snapshot.rs`、`cache_snapshot_test.rs`；构建入口 `pkg/planner/core/planbuilder_runtime.rs`；计划遍历 `pkg/planner/core/flat_plan.rs`；执行器抽象 `pkg/executor/builder.rs`；Go 对照 `physical_common_plans.go`、`plan_clone_generated.go`。
+本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/physical_delete.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
 
-RustCodeGraph 状态显示索引包含目标文件（目标文件 65 个符号）；执行过文件查询、文件节点读取、`ResolveIndices`/`FindTblIdx`/`MemoryUsage`/`HasForeignKeyPlans` 精确查询，以及 callers/callees 尝试。调用图未给出足以消歧的跨文件边，因此用 `rg` 路径限定搜索和相邻源码读取补齐，并明确保留执行器具体适配未验证这一限制。
+`logical_plans_test.rs::multi_table_update_partition_planner_marks_join_source` 检查 join UPDATE 标志；`operator/physicalop/cache_snapshot_test.rs` 的 DML 往返用例设置并断言恢复后的 Update.IsMultiTable，同时保留 Delete.IsMultiTable/IgnoreErr 与布局。`physical_delete_test.rs` 保留区间查找测试。
 
-直接测试 `physical_delete_test.rs` 证明 `FindTblIdx` 的严格起点边界、空切片、首起点前序号和 `Cmp` 只比较 `Start`；`cache_snapshot_test.rs` 证明 Update 赋值与 Delete 布局可往返、索引 ID 可查询，并证明带外键检查/级联的 DML 计划被缓存快照拒绝。本任务是纯文档分析，按计划不运行 Cargo；交付结构校验要求本文恰有上述 11 个固定二级章节。
+RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。
