@@ -11,9 +11,11 @@
 1. `collect_ttl_schedules` 从一个 `InfoSchema` 快照枚举已启用 TTL 的表，解析作业周期，并将每个分区展开为独立调度单元。
 2. `physical_ttl_tables` 将单个 `TableInfo` 转换为一个或多个 worker `PhysicalTable`，包括物理 ID、键列、TTL 列、定义版本与过期偏移。
 3. `split_ttl_scan_ranges` 把标准表元数据映射为 `astersql-ttl-cache` 的扫描模型，优先在兼容性允许时使用 TTL 索引切分，否则使用主键切分或安全退化到全范围。
-4. `ttl_index_scan_version_check` 在滚动升级期间守护新的索引扫描任务格式：只有所有实例的 version 和 git hash 一致时才允许创建。
+4. `ttl_index_scan_version_check` 在滚动升级期间守护新的索引扫描任务格式：只有参与比较的 RPC-serving 实例与本地 version 和 git hash 一致时才允许创建。
 
 ## 主要符号
+
+- `ttl_server_info`：`pub(super)` 转换 helper，保留 infosync 的 Version、GitHash、DisableRPC，设置 `assumed: false`；本地与集群 server info 均复用它。
 
 - `pub struct TtlScanRanges { ranges, index }`：扫描切分结果。`ranges` 是持久化到 TTL task 的范围；`index` 为 `Some(ScanIndex)` 时记录索引 ID、名称、列和唯一性，下游扫描据此选择索引路径。
 - `struct StorageRegions(Arc<StorageHandle>)` 与 `impl RegionProvider`：将 domain 存储接口 `TTLRegionRanges(start, end)` 适配为 cache splitter 需要的 `Vec<KeyRange>`；存储返回 `None` 时视为空列表。
@@ -61,6 +63,8 @@ RustCodeGraph 将本文件索引为 453 行，并解析出 `split_ttl_scan_range
 
 ## 错误处理与边界
 
+版本 gate 的集群比较会跳过 `assumed` 或 `disable_rpc` 实例，因此“所有实例一致”准确地说是与本地 build identity 比较的所有实际 RPC-serving 实例。只有被跳过的实例时，checker 判为无可验证服务器并回退主键扫描；不能让禁用 RPC 的诊断节点因不同版本阻断 TTL 索引任务。过滤和三态决策在 `pkg/ttl/ttlworker/job_version_checker.rs`，本文件只负责无损转换与加锁调用。
+
 - 发现层的 `SchemaTableInfos` 错误、`JobInterval` duration 解析错误、表转换错误都立即以 `String` 传播；不会跳过单个坏表后继续。
 - 无 TTL/已禁用 TTL/非 public 表是正常的空结果，不是错误。未支持的 interval unit、超出 `i64` 的时间、缺失 PK handle 列、缺失 public primary index 则是错误。
 - 切分前若 domain 中表、键列或 TTL 时间列已消失，返回带语义的错误，防止用过期 metadata 创建任务。
@@ -93,10 +97,11 @@ RustCodeGraph 将本文件索引为 453 行，并解析出 `split_ttl_scan_range
 
 ## 验证依据
 
-- 目标源码：`pkg/session/runtime/ttl_metadata.rs`，RustCodeGraph `node --file ... --offset 1 --limit 520` 返回完整 453 行及符号定义。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/ttl_metadata.rs` 与 `git show 2c944fb:pkg/session/runtime/ttl_metadata.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`pkg/session/runtime/ttl_metadata_test.rs::ttl_server_info_preserves_rpc_serving_state` 检查 DisableRPC、version、hash 与 assumed；`pkg/ttl/ttlworker/job_version_checker.rs` 核对跳过 RPC-disabled 实例及无可验证实例时回退。
 - crate/模块边界：`pkg/session/Cargo.toml` 和 `pkg/session/runtime.rs`。
 - Rust 上游与端到端证据：`pkg/session/runtime/ttl_timer.rs`、`pkg/session/runtime/ttl_runtime.rs`、`pkg/session/runtime/ttl_metadata_test.rs`、`pkg/session/runtime/ttl_runtime_test.rs` 和 `pkg/session/runtime/normal_ddl_create_table_test.rs`。`ttl_metadata_test.rs` 直接验证 canonical table 转换、1 天过期偏移、24 小时作业周期、禁用 TTL 过滤以及每分区 physical ID 展开；`ttl_runtime_test.rs` 验证 schedule 进入 timer/worker 及持久化范围被扫描/接管。
 - Go 对照：`pkg/ttl/cache/infoschema.go`、`pkg/ttl/cache/table.go`、`pkg/ttl/ttlworker/job_manager.go`、`pkg/ttl/ttlworker/job_version_checker.go`，以及相关 `split_test.go`、`table_test.go`、`job_manager_test.go`。
 - 版本门禁的 Rust 实现与测试：`pkg/ttl/ttlworker/job_version_checker.rs` 和 `pkg/ttl/ttlworker/job_version_checker_test.rs`。
-- RustCodeGraph 状态：索引包含 11,467 个文件（其中 7,032 个 Rust 文件）；`query` 能找到本文件四个核心函数，但针对所查函数的调用边为空，因此调用关系另用 `rg` 精确核对。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前通过任务指定的 11 节结构命令，并人工核对本文档可回答文件定位、运行方式与安全扩展点。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

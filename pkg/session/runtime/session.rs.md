@@ -16,6 +16,10 @@
 
 ## 主要符号
 
+- `ValidateDiagnosticBootstrap`：只读检查 KV bootstrap version 为正、SQL bootstrapped 标志为 True，且 `mysql.tidb` 版本存在并与 KV 一致；返回实际版本，不要求升级到当前版本。
+- `load_diagnostic_metadata_readers`：扫描既有权限表与 `mysql.bind_info`，向共享权限/绑定缓存装载查询所需状态。
+- `CanonicalBootstrapVariableRuntime::add_analyze_options_ndv_rate`：执行 `ALTER TABLE mysql.analyze_options ADD COLUMN IF NOT EXISTS ndv_rate DOUBLE NOT NULL DEFAULT -1`，由正常升级链调用。
+
 - `RuntimeTimeZone::parse`：接受 `SYSTEM`、IANA 时区和 `[-12:59,+14:00]` 的定长偏移；返回 `None` 表示非法输入。
 - `SessionWarning`：保存 MySQL 告警级别、错误码和消息；`from_error` 沿 error source 链保留 AsterSQL 错误码及全局变量错误码，否则退回通用 1105。
 - `SessionState` / `NamedPreparedStatement`：前者是执行路径的会话可变事实源，后者保存 text protocol PREPARE 的 SQL、数据库、计划版本、参数形状和事务上下文缓存信息。`SessionState::default` 给出兼容默认值，例如当前库 `test`、autocommit 开启、隔离级别 `REPEATABLE-READ`、leader read、动态分区裁剪及内建 schema 集合。
@@ -29,11 +33,15 @@
 
 ## 执行流程
 
-生产启动流程如下：
+`from_tikv_store_with_server_info_options` 建立 storage factory 后，若 diagnostic mode 开启，调用 `diagnostic::bootstrap_session_impl_diagnostic` 并提前返回，绕过后续正常启动分支。诊断入口先验证已有 bootstrap，再加载只读 metadata readers；这里不能沿用正常 bootstrap/upgrade 会创建、升级并写回系统表的描述。
+
+reader 在未配置 `skip_grant_table` 时逐表解码 user/global_priv/global_grants/db/tables_priv/columns_priv/default_roles/role_edges，排序 user 后合入权限 handle。绑定读取跳过 deleted 项，要求 original SQL 恰有一条语句，恢复默认库并在缺失 SQL digest 时计算 digest，逐项 upsert 全局绑定，最后 `sync_global_bindings`。
+
+常规（非诊断）生产启动流程如下：
 
 1. `cmd/tidb-server/main.rs` 从注册 store 取得 `TikvStore`，调用 `CanonicalSessionFactory::from_tikv_store`；本地 mock 模式则调用 `CreateAnalyzeSession`。
 2. `from_tikv_store_with_server_info_options` 读取 keyspace、PD/etcd/TLS 信息并调用 `from_storage` 完成 `Domain::new` 与 `Domain::init`。若有真实 etcd，它注册 server-info、准备 DDL owner/运行时并获取需要的 bootstrap upgrade 分布式锁；NextGen 同时安装跨 keyspace session factory。
-3. 工厂调用 `BootstrapCanonicalDomain`。该函数判断 bootstrap 状态和版本，创建 `mysql`/`sys`/`test` 及系统表，运行版本升级、写入 `mysql.global_variables` 与 `mysql.tidb`，创建 sys view，刷新关键 ANALYZE 全局变量，最后发布 store bootstrap version。
+3. 非诊断启动的工厂调用 `BootstrapCanonicalDomain`。该函数判断 bootstrap 状态和版本，创建 `mysql`/`sys`/`test` 及系统表，运行版本升级、写入 `mysql.global_variables` 与 `mysql.tidb`，创建 sys view，刷新关键 ANALYZE 全局变量，最后发布 store bootstrap version。
 4. bootstrap 锁释放后，工厂安装 serving DDL runtime，启动 Domain，协调 Starter bootstrap，初始化 stats、TTL manager、MLog purge worker，并返回可服务的工厂。
 5. `pkg/server/runtime.rs::ConcreteSessionDriver` 共享工厂的 `Arc<Domain>`；每条连接的 worker 在该 Domain 上创建 `ConcreteSession`。`ConcreteSession::new` 为连接建立独立 `SessionState`，并从系统表及 Domain 缓存加载持久化全局变量。
 6. SQL 执行由同模块其他文件对 `ConcreteSession` 的 impl 扩展完成，结果以 `ConcreteRecordSet` 返回；协议层读取列元数据与行，结束时显式 `close`。
@@ -66,6 +74,8 @@ RustCodeGraph 对 `BootstrapCanonicalDomain` 给出的直接上游是 `Canonical
 生产调用证据还包括：`cmd/tidb-server/main.rs` 构造工厂；`pkg/server/runtime.rs::ConcreteSessionDriver::new` 克隆其 Domain；`pkg/session/runtime/crossks_runtime.rs` 使用 `from_crossks_tikv_store`；`pkg/testkit/mockstore.rs` 复用工厂和 `create_session`。
 
 ## 错误处理与边界
+
+工厂的诊断启动调用直接用 `?` 传播失败，本分支没有显式 `domain.close()`；不能将下面常规启动分支的关闭保证套用到此处。诊断启动拒绝未 bootstrap、缺失 SQL version 或 KV/SQL version 不一致的 store；不会借此触发升级。缺失的 reader 表按空数据处理，扫描和解码错误会传播；权限跳过配置不跳过绑定读取。绑定时间当前使用 `BindingTime::now()`，并非恢复持久化时间。缓存 merge/upsert 逐步生效，后续失败没有本函数级缓存回滚；只读指不写这些持久化表，不表示不改变内存缓存。
 
 本文件统一返回 `SessionResult<T>`。外部错误通常经 `session_error(context, error)` 或 `SessionError::with_source` 增加动作上下文并保留 source 链；这使 `SessionWarning::from_error` 和 AutoID 回归测试可以识别底层错误类型。
 
@@ -104,10 +114,8 @@ Bootstrap 语义以 `pkg/session/session.go::BootstrapSession`、`bootstrapSessi
 
 ## 验证依据
 
-已核对的生产与配置文件：`pkg/session/runtime/session.rs`（完整 2979 行及符号清单）、`pkg/session/runtime.rs`（模块声明/再导出）、`pkg/session/lib.rs`（crate 入口）、`pkg/session/Cargo.toml`（crate、feature 与依赖）、`cmd/tidb-server/main.rs`（生产工厂入口）、`pkg/server/runtime.rs`（连接驱动和 SQL split 调用者）、`pkg/session/runtime/crossks_runtime.rs`（跨 keyspace 工厂使用）。目标包没有 `pkg/session/doc.go`。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/session.rs` 与 `git show 2c944fb:pkg/session/runtime/session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`pkg/session/dml_runtime_test.rs::start_diagnostic_preserves_persisted_bootstrap_versions` 覆盖旧版本只读启动；`pkg/session/diagnostic.rs` 核对验证/reader 调用次序。`load_diagnostic_metadata_readers` 的逐表解码、binding digest 与缺失表分支由冻结源码复核，不冒充已运行测试。
 
-已核对的 Go 对照：`pkg/session/session.go` 的 `session`、`BootstrapSession`、`bootstrapSessionImpl`、`createSessionsImpl`、`createSessionWithOpt`；`pkg/util/timeutil/time_zone.go::ParseTimeZone` 与 `pkg/util/timeutil/time_zone_test.go::TestParseTimeZone`。
-
-已核对的独立 Rust 测试：`pkg/session/runtime/session_test.rs` 的时区、AutoID 失败/成功测试；`pkg/session/runtime_test/session.rs` 的 clone 共享、factory 隔离、真实执行/事务和 production record-set 测试；`pkg/session/runtime/lifecycle_test.rs` 的 Domain/cross-keyspace 生命周期测试。RustCodeGraph 索引状态为 11,467 文件、307,296 节点、1,848,419 边；执行了目标文件列表、`query`（`CanonicalSessionFactory`、`BootstrapCanonicalDomain`、`ConcreteSession`、`ConcreteRecordSet`）和 `node`（`BootstrapCanonicalDomain`、`from_tikv_store_with_server_info_options`、`CreateAnalyzeSession`、`SplitSQLStatements`）查询。精确 `callers BootstrapCanonicalDomain` 查询长时间未返回而中止，其等价调用边由 `node` 的 Trail 和 `rg` 交叉确认。
-
-本任务是纯文档分析，未运行 Cargo。结构验收使用任务文件指定的 11 章节命令；人工复核重点是：现状与理想架构分离、每个重要结论均可回到真实符号/路径、测试保持独立、未声称 Go 全功能已经完成移植。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

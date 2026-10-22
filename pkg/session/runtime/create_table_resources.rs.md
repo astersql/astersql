@@ -21,6 +21,8 @@
 
 ## 主要符号
 
+- `affinity_keyspace_id`：storage 的 `GetKeyspace()` 为空时返回 `None`，否则读取 `DDLKeyspaceID()` 并传播错误；创建和删除共用这一判定。
+
 - `storage_error`：把底层存储、UTF-8、整数解析等错误统一降格为 `autoid::AutoIdError::Storage`。
 - `Store(Arc<StorageHandle>)`：canonical domain storage 的共享句柄；实现 `autoid::IdStore`，并额外实现 `autoid::Requirement` 的本地 allocator 存储能力。
 - `Txn<'a>(&'a mut dyn kv::Transaction)`：借用一个新 KV 事务，实现 `get`、`put`、`inc`、`copy_to`。`get` 将不存在的 key 解释为基数 0。
@@ -30,7 +32,7 @@
 - `requirement`：读取 storage name、UUID、DDL keyspace 与 PD endpoints，按 mock/真实存储构建 single-point allocator 所需环境；真实路径可读取集群 CA、证书和私钥，并为非 null keyspace 使用 `/keyspaces/tidb/{id}` namespace。
 - `rebase_ids`：从 `TableInfo` 提取 allocator 相关字段，选择本地或 single-point requirement，计算三个候选基数并逐个 `rebase(..., false)`；single-point 分配器随后安装进 `Domain`。
 - `check_columnar`：安装 planner expression factory 后检查 TiFlash replica、CSE columnar 配置和全局变量；对 columnar index 返回专用“不支持”错误，否则返回 TiFlash columnar storage 未启用错误。
-- `create_affinity` / `delete_affinity`：创建或删除 `_tidb_t_<table>`、`_tidb_pt_<table>_p<partition>` group；分区级创建要求存在非空 definitions。
+- `create_affinity` / `delete_affinity`：按 keyspace 创建或删除 Classic / NextGen 命名的 group；分区级创建要求存在非空 definitions。
 - `read_optional_tls` / `pd_client`：加载可选 TLS 文件并用 DDL PD endpoints 建立阻塞 HTTP client。
 - `put_bundles`：空 bundle 快速成功；mock 路径复用 infosync retry，真实路径向 placement-rule partial API 发送 JSON，并按 infosync 常量重试。
 - `replica_rule` / `configure_replica`：生成 TiFlash learner rule；按 CSE 配置、是否存在 replica、mock/真实存储以及表/分区分支执行配置、删除或 adding-partition 加速。
@@ -52,6 +54,8 @@ CREATE TABLE 的顺序由 `pkg/ddl/persistent_create_table.rs:82-170` 决定：
 `update_labels` 是另一条资源迁移流程：先基于旧 schema/table/partition 名称生成 rule IDs，读取存在的旧规则，再用新名称和当前物理 ID 重建；表规则覆盖表 ID 及全部分区 ID。`delete_affinity` 是清理流程，只根据旧表 metadata 构造 group IDs 并请求删除。
 
 ## 数据与状态
+
+冻结增量把 affinity ID 与 keyspace 绑定：`None` 保留 `_tidb_t_<table>` / `_tidb_pt_<table>_p<partition>`；`Some(id)` 使用 `_tidb_ks<id>_t_<table>` / `_tidb_ks<id>_pt_<table>_p<partition>`。ID 命名复用 `pkg/ddl/affinity.rs` 的两个 `*_for_keyspace` helper，key range 仍独立经过 storage codec 编码，不能用 ID 前缀代替 range 编码。
 
 - 持久状态主要位于 meta KV、PD placement/affinity/label 配置以及 TiFlash 同步状态中；本文件自身没有全局可变状态。
 - auto-ID value 以十进制字符串字节保存在 `transaction_meta_hash_key("DB:<db>", "<prefix>:<table>")` 下。不存在等价于 0；存在但非 UTF-8 或非 `i64` 会报错，不能被当作 0。
@@ -80,6 +84,8 @@ CREATE TABLE 的顺序由 `pkg/ddl/persistent_create_table.rs:82-170` 决定：
 RustCodeGraph 明确识别了 `rebase_ids → requirement`、`create_affinity/put_bundles/configure_replica/delete_affinity → pd_client`、`configure_replica → replica_rule` 等文件内调用边。
 
 ## 错误处理与边界
+
+配置了 affinity 时，创建和删除均先解析 keyspace；非空 keyspace 的 ID 查询失败会在访问 PD 前返回错误，不会退回 Classic 命名。未配置 affinity 时仍直接成功。
 
 - 所有外部错误最终转换成字符串，保留底层消息但丢失结构化错误类型；上游 DDL 状态机负责补充“failed to notify PD”等上下文并设置取消状态。
 - auto-ID 事务通过 `kv::RunInNewTxn(..., retryable = true, ...)` 独立提交。闭包错误先变成 KV error，外层再变成 `AutoIdError::Storage`；这保证它不依赖调用者的表元数据事务。
@@ -121,10 +127,11 @@ RustCodeGraph 明确识别了 `rebase_ids → requirement`、`create_affinity/pu
 
 ## 验证依据
 
-- 目标源码：`pkg/session/runtime/create_table_resources.rs`，RustCodeGraph `files` 确认该文件已索引且含 38 个符号；`node --file ... --offset 1/401` 阅读了全部 618 行。
-- 调用图：RustCodeGraph `query` 定位七个 `pub(super)` 入口，`callees --file` 验证了 `requirement`、`pd_client`、`replica_rule` 等关键下游边；图未返回模块私有 trait 转发的 callers，已用 `rg` 和源码补证。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/create_table_resources.rs` 与 `git show 2c944fb:pkg/session/runtime/create_table_resources.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`pkg/ddl/affinity.rs` 的 keyspace ID helper、Go `pkg/ddl/affinity.go::GetTableAffinityGroupID/GetPartitionAffinityGroupID`；独立 `pkg/ddl/affinity_test.rs::test_affinity_group_id_includes_keyspace_in_next_gen` 覆盖命名，runtime CREATE TABLE affinity 测试覆盖 PD/range 接线，不能把前者当作 runtime 全链测试。
 - Rust 上游：`pkg/ddl/persistent_create_table.rs:82-170`、`pkg/ddl/job_worker.rs:326-388`、`pkg/session/runtime/system_session.rs:997-998,1303-1398`。
 - crate 边界：`pkg/session/Cargo.toml`；`pkg/session` 当前没有 `doc.go`，因此无可读取的 package doc contract。
 - Go 对照：`pkg/ddl/create_table.go:56-213`、`pkg/ddl/affinity.go:104-160`、`pkg/ddl/table.go:1842-1880`。
 - 独立 Rust 测试：`pkg/session/runtime/normal_ddl_create_table_test.rs` 中的 `normal_ddl_plan_create_table_auto_id_independent_notification_retry`、`normal_ddl_plan_create_table_extra_row_and_random_bases`、`normal_ddl_plan_create_table_pd_placement_and_tiflash_requests`、`normal_ddl_plan_create_table_affinity_requests_failure_and_range_encoding`、`normal_ddl_create_table_columnar_gate`；materialized-view shadow 的同类资源路径另由 `normal_ddl_create_materialized_view_shadow_test.rs` 覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付验证仅检查文档结构、路径和上述源码证据。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

@@ -28,6 +28,8 @@
 
 ## 执行流程
 
+任务成功收尾现在先 `GetTaskByID((), task_id)` 取出当前完整 Task，再 `SucceedTask((), task)`。之后再次读取 Task、仅在导入成功时写 `TaskMeta.Summary.ImportedRows`，再 `TransferTasks2History`，最后传播执行闭包结果。此调整适配 DXF 成功状态转换的 Task 参数，不能描述为只传 task ID。
+
 1. `execute_import_file` 先检查是否存在大小写不敏感的 `split_file` 选项；不存在则走 `execute_import_compression`。存在时拒绝 `SELECT`、列赋值、列/用户变量映射以及非 CSV 格式。
 2. 遍历选项，用 `crate::dml_runtime::EvalExpr` 求值。支持 `split_file`、四种 CSV 分隔/包围/转义配置、`skip_rows` 和内部选项 `__max_engine_size`；其他选项立即报错。行终止符不得为空，engine 大小必须为有限正数。
 3. 从 `ImportFiles` 克隆 storage 并读取 `region_size`，解析当前 schema/目标表；随后调用 `Storage::list` 精确匹配 `statement.Path` 并取得文件大小。此路径只处理一个精确 URI，不进行 glob 展开。
@@ -61,6 +63,8 @@
 
 ## 错误处理与边界
 
+成功收尾新增的第一次 Task 查询也可能失败；通过 `map_err(error)?` 提前返回，此时 import job 表可能已写为 finished，而 DXF 尚未完成成功转换或历史迁移。这里没有跨 import job、DXF 状态与导入数据的原子事务。
+
 规划前错误（不支持的列映射/格式/选项、缺少或非法值、未配置 storage、表或源文件不存在、切分失败）直接返回 `SessionError`。其中源文件查询发生在创建 import job 之前，所以“文件不存在”不会产生 failed job；实际 engine/编码/唯一性错误发生在 job/task 创建之后，会进入失败状态收尾。`tests/realtikvtest/importintotest4/split_file_test.rs` 验证了缺失文件返回错误，以及重复导入触发唯一性错误后 job、task 和至少一个 subtask 为 failed，原表仍可通过 `ADMIN CHECK TABLE`。
 
 需要注意的边界：storage 路径必须与 SQL URI 完全相等；只支持 CSV；不支持列映射；并发数固定为 1；不支持完整 Go 路径的 detached、global sort、冲突捕获等选项。`serde_json::from_str(...).unwrap_or_default()` 和字段读取的默认值会把损坏/旧版 subtask summary 表现为零行而非查询错误。`physical.stats.lock().unwrap()` 在锁中毒时会 panic。失败收尾或历史迁移自身若失败，可能取代最初的导入错误返回。engine 的显式 `Cleanup` 只位于每个 engine 成功 `Import` 之后；若 `ProcessChunk`、`Close` 或 `Import` 提前失败，本函数没有补偿式 cleanup，不能把 Go DXF cleaner 的全部保证推断到此同步路径。
@@ -88,8 +92,11 @@ Go 没有 `pkg/session/runtime/import_file.go` 一一对应文件；等价职责
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/session/runtime` 确认目标文件与相邻运行时文件；`node --file pkg/session/runtime/import_file.rs --offset 1/261` 阅读了 466 行全貌；`query execute_import_file`、`query MakeTableRegions`、`query ProcessChunk`、`query ImportTaskManager`、`query LastImportSSTStats` 定位了入口和关键下游。图的 `callers/callees execute_import_file` 未返回边，因此调用点再由文本检索核验，未据此虚构调用关系。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/import_file.rs` 与 `git show 2c944fb:pkg/session/runtime/import_file.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：冻结源码成功收尾两次 GetTaskByID、SucceedTask(Task)、TransferTasks2History 的顺序；这是 DXF API 接线审计，未执行导入或验证真实 SST 资源清理。
 - 源码与装配：`pkg/session/runtime/import_file.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/import_sst.rs`、`pkg/session/runtime/dxf_session.rs`、`pkg/session/runtime/import_compression.rs`。
 - crate 边界：`pkg/session/Cargo.toml`；目标包范围内未找到 `doc.go`，因此以 `runtime.rs` 顶层模块说明作为最近的运行时契约。
 - Go 对照：`pkg/executor/importer/import.go`、`pkg/executor/importer/table_import.go`、`pkg/dxf/importinto/scheduler.go`、`tests/realtikvtest/importintotest4/split_file_test.go`。
 - Rust 测试：`tests/realtikvtest/importintotest4/split_file_test.rs` 覆盖 canonical KV/RealTiKV、三段切分、任务历史、skip rows、CRLF、非聚簇主键、缺失文件与失败状态；`pkg/session/runtime/import_compression_test.rs` 覆盖无 `split_file` 的委托分支。按任务约束未运行 Cargo 或测试二进制，只做静态事实与文档结构验证。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

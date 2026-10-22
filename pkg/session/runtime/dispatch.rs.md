@@ -34,6 +34,8 @@ crate 归属由 `pkg/session/Cargo.toml` 的 `[package] name = "astersql-session
 
 ## 执行流程
 
+诊断模式在每条已解析 AST 进入语句循环后首先检查：仅非 restricted SQL 调用 `diagnostic_sql::is_diagnostic_sql_allowed`，传入当前库和 InfoSchema 的 view 判定；拒绝时立即返回只读模式错误。该检查早于 scalar-subquery registry 清理、过期事务处理、告警重置、tracker 与语句 guard 建立，因此拒绝分支没有进入后续正常语句收尾链。
+
 1. `ConcreteSession::execute(sql)` 调用 `execute_with_logger(sql, None)`，再进入 `execute_with_logger_and_hook`。入口先恢复未完成的 ADD INDEX 任务，并处理请求局部 `mockGetTSFail` 注入。
 2. SQL 按当前 `sql_mode` 解析；restricted SQL 会暂时去除 `NO_BACKSLASH_ESCAPES`。AST 列表与 `split_statement_sql` 产生的原文本片段按索引配对，因此每条语句保留自己的日志/hint 文本。
 3. 每条语句先清除 scalar-subquery registry，设置 EXPLAIN 上下文，重置 DistSQL-cache、warning 和统计同步等待状态；随后生成 trace ID，建立 statement RU scope 和挂到 session tracker 的内存 tracker。
@@ -79,6 +81,8 @@ Plan Replayer load 会暂时执行 `SET FOREIGN_KEY_CHECKS = 0`，按归档路�
 RustCodeGraph 的文件节点报告 `dispatch.rs` 被 11 个文件使用，并展示了 `pkg/session/runtime/ddl.rs` 等直接关系；对本文件 `impl ConcreteSession` 方法执行的精确 callers/callees 查询没有返回方法边，因此以上方法级关系进一步由模块重导出和仓库调用点核对，而非把缺失图边当成“没有调用”。
 
 ## 错误处理与边界
+
+`TestSession::PrepareStmt` 在诊断模式且非 restricted SQL 时于解析前拒绝，即使 SQL 本身是可读语句也不能走二进制 prepare；restricted SQL 保留内部执行入口。允许列表判定属于 `diagnostic_sql.rs`，不能把所有 SELECT 都视为允许。`sync_global_bindings` 改为 `pub(super)`，供诊断元数据加载后刷新会话绑定。
 
 本文件统一返回 `SessionResult<T>`，底层错误通常通过 `session_error(context, error)` 或 `SessionError::new` 增加语境。解析错误、权限拒绝、非法 stale-read 写入、缺失表、未知 prepared 名称、参数数量不匹配、计划缓存校验失败、存储错误和 hint 恢复错误均向上返回；多语句执行在首个错误处停止。
 
@@ -127,11 +131,12 @@ Plan Replayer 扩展应优先补齐 `SessionPlanReplaySource` 的真实 stats/Ti
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认本地索引包含 7,032 个 Rust 文件；`files --filter pkg/session/runtime` 确认 `dispatch.rs` 和独立 `dispatch_test.rs` 均已索引；`node --file pkg/session/runtime/dispatch.rs` 分段读取了完整文件的关键区间，并确认文件级“used by 11 files”。
-- RustCodeGraph 符号查询：`query split_statement_sql --kind function` 定位到 `dispatch.rs:4442`；对 `impl ConcreteSession` 私有方法执行 query/callers/callees 未返回可用方法边，因此没有据此推断不存在调用。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/dispatch.rs` 与 `git show 2c944fb:pkg/session/runtime/dispatch.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`pkg/session/diagnostic_sql_test.rs::diagnostic_sql_execution_guard_rejects_unauthorized_sql` 覆盖允许/拒绝 SQL、view、二进制 prepare 和 restricted 绕过；正常执行后的 guard Finish、tracker detach 与结果错误合并顺序由冻结 dispatch 源码复核。
 - 源码与模块：`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`；后两者确认模块装配、重导出和 `SplitSQLStatements` 调用。
 - crate/feature：`pkg/session/Cargo.toml`，确认 crate 名、库入口、Go package 映射、`nextgen` feature，以及 parser/domain/KV/planner/executor/sessionctx/memory/log/trace 等依赖边界。
 - 独立 Rust 测试：`pkg/session/runtime/dispatch_test.rs` 验证 MySQL `--` 注释切分规则及 EXPLAIN ANALYZE RU 的 schema、行数、错误与 plan-cache context；`pkg/session/lib.rs` 通过 `#[path = "runtime/dispatch_test.rs"] mod runtime_dispatch_test;` 独立挂载，符合测试不与源文件同置的约束。
 - 直接调用点：`pkg/session/runtime_test/session.rs`、`tests/realtikvtest/sessiontest/session_fail_test.rs`、`pkg/session/runtime/ttl_timer_store.rs`、`pkg/session/runtime/ttl_worker_session.rs`、`pkg/session/starter_bootstrap_file.rs`。
 - Go 对照：`pkg/session/session.go` 中 `Execute`、`ExecuteStmt`、`executeStmtImpl`、`PrepareStmt`、`ExecutePreparedStmt`、`logGeneralQuery`。
-- 本任务是只读分析加 Markdown 文档，不修改运行时代码，按任务约束未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并额外检查变更范围、源文件链接/符号引用和文档差异。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

@@ -60,6 +60,8 @@ DDL 持久作业流程如下：
 
 ## 数据与状态
 
+`ConcreteJobExecutionContext` 的第五个 tuple 字段是本次 execution context 的强制错误回滚标志。`mark_must_rollback_transaction_on_error` 将其置 true，`must_rollback_transaction_on_error` 读取它；每次 `with_execution_context` 在确认 active transaction 后都以 false 构造新 context，标志不会随 pool lease 跨次复用。
+
 - `NEXT_ID: AtomicU64` 以 relaxed 顺序生成进程内稳定系统会话 ID；ID 用于 DDL internal-session 注册和回调，不承担跨进程一致性。
 - `ResourceState.closed` 与 `borrowed` 在同一 `Mutex` 下维护，保证 get/put/destroy/close 对池生命周期的观察一致。弱引用只用于关闭尚存 lease，不延长其生命。
 - `ConcreteDdlContext.closed: AtomicBool` 让 `transaction()` 在 context 已关闭时返回 `None`；Acquire/Release 顺序用于与 close 的跨线程可见性。
@@ -70,6 +72,8 @@ DDL 持久作业流程如下：
 - `IndexBackfillRecords` 只持有有界批次的 owned key/value 和索引元数据；transaction、snapshot iterator 与 handle 不跨线程或跨阶段保存。
 
 ## 依赖与调用关系
+
+物化视图、物化视图日志与 masking 持久动作通过 `JobExecutionContext` 设置回滚标志；`pkg/ddl/table_mode.rs` 在动作失败时读取该标志并进入 worker 的事务决策。此 session 适配器只保存/暴露标志，不在 setter 中直接 rollback，也不表示所有错误都会强制整事务回滚。
 
 上游调用关系：
 
@@ -131,10 +135,11 @@ RustCodeGraph 对 `acquire_with_cancellation` 确认其构造 `SystemSessionLeas
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件在索引中，报告 2 个直接 file usage：`pkg/session/test/variable/variable_test.rs`、`pkg/session/tests/system_session.rs`。
-- RustCodeGraph 源码与符号查询：完整分段读取 `pkg/session/runtime/system_session.rs`；查询 `SystemSessionPool`、`SystemSessionLease`、`transaction_mdl`、`generate_index_backfill_records`、`derive_create_mlog_schedule`；对 `acquire_with_cancellation`、`generate_index_backfill_records` 执行 callers/callees。图中同名通用方法存在歧义，故没有把明显来自其他模块的候选当成本文件调用边。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/system_session.rs` 与 `git show 2c944fb:pkg/session/runtime/system_session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：冻结 `pkg/ddl/table_mode.rs` 的失败分支读取 must-rollback 标志；`persistent_create_materialized_view.rs`、`persistent_create_materialized_view_log.rs`、`persistent_masking_actions.rs` 设置标志。context 每次初始化为 false，未运行 worker 回滚测试。
 - Rust 源与装配文件：`pkg/session/runtime/system_session.rs`、`pkg/session/runtime.rs`、`pkg/session/lib.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/normal_ddl_submit.rs`。
 - crate 边界：`pkg/session/Cargo.toml` 的 package、feature、porting metadata、直接依赖与 dev-dependencies。
 - Rust 测试：`pkg/session/tests/system_session.rs`；另通过引用搜索确认 `runtime/lifecycle_test.rs`、`runtime/durable_scheduler_test.rs`、`runtime/normal_ddl_test.rs`、物化视图专项测试、`pkg/ddl/tests/partition/reorg_partition_test.rs` 等覆盖实际消费者和后半部作业逻辑。
 - Go 对照：`pkg/session/syssession/pool.go`、`pkg/session/syssession/pool_test.go`、`pkg/ddl/session/session_pool.go`、`pkg/ddl/session/session_pool_test.go`，以及 `pkg/domain/domain.go` 中 system session pool 的创建/关闭/访问位置。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构校验要求本文恰好具有任务规定的 11 个二级标题；同时人工复核了文件存在原因、借用/执行/归还流程、安全扩展点和独立测试位置。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

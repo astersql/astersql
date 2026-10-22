@@ -36,6 +36,8 @@
 
 ## 执行流程
 
+`GlobalSystemVariableInitialValueWithRuntime` 对 `TiDBAnalyzeSampledNDVThreshold` 返回字符串 `500000000`，用于新集群初始化，而注册定义与原子初始值仍为 0。该 match 分支不依赖 next-gen 环境，也不直接写原子状态或持久化；升级集群保持关闭的迁移策略属于外部 upgrade 链，不能宣称每次读取都会自动启用 sampled NDV。
+
 执行器并发构造与写入流程如下：
 
 1. `newExecConcurrencySysVar` 用固定作用域、整数类型、范围和默认 auto 行为构造 `SysVar`。
@@ -118,11 +120,10 @@ Go 测试 `pkg/sessionctx/variable/sysvar_test.go::TestGlobalSystemVariableIniti
 
 ## 验证依据
 
-- 源码全貌：RustCodeGraph `node --file pkg/sessionctx/variable/sysvar.rs --offset 1 --limit 260` 与 `--offset 261 --limit 260`，确认文件共 405 行、28 个索引符号及全部实现。
-- 符号检索：RustCodeGraph `query` 确认 Rust/Go 的 `SysVar`、`newExecConcurrencySysVar`、`GlobalSystemVariableInitialValue`、`setTiFlashComputeDispatchPolicy`、`setPipelinedDmlResourcePolicy` 对应位置。
-- 调用证据：RustCodeGraph 文件边报告 5 个使用文件；函数级 `callers/callees` 查询在当前索引上超时未返回，因此又以精确源码检索和 RustCodeGraph 文件节点核对了 `pkg/session/runtime/control.rs` 与 `pkg/sessionctx/variable/nextgen.rs` 的真实调用。未把无法落到具体调用表达式的图边当作结论。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/sysvar.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/sysvar.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：冻结 Go `sysvar.go::GlobalSystemVariableInitialValue` 同样返回 500000000；Rust `sysvar_test.rs` 的初始化值用例包含该项，注册表测试另证定义默认值为 0。
 - crate 与模块：读取 `pkg/sessionctx/variable/Cargo.toml`、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/variable.rs` 和 `pkg/sessionctx/variable/sysvar_builtins.rs`，确认包依赖、公开模块及精简/正式类型边界；目标包没有 `doc.go`。
-- Go 对照：读取 RustCodeGraph 中 `pkg/sessionctx/variable/sysvar.go` 100--199、4310--4487 行，以及 `pkg/sessionctx/variable/sysvar_test.go` 的 `TestGlobalSystemVariableInitialValue`。
 - Rust 测试：读取 `pkg/sessionctx/variable/sysvar_3_aster_unit_test.rs`、`sysvar_test.rs` 1720--1860 行和 `varsutil_test.rs` 的并发变量用例；它们覆盖选项顺序、无效并发回退、运行时默认值、TiFlash 失败不更新、三类流水线策略、范围错误与失败原子性。
 - 常量核对：`pkg/sessionctx/vardef/tidb_vars.rs` 定义 `MaxConfigurableConcurrency=256`、流水线并发范围 1--8192、默认 128/8、保守 2/2 及三种策略字符串。
-- 本任务仅生成文档，按计划不运行 Cargo。最终以任务给定命令确认目标文件存在且恰有十一个固定二级章节，并人工复核链接、当前接线边界和未验证项。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

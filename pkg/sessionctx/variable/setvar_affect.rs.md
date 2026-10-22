@@ -10,14 +10,14 @@
 
 ## 核心职责
 
-- `HINT_UPDATABLE_VERIFIED` 是 131 个精确、小写系统变量名组成的静态切片，表示这些变量已验证可由 `SET_VAR` Hint 临时改写。
+- `HINT_UPDATABLE_VERIFIED` 是 132 个精确、小写系统变量名组成的静态切片，表示这些变量已验证可由 `SET_VAR` Hint 临时改写。
 - `setHintUpdatable` 扫描传入的变量切片，仅对名称命中白名单的项把 `IsHintUpdatableVerified` 置为 `true`。
 - 本文件的 `SysVar` 是只含 `Name` 与 `IsHintUpdatableVerified` 的精简类型，不是 [`variable.rs`](variable.rs) 中包含作用域、类型、默认值和钩子的完整运行时 `SysVar`。因此该函数不能直接处理运行时注册表。
-- 当前 Rust 生产接线只在 [`sysvar_builtins.rs`](sysvar_builtins.rs) 注册 `tidb_enable_full_outer_join` 时直接查询 `HINT_UPDATABLE_VERIFIED`；不能据此推断 131 项均由本模块自动写入运行时注册表。其他内建变量的标志常在各自构造处直接置位。
+- 当前 Rust 生产接线只在 [`sysvar_builtins.rs`](sysvar_builtins.rs) 注册 `tidb_enable_full_outer_join` 时直接查询 `HINT_UPDATABLE_VERIFIED`；不能据此推断 132 项均由本模块自动写入运行时注册表。其他内建变量的标志常在各自构造处直接置位。
 
 ## 主要符号
 
-- `pub static HINT_UPDATABLE_VERIFIED: &[&str]`：进程生命周期内有效的只读白名单。采用切片而非哈希集合，成员判断是线性搜索；当前长度为 131。
+- `pub static HINT_UPDATABLE_VERIFIED: &[&str]`：进程生命周期内有效的只读白名单。采用切片而非哈希集合，成员判断是线性搜索；当前长度为 132。
 - `pub struct SysVar`：本模块的精简可变记录，派生 `Clone`、`Debug`、`PartialEq` 和 `Eq`。字段沿用 Go 命名：`Name: String` 与 `IsHintUpdatableVerified: bool`。
 - `SysVar::new(name: impl Into<String>) -> Self`：接收可转换为 `String` 的名称，初始化标志为 `false`。
 - `pub fn setHintUpdatable(vars: &mut [SysVar])`：原地遍历切片并设置命中项。它无返回值，不分配新的集合，也不清除已有的 `true`。
@@ -40,9 +40,11 @@
 
 匹配区分大小写，且不做 trim、别名解析或规范化。例如测试中的 `tidb_allow_mpp` 命中，而 `not_hint_updatable` 与 `tidb_paging_size_bytes` 不命中。名称规范化应由上游完成，或新增行为时显式定义，不能默认为本函数已有能力。
 
-Rust 白名单与 [`setvar_affect.go`](setvar_affect.go) 的 Go map 均为 131 项；按名称排序比较时集合完全一致。Go 源码还以注释明确排除了在 planner preprocess 阶段使用、行为尚需修正的 `tidb_read_staleness`，Rust 切片同样未包含它。
+Rust 白名单与 [`setvar_affect.go`](setvar_affect.go) 的 Go map 均为 132 项；按名称排序比较时集合完全一致。Go 源码还以注释明确排除了在 planner preprocess 阶段使用、行为尚需修正的 `tidb_read_staleness`，Rust 切片同样未包含它。
 
 ## 依赖与调用关系
+
+本次加入 `tidb_opt_range_max_count`。正式注册表在 `sysvar_builtins.rs` 的 planner 与 getters/defaults 分组都显式设置该定义的 `IsHintUpdatableVerified = true`，没有调用本文件精简类型的批量函数。该项默认值 1000、允许 global/session、0 关闭阈值；值校验和语句还原仍由正式变量/会话链负责。
 
 - 模块入口：[`lib.rs`](lib.rs) 的 `pub mod setvar_affect`。
 - 直接生产消费者：[`sysvar_builtins.rs`](sysvar_builtins.rs) 的内建变量注册逻辑用 `HINT_UPDATABLE_VERIFIED.contains(&vardef::TiDBEnableFullOuterJoin)` 设置完整运行时变量的标志。
@@ -56,7 +58,7 @@ RustCodeGraph 的文件级索引报告本文件被 `sysvar_builtins.rs` 使用�
 
 本文件没有 `Result`、`Option` 解包、panic 或 I/O，因此没有本地错误传播。空切片直接完成；重复名称逐项处理；重复调用不改变已经为 `true` 的结果。
 
-主要边界来自精确名称匹配：大小写不同、前后空白、别名和未列入白名单的新变量均不命中。线性 `contains` 的复杂度是每个输入元素扫描最多 131 个名称，即约为 `O(vars.len() * whitelist.len())`；对白名单和注册表的当前规模通常很小，但若未来显著扩张，应重新评估集合表示。
+主要边界来自精确名称匹配：大小写不同、前后空白、别名和未列入白名单的新变量均不命中。线性 `contains` 的复杂度是每个输入元素扫描最多 132 个名称，即约为 `O(vars.len() * whitelist.len())`；对白名单和注册表的当前规模通常很小，但若未来显著扩张，应重新评估集合表示。
 
 “列入白名单”只表达已经验证可通过 Hint 更新，不替代完整变量的作用域检查、值校验、设置钩子和恢复机制。新增名称却未在运行时 `SysVar` 上形成相同标志，或只有标志却缺少正确的会话写入/恢复行为，都会造成接线不完整。
 
@@ -68,7 +70,7 @@ RustCodeGraph 的文件级索引报告本文件被 `sysvar_builtins.rs` 使用�
 
 ## 与 Go 版本的对应关系
 
-[`setvar_affect.go`](setvar_affect.go) 使用 `map[string]struct{}` 保存相同的 131 个名称，Rust 用 `&[&str]` 表示；前者平均常数时间查找，后者线性查找。两端 `setHintUpdatable` 都逐项原地把命中变量的 `IsHintUpdatableVerified` 设为 `true`，不处理未命中项，也不返回错误。
+[`setvar_affect.go`](setvar_affect.go) 使用 `map[string]struct{}` 保存相同的 132 个名称，Rust 用 `&[&str]` 表示；前者平均常数时间查找，后者线性查找。两端 `setHintUpdatable` 都逐项原地把命中变量的 `IsHintUpdatableVerified` 设为 `true`，不处理未命中项，也不返回错误。
 
 关键迁移差异是类型和接线：Go 函数接收完整的 `[]*SysVar`，并由 [`variable.go`](variable.go) 对 `defaultSysVars` 批量调用；Rust 函数接收本模块自定义的精简 `[SysVar]`，没有对 [`variable.rs`](variable.rs) 完整 `SysVar` 的通用批量应用。Rust 当前仅复用常量为一个生产变量打标，同时在其他注册代码中直接设置若干变量。因此白名单内容已经对齐，但不能宣称 Go 的统一初始化机制已完整移植。
 
@@ -84,8 +86,10 @@ RustCodeGraph 的文件级索引报告本文件被 `sysvar_builtins.rs` 使用�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件和 4,415 个 Go 文件；`files --filter pkg/sessionctx/variable` 定位目标、Go 对照及测试；`node --file pkg/sessionctx/variable/setvar_affect.rs --offset 1 --limit 240` 读取完整 182 行源码并报告文件消费者；`query SetVarHintRestore`/`query setHintUpdatable` 区分相关符号；对精确函数的 `callers`/`callees` 查询超时，无边结果未被当作证据。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/setvar_affect.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/setvar_affect.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：从冻结 blob 抽取 Rust 字符串项与 Go map 键，两者均为 132 项且集合相同（排除 Go 注释中的 tidb_read_staleness）；`sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 断言正式注册项的 Hint 标志。
 - 源码与接线：[`setvar_affect.rs`](setvar_affect.rs)、[`lib.rs`](lib.rs)、[`sysvar_builtins.rs`](sysvar_builtins.rs)、[`variable.rs`](variable.rs)、[`pkg/planner/optimize.rs`](../../planner/optimize.rs)。本包路径下不存在 `doc.go`，因此没有可补充读取的包级 Go 文档。
 - crate 边界：[`Cargo.toml`](Cargo.toml) 的 package、lib、dependencies 与 `package.metadata.porting`。
-- Go 对照：[`setvar_affect.go`](setvar_affect.go)、[`variable.go`](variable.go)；通过抽取并排序名称确认 Go/Rust 均为 131 项且无集合差异。
-- 测试证据：[`error_1_aster_unit_test.rs`](error_1_aster_unit_test.rs)、[`sysvar_test.rs`](sysvar_test.rs)、[`sysvar_builtins_test.rs`](sysvar_builtins_test.rs)、[`tests/session_test.rs`](tests/session_test.rs)、[`sysvar_test.go`](sysvar_test.go)、[`tests/variable_test.go`](tests/variable_test.go)。本任务仅写文档，按计划未运行 Cargo 或代码测试。
+- Go 对照：[`setvar_affect.go`](setvar_affect.go)、[`variable.go`](variable.go)；通过抽取并排序名称确认 Go/Rust 均为 132 项且无集合差异。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

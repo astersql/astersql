@@ -35,6 +35,8 @@ crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-sessio
 
 ## 执行流程
 
+`SetSystemVar` 对 range-count 先经 `SetHintSystemVarWithOldState` 校验/设置临时变量状态，再读取规范化字符串并解析到 `RangeMaxCount`。原始输入去空白和两端引号后若能解析为负 `i128`，会追加 `Truncated incorrect tidb_opt_range_max_count value` warning；例如 -1 被钳制为 0，而非保留负字段值。该字段同步发生在本函数分支，不能误写为 `sysvar_builtins.rs` 安装了专用 SetSession hook。
+
 ### 会话建立与普通语句
 
 1. `SessionVars::new` 建立所有必需容器和默认值：事务/重试上下文、`StatementContext`、系统变量桥接容器、三种 planner `RefCell` 状态、优化器默认参数、UTC 固定偏移和默认允许的 TiKV/TiFlash/TiDB 隔离读引擎。
@@ -58,6 +60,8 @@ crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-sessio
 4. 备选计划轮通过 `SetAlternative*Override` 交换旧覆盖值，调用者应在作用域结束时写回旧值；读取方法优先覆盖、再回退会话或 `StmtCtx` 默认值。标量子查询和扩展列 ID 也提供 snapshot/restore，供规划分支回滚。
 
 ## 数据与状态
+
+`SessionVars.RangeMaxCount: i64` 默认来自 `vardef::DefTiDBOptRangeMaxCount`（1000），与 `RangeMaxSize` 独立。前者约束 skyline 的 equality/IN 优先判定阈值，后者是 range 内存预算；0 关闭前者阈值并不禁止构造 range。
 
 - 会话持久状态：连接 ID/能力、用户与角色、当前库、事务模式、autocommit、系统变量 map、prepared statement map、用户变量、慢日志规则及全局变量访问器。
 - 语句状态：`StmtCtx`、计划缓存参数/值、warning/error count、table-cache 标记、前一 trace ID、开始时间、解析/编译/优化/等待 TS 耗时。
@@ -131,10 +135,12 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并点名 `p
 
 ## 验证依据
 
-- 源码全貌：RustCodeGraph `node --file pkg/sessionctx/variable/session.rs` 分段读取 1–1748 行；符号清单以该文件的结构、trait、函数和 impl 为准。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/session.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`pkg/sessionctx/variable/sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 检查 1000、2048、0、-1 钳制与恰一条 warning；Go `session.go::RangeMaxCount` 和 `sysvar.go` 的同名 SetSession 为行为对照。
 - 图索引：`rustcodegraph status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；文件节点给出 8 个使用文件。`query SessionVars --kind struct` 命中本文件 631 行，同时显示运行时/规划器相邻类型；对 `SetSystemVar`、`FinishHintStatement`、`RegisterScalarSubQ` 的 Rust method 查询未产生本文件节点，因此使用直接引用搜索补齐调用证据。
 - crate 与入口：已读 [`Cargo.toml`](./Cargo.toml) 和 [`lib.rs`](./lib.rs)，确认 crate 名、直接依赖、`pub mod session` 及测试模块装配。
 - Go 对照：已读 [`session.go`](./session.go) 中 RetryInfo、TransactionContext、UserVars、SessionVars、计划参数、惰性文本、系统变量、规划 ID、MPP、标量子查询和选择率相关定义；差异均按当前 Rust 实现表述。
 - 测试证据：已读 [`session_test.rs`](./session_test.rs)、[`session_hint_bridge_aster_unit_test.rs`](./session_hint_bridge_aster_unit_test.rs)、[`session_planner_ids_aster_unit_test.rs`](./session_planner_ids_aster_unit_test.rs) 与 [`scalar_subquery_registry_aster_unit_test.rs`](./scalar_subquery_registry_aster_unit_test.rs)，并检查更宽测试入口 [`tests/session_test.rs`](./tests/session_test.rs) 的直接引用。
 - 上游直接引用：已检查 `pkg/session/runtime/{session,planning,control,dispatch,explain_query}.rs`、`pkg/planner/{optimize,core/expression_rewriter}.rs` 和 `pkg/executor/adapter_slow_log.rs` 中对本模块符号的引用。
-- 本任务为纯文档分析，按总计划不运行 Cargo。交付结构以任务规定的 11 个固定二级标题命令验证；结论另经人工复核，确保能回答文件存在原因、主要运行流程和安全扩展边界。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

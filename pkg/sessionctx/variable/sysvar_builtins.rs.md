@@ -33,6 +33,8 @@
 
 ## 执行流程
 
+range-count 在 `register_planner_tuning_vars` 和稍后的 `register_getters_and_defaults` 中各注册一次，均为 global/session 的 TypeInt、默认 1000、范围 `0..=i64::MAX`、Hint 可更新；后一次覆盖同名注册项但保留这些属性。两处均无专用 SetSession hook，`SessionVars.RangeMaxCount` 的同步由 `session.rs::SetSystemVar` 完成。
+
 注册阶段如下：
 
 1. 首次调用 `register_builtin_sysvars()` 时进入 `REGISTER.call_once`；后续调用立即返回。
@@ -46,6 +48,8 @@
 会话写入通常由 `SysVar::SetSessionFromHook` 完成：通用层维护字符串形式的 session system map，本文件的 `SetSession` 再同步 `SessionVars`、`StmtCtx` 或 `KVVars` 的强类型字段。动态读取则优先通过 `GetSession`/`GetGlobal` 返回运行时状态，而不是静态 `Value`。
 
 ## 数据与状态
+
+`tidb_analyze_sampled_ndv_threshold` 注册为仅 global 的 TypeUnsigned，定义默认值 0，范围 `0..=i64::MAX`。GetGlobal 读取 `vardef::AnalyzeSampledNDVThreshold.Load()`，SetGlobal 解析 i64 后 Store；值转换失败返回 wrong_type。通用 Validate 负责 scope/范围约束，直接调用 hook 不等同于走完整 Validate 链。新集群 500000000 初值来自 `sysvar.rs` 的初始化函数，不能改称本注册项默认值。
 
 - `REGISTER: Once`：注册生命周期哨兵，不保存变量内容。
 - 进程级原子量：`RESOURCE_CONTROL_ENABLED`、`RESOURCE_CONTROL_STRICT`、`SERVER_MEMORY_LIMIT`、`SERVER_MEMORY_LIMIT_SESS_MIN_SIZE`、`SERVER_MEMORY_LIMIT_GC_TRIGGER_BITS`、`SCHEMA_CACHE_SIZE`、`TS_VALIDATION_ENABLED`，以及私有的 `GOGC_THRESHOLD_BITS`、`GOGC_MIN`、`GOGC_MAX`。浮点数以 `f64::to_bits()` 存在 `AtomicU64` 中。
@@ -121,9 +125,8 @@ Go 的主要对照是 [`variable.go`](./variable.go) 与 [`sysvar.go`](./sysvar.
 
 ## 验证依据
 
-- RustCodeGraph `status`：本仓库索引包含 11,467 个文件；`files --filter pkg/sessionctx/variable` 显示目标文件 79 个符号、独立测试 26 个符号。
-- RustCodeGraph `node --file pkg/sessionctx/variable/sysvar_builtins.rs` 分段读取了 1--2488 行；`node --file .../sysvar_builtins_test.rs` 读取了完整测试。图报告该生产文件被三个 Rust 文件引用。
-- RustCodeGraph `query` 确认 `SetTraceEventConfig`、`register_builtin_sysvars` 和 `set_global_system_var` 的定义位置；`callers/callees` 对函数 ID 出现泛化候选，故未将其不可靠输出当作调用事实，转而用直接调用点搜索补证。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/sysvar_builtins.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/sysvar_builtins.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：`sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 与 `sampled_ndv_threshold_sysvar_updates_global_atomic_state` 核对正式定义、scope、Hint 标志、负值 warning、global 原子写读与测试后恢复；Go `sysvar.go` 的同名项提供对照。
 - 已核对：`pkg/sessionctx/variable/Cargo.toml`、`lib.rs`、`variable.rs`、`session.rs`、`sysvar_builtins_test.rs`、Go `variable.go`、`sysvar.go`、`sysvar_test.go`，以及直接调用点 `pkg/session/hint_runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/control.rs`。
-- 人工复核重点：总注册顺序、compatibility 覆盖规则、global write 的四步顺序、原子/锁状态、跨变量不变量、Go/Rust 测试边界和测试文件独立性。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；结构验证使用任务指定的 11 标题命令。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

@@ -47,6 +47,8 @@ crate 边界由 `pkg/sessionctx/vardef/Cargo.toml` 给出：库入口为 `lib.rs
 
 ## 数据与状态
 
+冻结增量新增两组定义：`TiDBOptRangeMaxCount = "tidb_opt_range_max_count"`，默认 `DefTiDBOptRangeMaxCount = 1000`；这是 skyline pruning 中 equality/IN 优先比较的 range-count 阈值，0 关闭该阈值，不限制 range 构造。`TiDBAnalyzeSampledNDVThreshold = "tidb_analyze_sampled_ndv_threshold"`，定义默认值为 0，并由 `AnalyzeSampledNDVThreshold: AtomicI64Value` 保存进程级状态；0 关闭 sampled NDV。
+
 静态名称和默认值是只读编译期数据；动态状态则是**进程级**而非会话级。同一进程中的会话、后台任务和服务组件共享这些原子量，另一个 TiDB/AsterSQL 进程不会自动看到更新。`ScopeGlobal` 描述 SQL 系统变量语义，不能误解为跨节点一致性协议；跨节点传播由本文件之外的全局变量缓存/配置流程负责。
 
 整数、布尔和浮点包装均采用顺序一致原子访问。`AtomicF64Value` 保留全部位模式，包括 NaN 的具体表示；它只保证单值原子读写，不提供 compare-and-swap 或复合更新。`AtomicU64Value::Inc` 使用 `fetch_add(1) + 1` 返回递增后的值，溢出行为沿用 Rust 原子整数运算。字符串和慢日志规则使用 `RwLock`：读字符串会产生一份克隆，规则表的调用方必须自行遵循锁的读写生命周期。
@@ -56,6 +58,8 @@ DDL 的六个共享量使用标准库原子类型并通过函数封装；其他�
 `DefTiDBServerMemoryLimit` 是 `LazyLock<String>`，首次读取时根据 `sysinfo::System::total_memory()` 决定 `80%` 或禁用值 `0`。TTL 开始/结束时间当前保存为已校验的字符串，不是带时区的时间对象。若消费者需要比较窗口，仍须在其自身边界解析或转换。
 
 ## 依赖与调用关系
+
+range-count 的 global/session scope、整数边界与 Hint 标志由 `variable/sysvar_builtins.rs` 注册，强类型会话字段在 `variable/session.rs` 更新；sampled-NDV 由注册表的全局 getter/setter 读写原子状态。新集群初始化函数 `variable/sysvar.rs::GlobalSystemVariableInitialValueWithRuntime` 返回 500000000，这与本文件定义默认值 0 分属不同阶段，不能混写。
 
 - **模块入口：** `pkg/sessionctx/vardef/lib.rs` 私有声明 `tidb_vars` 并公开重导出全部符号；同 crate 的 `sysvar.rs` 和 `runtime.rs` 分别覆盖 MySQL 通用名称与其他运行时租约。
 - **直接依赖：** `std::sync::atomic` 提供标量原子；`RwLock`/`LazyLock` 提供字符串、Map 和延迟初始化；`chrono` 校验时间格式；`sysinfo` 探测主机总内存；`kerneltype` 提供 Classic/NextGen 判断。
@@ -119,10 +123,12 @@ RustCodeGraph 对精确节点给出的下游边包括：`IsMDLEnabled → kernel
 
 ## 验证依据
 
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/vardef/tidb_vars.rs` 与 `git show 2c944fb:pkg/sessionctx/vardef/tidb_vars.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
+- 增量复核：冻结 Go `pkg/sessionctx/vardef/tidb_vars.go` 同名常量/原子值；`pkg/sessionctx/variable/sysvar_builtins_test.rs` 的 range_count_threshold_sysvar_matches_go_contract 与 sampled_ndv_threshold_sysvar_updates_global_atomic_state 记录作用域、默认值、字段和原子钩子断言。
 - 源文件全貌：`pkg/sessionctx/vardef/tidb_vars.rs`（2685 行）；符号盘点确认 968 个 `pub const`、113 个 `pub static`、19 个 `pub fn`，并检查了所有结构体、枚举、类型别名、impl 和函数区域。
 - crate 与模块边界：`pkg/sessionctx/vardef/Cargo.toml`、`pkg/sessionctx/vardef/lib.rs`。
 - Go 对照：`pkg/sessionctx/vardef/tidb_vars.go`，重点核对进程全局 var block、内存/时间辅助、压缩模式、作用域/类型标志、聚簇索引转换、DDL 原子访问及内核分支。
 - 独立测试：`pkg/sessionctx/vardef/tidb_vars_test.rs`、`pkg/sessionctx/vardef/tidb_vars_2_aster_unit_test.rs`；Go 对照测试：`pkg/sessionctx/vardef/tidb_vars_test.go`。
-- RustCodeGraph：`status` 确认索引覆盖目标文件；文件节点报告该文件被 20 个文件使用；精确 `node` 查询验证 `IsMDLEnabled`、`ToExchangeCompressionMode`、`SetDDLReorgWorkerCounter` 的源码与下游边。callers 查询未在限定时间返回，直接上游改用符号检索核对。
 - 直接调用证据包括：`pkg/session/runtime/control.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/domain/domain.rs`、`pkg/ddl/normal_policy.rs`、`pkg/ddl/reorg.rs`、`pkg/meta/model/reorg.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/sessionctx/variable/variable.rs`、`pkg/executor/adapter.rs` 和 `pkg/kv/version_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档恰含 11 个固定二级章节，并人工复核未把声明常量误述为完整 SysVar 接线。
+- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
+- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。
