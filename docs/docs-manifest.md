@@ -1,8 +1,10 @@
 # Rust 文件说明文档新增清单
 
-计划为 2561 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2576 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
-排除：`*_test.rs`、`*_tests.rs`、`test.rs`、`tests.rs`，`test/tests/testdata/benches/fuzz` 目录，以及仅承担装配、占位、桩接线或薄转发的 `lib.rs`、`mod.rs`、`doc.rs`、`stubs.rs`、`build.rs`、`bin_main.rs`。
+维护规则：修改含实际业务逻辑的合格生产 `.rs` 文件时，必须同步更新同目录的同名 `.rs.md`；新增合格生产 `.rs` 文件时，必须新建同目录说明并加入本清单。
+
+排除：`*_test.rs`、`*_tests.rs`、`test.rs`、`tests.rs`，`test/tests/testdata/benches/fuzz` 目录，以及仅承担装配、占位、桩接线或薄转发的 `lib.rs`、`mod.rs`、`doc.rs`、`stubs.rs`、`build.rs`、`bin_main.rs` 等骨架文件。是否纳入最终按文件实际职责判断，不仅依据文件名。
 
 ## 📘 推荐阅读顺序（由浅入深）
 
@@ -127,6 +129,8 @@
 - [ ] [`br/pkg/restore/log_client/migration.rs.md`](../br/pkg/restore/log_client/migration.rs.md)
 - [ ] [`br/pkg/restore/log_client/ssts.rs.md`](../br/pkg/restore/log_client/ssts.rs.md)
 - [ ] [`br/pkg/restore/misc.rs.md`](../br/pkg/restore/misc.rs.md)
+- [ ] [`br/pkg/restore/nameroute/parser.rs.md`](../br/pkg/restore/nameroute/parser.rs.md)
+- [ ] [`br/pkg/restore/nameroute/router.rs.md`](../br/pkg/restore/nameroute/router.rs.md)
 - [ ] [`br/pkg/restore/restorer.rs.md`](../br/pkg/restore/restorer.rs.md)
 - [ ] [`br/pkg/restore/snap_client/client.rs.md`](../br/pkg/restore/snap_client/client.rs.md)
 - [ ] [`br/pkg/restore/snap_client/import.rs.md`](../br/pkg/restore/snap_client/import.rs.md)
@@ -207,6 +211,7 @@
 - [ ] [`br/pkg/task/restore_data.rs.md`](../br/pkg/task/restore_data.rs.md)
 - [ ] [`br/pkg/task/restore_ebs_meta.rs.md`](../br/pkg/task/restore_ebs_meta.rs.md)
 - [ ] [`br/pkg/task/restore_lifecycle.rs.md`](../br/pkg/task/restore_lifecycle.rs.md)
+- [ ] [`br/pkg/task/restore_name_route.rs.md`](../br/pkg/task/restore_name_route.rs.md)
 - [ ] [`br/pkg/task/restore_raw.rs.md`](../br/pkg/task/restore_raw.rs.md)
 - [ ] [`br/pkg/task/restore_txn.rs.md`](../br/pkg/task/restore_txn.rs.md)
 - [ ] [`br/pkg/task/show/cmd.rs.md`](../br/pkg/task/show/cmd.rs.md)
@@ -400,6 +405,7 @@
 - [ ] [`pkg/config/configtypes/types.rs.md`](../pkg/config/configtypes/types.rs.md)
 - [ ] [`pkg/config/const.rs.md`](../pkg/config/const.rs.md)
 - [ ] [`pkg/config/deploymode/mode.rs.md`](../pkg/config/deploymode/mode.rs.md)
+- [ ] [`pkg/config/diagnosticmode.rs.md`](../pkg/config/diagnosticmode.rs.md)
 - [ ] [`pkg/config/external_workload.rs.md`](../pkg/config/external_workload.rs.md)
 - [ ] [`pkg/config/kerneltype/classic.rs.md`](../pkg/config/kerneltype/classic.rs.md)
 - [ ] [`pkg/config/kerneltype/nextgen.rs.md`](../pkg/config/kerneltype/nextgen.rs.md)
@@ -560,6 +566,7 @@
 - [ ] [`pkg/domain/crossks/cross_ks.rs.md`](../pkg/domain/crossks/cross_ks.rs.md)
 - [ ] [`pkg/domain/crossks/ddl_submit.rs.md`](../pkg/domain/crossks/ddl_submit.rs.md)
 - [ ] [`pkg/domain/crossks/reporter.rs.md`](../pkg/domain/crossks/reporter.rs.md)
+- [ ] [`pkg/domain/diagnostic.rs.md`](../pkg/domain/diagnostic.rs.md)
 - [ ] [`pkg/domain/domain.rs.md`](../pkg/domain/domain.rs.md)
 - [ ] [`pkg/domain/domain_sysvars.rs.md`](../pkg/domain/domain_sysvars.rs.md)
 - [ ] [`pkg/domain/domainctx.rs.md`](../pkg/domain/domainctx.rs.md)
@@ -872,6 +879,7 @@
 - [ ] [`pkg/executor/metrics_reader.rs.md`](../pkg/executor/metrics_reader.rs.md)
 - [ ] [`pkg/executor/mpp_gather.rs.md`](../pkg/executor/mpp_gather.rs.md)
 - [ ] [`pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md`](../pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs.md)
+- [ ] [`pkg/executor/mview_complete_delta_apply.rs.md`](../pkg/executor/mview_complete_delta_apply.rs.md)
 - [ ] [`pkg/executor/operate_ddl_jobs.rs.md`](../pkg/executor/operate_ddl_jobs.rs.md)
 - [ ] [`pkg/executor/opt_rule_blacklist.rs.md`](../pkg/executor/opt_rule_blacklist.rs.md)
 - [ ] [`pkg/executor/parallel_apply.rs.md`](../pkg/executor/parallel_apply.rs.md)
@@ -1166,6 +1174,7 @@
 - [ ] [`pkg/ingestor/globalsort/kvgroup.rs.md`](../pkg/ingestor/globalsort/kvgroup.rs.md)
 - [ ] [`pkg/ingestor/globalsort/merge.rs.md`](../pkg/ingestor/globalsort/merge.rs.md)
 - [ ] [`pkg/ingestor/globalsort/merge_v2.rs.md`](../pkg/ingestor/globalsort/merge_v2.rs.md)
+- [ ] [`pkg/ingestor/globalsort/orphandata.rs.md`](../pkg/ingestor/globalsort/orphandata.rs.md)
 - [ ] [`pkg/ingestor/globalsort/reader.rs.md`](../pkg/ingestor/globalsort/reader.rs.md)
 - [ ] [`pkg/ingestor/globalsort/split.rs.md`](../pkg/ingestor/globalsort/split.rs.md)
 - [ ] [`pkg/ingestor/globalsort/testutil.rs.md`](../pkg/ingestor/globalsort/testutil.rs.md)
@@ -1608,6 +1617,8 @@
 - [ ] [`pkg/planner/core/memtable_infoschema_extractor.rs.md`](../pkg/planner/core/memtable_infoschema_extractor.rs.md)
 - [ ] [`pkg/planner/core/memtable_predicate_extractor.rs.md`](../pkg/planner/core/memtable_predicate_extractor.rs.md)
 - [ ] [`pkg/planner/core/metrics/metrics.rs.md`](../pkg/planner/core/metrics/metrics.rs.md)
+- [ ] [`pkg/planner/core/mview_refresh_builder.rs.md`](../pkg/planner/core/mview_refresh_builder.rs.md)
+- [ ] [`pkg/planner/core/mview_refresh_lookup.rs.md`](../pkg/planner/core/mview_refresh_lookup.rs.md)
 - [ ] [`pkg/planner/core/operator/baseimpl/plan.rs.md`](../pkg/planner/core/operator/baseimpl/plan.rs.md)
 - [ ] [`pkg/planner/core/operator/logicalop/base_logical_plan.rs.md`](../pkg/planner/core/operator/logicalop/base_logical_plan.rs.md)
 - [ ] [`pkg/planner/core/operator/logicalop/expression_util.rs.md`](../pkg/planner/core/operator/logicalop/expression_util.rs.md)
@@ -1789,6 +1800,8 @@
 - [ ] [`pkg/planner/memo/group.rs.md`](../pkg/planner/memo/group.rs.md)
 - [ ] [`pkg/planner/memo/group_expr.rs.md`](../pkg/planner/memo/group_expr.rs.md)
 - [ ] [`pkg/planner/memo/implementation.rs.md`](../pkg/planner/memo/implementation.rs.md)
+- [ ] [`pkg/planner/mview/mview.rs.md`](../pkg/planner/mview/mview.rs.md)
+- [ ] [`pkg/planner/mview/stats.rs.md`](../pkg/planner/mview/stats.rs.md)
 - [ ] [`pkg/planner/optimize.rs.md`](../pkg/planner/optimize.rs.md)
 - [ ] [`pkg/planner/planctx/context.rs.md`](../pkg/planner/planctx/context.rs.md)
 - [ ] [`pkg/planner/plannersession/context.rs.md`](../pkg/planner/plannersession/context.rs.md)
@@ -1937,6 +1950,8 @@
 - [ ] [`pkg/session/cursor/state.rs.md`](../pkg/session/cursor/state.rs.md)
 - [ ] [`pkg/session/cursor/tracker.rs.md`](../pkg/session/cursor/tracker.rs.md)
 - [ ] [`pkg/session/ddl_tables.rs.md`](../pkg/session/ddl_tables.rs.md)
+- [ ] [`pkg/session/diagnostic.rs.md`](../pkg/session/diagnostic.rs.md)
+- [ ] [`pkg/session/diagnostic_sql.rs.md`](../pkg/session/diagnostic_sql.rs.md)
 - [ ] [`pkg/session/dml_runtime.rs.md`](../pkg/session/dml_runtime.rs.md)
 - [ ] [`pkg/session/fts_runtime.rs.md`](../pkg/session/fts_runtime.rs.md)
 - [ ] [`pkg/session/global_init.rs.md`](../pkg/session/global_init.rs.md)
@@ -2166,9 +2181,11 @@
 - [ ] [`pkg/statistics/histogram.rs.md`](../pkg/statistics/histogram.rs.md)
 - [ ] [`pkg/statistics/index.rs.md`](../pkg/statistics/index.rs.md)
 - [ ] [`pkg/statistics/merge_global.rs.md`](../pkg/statistics/merge_global.rs.md)
+- [ ] [`pkg/statistics/partition_ndv.rs.md`](../pkg/statistics/partition_ndv.rs.md)
 - [ ] [`pkg/statistics/row_sampler.rs.md`](../pkg/statistics/row_sampler.rs.md)
 - [ ] [`pkg/statistics/runtime_stats_builder.rs.md`](../pkg/statistics/runtime_stats_builder.rs.md)
 - [ ] [`pkg/statistics/sample.rs.md`](../pkg/statistics/sample.rs.md)
+- [ ] [`pkg/statistics/sampled_ndv.rs.md`](../pkg/statistics/sampled_ndv.rs.md)
 - [ ] [`pkg/statistics/scalar.rs.md`](../pkg/statistics/scalar.rs.md)
 - [ ] [`pkg/statistics/table.rs.md`](../pkg/statistics/table.rs.md)
 - [ ] [`pkg/statistics/util/json_objects.rs.md`](../pkg/statistics/util/json_objects.rs.md)
