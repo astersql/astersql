@@ -4,9 +4,11 @@
 
 ## 文件定位
 
+本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
+
 `pkg/executor/analyze_col.rs` 属于 `astersql-executor` crate；crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs` 以 `pub mod analyze_col;` 对外公开本模块。文件移植自同目录的 `analyze_col.go`，负责表达列统计 ANALYZE 下推请求的参数、结果流生命周期边界和作业描述文本。
 
-当前 Rust 接线必须与 Go 生产链区分开看。RustCodeGraph 显示本文件被 `pkg/executor/analyze.rs`、`pkg/executor/analyze_col_test.rs`、`pkg/executor/analyze_test.rs` 和一个 mockstore 测试文件引用，但精确文本检索只找到本文件的 `AnalyzeColumnsExec` 在 `pkg/executor/analyze_col_test.rs` 中被构造；Rust 主调度 `pkg/executor/analyze.rs::analyzeWorker` 使用的是该文件自己定义的 `analyzeColumnsExec`，采样实现 `pkg/executor/analyze_col_sampling.rs` 也定义了另一个泛型 `AnalyzeColumnsExec<B>`。因此，本文件现阶段是公开的、可单测的列下推移植边界，不应表述为已完整接入 Rust ANALYZE 主链。
+冻结版本的精确检索只找到 `pkg/executor/analyze_col_test.rs` 导入本模块并实现 `analyzeColumnRuntime`；Rust 主调度 `analyze.rs` 使用自己的 `analyzeColumnsExec`，采样模块也有独立泛型类型。本文件是公开、可独立测试的列下推边界，尚无生产适配接线证据。
 
 ## 核心职责
 
@@ -27,7 +29,7 @@
 - `schemaState`、`indexColumn`、`indexInfo`、`columnInfo`、`tableInfo`：本地化的表结构快照。`indexInfo::{hasPrefixIndex, hasCondition}` 支撑唯一索引资格判断；`tableInfo::nonTemporaryColumnCount` 计算作业文案中的有效列总数。
 - `handleCols::{Int, Common}` 与 `hasPkHist`：区分整型主键 handle 和 common handle；只有 `Int` 具有独立 PK 直方图。
 - `keyRange { low, high }`：半开扫描范围 `[low, high)` 的字节表示。
-- `columnAnalyzeRequest`、`analyzeRequest`：列采样、桶、TopN、CMS/FM sketch、扩展统计和 NDV 参数；`opaqueFields` 保留本模块不理解的序列化字段。
+- `columnAnalyzeRequest`、`analyzeRequest`：列采样、桶、TopN、CMS/FM sketch、扩展统计和 NDV 参数，其中 `ndvRate: Option<f64>` 表示实际下发的 NDV 采样率（None 为全输入）；`opaqueFields` 保留本模块不理解的序列化字段。
 - `analyzeOptionType`、`v2AnalyzeOptions`、`analyzeInfo`、`analyzeJob`：选项标签、v2 已填充选项及最终 `jobInfo` 容器。
 
 ### 运行时接口与执行器
@@ -68,7 +70,7 @@
 
 ### 生成作业描述
 
-`prepareAnalyzeColumnsJobInfo` 对 `None` 立即返回；否则先选取 `analyzeInfo.v2Options.filledOptions`，没有 v2 选项时才用基础 `options`。restricted SQL 添加 `auto ` 前缀，然后依次拼接索引、逗号、列和 `with` 选项。桶数和 TopN 仅在映射含键时输出；非零样本数优先输出 `samples`，否则输出请求中的浮点 `sampleRate`。只有 `job` 存在时才写回字符串。
+`prepareAnalyzeColumnsJobInfo` 对 `None` 立即返回；否则先选取 `analyzeInfo.v2Options.filledOptions`，没有 v2 选项时才用基础 `options`。restricted SQL 添加 `auto ` 前缀，然后依次拼接索引、逗号、列和 `with` 选项。桶数和 TopN 仅在映射含键时输出；非零样本数优先输出 `samples`，否则输出请求中的浮点 `sampleRate`。随后仅当实际请求的 `columnRequest.ndvRate` 为 `Some(rate)` 时追加 `{rate} ndvrate`；不是看 raw/filled options 中有没有 NDVRate 键。只有 `job` 存在时才写回字符串。
 
 ## 数据与状态
 
@@ -77,7 +79,7 @@
 - `notifyErrorWaitGroupWrapper` 与 `waitGroupWrapper` 仅持有 `Arc<AtomicUsize>`。本文件没有增减或等待逻辑，它们只是为了与完整执行器形状对齐。
 - `tableInfo::nonTemporaryColumnCount` 先排除 temporary/removing 列并按小写名称去重。对于 changing 列，它会从 `_Col$_<原名>_<后缀>` 推回原名并从集合移除，避免在线 modify-column 阶段把原列和过渡列重复计入；`analyze_col_test.rs::non_temporary_column_count_matches_go_modify_column_semantics` 覆盖该规则。
 - `prepareColumns` 假定 `ExtraHandleID == -1` 的伪 `_row_id` 若存在则位于 `colsInfo` 最后；它只剔除末项，不扫描中间位置。
-- 选项用 `BTreeMap` 保存，因此状态确定且可比较；实际输出顺序不是映射迭代顺序，而是函数明确规定的 buckets、topn、samples/samplerate。
+- 选项用 `BTreeMap` 保存，因此状态确定且可比较；实际输出顺序不是映射迭代顺序，而是函数明确规定的 buckets、topn、samples/samplerate、可选 ndvrate。`analyzeOptionType::NDVRate.label()` 返回 `ndvrate`；`buildResp` 克隆完整 analyzeRequest 到 spec，实际 protobuf 编码仍由 runtime 负责。
 
 ## 依赖与调用关系
 
@@ -121,6 +123,7 @@ Rust 生产主链的相关但不同类型是 `pkg/executor/analyze.rs::analyzeCo
 - 唯一索引资格条件与 `pkg/executor/analyze_col.go::{isColumnCoveredBySingleColUniqueIndex,isSingleColNonPrefixUniqueIndex}` 一致：Public、unique/primary、单列、无前缀、无条件。
 - `open` 都安装不限额的语句级 tracker、拆分整型边界、先建第一段请求，并在有第二段时保存双结果。
 - `buildResp` 都以快照开关选择 SI/RC，以 ANALYZE 专用 store batch size 同时控制 merge/serial 标志，并固定无序扫描。
+- NDVRATE 文案与 Go 读取 `analyzePB.ColReq.NdvRate` 的意图一致：仅展示实际下发值；`analyze_ndv_rate_is_rendered_in_job_info_when_sent_to_storage` 静态断言结尾为 `with 0.01 samplerate, 0.25 ndvrate`。本文件不负责阈值决策、选项校验或保存。
 - 作业文案的 auto 前缀、索引/列全量或子集、选项顺序以及 samples 与 samplerate 二选一规则与 Go 一致。
 - Rust 测试 `analyze_request_is_unordered_for_store_batching` 对应 Go `pkg/executor/analyze_test.go::TestAnalyzeBuildsRequest` 的核心请求断言：`keepOrder=false`、并发度传播、batch size 传播以及两个 batch 布尔标志随零值关闭。
 
@@ -146,12 +149,9 @@ Rust 生产主链的相关但不同类型是 `pkg/executor/analyze.rs::analyzeCo
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件 `node` 覆盖 `pkg/executor/analyze_col.rs` 全部 616 行。
-- RustCodeGraph 符号查询：定位了 Rust/Go 两份 `AnalyzeColumnsExec`、`isColumnCoveredBySingleColUniqueIndex`、`isSingleColNonPrefixUniqueIndex`、`hasPkHist` 和 `prepareAnalyzeColumnsJobInfo`；流程查询确认 Rust `open -> buildResp`、`prepareAnalyzeColumnsJobInfo -> prepareIndexes/prepareColumns`，以及测试对 `buildResp` 的调用。
-- 读取的 Rust 生产文件：`pkg/executor/analyze_col.rs`、`pkg/executor/analyze.rs`、`pkg/executor/analyze_col_sampling.rs` 的直接引用，以及 `pkg/executor/lib.rs` 的模块声明。
-- 读取的 crate 配置：`pkg/executor/Cargo.toml`；确认 package 为 `astersql-executor`、lib 根为 `lib.rs`、`nextgen` 是唯一声明 feature，且完整执行链依赖位于 crate 层。本文件没有 feature gate。
-- 读取的 Rust 测试：`pkg/executor/analyze_col_test.rs`；覆盖 modify-column 列计数和无序/batch 请求参数。`pkg/executor/analyze_test.rs` 被图索引列为模块使用者，但其中的 `analyze_columns` 针对 `analyze.rs` 的 runtime 接口，不是本文件执行器的直接行为测试。
-- 读取的 Go 对照：`pkg/executor/analyze_col.go` 全文件，以及直接上游 `pkg/executor/builder.go`、`pkg/executor/analyze.go`、`pkg/executor/analyze_col_sampling.go` 的相关片段。
-- 读取的 Go 测试：`pkg/executor/analyze_test.go::TestAnalyzeBuildsRequest`，验证无序请求、unsigned handle 边界、专用并发度、store batch 参数及其零值关闭行为。
-- 包契约检查：仓库中不存在 `pkg/executor/doc.go`，因此没有可读取的包级 `doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只执行任务指定的 11 章节结构检查并人工核对上述事实链。
+- 冻结审计：`git diff ad0a6f4..2c944fb -- pkg/executor/analyze_col.rs` 和 `git show 2c944fb:pkg/executor/analyze_col.rs`；已核对全文件、NDVRate 枚举/标签、可选请求 rate、文案与请求克隆路径。
+- 冻结装配：`pkg/executor/lib.rs`、`Cargo.toml`；`git grep` 对目标提交的模块引用及 trait 实现仅找到独立 `analyze_col_test.rs`。`pkg/executor/doc.go` 不存在；没有据 manifest 推定生产接线。
+- Go 对照：冻结 `pkg/executor/analyze_col.go::prepareAnalyzeColumnsJobInfo` 读取实际 protobuf `NdvRate`；同时保留范围拆分、无序/batch 参数及失败清理差异说明。
+- 静态读取冻结 `pkg/executor/analyze_col_test.rs::analyze_ndv_rate_is_rendered_in_job_info_when_sent_to_storage`，核对实际 rate 文案；既有独立测试覆盖无序/store batch 请求与 modify-column 列计数。未运行代码测试。
+- RustCodeGraph status/explore 仅辅助工作区符号定位；冻结 blob 是本文事实依据，旧索引统计不再作为验证结论。
+- Ready 文档验证：任务指定的固定 11 节与 `git diff --check`；验证 profile 技能缺失，按计划使用等价检查。没有修改 Rust/Go/Cargo 或运行 Cargo。

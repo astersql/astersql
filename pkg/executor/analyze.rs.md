@@ -2,6 +2,8 @@
 
 ## 文件定位
 
+本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
+
 `pkg/executor/analyze.rs` 属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod analyze` 暴露它，`pkg/executor/Cargo.toml` 声明该 crate，并直接依赖 `astersql-statistics-handle` 和带 `failpoints` feature 的 `fail`。本文件是 ANALYZE 统计收集的编排与边界层：它不实现列采样、索引扫描或统计存储细节，而是定义任务、结果、取消和运行时 trait，并规定预刷 delta、构建/保存、发布、作业收尾及全局统计合并的顺序。
 
 当前应用接线要区分两条路径。会话层 `pkg/session/runtime/statistics.rs` 的 `ConcreteSession::execute_analyze_with_context` 构造 `SessionAnalyzeRuntime`，调用 `AnalyzeExec::RunCanonicalWithContext`；这是 SQL 会话实际使用的规范批次路径。`AnalyzeExec::Next` 则保留与 `pkg/executor/analyze.go` 的 `AnalyzeExec.Next` 对齐的显式任务/worker 管线，RustCodeGraph 当前找到的直接构造者是 `pkg/executor/analyze_test.rs::executor`。因此不能仅凭 `Next` 的完整实现断言生产会话正从该入口运行。
@@ -10,7 +12,7 @@
 
 - `flushStatsDeltaForAnalyze` 在列分析读取 `mysql.stats_meta` 基数前，按库表去重并尝试广播 `FLUSH STATS_DELTA ... CLUSTER`；旧节点不支持广播执行类型时只记录警告，其他错误向上返回。
 - `AnalyzeExec::RunCanonicalWithContext` 固定 canonical 批次的阶段顺序：检查取消/kill、预刷 delta、准备批次、在线程中保存、再发布；任何捕获到的失败交给 `CanonicalAnalyzeRuntime::record_failure`。
-- `AnalyzeExec::Next` / `next_inner` 管理 Go 对齐的多任务管线：过滤锁表、计算并发、登记作业、并行收集、并行保存、合并动态分区全局统计、保存分析选项并刷新统计缓存。
+- `AnalyzeExec::Next` / `next_inner` 管理 Go 对齐的多任务管线：过滤锁表、提示未实际使用的 NDVRATE、计算并发、登记作业、并行收集、并行保存、合并动态分区全局统计、保存分析选项并刷新统计缓存。
 - `handleResultsErrorWithConcurrency` 汇集 worker 输出，分发保存任务，去重保存错误和历史统计表 ID，并保证每个作业走成功或失败收尾。
 - `analyzeContext`、`buildAnalyzeKillCtx`、`analyzeWorkerExitErr` 和 `trySendAnalyzeResult` 把父取消、SQL kill 与跨线程提前退出统一为可传播的 `AnalyzeError`。
 
@@ -22,6 +24,7 @@
 - 结果/全局统计：`analyzeResults`、`analyzeResultPart`、`histogram`、`globalStatsKey`、`globalStatsInfo`、`globalStatsMap`。列统计以 `indexID = -1` 聚合，索引统计按直方图 ID 分键。
 - 运行时边界：`analyzeRuntime` 承担广播、统计读写、作业状态、kill、指标和 SQL 等旧式管线副作用；`CanonicalAnalyzeRuntime` 是当前会话 canonical 路径的较窄边界；`CanonicalAnalyzeBatch` 携带版本、`TableStats` profiles 和 `RuntimeAnalyzeJob`。
 - 主执行器：`AnalyzeExec` 持有任务、选项、`errExitCh` 和 `analyzeRuntime`；`baseAnalyzeExec` 保留单任务基础配置。公开编排入口包括 `RunCanonical`、`RunCanonicalWithContext`、`Next`、`waitFinish`、`saveAnalyzeOptions`、`handleResultsError*`、`buildAnalyzeKillCtx`、`trySendAnalyzeResult` 和 `analyzeWorker`。
+- `analyzeColumnsExec::{opts, ndvRate}`：分别保留原始请求/保存选项和实际下发 NDV 采样率；`None` 表示全输入 NDV。本文件复用 builder 的选择结果，不自行计算采样率或比较表行数。`warnUnusedNDVRateForTest` 仅公开提示判定测试入口。
 - 辅助函数：`filterAndCollectTasks`、`getLockedTableAndPartitionIDs`、`warnLockedTableMsg`、`recordHistoricalStats`、`AddNewAnalyzeJob`、`finishJobWithLog`、`handleGlobalStats` 等封装可单独验证的策略。
 
 ## 执行流程
@@ -30,7 +33,7 @@
 
 Go 对齐路径从 `Next` 进入。`Next` 记录是否为 restricted SQL，调用 `next_inner`，无论成功失败都遍历列任务并 `memoryTracker::detach`，手工 ANALYZE 还上报 `succ`/`failed` 指标。`next_inner` 的主要阶段是：
 
-1. `buildAnalyzeKillCtx` 创建子上下文和 kill watcher；`filterAndCollectTasks` 一次查询涉及的表/分区锁，跳过锁定对象并追加警告。
+1. `buildAnalyzeKillCtx` 创建子上下文和 kill watcher；`filterAndCollectTasks` 一次查询涉及的表/分区锁，跳过锁定对象并追加警告。随后 `warnUnusedNDVRate` 只检查过滤后任务：阈值为 0 时不提示；列任务 raw `opts[NDVRate]` 解码后在 `(0,1)` 内算 requested，任一列任务 `ndvRate.is_some()` 算 used；仅 requested 且没有 used 时追加提示，再处理空任务返回。索引任务和已锁定对象不参与判断。
 2. 构造待更新表 ID，取 `min(build_stats_concurrency, tasks.len())`；零并发是错误。采样并发在主线程解析一次并写入所有列任务的原子字段。
 3. 准备并插入作业，清空 `errExitCh`，创建有界 task/result channel；启动 build workers 和一个结果处理线程。
 4. `analyzeWorker` 取任务、检查退出条件、启动作业并按 `taskType` 调用 `analyze_columns` 或 `analyze_index`；结果经 `trySendAnalyzeResult` 非阻塞重试发送。worker panic 被转换成带当前作业的错误结果。
@@ -41,7 +44,7 @@ Go 对齐路径从 `Next` 进入。`Next` 记录是否为 restricted SQL，调�
 
 共享状态主要通过 `Arc` 和原子量传递。`errExitCh: AtomicBool` 是整个旧式管线的快速失败标志；`samplingStatsConcurrency` 在 worker 启动前以 Release 写入；`analyzeContext.cancelled` 用 Acquire/Release 读写，具体 cause 受 `Mutex` 保护。任务与结果跨线程使用 `Arc`，全局统计映射、接收端及历史表 ID 集合使用 `Mutex`。
 
-`OptionsMap` 以物理表 ID 保存 `v2AnalyzeOptions`。`saveAnalyzeOptions` 对缺失的 raw option 写 SQL `DEFAULT`，`SampleRate` 从位模式恢复 `f64`；动态分区裁剪时只 REPLACE 表级行，并对分区旧行中明确 reset 的字段执行 `UPDATE ... SET ...=DEFAULT`。`columnChoice` 会转义单引号，列 ID 以逗号串持久化。
+`OptionsMap` 以物理表 ID 保存 `v2AnalyzeOptions`。`saveAnalyzeOptions` 对缺失的 raw option 写 SQL `DEFAULT`，`SampleRate` 与 `NDVRate` 从位模式恢复 `f64`；动态分区裁剪时只 REPLACE 表级行，并对分区旧行中明确 reset 的字段执行 `UPDATE ... SET ...=DEFAULT`。REPLACE 列表包含 `ndv_rate`，动态裁剪的 reset 集合同样支持 `ndv_rate=DEFAULT`，没有该 raw option 时写 `DEFAULT` 而非固定采样率。`columnChoice` 会转义单引号，列 ID 以逗号串持久化。
 
 `handleGlobalStats` 只处理动态裁剪下的分区结果。列 part 忽略空直方图并把所有 histogram ID 放入 `(tableID, -1)`；索引 part 为每个非空直方图建立 `(tableID, histogram.id)`。重复键采用 `BTreeMap::insert` 的后写覆盖语义。
 
@@ -77,6 +80,8 @@ canonical 路径在每个有副作用的主要阶段前检查 kill，并在预�
 
 Rust `Next`、`filterAndCollectTasks`、`saveAnalyzeOptions`、`handleResultsErrorWithConcurrency`、`buildAnalyzeKillCtx`、`analyzeWorker`、`finishJobWithLog`、`handleGlobalStats` 对应 Go 同名逻辑。线程、`mpsc`、`AtomicBool`/`Mutex` 分别替代 goroutine、channel close、context/errgroup 和 map；关键语义仍是有界并发、失败时停止派发、作业完整收尾、保存错误去重、历史统计 best-effort、动态分区全局统计合并和选项持久化。
 
+NDVRATE 增量与 Go `warnUnusedNDVRate`、`writeSavedAnalyzeOption` 及分区 reset 同步：提示复用请求中是否存在采样率，持久化按浮点位模式还原并使用数据库默认值。Rust 通过 `ndvRate: Option<f64>` 表达 Go protobuf 的可选 `NdvRate`；本增量位于 `Next` 管线，不能据此宣称 canonical 入口已经执行这段提示或选项保存。
+
 仍需注意当前接线差异：Go `AnalyzeExec.Next` 是执行器入口；Rust SQL 会话目前走 `RunCanonicalWithContext`，由 `SessionAnalyzeRuntime` 自行准备、保存和发布 `CanonicalAnalyzeBatch`。因此扩展生产 ANALYZE 行为时必须先判断变化属于 canonical runtime、批次顺序，还是仅属于尚未成为会话入口的 Go 对齐 worker 管线，不能只改同名 Rust `Next`。
 
 `pkg/executor/analyze_test.rs` 与 Go `pkg/executor/analyze_test.go` 共享多组测试意图：索引全局统计拆键、动态分区构建并发上限、保存失败不挂起、预刷使用语句 context、kill 中断不挂起、列 tracker 及时释放。Rust 另外直接验证了动态/静态分区选项过滤、缺省值写 `DEFAULT` 和 reset 分区覆盖；panic/OOM 的集成覆盖位于 `pkg/executor/test/analyzetest/panictest/panic_test.rs`。
@@ -86,14 +91,16 @@ Rust `Next`、`filterAndCollectTasks`、`saveAnalyzeOptions`、`handleResultsErr
 - 新增 canonical 阶段或改变提交原子性时，修改 `RunCanonicalWithContext`、`CanonicalAnalyzeRuntime` 以及 `pkg/session/runtime/statistics.rs::SessionAnalyzeRuntime`；补充会话层成功、kill、保存失败、发布失败与 panic 测试，并明确失败后是否允许部分可见。
 - 新增列/索引任务类型或结果字段时，更新 `taskType`、`analyzeTask`、`analyzeResults`、`getTableIDFromTask`、`analyzeWorker` 和 `handleGlobalStats`，同步 `pkg/executor/analyze_test.rs` 与 Go 同名逻辑；必须维持任务类型与对应 executor 存在性的内在约束。
 - 修改并发策略时同时审查 task/result/save 三层容量、`errExitCh`、`panic_count` 和作业补收尾逻辑。性能风险主要是过小通道造成吞吐下降、锁住 receiver 时串行化，以及保存并发放大系统表写压力；正确性风险是提前退出导致任务或作业永不结束。
+- 修改 NDVRATE 时同步原始 `opts` 与实际 `ndvRate`、锁表过滤后的提示和独立测试 `analyze_ndv_rate_matches_go_validation_sampling_persistence_and_bootstrap_contract`；覆盖阈值关闭、任一分区已使用采样、未使用提示及保存值。
 - 修改选项持久化时同步 reader 的 unset sentinel、`mysql.analyze_options` 默认值以及 Go `writeSavedAnalyzeOption`/`resetAnalyzeOptionsForPartitions`。兼容风险包括把未设置值固定化、动态/静态裁剪切换后旧分区覆盖复活，以及 SQL 转义错误。
 - 修改取消或 panic 处理时保留原始 cause，确保 dropped result、未发送任务和当前作业各自只完成一次；同步 `pkg/executor/test/analyzetest/panictest/panic_test.rs` 与不挂起测试。
 - 修改预刷逻辑时同步 `collectStatsDeltaFlushObjectsForAnalyze`、测试回退目标 ID 和滚动升级兼容判断；50ms 探测只用于测试路径，不应被误用为生产健康检查。
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；查询 `AnalyzeExec` 定位 Rust/Go 定义，`node RunCanonicalWithContext` 核实 canonical 阶段和下游 trait 调用，`node next_inner` 核实 `Next` 上游与 worker/handler/合并调用边，`node flushStatsDeltaForAnalyze` 核实预刷调用链，`node handleResultsErrorWithConcurrency` 核实结果保存、作业收尾、全局统计和历史统计调用边。
-- 已读生产路径：`pkg/executor/analyze.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`、`pkg/session/runtime/statistics.rs`；`pkg/executor` 下不存在 `doc.go`，因此包契约取自 crate 根文档与模块声明。
-- 已读 Go 对照：`pkg/executor/analyze.go` 中的预刷、`AnalyzeExec.Next`、锁表过滤、选项保存、结果处理、取消、worker、作业和全局统计实现。
-- 已读独立测试：`pkg/executor/analyze_test.rs`、Go `pkg/executor/analyze_test.go`，并定位 `pkg/executor/test/analyzetest/panictest/panic_test.rs` 的 panic/OOM 集成覆盖。
-- 人工复核结论：本文件存在的原因是集中约束 ANALYZE 的阶段顺序、失败/取消语义和并发资源生命周期；当前生产入口与 Go 对齐旧式入口已明确区分，扩展点及需要同步的测试、兼容性和性能风险均有具体符号与路径依据。
+- 冻结范围：逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/executor/analyze.rs`，并用 `git show 2c944fb:pkg/executor/analyze.rs` 分段核对完整源码；说明不采纳工作区未提交 Rust 变化。增量为 NDVRate 枚举、任务 opts/ndvRate、过滤后提示及选项保存/reset。
+- 接线：冻结版本 `pkg/session/runtime/statistics.rs` 的 `SessionAnalyzeRuntime` 和 `execute_analyze_with_context -> RunCanonicalWithContext`，以及 `pkg/executor/lib.rs`、`Cargo.toml`；`pkg/executor/doc.go` 不存在。
+- Go 对照：冻结版本 `pkg/executor/analyze.go` 的 `warnUnusedNDVRate`、`writeSavedAnalyzeOption`、`saveAnalyzeOptions`；已核对 requested/used、阈值关闭、DEFAULT 与浮点位模式。
+- 独立 Rust 测试：冻结 `pkg/executor/analyze_test.rs::analyze_ndv_rate_matches_go_validation_sampling_persistence_and_bootstrap_contract`，静态核对未使用提示、有实际 rate 时不提示及 REPLACE 的 `ndv_rate=0.5`；同时保留并发、取消、内存 detach 与选项缺省测试作为既有边界证据。未运行这些测试。
+- RustCodeGraph `status` 当前已含 Rust；`explore 'warnUnusedNDVRate set_mpp_encode_type unique_by_schema'` 辅助定位符号，但索引对应工作区且输出截断，不能作为冻结版本事实来源。权威依据为上述目标提交 blob。
+- Ready 文档验证使用任务指定的 11 章节检查与 `git diff --check`；`.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划采用此等价检查。纯文档任务不运行 Cargo 或代码测试。

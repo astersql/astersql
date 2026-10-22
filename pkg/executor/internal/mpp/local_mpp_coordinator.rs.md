@@ -2,6 +2,8 @@
 
 ## 文件定位
 
+本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
+
 本文件属于 `astersql-executor-internal-mpp` crate（见同目录 `Cargo.toml`），是 TiDB 进程内 MPP（Massively Parallel Processing）执行的本地协调器实现。crate 入口 `pkg/executor/internal/mpp/lib.rs` 将 `NewLocalMppCoordinator`、`MppCoordinatorPlan`、`MppDispatchSession`、`MppStoreInfo`、`MppReportSink` 和 `NoopMppReportSink` 重新导出；外层 `executor_with_retry.rs` 再把构造出的 `Box<dyn kv::MppCoordinator>` 注册、执行、按需重建，并作为 `kv::Response` 消费。
 
 它位于“物理计划已选定、TiFlash 根任务即将生成”与“调用者逐包读取 MPP 结果”之间：`NewLocalMppCoordinator` 调用 `SessionRootMppTaskGenerator::GenerateRootMPPTasks` 切分 Fragment 和 KV range，编码 TiFlash DAG 与派发请求；`LocalMppCoordinator::Execute` 启动派发，`kv::Response::Next` 汇聚根任务流，`Close` 取消剩余任务并处理 execution summary。文件本身不负责优化计划、选择 MPP 与否或决定重试策略。
@@ -24,7 +26,8 @@
 - `CoordinatorResponseStream` / `CoordinatorTransport`：将状态机与具体 RPC 解耦。生产实现 `MppClientCoordinatorTransport` 包装 `kv::MPPClient`，在 `DispatchMPPTask` 和 `EstablishMPPConns` 返回 retry 标志时循环；非 root task 返回 `None`，root task 返回 `MppClientResponseStream`。
 - `MppReportHandle`：`Mutex<MppReportState> + Condvar + AtomicBool` 的独立上报器，同时实现 `kv::MppStatusReporter`。它能在协调器本体被外层互斥锁持有、`Close` 等待报告时继续接收 gRPC report。
 - `LocalMppCoordinator`：核心状态机。请求列表和 task 状态由可变协调器独占；工作线程、事件接收器、停止标记、report handle 管理并发；`executed`、`closed`、`dispatch_failed`、`all_reports_handled` 保证阶段和幂等性。
-- `DispatchSessionInfo` / `MppDispatchSession`：前者是文件内部请求编码快照，后者是公开构造参数；字段覆盖时区、flags、summary 开关、除法精度、schema 版本、资源组、连接身份、SQL/plan digest 和 TiDB zone。
+- `DispatchSessionInfo` / `MppDispatchSession`：前者是文件内部请求编码快照，后者是公开构造参数；字段覆盖时区、flags、summary 开关、chunk RPC 开关、除法精度、schema 版本、资源组、连接身份、SQL/plan digest 和 TiDB zone。
+- `set_mpp_encode_type`：隔离 MPP 根请求的会话编码开关与平台对齐检查；`NewLocalMppCoordinator` 将公开 `MppDispatchSession.enable_chunk_rpc` 传入内部 `DispatchSessionInfo`，再由请求构建函数使用。
 - `PreparedDispatchRequests`：返回请求及 task/store id 的批次容器；task/store id 当前由协调器保存，主要对应 Go 的派发日志数据，但本文件 Rust 实现不输出该日志。
 - `TiFlashStore`、`TiFlashStoreInfo`、`MppStoreInfo`：store 地址到 `store_id`/DC zone 的边界；`add_tiflash_store_info` 从 `placement::DCLabelKey` 读取 zone。
 - `TaskZoneInfoHelper`：缓存 executor id 到对端 zone 数组；`fill_same_zone_flag_for_exchange` 递归遍历 tipb executor DAG。
@@ -38,7 +41,7 @@
 2. `GenerateRootMPPTasks` 生成 fragments、KV ranges 和已知节点地址。入口拒绝空 range；随后遍历每个 fragment 的 self tasks，补齐并校验所有 task metadata，并以地址集合大小作为 `node_count`。
 3. `new_local_mpp_coordinator` 根据协议版本初始化状态：低于 `MppVersionV2` 时清空 coordinator 地址；仅“地址非空且 statement plan 中存在 Limit -> 目标 TableReader 路径”时设置 `report_execution_info`。
 4. 每个 fragment 进入 `appendMPPDispatchReq`：锁住 `Fragment::Sink`，调用 `to_pb(..., StoreType::TiFlash)` 得到 root executor，再为每个 task 进入 `prepare_dispatch_requests_from_root`。
-5. 请求准备阶段按 `PartitionTableIDs` 或非静态裁剪的 `TableID` 改写扫描节点；为交换节点填 same-zone；按 root/non-root 选择 `TypeChunk`/`TypeChBlock`；序列化 DAG 并构造初始状态为 `MppTaskReady` 的 `MPPDispatchRequest`。每个请求同时在 `MppReportHandle` 中安装唯一 report 槽位。
+5. 请求准备阶段按 `PartitionTableIDs` 或非静态裁剪的 `TableID` 改写扫描节点；为交换节点填 same-zone；调用 `set_mpp_encode_type`：non-root 固定 `TypeChBlock`；root 在 `enable_chunk_rpc` 且 `astersql_distsql::distsql::checkAlignment()` 为真时使用 `TypeChunk`，并写入编译目标字节序的 `ChunkMemoryLayout`，否则使用 `TypeDefault`；序列化 DAG 并构造初始状态为 `MppTaskReady` 的 `MPPDispatchRequest`。每个请求同时在 `MppReportHandle` 中安装唯一 report 槽位。
 6. 外层 `ExecutorWithRetry::setupMPPCoordinator` 取得 `StatusReporter`、注册 `(query_id, gather_id)`，然后调用 `Execute`。`Execute` 保存 context 并调用 `dispatchAll`；重复 Execute、已关闭状态或 Execute 后追加请求都会报错。
 7. `dispatchAll` 在持有 `&mut self` 的串行阶段把每个 Ready 请求改成 Running，再各启线程。线程先 `Dispatch`；非 root 到此结束，root 逐次 `stream.Next()`。成功包发 `WorkerEvent::Response`，RPC/包内错误发 `Error`，最后总会尝试发 `Finished` 并关闭 stream。
 8. 调用者反复执行 `kv::Response::Next`。Response 事件先做 MVCC visibility 检查再包装为 `mppResponse`；Error 事件保存首错、标记派发失败、取消所有运行中 task 并返回错误；Finished 将仍为 Running 的请求标为 Done 并减少活跃线程。所有线程结束后 join，返回 `None`。
@@ -58,7 +61,7 @@
 
 ## 依赖与调用关系
 
-上游主链（由 RustCodeGraph 文件关系和 `executor_with_retry.rs` 核对）：
+公开构造与消费链（以冻结 `executor_with_retry.rs` 和本文件核对，具体工厂由调用方注入）：
 
 `CoordinatorFactory::Build`（具体工厂） -> `NewLocalMppCoordinator` -> `Box<dyn kv::MppCoordinator>` -> `ExecutorWithRetry::setupMPPCoordinator` -> `Execute`；随后 `ExecutorWithRetry::Next`/`Close` 转发到协调器。注册表同时保存 `StatusReporter`，使 `MppCoordinatorManager::ReportStatus` 无需获取协调器主互斥锁即可调用 `MppReportHandle::ReportStatus`。
 
@@ -70,7 +73,7 @@
 - 统计侧：`CopRuntimeStats`、`ExecDetails` 和注入的 `MppReportSink`。
 - 拓扑侧：`astersql-ddl-placement::DCLabelKey` 提供 zone 标签键。
 
-同目录 `Cargo.toml` 将该 crate 定位到 `pkg/executor/internal/mpp/lib.rs`，并声明 planner core/base/physicalop、KV、distsql、infoschema、store、execdetails、kvproto、tipb 等依赖；本文件直接使用其中 planner、KV、placement、execdetails、kvproto、protobuf 和 tipb。crate 没有针对本文件的 feature 门控，条件编译只有若干 `#[cfg(test)]` 观察/注入接口。
+同目录 `Cargo.toml` 将该 crate 定位到 `pkg/executor/internal/mpp/lib.rs`，并声明 planner core/base/physicalop、KV、distsql、infoschema、store、execdetails、kvproto、tipb 等依赖；本文件直接使用其中 planner、KV、placement、execdetails、distsql、kvproto、protobuf 和 tipb。crate 没有针对本文件的 feature 门控，条件编译只有若干 `#[cfg(test)]` 观察/注入接口。
 
 ## 错误处理与边界
 
@@ -103,6 +106,8 @@ report 通道与响应通道刻意分离。`MppReportHandle` 自含 Mutex/Condva
 - Go goroutine、`respChan`、`finishCh`、`WaitGroup` 被 Rust worker thread、`mpsc::channel<WorkerEvent>`、`AtomicBool`、`JoinHandle` 替换；状态转换和“取消只包含 Running store”的意图保持一致。
 - Go `reqMap + reportStatusCh + mu` 被 Rust `MppReportHandle(Mutex + Condvar)` 替换，从而让 status reporter 可独立于主协调器锁被注册。
 
+编码增量对应 Go `setMPPEncodeType`：非 root 强制 CHBlock，root 委托 DistSQL 编码策略。Rust 直接使用 tipb DagRequest，复用 DistSQL `checkAlignment` 并在本文件写 layout；其 `checkAlignment` 当前定义为 `align_of::<i128>() >= 8`。开关由调用方传入，不在协调器内部重新读取 session。
+
 当前可见差异必须在扩展时保留意识：
 
 - Go `nextImpl` 定时检查 session killed 标志和 context cancellation；Rust 本文件没有等价轮询。
@@ -114,6 +119,7 @@ report 通道与响应通道刻意分离。`MppReportHandle` 自含 Mutex/Condva
 
 ## 扩展指南
 
+- 修改编码策略时保持 non-root CHBlock 与 root Default/Chunk 分支，更新 `MppDispatchSession` 到内部快照的字段传递，并同步 `test_set_mpp_encode_type_respects_chunk_rpc_setting`；另需检查端序 layout 与平台对齐，当前测试只断言 encode type。
 - 新增派发字段或会话元数据：修改 `MppDispatchSession`、内部 `DispatchSessionInfo`、`NewLocalMppCoordinator` 字段映射和 `prepare_dispatch_requests_from_root` 的 `MPPDispatchRequest`/`DagRequest` 构造；同步 `coordinator_prep_aster_unit_test.rs`，并与 Go `appendMPPDispatchReq` 对照默认值、开关和 digest/resource group 规则。
 - 新增 tipb executor 类型：同时审查 `update_executor_table_id` 和 `TaskZoneInfoHelper::fill_same_zone_flag_for_exchange`。前者必须明确扫描改写路径，后者必须明确 child 遍历和 exchange 行为；不要简单落入 unknown 分支。同步独立测试文件，避免把测试写进生产源文件。
 - 修改任务状态或取消策略：保持 Ready/Running/Done/Cancelled 单向语义、Execute/Close 的外层串行契约以及“只取消已 Running store”的规则；同步 `local_mpp_coordinator_test.rs` 的 race 回归测试和 `local_mpp_coordinator_aster_unit_test.rs` 的失败取消测试。
@@ -125,11 +131,9 @@ report 通道与响应通道刻意分离。`MppReportHandle` 自含 Mutex/Condva
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引包含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/executor/internal/mpp` 确认本模块 16 个索引文件；目标文件识别 113 个符号。
-- RustCodeGraph `query LocalMppCoordinator` / `query MppCoordinator`：定位 Rust `LocalMppCoordinator`（源码第 427 行）、`MppCoordinatorPlan`（第 1440 行）、公开 `NewLocalMppCoordinator`（第 1456 行）、`kv::MppCoordinator` trait 和外层 `ExecutorWithRetry`/注册表符号。
-- RustCodeGraph `node --file pkg/executor/internal/mpp/local_mpp_coordinator.rs` 分段读取完整 1-1553 行，核对传输、report、状态机、请求编码、zone、计划判定、响应和公开入口；文件关系显示其被 `executor_with_retry.rs` 等 6 个 Rust 文件使用。
-- 直接读取 `pkg/executor/internal/mpp/Cargo.toml` 与 `lib.rs`，核对 crate 名、依赖、模块声明、公开再导出和独立测试模块；本目录没有 `doc.go`，因此无额外包契约可读。
-- RustCodeGraph 分段读取 `executor_with_retry.rs`，核对 `setupMPPCoordinator -> Execute`、`Next`、`Close`、注册/注销和恢复重建主链。
-- RustCodeGraph 分段读取 Go `local_mpp_coordinator.go`（1-982）和 `local_mpp_coordinator_test.go`（1-179），核对移植语义、并发模型、request 字段、same-zone、report、错误与已知差异。
-- RustCodeGraph 分段读取 Rust `local_mpp_coordinator_test.rs`（1-353）和 `local_mpp_coordinator_aster_unit_test.rs`（1-748），核对计划形状、zone quick-fill、派发/取消竞态、client retry、并行交错流、失败取消、首错优先、report 去重/解码、超时和并发唤醒。
-- 未运行 Cargo：任务和总计划明确规定纯文档分析不运行 Cargo。验收以事实复核和固定 11 章节结构命令为准。
+- 冻结审计：`git diff ad0a6f4..2c944fb -- pkg/executor/internal/mpp/local_mpp_coordinator.rs` 和 `git show 2c944fb:pkg/executor/internal/mpp/local_mpp_coordinator.rs` 分段读取完整实现。增量只增加 chunk 开关传递和编码选择/layout，未改变取消、worker、report 或恢复策略。
+- 冻结装配：同目录 `Cargo.toml`、`lib.rs` 与 `executor_with_retry.rs`，核对工厂注入、reporter 注册、Close/Drop、恢复重建边界；`pkg/executor/doc.go` 及 MPP 目录 `doc.go` 不存在。
+- 编码依据：冻结 Go `local_mpp_coordinator.go::setMPPEncodeType`、Rust `pkg/distsql/distsql.rs::{canUseChunkRPC,checkAlignment,SetEncodeType}`，核对 root 开关/对齐和端序来源。
+- 静态读取冻结 `local_mpp_coordinator_test.rs::test_set_mpp_encode_type_respects_chunk_rpc_setting`，通过解析序列化 DAG 验证开关开/关与 root/non-root 四种组合。该测试不直接断言 layout/endian 或对齐失败分支；这些描述来自实现，未声称已运行测试。
+- 既有生命周期边界以源码复核：只派发 Ready、只收集 Running store 做取消、Close join、独立 report handle 的 Condvar 唤醒、超时不消费部分 summaries、没有本地 Drop/会话 kill 轮询或响应内存 tracker 记账。
+- RustCodeGraph status/explore 仅辅助定位当前工作区符号，不能证明冻结快照；本文依据 `2c944fb` blob。Ready 文档检查使用任务指定 11 节与 `git diff --check`；profile 技能缺失，按计划采用等价证据，不运行 Cargo。
