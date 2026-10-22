@@ -51,7 +51,7 @@
 ### 越界估计
 
 1. `OutOfRangeShape` 对空直方图直接标记 `Empty`；否则将 NDV 至少置 1，并以非 NULL 行数除以 NDV 得到单值基线。
-2. 字符串/字节边界先计算直方图端点与查询端点的公共前缀，再统一标量化。无符号列会把负端点钳到 0；若范围因负数钳制完全坍缩，或上界小于下界，则标记 `Impossible`。
+2. 非空直方图先检查查询上界：`upper.IsNull()` 或 `KindMinNotNull` 时标记 `Impossible` 并返回，避免 NULL 标量化后倒置范围；NULL 数由独立字段统计，不参与越界新增行。其他字符串/字节边界先计算直方图端点与查询端点的公共前缀，再统一标量化。无符号列会把负端点钳到 0；若范围因负数钳制完全坍缩，或上界小于下界，则标记 `Impossible`。
 3. 以直方图宽度在左右各扩一倍，`calculateLeftOverlapPercent` 和 `calculateRightOverlapPercent` 用三角分布面积求查询范围在两侧扩展带的重叠比例。
 4. `ScaleOutOfRangeShape` 在禁止使用修改量时直接返回单值基线；否则根据实时行数与直方图行数差、低 NDV 的 1% 下限、默认 0.5 或显式偏斜比，形成 `MinEst/Est/MaxEst`。空形状优先返回 0；允许修改量时，不可能范围返回 0。
 
@@ -83,6 +83,8 @@
 - crate 边界：`pkg/statistics/Cargo.toml` 声明本地依赖 `astersql-errors`、chunk、codec、collate、stmtctx、tablecodec、types、types-field、vardef 和远端 `tipb`；本文件直接使用其中 errors、codec、collate、types、types-field、tipb，以及 `chrono-tz` 与 `protobuf`。
 
 ## 错误处理与边界
+
+NULL-only 范围的新增保护在 `OutOfRangeShape` 中、标量转换之前执行；空直方图仍优先返回 `Empty`。`ScaleOutOfRangeShape` 先检查 `Empty`，再在 `allow_modify_count == false` 时返回 `OneValue`，最后才检查 `Impossible`。因此 NULL-only shape 在允许修改量的路径返回零，但不能宣称禁用修改量时也一律返回零；测试只覆盖允许修改量的零值路径。
 
 - `compareDatum` 在比较失败时以相等（0）继续，这是兼容性兜底而不是错误传播；边界 Datum 无法比较时可能隐藏排序问题，新增类型时必须专门覆盖。
 - `DecodeTo`、`ConvertTo`、`GetIndexPrefixLens`、`ExtractTopN` 和分区合并公开返回 `SharedError`。典型错误源是 Datum/索引键解码、类型转换、TopN Datum 恢复，以及非法桶顺序。
@@ -125,9 +127,8 @@ Rust 类型和主要 API 名称刻意保持 Go 风格，对照文件为 `pkg/sta
 
 ## 验证依据
 
-- 生产源：`pkg/statistics/histogram.rs`（RustCodeGraph `node --file` 分段核对全部 1762 行）。主要确认了 `Histogram`/`Bucket`/`OutOfRangeShape`/`RowEstimate`/`StatsLoadedStatus`、估计入口、TopN、Proto、双层合并及辅助函数。
-- 图查询：`rustcodegraph status` 确认索引包含 11467 文件、307296 节点和 1848419 边；`rustcodegraph files --filter pkg/statistics` 确认 Rust/Go 对照及测试均已索引；`query/node PreCalculateScalar` 和 `query/node calcFraction` 确认桶内插值下沉到 `pkg/statistics/scalar.rs`；对目标文件的 `node --file` 报告约 30 个使用文件。
-- crate/模块：`pkg/statistics/Cargo.toml`、`pkg/statistics/lib.rs`，用于确认 crate 名、Go 包映射、依赖和重导出边界；本包无 `doc.go`。
-- Rust 测试：`pkg/statistics/histogram_test.rs`，覆盖内存计量、桶定位与行数估计、Proto 往返、普通/分区合并、加载状态、V2 标准化、伪直方图、索引前缀、TopN、HistogramEqual 以及越界几何/缩放；补充调用证据来自 `pkg/statistics/main_test.rs`、`histogram_bench_test.rs`、`index.rs`、`column.rs`、`table.rs` 和 `handle/runtime_stats.rs` 的定向搜索。
-- Go 对照：`pkg/statistics/histogram.go` 与 `pkg/statistics/histogram_test.go`，用于核对同名 API、累计桶语义、会话偏斜参数、TopN、全局合并实现和加载状态。Rust 测试并非覆盖 Go 文件的全部大型合并矩阵，因此复杂分区合并的完全行为等价性未在本纯文档任务中证明。
-- 结构验收使用任务指定命令，要求目标文件存在且恰好包含本文 11 个固定二级标题。任务明确禁止 Cargo，本次未进行编译或运行时测试。
+增量为 `OutOfRangeShape` 对 NULL/`MinNotNull` 上界的提前返回。读取冻结 `histogram.rs`（含 `ScaleOutOfRangeShape` 的分支顺序），对照 `histogram.go` 同一保护。独立测试 `histogram_test.rs::null_only_range_skips_out_of_range_estimation` 遍历 NULL 和 MinNotNull 上界，断言 `Impossible` 且允许修改量时估计为零；`out_of_range_shape_empty_impossible_and_determinate_order` 说明空图、不可行范围以及禁用修改量时的单值基线优先级。
+
+本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/histogram.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
+
+纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

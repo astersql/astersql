@@ -20,12 +20,12 @@
 - `SampleItem { Value, Handle, Ordinal }`：`Value` 是真实样本；`Handle` 在本文件创建样本时恒为 `0`；`Ordinal` 由 `Collect` 设为从零开始的非空输入序号，运行时列统计路径还会在 `runtime_stats_builder.rs` 中改写成原始行位置。
 - `EmptySampleItemSize`：`size_of::<SampleItem>()` 的结构体静态大小，不包含 `Datum` 指向或拥有的动态载荷。`runtime_stats_builder.rs::collector_memory` 在此基础上另计 `Datum`、sketch 和 TopN 内存。
 - `sortSampleItems(&mut [SampleItem]) -> Result<(), SharedError>`：用 `Datum::Compare` 和二进制 collator 排序。比较错误被保存，比较器当次返回相等；排序结束后再返回该错误，因此错误发生时切片可能已经被部分重排。
-- `SampleCollector`：公开持有 `FMSketch`、可选 `CMSketch`/`TopN`、样本与各项计数；`seenValues` 和 `randomState` 是内部蓄水池状态，`IsMerger` 控制是否跳过计数/sketch 更新。
+- `SampleCollector`：公开持有 `FMSketch`、可选 `CMSketch`/`TopN`、样本与各项计数；`seenValues` 和 `randomState` 是内部蓄水池状态，`IsMerger` 控制是否跳过计数/sketch 更新；新增 `Unique: bool` 表示 schema 保证非 NULL 值互异，`New` 与 `Destroy` 都置为 `false`。
 - `SampleCollector::New`：预分配非负样本容量，创建 FM Sketch，并用固定非零常量初始化 xorshift 状态；CM Sketch 和 TopN 初始为空。
 - `Destroy`：清空样本和可选结构，把 FM Sketch 换成容量为零的新实例，并归零公开计数。它不会重置私有 `randomState`，所以对象虽可析构式释放状态，却不等价于重新 `New`。
 - `Collect` / 私有 `collect`：前者是实际实现，后者只是内部别名。`Collect` 负责 NULL 分支、计数与 sketch、总长度，以及蓄水池插入/替换。
 - `MergeSampleCollector`、`CalcTotalSize`、`ExtractTopN`：分别处理合并、按当前样本重算大小和从 CM Sketch 分离 TopN。
-- `SampleCollectorToProto` / `SampleCollectorFromProto`：序列化稳定统计状态；不序列化 `MaxSampleSize`、`seenValues`、`MemSize`、`IsMerger`、随机状态、`Handle` 和 `Ordinal`。
+- `SampleCollectorToProto` / `SampleCollectorFromProto`：序列化稳定统计状态；不序列化 `MaxSampleSize`、`seenValues`、`MemSize`、`IsMerger`、`Unique`、随机状态、`Handle` 和 `Ordinal`。
 - `MaxSampleValueLength = 32_767`：反序列化时允许保留的单个样本最大字节数。
 - `SampleBuilder`：仅包含样本数与 FM/CM Sketch 尺寸；`CollectColumnStats` 接收已物化的 `Vec<Vec<Datum>>`，按首行列数创建收集器。
 - `RowToDatums`：按字段类型下标从 `chunk::Row` 提取 `Datum`，返回与 `field_types` 等长的向量。
@@ -42,6 +42,8 @@
 8. protobuf 往返时，编码写入空值数、非空数、FM/CM Sketch、总大小和样本字节；解码恢复这些字段并过滤长度超过 `MaxSampleValueLength` 的样本，但把样本 `Handle`/`Ordinal` 及所有临时蓄水池状态留为默认值。
 
 ## 数据与状态
+
+`Unique` 只由调用者设置，`Collect` 不推导它，`MergeSampleCollector` 不合并/传播它，protobuf 往返不保存它（恢复值为 `false`）。`BuildHistAndTopN` 在它为真时用 `Count` 取代 FM 估计；`BuildColumn` 不读取它。冻结 Rust 的真值赋值仅见独立测试；Go `analyze_col_sampling.go` 按 schema 设置标志的生产能力不能自动归到 Rust。
 
 `NullCount` 与 `Count` 分别表示空值和非空值数量；普通模式下二者互斥增加。`FMSketch` 只接收非空值并估计 NDV，`CMSketch` 只在存在时统计非空值频率。`TotalSize` 在收集路径中累计 `GetBytes().len() - 1`，注释说明减去的是编码标志字节；`CalcTotalSize` 则直接累加当前样本完整字节长度，语义是“样本当前大小”，不是全量输入累计大小，调用者不能混用两种解释。
 
@@ -66,7 +68,7 @@
 - `protobuf::RepeatedField` 与 git 固定 revision 的 `tipb` 依赖定义 wire representation；具体边界由 `pkg/statistics/Cargo.toml` 约束。
 - `astersql_errors::SharedError` 是比较、sketch 插入、sketch 合并和批量收集的统一错误通道。
 
-RustCodeGraph `query` 将 Rust 符号与同路径 Go 符号匹配，并识别 `builder.rs::BuildColumn` 等引用；本次索引中的 `callers`/`callees` 查询无输出并超时，因此上述精确调用边由全仓 Rust `rg` 和直接源码复核补齐。
+上述调用边以冻结版本 Git blob 与符号引用为依据；工作区图索引不作为冻结版本接线证据。
 
 ## 错误处理与边界
 
@@ -112,10 +114,8 @@ Rust 文件逐项对应 `pkg/statistics/sample.go` 的 `SampleItem`、`SampleCol
 
 ## 验证依据
 
-- 源码全貌：`pkg/statistics/sample.rs`，核对了 2 个 struct、2 个常量、4 个自由函数、`SampleCollector`/`SampleBuilder` 的全部方法及无条件编译事实；文件没有 `cfg` 条件项。
-- crate 边界：`pkg/statistics/Cargo.toml` 与 `pkg/statistics/lib.rs`，确认 crate 名、`lib.rs` 模块装配、公开重导出，以及 `types`、`stmtctx`、`chunk`、`collate`、`protobuf`、`tipb` 等直接依赖。
-- 生产调用：`pkg/statistics/runtime_stats_builder.rs` 与 `pkg/statistics/builder.rs`，确认 `Collect`、`EmptySampleItemSize`、`sortSampleItems`、样本字段及 `BuildHistAndTopN` 的实际消费关系。
-- Rust 测试：`pkg/statistics/sample_test.rs` 验证蓄水池容量、NDV、protobuf 往返、NULL/计数、TopN 扣减与零上限、Destroy 和瞬态状态；`pkg/statistics/integration_test.rs` 验证简化批量采样到直方图管线；`pkg/statistics/go_merge_47_test.rs` 提供样本进入统计构建的补充证据。
-- Go 对照：`pkg/statistics/sample.go` 与 `pkg/statistics/sample_test.go`，核对完整 RecordSet 收集、合并、序列化、长度过滤、TopN 编码和对应边界测试；差异已在上节逐项列出。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/statistics/sample.rs` 返回完整 324 行及 16 个使用文件；`query` 确认 Rust/Go 同名符号并识别 `builder.rs::BuildColumn`。`callers`/`callees` 在本索引上无输出且超时，故直接边由全仓 `rg` 与上述源码人工复核，不据此声称更多调用者。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前运行固定 11 章节结构命令，并人工复查只有 `pkg/statistics/sample.rs.md` 是生产物、未修改 `plan.md`、没有把 Go 专属能力描述为 Rust 已支持。
+本次增量为 `SampleCollector.Unique` 字段及构造、销毁复位。完整读取 `sample.rs`、`builder.rs`，对照 `sample.go` 与 Go executor 唯一性赋值，核对 `lib.rs` 和 `Cargo.toml`。`builder_test.rs::schema_unique_ndv_uses_non_null_row_count_instead_of_the_sketch_estimate`、`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 静态覆盖唯一列行数覆盖草图估计；没有运行测试，也不把这些测试赋值描述成生产接线。
+
+本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/sample.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
+
+纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

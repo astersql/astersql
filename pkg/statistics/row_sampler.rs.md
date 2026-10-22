@@ -4,7 +4,7 @@
 
 `row_sampler.rs` 属于 `astersql-statistics` crate，模块由 [`pkg/statistics/lib.rs`](lib.rs) 以 `mod row_sampler` 纳入，并通过 `pub use row_sampler::*` 将公开类型和函数重导出。crate 的 Go 包映射在 [`pkg/statistics/Cargo.toml`](Cargo.toml) 中声明为 `pkg/statistics`。
 
-该文件承载 ANALYZE 所需的行级统计采样数据结构：固定容量的加权水库采样、按采样率保留行的伯努利采样、逐列及列组 FM Sketch/NULL 数/字节数累计，以及 `tipb::RowSampleCollector` 的序列化边界。RustCodeGraph 能确认文件内部的构造与调用链，但当前仓库搜索没有找到这些 API 在其他 Rust **生产文件**中的直接调用；现阶段可确认的外部 Rust 使用者是独立测试。对应 Go 文件 [`pkg/statistics/row_sampler.go`](row_sampler.go) 则被 `pkg/executor/analyze_col_sampling.go` 和 `pkg/store/mockstore/unistore/cophandler/analyze.go` 使用。因此，Go 版本位于实际 ANALYZE 主链，Rust 版本虽已由 crate 导出，其生产接线不能仅凭 Go 调用关系推断为已经完成。
+该文件承载 ANALYZE 所需的行级统计采样数据结构：固定容量的加权水库采样、按采样率保留行的伯努利采样、逐列及列组 FM Sketch/NULL 数/字节数累计，以及 `tipb::RowSampleCollector` 的序列化边界。冻结源码可确认文件内部的构造与调用链，但冻结版本符号搜索没有找到这些 API 在其他 Rust **生产文件**中的直接调用；现阶段可确认的外部 Rust 使用者是独立测试。对应 Go 文件 [`pkg/statistics/row_sampler.go`](row_sampler.go) 则被 `pkg/executor/analyze_col_sampling.go` 和 `pkg/store/mockstore/unistore/cophandler/analyze.go` 使用。因此，Go 版本位于实际 ANALYZE 主链，Rust 版本虽已由 crate 导出，其生产接线不能仅凭 Go 调用关系推断为已经完成。
 
 ## 核心职责
 
@@ -13,7 +13,7 @@
 - `ReservoirRowSampleCollector` 保留权重最大的至多 `MaxSampleSize` 行，使多个局部收集器可以按相同权重规则合并。
 - `BernoulliRowSampleCollector` 将权重确定性映射为 `[0, 1]` 概率，再按 `SampleRate` 决定是否保留行。
 - `RowSampleBuilder::Collect` 遍历已经物化的 Datum 行，累计统计、执行采样，并复用单列列组对应列的统计结果。
-- `baseCollector::{ToProto, FromProto}` 与 `RowSamplesToProto` 在内存结构和 tipb protobuf 之间转换。
+- `baseCollector::{ToProto, FromProto}` 与 `RowSamplesToProto` 在内存结构和 tipb protobuf 之间转换；`FromProto` 按 `ndv_sample_count` 字段存在性选择 sampled 草图。
 
 ## 主要符号
 
@@ -41,6 +41,10 @@
 
 ## 数据与状态
 
+新增私有 `mergeBase` 先断言三组向量长度相同，依次累加 `Count`、合并 `FMSketches`、累加 `NullCount` 和 `TotalSizes`；水库与伯努利两类 `MergeCollector` 均复用它，再分别重采样/拼接样本。草图合并会累计 sampled 行数并标记跨输入重复哈希，但它不是跨分区不同采样率合并器；后者使用 `PartitionNDVMerger`。
+
+`FromProto` 发现 `ndv_sample_count` 存在时，对每个 sketch 调用 `newSampledFMSketch`，携带 `rows = count`、`samples = ndv_sample_count`、`nulls = null_counts[index]`，同时恢复 singleton/repeated 两组哈希。字段值为零也代表 sampled；字段缺失才走普通 `FMSketchFromProto`。sample count 包含 NULL 行，null count 是全量缩放后的 NULL 数。`ToProto` 未写 `ndv_sample_count`，不能视为保留 sampled counts 的对称往返；需要持久化这些信息时使用 `EncodeFMSketch` 的 sampled envelope。
+
 `baseCollector.Count` 表示看过的输入行数，不由 `CollectColumns` 隐式维护，而由 builder 或上层调用者负责增加。`row_sampler_test.rs::collect_columns_does_not_own_row_count_and_excludes_flag_byte` 固化了这一所有权边界。
 
 `NullCount`、`FMSketches`、`TotalSizes` 使用相同槽位布局：前半是原始列，后半按 `ColGroups` 顺序存列组。单列组在扫描结束后复制源列状态；多列组维护组合 FM Sketch 和总字节数，但不维护 NULL 计数。调用者必须保证行宽、列组下标和这些向量的布局一致。
@@ -51,7 +55,7 @@ protobuf 不携带 Rust 的 `MemSize` 和样本 `Handle`；恢复时句柄固定
 
 ## 依赖与调用关系
 
-内部主链由 RustCodeGraph 验证为 `RowSampleBuilder::Collect → NewRowSampleCollector → NewReservoirRowSampleCollector/NewBernoulliRowSampleCollector`。`Collect` 再调用 `baseCollector::{CollectColumns, collectColumnGroups}` 和具体实现的 `SampleRow`；`baseCollector::ToProto → RowSamplesToProto`；水库 `MergeCollector → SampleRow`。
+冻结源码内部主链为 `RowSampleBuilder::Collect → NewRowSampleCollector → NewReservoirRowSampleCollector/NewBernoulliRowSampleCollector`。`Collect` 再调用 `baseCollector::{CollectColumns, collectColumnGroups}` 和具体实现的 `SampleRow`；`baseCollector::ToProto → RowSamplesToProto`；水库 `MergeCollector → SampleRow`。
 
 直接依赖如下：
 
@@ -62,7 +66,7 @@ protobuf 不携带 Rust 的 `MemSize` 和样本 `Handle`；恢复时句柄固定
 - `tipb::{RowSample, RowSampleCollector}` 和 `protobuf::RepeatedField` 构成传输边界；对应 Cargo 依赖是固定 revision 且启用 `protobuf-codec` 的 `tipb`，以及精确版本 `protobuf = 2.8.0`。
 - `astersql_errors::SharedError` 是收集 FM Sketch 时的错误返回类型。
 
-`pkg/statistics/lib.rs` 公开重导出该模块。RustCodeGraph 的 `explore` 能找到独立测试对采样、合并和 protobuf 的调用，但仓库级 Rust 搜索未找到其他生产文件直接引用这些入口；不要把 Go 的 `pkg/executor/analyze_col_sampling.go` 调用自动视为 Rust 调用。Go 侧真实上游还包括 mockstore cop handler，其结果经 tipb 在 TiKV/TiDB 分工边界传递。
+`pkg/statistics/lib.rs` 公开重导出该模块。冻结版本的符号引用可定位独立测试对采样、合并和 protobuf 的调用，但未找到其他生产文件直接引用这些入口；不要把 Go 的 `pkg/executor/analyze_col_sampling.go` 调用自动视为 Rust 调用。Go 侧真实上游还包括 mockstore cop handler，其结果经 tipb 在 TiKV/TiDB 分工边界传递。
 
 ## 错误处理与边界
 
@@ -74,7 +78,7 @@ protobuf 不携带 Rust 的 `MemSize` 和样本 `Handle`；恢复时句柄固定
 - 行宽必须与初始化槽位和第一行推断的列数一致；列组索引必须有效，否则直接索引可能 panic。
 - 单列组目标槽与源列索引必须有效。
 - `SampleRate` 没有显式限制到 `[0, 1]`；负数使工厂返回 `None`，大于等于 1 的值会保留所有由当前映射得到的概率，`NaN` 也因 `> 0.0` 为假而禁用采样。
-- `FromProto` 假设 protobuf 各统计向量彼此语义对齐，不校验长度，也不保留句柄。
+- `FromProto` 假设 protobuf 各统计向量彼此语义对齐，不校验长度，也不保留句柄。sampled 分支直接索引 `null_counts[index]`，长度不足会 panic；不是返回 `SharedError` 的校验入口。
 - `RowSamplesToProto` 能处理空样本并返回空向量；NULL 使用 `NilFlag`，由独立测试固定。
 
 `MaxSampleSize == 0` 不会构造水库；若直接构造零容量水库，`SampleRow` 的显式 `self.MaxSampleSize > 0` 守卫可避免索引空样本。总大小使用 `saturating_sub(1)`，空字节 Datum 不会产生负数，这比 Go 的直接 `sizes[i]-1` 更防御性。
@@ -113,9 +117,8 @@ Rust 文件以 [`pkg/statistics/row_sampler.go`](row_sampler.go) 为直接语义
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可通过 `node --file pkg/statistics/row_sampler.rs` 完整读取。
-- RustCodeGraph `explore "row_sampler.rs RowSampleBuilder RowSampleCollector"`：确认 `NewRowSampleCollector` 到两类构造器的调用边，以及 `CollectColumns`、`MergeCollector`、`ToProto/FromProto`、`RowSamplesToProto` 被测试和内部流程使用。单独的 `callers NewRowSampleCollector` 查询在超过 60 秒仍无输出后终止，调用范围由 explore 结果和仓库级精确符号搜索交叉核验。
-- 已读生产与配置：[`pkg/statistics/row_sampler.rs`](row_sampler.rs)、[`pkg/statistics/lib.rs`](lib.rs)、[`pkg/statistics/Cargo.toml`](Cargo.toml)、[`pkg/statistics/row_sampler.go`](row_sampler.go)。`pkg/statistics` 下不存在 `doc.go`，因此无更近的包契约文件可读。
-- 已读独立测试：[`pkg/statistics/row_sampler_test.rs`](row_sampler_test.rs)、[`pkg/statistics/sample_test.rs`](sample_test.rs) 的行采样相关用例，以及 Go [`pkg/statistics/sample_test.go`](sample_test.go) 的加权和分布式采样用例。
-- 关键测试事实：`CollectColumns` 不拥有行计数且排除 flag 字节；单列列组复用源列统计；NULL protobuf 编码为 `NilFlag`；反序列化重算样本内存；销毁只释放 FM Sketch；水库保留最大权重；分片合并得到全局最高权重集合。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认本文恰有 11 个固定二级标题，并人工复核链接、当前接线状态、Go/Rust 差异和扩展风险均有上述源码或测试依据。
+本次增量为 `mergeBase` 去重接线、两类合并器复用，以及 `FromProto` 的 sampled counts 分支。完整读取冻结 `row_sampler.rs`，核对 `fmsketch.rs`、`sampled_ndv.rs`、`lib.rs`、`Cargo.toml` 和 Go `row_sampler.go`。`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 明确检查 sample count 字段缺失与存在且值为零的区别；既有行采样测试在 `row_sampler_test.rs` 和 `sample_test.rs`。
+
+本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/row_sampler.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
+
+纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

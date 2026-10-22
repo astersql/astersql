@@ -51,7 +51,7 @@
 
 `BuildHistAndTopN` 的主链为：
 
-1. 从收集器取得总行数和 FM Sketch NDV，并将 NDV 上限设为总行数；空表、空样本或零 NDV 立即返回空桶直方图与空 TopN。
+1. 从收集器取得非 NULL 行数 `Count`；若 `Unique` 为真直接令 NDV 等于 `Count`，否则取 `FMSketch.NDV().min(Count)`；空表、空样本或零 NDV 立即返回空桶直方图与空 TopN。
 2. `sortSampleItems` 原地按样本值排序。列统计额外以“排序后下标 × 原始 `Ordinal`”求和，并调用 `calcCorrelation`。
 3. 计算 `sample_factor = count / sample_count`。仅当请求的 `num_top_n` 等于运行时 `vardef::AnalyzeDefaultNumTopN` 时启用统计剪枝；显式非默认值被视为用户意图，不自动剪枝。
 4. 列值用语句时区执行 `codec::EncodeKey`；索引样本已是编码字节，直接取 `Datum::GetBytes`。随后线性扫描相同编码值的连续区间，通过 `processTopNValue` 保留至多 `num_top_n` 个候选。
@@ -63,6 +63,8 @@
 `buildHist` 用 `count / sample_count_excluding_top_n` 放大样本，以 `min(count / ndv, sample_factor)` 作为单次不同值的保守重复估计。它先寻找第一个非 TopN 样本初始化桶，然后顺序处理余下样本：同值更新累计数和重复数，异值在容量允许时扩大当前桶，否则新开桶；同时累计未跳过样本的下标与 `Ordinal` 点积。
 
 ## 数据与状态
+
+`SampleCollector.Unique` 是 schema 对所有非 NULL 值互异的保证，不是从样本猜出的唯一性。只有 `BuildHistAndTopN` 使用该标志；`BuildColumn` 仍传入 FM Sketch 的 NDV。冻结版本中 `Unique = true` 的 Rust 使用点只见 `builder_test.rs` 和 `fmsketch_test.rs`，不能据 Go executor 的赋值路径声称 Rust 生产 ANALYZE 已设置它。
 
 `Histogram.Buckets[*].Count` 是累计计数而不是单桶局部计数；`lastNumber` 因而记录前一桶累计值，用于计算当前桶实际容量。`Repeat` 表示桶上界值的估算频次。`Histogram.NDV` 在在线构建时按新不同值递增，但 `BuildColumnHist` 最终会以 FM Sketch 或调用者传入的 NDV 覆盖它。
 
@@ -96,7 +98,7 @@
 - `compareDatum` 的比较错误统一转换成共享错误。`SortedBuilder::Iterate` 与 `buildHist` 立即向上传播；`BuildColumnHist` 因标准排序闭包不能返回 `Result`，会记录排序期间的比较错误，并在排序后返回错误。
 - `BuildHistAndTopN` 会传播 `sortSampleItems`、列值 `EncodeKey` 和 `buildHist` 的错误。索引路径的 `GetBytes` 本身不返回错误。
 - 空输入：`BuildColumnHist` 返回带元数据但无桶的直方图；`BuildHistAndTopN` 返回同类直方图以及容量为 0 的 TopN。
-- `ndv` 在两个公开构建路径中都被限制为不超过总行数。`buildHist` 又以 `ndv.max(1)` 防止内部除零，且对空样本、非正的排除后样本数或非正桶数直接返回 `0.0`。
+- `BuildColumnHist` 将 NDV 限制为不超过非 NULL 行数；`BuildHistAndTopN` 对非唯一列同样取上限，对 `Unique` 列直接采用非 NULL 行数。`buildHist` 又以 `ndv.max(1)` 防止内部除零，且对空样本、非正的排除后样本数或非正桶数直接返回 `0.0`。
 - `num_buckets = 0` 在 `BuildHistAndTopN` 中表示不建直方图；`NewSortedBuilder` 则会把直接传入的桶数提升到至少 1。两种入口的零值语义不同。
 - `num_top_n = 0` 会使候选向量每次截断为空，最后正常进入纯直方图路径。
 - `calcCorrelation` 对样本数小于等于 1 或理论分母为 0 返回 `1.0`，避免 NaN/除零。
@@ -144,14 +146,8 @@ Go 基准 `pkg/statistics/builder_test.go` 覆盖高 NDV、低 NDV 性能场景�
 
 ## 验证依据
 
-本说明依据以下直接证据形成：
+增量为 `BuildHistAndTopN` 的 `Unique` NDV 分支。完整读取 `builder.rs`，对照 `builder.go`，并核对 `sample.rs`、`lib.rs`、`Cargo.toml` 和冻结符号引用。独立测试 `builder_test.rs::schema_unique_ndv_uses_non_null_row_count_instead_of_the_sketch_estimate` 将 `Count` 设为 32,768、启用 `Unique`，断言 NDV 为 32,768 且无 TopN；`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 另覆盖 sampled sketch 被唯一性保证覆盖为 3,000。它们是源码级证据。
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/builder.rs` 报告目标文件含 21 个符号。
-- RustCodeGraph `node --file pkg/statistics/builder.rs`：完整读取 550 行目标源码；图中报告该文件被 `runtime_stats_builder.rs`、`go_merge_47_test.rs`、`sample_test.rs` 使用。
-- RustCodeGraph `query`：核对了 `NewSequentialRangeChecker`、`IsIndexInTopNRange`、`processTopNValue`、`NewSortedBuilder`、`Iterate`、`BuildColumnHist`、`buildHist`、`BuildColumn`、`BuildHistAndTopN`、`calcCorrelation`、`pruneTopNItem` 的 Rust/Go 定义。
-- RustCodeGraph `node BuildHistAndTopN`：确认 Rust入口调用 `sortSampleItems`、`calcCorrelation`、`processTopNValue`、`pruneTopNItem`、`NewSequentialRangeChecker`、`buildHist` 和 `NewTopN`；同时取得 Go 对照入口及其生产调用者轨迹。精确 `callers/callees --file pkg/statistics/builder.rs` 在限定时间内未返回输出，因此调用方改由模块重导出、目标文件的“used by”关系和直接引用搜索交叉验证，未据此臆造额外生产调用者。
-- 已读 Rust 路径：`pkg/statistics/builder.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/runtime_stats_builder.rs`、`pkg/statistics/builder_test.rs`、`pkg/statistics/main_test.rs`、`pkg/statistics/statistics_test.rs`、`pkg/statistics/integration_test.rs`、`pkg/statistics/sample_test.rs`、`pkg/statistics/go_merge_47_test.rs`。
-- 已读边界与 Go 对照：`pkg/statistics/Cargo.toml`、`pkg/statistics/builder.go`、`pkg/statistics/builder_test.go`。
-- 独立测试证据：`builder_test.rs` 验证桶合并、区间游标、一般/低 NDV TopN 和采样保护；`statistics_test.rs` 验证低频 TopN 剪枝；`integration_test.rs` 验证采样到列直方图的总行数/NDV；`go_merge_47_test.rs` 与 `sample_test.rs` 验证运行时默认 TopN/桶数对剪枝的影响。
+本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/builder.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
 
-本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付前执行任务指定的结构命令，要求文档存在且恰有十一个固定二级标题；此外人工复核文档已回答文件定位、运行主链、安全扩展点与已知 Go 差异。
+纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。
