@@ -30,8 +30,12 @@
 
 ## 执行流程
 
+`Manager` 新增 owner 侧 `OrphanDataMonitor`：构造时按 `IsNextGen()` 选择真实 globalsort monitor 或 Classic no-op。`start` 在刷新节点、排空终态清理批次后触发扫描，再发布 initialized；正常 `tick` 完成调度推进和清理后再次触发；`stop` 关闭调度器、释放预留后 reset 指标，Drop 复用 stop。
+
+真实监控通过 `active_task_count() > 0` 判断生产者，包含尚未清理的终态任务，避免提前将仍被清理链持有的文件统计为孤儿。云 URI 每轮调用 handle 查询，查询错误转为空字符串而跳过；保留前缀固定为 `conflicted-rows/`。扫描只发布大小，不删除对象，与 `run_expired_file_clean` 的过期文件清理能力独立。
+
 1. 调用方先以任务存储边界、server ID 和可选 `NodeResource` 构造 `Manager`。`new` 同时创建空的 `NodeManager`、`SlotManager`、`Balancer` 和运行表。
-2. `start` 调用 `NodeManager::refresh_nodes`：通过 `TaskManager::all_nodes` 建立 managed 节点快照，并以第一个正 CPU 数刷新 slot capacity。随后 `drain_clean_task_batches` 处理 owner 接管前遗留的终态任务，最后以 Release 写入 `initialized=true`。任一步存储错误都会阻止初始化完成。
+2. `start` 调用 `NodeManager::refresh_nodes`：通过 `TaskManager::all_nodes` 建立 managed 节点快照，并以第一个正 CPU 数刷新 slot capacity。随后 `drain_clean_task_batches` 处理 owner 接管前遗留的终态任务，触发孤儿监控，最后以 Release 写入 `initialized=true`。节点刷新错误会阻止初始化；清理 drain 和监控错误在各自内部处理。
 3. 外层循环调用 `tick`。若未初始化立即返回；否则 `get_schedulable_tasks` 根据当前运行数选择 `top_unfinished_tasks`，达到并发上限时改取 `top_no_need_resource_tasks`。已有运行条目的任务被跳过；没有注册 scheduler factory 的任务被标记失败，并调用 `on_task_finished` 更新完成指标。
 4. `start_schedulers` 先整体刷新节点的已用 slot 快照。对 `Pending`、`Running`、`Resuming` 任务，它再次核对并发上限并调用 `SlotManager::can_reserve`；其他状态（如 cancelling/reverting/pausing/modifying）不占 slot，因而即使普通并发额度已满仍可启动。
 5. `start_scheduler` 重新按 ID读取完整 `Task`，由 `get_scheduler_factory(task_type)` 取得工厂并注入 `Param`。`Scheduler::init` 失败时将任务标记失败且不登记；成功时先登记 slot 预留，再把 `RunningScheduler` 写入映射。
@@ -78,6 +82,8 @@
 
 ## 并发与资源生命周期
 
+监控为同步扫描，会延长 start/tick 耗时；每次传入新建 `Context`，包装层将取消标志转成对象存储 Context，但 `cancel()` 仅清 initialized，没有保存并取消正在扫描的 Context。不能宣称 stop 会中断在途扫描；调用方仍需串行驱动 owner 生命周期。双门检查不能消除生产者在扫描期间出现又消失的 ABA 窗口。
+
 - `Manager` 的共享依赖均通过 `Arc` 持有；运行表用 `RwLock`，balancer 用 `Mutex` 串行化每次 balance。锁获取顺序在本文件中短且固定，外部 trait 方法均在释放运行表锁后调用，降低重入死锁风险。
 - `MAX_CONCURRENT_TASKS` 和 `initialized` 使用 Release 写/Acquire 读，分别发布配置与初始化完成状态。`scheduler_count` 与后续插入之间不是单个原子临界区；如果多个线程并发调用 `tick`，它们可能都通过上限检查。本文件的设计对应单 owner 循环，调用方应串行驱动 `tick`。
 - scheduler 生命周期为：工厂构造 → `init` →（可选）`reserve` → 运行表持有 → 多次 `schedule_once` → `close` →（可选）`unreserve`。初始化失败不会 reserve；正常完成和 `stop` 都成对释放。
@@ -86,6 +92,8 @@
 - Rust 版没有 Go 版的 `context.CancelFunc`、wait group、ticker、`finishCh` 或任务运行时 release 回调；`cancel` 仅翻转标志，`stop` 同步关闭本地实例，不等待任何由 `Scheduler` 内部创建的后台工作。
 
 ## 与 Go 版本的对应关系
+
+Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变化 Stop 时 Reset；Rust 已接入 start/tick/stop，但没有 Go ticker 清理 goroutine，也没有同等 logger。NextGen gate、保留冲突对象命名空间与活动表计数的保守判断意图一致。
 
 共同语义（依据 `pkg/dxf/framework/scheduler/scheduler_manager.go`）：
 
@@ -115,10 +123,8 @@
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/dxf/framework/scheduler/scheduler_manager.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 1200` 返回完整 500 行源码并报告 41 个符号及 12 个使用文件。`query max_concurrent_tasks --kind function --json` 精确定位本文件第 42 行和第 47 行的 getter/setter。方法级 callers/callees 因 `Manager`/`tick` 同名歧义未产生可靠输出，故未将宽泛结果当作证据。
-- 生产源码：`pkg/dxf/framework/scheduler/scheduler_manager.rs`（管理流程）；`interface.rs`（TaskManager/Scheduler/Cleaner/Param 契约和注册表）；`nodes.rs`（节点刷新）；`slots.rs`（预留与释放）；`balancer.rs`（balance 下游）；`scheduler.rs`（`on_task_finished`）。
-- crate 边界：`pkg/dxf/framework/scheduler/Cargo.toml` 与 `lib.rs`。目标目录没有 `doc.go`，因此不存在额外 Go package contract 文件可读。
-- Go 对照：`pkg/dxf/framework/scheduler/scheduler_manager.go`；重点核对 `NewManager`、`Start`/`Stop`、`scheduleTaskLoop`、`getSchedulableTasks`、`startSchedulers`/`startScheduler`、清理循环/分组、expired-file 与 metrics collect 流程。
-- 独立 Rust 测试：`scheduler_manager_test.rs` 覆盖 cleaner 改写后迁移、启动即 drain、停止条件和 tick 后清理；`scheduler_manager_nokit_test.rs` 覆盖排名、无需 slot 状态、非法 keyspace 初始化失败、失败指标、并发上限快速通道、bounded cleanup、single/batch cleaner 部分失败与历史迁移重试；`scheduler_test.rs` 覆盖 manager 驱动真实基础调度器。
-- Go 测试：`scheduler_manager_test.go`、`scheduler_manager_nokit_test.go`，包含对应 cleaner、排序、过期文件清理、无需资源状态、跨 keyspace 与达到并发上限用例。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查要求目标文件存在且恰有 11 个固定二级标题；运行结果在交付时报告。
+- 固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的本文件 diff 与完整 `git show 2c944fb:pkg/dxf/framework/scheduler/scheduler_manager.rs`。
+- 冻结接线：`scheduler/Cargo.toml` 的 kerneltype、handle、globalsort、objstore 依赖，`scheduler/lib.rs` 公共模块；`interface.rs::active_task_count` 与 `storage_adapter.rs` 的存储计数覆盖。
+- `scheduler_manager_nokit_test.rs::orphan_monitor_runs_with_scheduler_cleanup_and_resets_on_stop` 注入记录器验证 start/tick 触发和 stop 重置；`scheduler_manager_test.rs` 验证清理批次推进与失败边界。这些是源码证据，本轮未执行测试。
+- Go 对照：`scheduler_manager.go::newOrphanDataMonitor`、`cleanTaskLoop`、`Stop`；globalsort 的 `orphandata.rs` 和 `orphandata/monitor.go` 用于复核只读扫描、双门检查和资源关闭。
+- RustCodeGraph status 的当前索引不保证冻结版本关系，以目标 blob 为准。Ready 等价文档校验采用任务指定的七篇 11 节结构、空白和 diff 检查；未运行 Cargo/Go、真实对象存储或 owner 切换测试。

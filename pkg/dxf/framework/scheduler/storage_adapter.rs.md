@@ -29,6 +29,8 @@
 
 ## 执行流程
 
+新增 `active_task_count -> GetActiveTaskCountsByKeyspace(context()).Total`，查询失败转换为 `SchedulerError`，供 owner 孤儿监控保守跳过扫描；这里统计活动表所有行，终态清理前仍算占有者。成功写入改为 `succeed_task(&Task) -> SucceedTask(context(), to_task(task))`，完整转换保留完成回调改写的 meta，不能退回只传 task ID。
+
 典型流程是：业务代码取得 storage manager，调用 `StorageTaskManagerAdapter::new`，再将其包成 `Arc<dyn TaskManager>` 交给 `scheduler::Manager`、`NodeManager`、`SlotManager` 或 `Param`。调度器通过 trait 方法发起操作，适配器即时创建默认 storage context，必要时转换入参，调用同名或语义对应的 storage 方法，再转换返回值或错误。
 
 查询路径例如 `top_unfinished_tasks` 调用 `GetTopUnfinishedTasks`，将每个 `proto::TaskBase` 经 `from_base` 转成 scheduler `TaskBase`；`all_tasks`、`all_subtasks` 和两类 previous 查询把 storage 的 `Option<Vec<_>>` 中 `None` 规范化为空向量。`tasks_in_states` 先把静态状态字符串转换成 `storage::Value::String`，再将完整任务逐项转换。
@@ -89,9 +91,8 @@ Go 对照入口是 `pkg/dxf/framework/scheduler/interface.go` 的 `TaskManager` 
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引，并显示由 scheduler/interface、scheduler_manager、handle/status 等 16 个文件关联使用。
-- RustCodeGraph `node --file pkg/dxf/framework/scheduler/storage_adapter.rs`（1–443 行）：核对全部模块状态、转换函数、公开结构和 33 个 trait 方法实现；`query StorageTaskManagerAdapter --kind struct` 定位结构体于第 144 行。对 `StorageTaskManagerAdapter::new` 的静态 callers/callees 查询未返回可靠边，故直接调用点用仓库文本搜索补充，未据此臆造调用图。
-- 源码与边界：`pkg/dxf/framework/scheduler/storage_adapter.rs`、`interface.rs`、`lib.rs`、`Cargo.toml`；底层实现 `pkg/dxf/framework/storage/task_table.rs`；Go 对照 `pkg/dxf/framework/scheduler/interface.go` 和 `pkg/dxf/framework/storage/task_table.go`。
-- 上游调用：`pkg/session/runtime/modify_column_dist_backfill.rs`；独立 Rust 覆盖路径 `pkg/session/runtime_test/ddl.rs`、`pkg/dxf/framework/handle/handle_test.rs`、`pkg/dxf/importinto/clean_up_test.rs`、`tests/realtikvtest/importintotest4/recorded_summary_harness.rs`。
-- 行为测试证据：`pkg/dxf/framework/storage/table_test.rs` 覆盖 summary 的空结果、row count 映射和坏 JSON 错误；Go 的 `pkg/dxf/framework/storage/table_test.go` 覆盖 unfinished/no-resource 排序与上限、prepare CAS、批量切步稳定性以及 summary 行为。当前没有同名独立 Rust adapter 测试，因此“所有转换字段均被逐项回归覆盖”未验证。
-- 本任务是只读行为分析加文档，不运行 Cargo。交付前使用任务指定的 `rg` 结构命令确认恰有 11 个固定二级标题，并人工检查本文能回答文件位置、运行链路和安全扩展点。
+- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/storage_adapter.rs`，不采用工作区未提交源码。
+- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
+- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
+- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
+- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

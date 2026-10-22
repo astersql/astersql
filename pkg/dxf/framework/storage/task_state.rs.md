@@ -30,9 +30,11 @@ crate 根通过 `include!("task_state.rs")` 把这些符号直接并入 `astersq
 - `TaskManager::ResumeTask`、`ResumedTask`：外部请求令 `paused -> resuming` 并清空任务错误，调度恢复完成后令 `resuming -> running`（`task_state.rs:227-256`）。
 - `TaskManager::ModifyTaskByID`：验证 `PrevState` 只能是 `pending`、`running` 或 `paused`，序列化 `ModifyParam`，在事务中读取当前任务并以 compare-and-set 进入 `modifying`（`task_state.rs:258-288`；`proto/task.rs:83-101`）。
 - `TaskManager::ModifiedTask`：仅在任务仍为 `modifying` 时应用 `RequiredSlots`、`MaxNodeCount`、`Meta`，清空 `modify_params` 并恢复 `PrevState`；随后更新 `pending|running|paused` 子任务的 concurrency（`task_state.rs:290-322`）。
-- `TaskManager::SucceedTask`：仅把 `running` 转为 `succeed`，同步把 step 设为 `StepDone` 并写结束时间（`task_state.rs:324-337`）。
+- `TaskManager::SucceedTask`：仅把 `running` 转为 `succeed`，同步把 step 设为 `StepDone`、保存 task.Meta 并写结束时间（`task_state.rs:324-337`）。
 
 ## 执行流程
+
+成功终结接口改为 `SucceedTask(ctx, task: proto::Task)`，从完整任务取 ID 与 Meta，同一条条件 UPDATE 设置 state=succeed、step=Done、meta、更新时间和结束时间，前提仍为 `id = task.ID AND state = running`。这使 scheduler 的完成摘要与成功状态一起落库；零受影响行仍按原协议返回成功，不表示一定发生了转换。独立 `task_state_test.rs::TestTaskState` 使用 `Meta = b"summary"` 断言 SQL 第三个参数为该字节数组。
 
 普通单表转换的流程是：调用者给出任务标识与期望前态；方法执行可选的 `DXFRandomErrorWithOnePercent`；再通过 `ExecuteSQLWithNewSession` 或 `WithNewSession` 取得 session，提交带 `WHERE state ...` 的参数化更新；SQL/session 错误沿 `Result` 返回。取消、失败、回滚、等待决议、回滚完成、暂停落定、恢复落定和成功终结都属于这一类。条件未命中时，多数方法按 Go 语义静默成功；只有明确需要竞争反馈的方法读取 `AffectedRows`。
 
@@ -57,8 +59,6 @@ crate 根通过 `include!("task_state.rs")` 把这些符号直接并入 `astersq
 取消标记的读取链独立于状态写链：scheduler crate 将 `TaskCancelMessage` 重新导出并用 storage 的 `IsCancelledErr` 判断取消；历史摘要在 `history.rs::ClassifyTaskErrorMessage` 中把 `reverted + 取消标记` 分类为 `cancelled`，其他 reverted 错误分类为数据错误或失败（`scheduler/scheduler.rs:34,543-544`；`history.rs:318-338`）。
 
 下游依赖包括：`TaskManager::{WithNewSession,WithNewTxn,ExecuteSQLWithNewSession}` 管理 session/事务；`sqlexec::ExecSQL` 执行参数化 SQL；`json::Marshal` 编码修改参数；`serializeErrOption` 编码可空错误；`TaskIDToKey` 生成子任务外键；`proto` 提供状态、step、任务及修改参数；`failpoint`/`injectfailpoint` 提供竞争与随机错误注入点。crate 清单的 storage、config、proto、schstatus、serde 依赖构成更宽的 crate 边界，但本文件没有网络、文件或异步运行时依赖。
-
-RustCodeGraph 对目标文件的文件级关系只直接列出 `history.rs`，而精确 `callers/callees` 子命令未输出方法边；因此上述 Rust 上游方法调用同时用索引中的 `node/explore` 和仓库符号搜索核对，不能把文件级 “used by 1 file” 误解为完整运行时调用面。
 
 ## 错误处理与边界
 
@@ -96,12 +96,8 @@ Go 测试连接真实 mock store/system tables，验证读回状态、错误归�
 
 ## 验证依据
 
-- Rust 源与装配：`pkg/dxf/framework/storage/task_state.rs:24-338`、`pkg/dxf/framework/storage/lib.rs:1247-1262`。
-- session、事务与公共 helper：`pkg/dxf/framework/storage/task_table.rs:74-81,134-154,189-245,842-845`；`pkg/dxf/framework/storage/converter.rs:286-290`。
-- 状态定义与修改前态约束：`pkg/dxf/framework/proto/task.rs:30-61,83-101`。
-- crate 边界：`pkg/dxf/framework/storage/Cargo.toml` 的 `[lib]`、`[[test]]`、`[features]`、`[dependencies]` 与 `package.metadata.porting`。
-- Rust 上游：`pkg/dxf/framework/scheduler/interface.rs:349-430`、`pkg/dxf/framework/scheduler/storage_adapter.rs:256-323`、`pkg/dxf/framework/handle/handle.rs:460-481`、`pkg/session/runtime/import_file.rs:423-459`、`pkg/dxf/framework/storage/history.rs:318-338`。
-- Go 对照与测试：`pkg/dxf/framework/storage/task_state.go:30-339`；`pkg/dxf/framework/storage/task_state_test.go:40-403`。
-- Rust 独立测试：`pkg/dxf/framework/storage/task_state_test.rs:23-218` 覆盖主状态写、nil error、错误暂停竞争、修改前态、暂停恢复序列和取消标记；仓库符号搜索还确认 scheduler adapter、Handle 测试与若干导入路径存在直接调用。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter`、`node --file`、`query` 和 `explore` 用于核对目标源码、状态定义、Go 对照、测试与调用链。精确 `callers/callees --file` 没有返回文本，故调用边又用仓库 `rg` 搜索及调用者源码交叉验证。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 标题结构验证，并人工复核文档只描述已由上述源码、调用点和测试证实的当前行为。
+- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/storage/task_state.rs`，不采用工作区未提交源码。
+- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
+- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
+- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
+- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

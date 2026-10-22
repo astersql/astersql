@@ -17,6 +17,8 @@
 
 ## 主要符号
 
+`TaskManager::active_task_count` 默认使用 `all_tasks()?.len()`，统计活动任务表行数，包含尚未迁入历史的终态行，不能替换成 unfinished 数量。生产适配器改用存储层计数查询。`succeed_task(&Task)` 接收完整快照，使完成回调修改的 `meta` 与成功状态一起写入。
+
 - `SchedulerError(String)` 与 `Result<T>`：本 crate 的轻量错误边界。错误只保留消息并实现 `Display`/`Error`，没有错误码、来源链或类型化分类。
 - `Context`：持有共享的 `AtomicBool` 取消标志以及 `(Mutex<bool>, Condvar)`。`cancel` 先发布原子状态，再更新条件变量状态并唤醒全部等待者；`wait` 可被取消中断；`cancellation_flag` 让对象存储上下文共享同一取消生命周期。
 - `TaskBase`：关键方法是 `is_done`、`compare`、`runtime_slots`。`compare` 按 `priority ASC, create_time ASC, id ASC` 排名；`runtime_slots` 仅在正数 `max_runtime_slots` 对当前步骤生效时取其与 `required_slots` 的较小值。默认值为 pending/init、普通优先级 `512`、Unix epoch 和空 keyspace/scope。
@@ -97,9 +99,8 @@ Rust 还提供 `Context::cancellation_flag` 以连接 Rust 对象存储上下文
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/framework/scheduler` 覆盖目标及独立测试；`node --file pkg/dxf/framework/scheduler/interface.rs --offset 1/487` 读取完整 626 行；`query` 核对 `TaskManager`、`Extension`、`Scheduler`、`SchedulerFactory`；`explore` 核对 scheduler/cleaner 注册和查询调用边。
-- 源码：[`interface.rs`](interface.rs)（全部常量、数据类型、trait、注册表及辅助逻辑）、[`lib.rs`](lib.rs)（模块声明与再导出）、[`scheduler.rs`](scheduler.rs)（`BaseScheduler` 对接口的消费）、[`scheduler_manager.rs`](scheduler_manager.rs)（工厂查询、生命周期、清理与排序）、[`nodes.rs`](nodes.rs)、[`slots.rs`](slots.rs)。
-- crate 与架构：[`Cargo.toml`](Cargo.toml)（crate 名、无条件依赖及 Windows 条件依赖）、[`pkg/dxf/framework/doc.go`](../doc.go)（owner/follower、slot、scope、任务顺序和状态机契约）。
-- Go 对照：[`interface.go`](interface.go)（TaskManager/Extension/Param/注册表/cleaner 契约）及 [`scheduler.go`](scheduler.go)（Go Scheduler 生命周期接口）。
-- Rust 独立测试：[`scheduler_manager_nokit_test.rs`](scheduler_manager_nokit_test.rs) 覆盖排名、未知/已知工厂、无需资源状态、批量/单项/过期文件清理及失败重试；[`scheduler_manager_test.rs`](scheduler_manager_test.rs) 覆盖清理后 meta 迁移和有界批次；[`scheduler_nokit_test.rs`](scheduler_nokit_test.rs) 覆盖 prepare 与状态迁移；[`scheduler_test.rs`](scheduler_test.rs) 覆盖工厂注册、取消、暂停、错误和 manager 驱动；[`pkg/dxf/importinto/scheduler_test.rs`](../../importinto/scheduler_test.rs) 覆盖真实业务扩展、运行时槽位和已注册工厂复用；[`pkg/dxf/importinto/clean_up_test.rs`](../../importinto/clean_up_test.rs) 覆盖 import cleaner 注册与能力。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终只运行固定 11 章节的文件结构校验，并人工核对链接、符号名、调用方向以及 Rust/Go 差异。
+- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/interface.rs`，不采用工作区未提交源码。
+- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
+- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
+- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
+- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

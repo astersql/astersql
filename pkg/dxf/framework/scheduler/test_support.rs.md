@@ -37,6 +37,8 @@ Manager 清理测试通过 `cleanup_tasks` 按终态筛选并截断到 `GetTaskC
 
 ## 数据与状态
 
+成功写入夹具现为 `succeed_task(&Task)`：clone 传入完整任务，置 state=succeed、step=Done 后通过 `insert_task` 保存，因此保留完成回调的 meta。它没有数据库的 running 条件更新，也不模拟时间戳或 AffectedRows；缺失任务会被插入，不能用它证明 SQL CAS。`active_task_count` 继承 trait 默认实现，统计内存 `all_tasks` 的全部行，包含未迁历史的终态。该模块仅在 `#[cfg(test)]` 装配，不是生产存储。
+
 `TestTaskManager` 的字段可分为三类：输入脚本（如 `top_unfinished`、`state_counts`、`cleanup_infos`）、可变领域快照（`tasks`、`nodes`、`active_subtasks`）和副作用日志/计数（`persisted_subtasks`、`deleted_nodes`、`cleanup_info_calls`、`gc_calls`）。测试可以在调用前写入输入，在调用后分别断言领域结果和调用记录。
 
 重要状态约束如下：`tasks_in_states` 保证按 ID 稳定排序；`cleanup_tasks` 只返回 Failed/Reverted/Succeed 并受全局测试批大小限制；`transfer_tasks_to_history` 仅在无注入错误时记录并从活动表移除；`pause_task_on_error` 要求当前状态仍等于调用方传入值，否则返回 `task changed`，并只把指定 step 中 Failed 的活动子任务改为 Paused；`resume_subtasks` 只把 Paused 改为 Pending；`update_subtask_exec_ids` 按子任务 ID 更新所有活动视图。
@@ -88,9 +90,8 @@ Go 同目录没有与本文件一一对应的 `test_support.go`。对应意图�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`files --filter pkg/dxf/framework/scheduler` 列出目标、模块、Rust/Go 测试和相邻实现；`node --file pkg/dxf/framework/scheduler/test_support.rs --offset 1 --limit 500` 与 `--offset 501 --limit 120` 覆盖目标 582 行；`query TestTaskManager --kind struct`、`query TestExtension --kind struct` 定位两个主要类型。精确 callers/callees 无输出，故以直接引用搜索补证。
-- crate 与模块：`pkg/dxf/framework/scheduler/Cargo.toml`、`pkg/dxf/framework/scheduler/lib.rs`；包内未发现 `doc.go`，因此没有更近的 Go 包契约文件可读。
-- trait 与真实实现边界：`pkg/dxf/framework/scheduler/interface.rs`、`pkg/dxf/framework/scheduler/scheduler.rs`、`pkg/dxf/framework/scheduler/scheduler_manager.rs`、`pkg/dxf/framework/scheduler/storage_adapter.rs`。
-- Rust 独立测试：`scheduler_test.rs`、`scheduler_nokit_test.rs`、`scheduler_manager_test.rs`、`scheduler_manager_nokit_test.rs`、`nodes_test.rs`、`slots_test.rs`、`balancer_test.rs`。
-- Go 对照：`scheduler_nokit_test.go`、`scheduler_manager_nokit_test.go`、`scheduler_test.go`、`nodes_test.go`、`slots_test.go`、`balancer_test.go` 和 `mock/scheduler_mock.go`；确认没有同路径 `test_support.go`。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前运行任务指定结构命令，确认文件存在且恰有 11 个固定二级标题，并人工检查本文没有把测试夹具、Go gomock 能力或简化的内存写入描述成生产保证。
+- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/test_support.rs`，不采用工作区未提交源码。
+- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
+- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
+- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
+- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

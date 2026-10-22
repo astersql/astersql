@@ -31,6 +31,8 @@
 
 ## 执行流程
 
+在 `next_step == STEP_DONE` 分支，先让 `on_done_with_context` 修改局部 task，再调用 `succeed_task(&task)`。只有持久化返回成功后才将本地 step/state 更新为 Done/succeed、增加结束指标并替换快照；回调或写入失败沿 Result 返回，manager 保留调度器供下一轮推进。该 meta 写入契约针对成功路径；回滚完成仍调用只接收 ID 的 `reverted_task`，不能推断同样持久化回调 meta。
+
 1. `Manager::drive_schedulers` 调用 `schedule_once`。若 `closed` 已以 Acquire 读到 true，立即返回 `Ok(true)`。
 2. `refresh_task_if_needed` 从 `TaskManager` 对比持久化 state/step，必要时替换完整快照，避免用户操作、Owner 切换或其他调度器修改后继续使用旧状态。
 3. `schedule_once` 按状态分派：Cancelling 记录统一取消错误并进入 Reverting；Pausing 等活跃子任务清空后进入 Paused；Resuming 恢复暂停子任务或转回 Running；Reverting 等活跃子任务结束后执行 `on_done` 并落为 Reverted；终态和 Paused 返回 `true`；未知状态保持实例并返回 `false`。
@@ -104,8 +106,8 @@ Go 测试 `scheduler_test.go` 与 `scheduler_nokit_test.go` 是移植语义参�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示本地索引包含目标目录；`files --filter pkg/dxf/framework/scheduler` 列出目标、模块、Go 对照与独立测试；`node --file pkg/dxf/framework/scheduler/scheduler.rs --offset 1 --limit 500` 及 `--offset 495 --limit 100` 覆盖目标 545 行全貌，并报告 11 个使用文件；`node` 还读取了 `scheduler_manager.rs`、`interface.rs`、`scheduler_test.rs`、`scheduler_nokit_test.rs` 的直接调用与契约。针对 `BaseScheduler`、`schedule_once`、`switch_to_next_step` 执行了 query/callers/callees；query 定位了目标符号，callers/callees 未返回可用边，故以文件使用关系和具体调用点补证。
-- crate/模块：`pkg/dxf/framework/scheduler/Cargo.toml`、`pkg/dxf/framework/scheduler/lib.rs`。
-- Go 对照：`pkg/dxf/framework/scheduler/scheduler.go`；测试名称与覆盖面来自 `pkg/dxf/framework/scheduler/scheduler_test.go`、`pkg/dxf/framework/scheduler/scheduler_nokit_test.go`。
-- Rust 独立测试：`pkg/dxf/framework/scheduler/scheduler_test.rs` 覆盖完成、取消、回滚、人工恢复、轮询分派、暂停和 Manager 生命周期；`pkg/dxf/framework/scheduler/scheduler_nokit_test.rs` 覆盖初始化、准备、节点选择、磁盘满、暂停/恢复/回滚、无 slot、刷新、修改与完成指标。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰好包含 11 个固定二级标题，并人工核对本文未把 Go 独有能力描述成 Rust 现状。
+- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/scheduler.rs`，不采用工作区未提交源码。
+- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
+- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
+- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
+- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。
