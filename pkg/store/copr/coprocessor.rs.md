@@ -2,9 +2,9 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-copr` crate 的标准 Coprocessor 客户端核心。`pkg/store/copr/lib.rs` 将其作为 `coprocessor` 模块公开并再导出全部公开项；`pkg/store/copr/store.rs::Store::get_client` 和 `pkg/store/driver/tikv_driver.rs::TikvDriver::GetClient` 是生产侧构造 `CopClient` 的直接入口。它位于 SQL 执行产生的 DAG/Analyze/Checksum 请求与 TiKV、TiFlash 或 TiDB 内存协处理器之间，负责把逻辑 key ranges 定位、拆分成任务，调度 RPC，并把重试、分页和批处理结果重新组织成响应流。
+本文件是 `astersql-store-copr` crate 的标准 Coprocessor 客户端核心。`pkg/store/copr/lib.rs` 将其作为 `coprocessor` 模块公开并再导出全部公开项；`pkg/store/copr/store.rs::Store::get_client` 和 `pkg/store/driver/tikv_driver.rs::TikvStore::GetClient` 是生产侧构造 `CopClient` 的直接入口。它位于 SQL 执行产生的 DAG/Analyze/Checksum 请求与 TiKV、TiFlash 或 TiDB 内存协处理器之间，负责把逻辑 key ranges 定位、拆分成任务，调度 RPC，并把重试、分页和批处理结果重新组织成响应流。
 
-crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-copr`，本文件直接依赖同 crate 的 `batch_coprocessor`、`batch_request_sender`、`coprocessor_cache`、`ema`、`range_diagnostics`，并通过已发布 tag `v0.4.2-aster.10` 的 `tikv-client`、`astersql-kv`、`kvproto` 和 `protobuf` 承载读统计、限流器及锁协议。该文件没有条件编译项；测试由 `lib.rs` 以独立的 `coprocessor_test.rs` 模块接入，符合生产代码与测试分文件的布局。
+crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-copr`，本文件直接依赖同 crate 的 `batch_coprocessor`、`batch_request_sender`、`coprocessor_cache`、`ema`、`range_diagnostics`，并通过已发布 tag `v0.4.2-aster.13` 的 `tikv-client`、`astersql-kv`、`kvproto` 和 `protobuf` 承载读统计、限流器及锁协议。该文件没有条件编译项；测试由 `lib.rs` 以独立的 `coprocessor_test.rs` 模块接入，符合生产代码与测试分文件的布局。
 
 ## 核心职责
 
@@ -15,6 +15,8 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 5. **策略辅助**：小任务并发估算、store batch 资格、优先级/隔离级别映射、响应内存估算和 `RateLimitAction` 的 runaway 降速状态都集中于此。
 
 ## 主要符号
+
+- `TiDBRPCServer { server_id, address, disable_rpc }`：TiDB RPC 候选信息。`CopBackend::tidb_rpc_servers` 默认将旧 `tidb_server_addresses` 映射成 `disable_rpc = false`；提供禁用标记的后端需覆写此方法。该默认桥接本身不会发现禁用状态，不能据此宣称所有生产后端已接入服务发现标记。
 
 - 配置枚举：`StoreType`（TiKV/TiFlash/TiDB）、`RequestType`（DAG/Analyze/Checksum）、`ReplicaReadType`、`Priority`、`IsolationLevel` 和 `RunawayAction`。它们决定任务构建、wire 字段和调度分支。
 - 请求/任务：`CopRequest` 是一次逻辑请求；`PartitionKeyRanges` 保留分区 ranges 与逐 range 行数提示；`LocatedKeyRanges` 是后端定位结果；`CopTask` 是最小执行/重试单元；`BatchedCopTask` 与 `StoreBatchWireTask` 表示 store batch 的子任务。
@@ -39,19 +41,21 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 - `CopRequest` 在构建 iterator 后被克隆进 `Arc`，成为 worker 共享的只读请求快照；唯一共享可变请求统计 `resource_control_ru` 使用 `Mutex`。
 - `CopTask` 持有 Region 版本、bucket 版本、范围、目标地址、分页游标和批子任务映射。重试不是原地循环到成功，而是返回新的 `CopTaskResult::remains`，由当前 worker 的 pending 队列继续处理。
 - `keys_read` 和 `paging_task_index` 用原子量分别执行全请求 key 预算与页序号分配；`resolved_locks`、`committed_locks`、`runtime_stats` 和 limiter 等待统计使用共享 `Mutex`。
-- `RuEma` 根据 byte paging 的响应读取字节更新时间感知预测；预测值写入下一次 `CopWireRequest::predicted_read_bytes`，用于 RU 预扣和分页控制。
+- `RuEma::new()` 从零开始，一个 iterator 的 worker 共享同一 `Arc`。正常响应带续页范围且 `read_bytes > 0` 时才观察样本；错误、零读取和最终页不更新。只有 `request.paging.size_bytes > 0` 才将预测写入 `CopWireRequest::predicted_read_bytes` 用于 RU 预扣；行分页自身仍分配任务页序号，但不能单独启用预扣。
 - store batch 的成功/回退计数在所有子 backoff 与重建成功后一次性原子更新，避免失败路径重复计数；`CopResponse::mem_size` 惰性缓存响应占用估值。
 - 常量不变量包括：每任务最多 `RANGES_PER_TASK = 25_000` 个 range；小任务阈值为 32 行（batch 父任务为 64）；越界自愈最多 3 次；keep-order 模式的小任务额外并发最多 20。
 
 ## 依赖与调用关系
 
-上游生产链为 `pkg/store/driver/tikv_driver.rs::TikvDriver::GetClient` → `pkg/store/copr/store.rs::Store::get_client` → `CopClient::new`；请求侧最终调用 `CopClient::send` 或 `build_cop_iterator`。RustCodeGraph 对 `build_cop_tasks` 的被调用边未完整返回，但源码明确显示 `CopClient::build_cop_iterator` 与 `CopTaskWorker::{rebuild,rebuild_whole_store_batch}` 调用它；测试也直接调用以验证构建规则。
+上游生产链为 `pkg/store/driver/tikv_driver.rs::TikvStore::GetClient` → `pkg/store/copr/store.rs::Store::get_client` → `CopClient::new`；请求侧最终调用 `CopClient::send` 或 `build_cop_iterator`。冻结源码显示 `CopClient::build_cop_iterator` 与 `CopTaskWorker::{rebuild,rebuild_whole_store_batch}` 调用它；测试也直接调用以验证构建规则。
 
-下游主链为 `CopClient::build_cop_iterator` → `build_cop_tasks` → `CopBackend::{split_key_ranges,build_batch_task,tidb_server_addresses}`，以及 worker 的 `handle_task_once` → `CopBackend::{send,invalidate_region,update_buckets,resolve_lock}`。RustCodeGraph 的 callees 结果还确认 `build_cop_tasks` 调用 `ensure_monotonic_key_ranges`、`grow_paging_size`、`row_hint_for_location`、`is_small_task`、`append_batched_task` 和 `range_diagnostics::first_out_of_bound_key_range_in_location`；`handle_task_once` 调用 wire 构造、重建、批响应拆解、缓存和锁处理函数。
+下游主链为 `CopClient::build_cop_iterator` → `build_cop_tasks` → `CopBackend::{split_key_ranges,build_batch_task,tidb_rpc_servers}`，以及 worker 的 `handle_task_once` → `CopBackend::{send,invalidate_region,update_buckets,resolve_lock}`。冻结源码还显示 `build_cop_tasks` 调用 `ensure_monotonic_key_ranges`、`grow_paging_size`、`row_hint_for_location`、`is_small_task`、`append_batched_task` 和 `range_diagnostics::first_out_of_bound_key_range_in_location`；`handle_task_once` 调用 wire 构造、重建、批响应拆解、缓存和锁处理函数。
 
 `pkg/store/copr/network_backend.rs::NetworkBackend` 是生产网络实现：它复用 Region 元数据定位和标准 Coprocessor transport，在 `send_coprocessor_stream` 中按实际 peer/store 获取 `CopRequestAttemptLimiter` 许可并设置超时。`batch_coprocessor.rs` 提供 TiFlash batch iterator/统计，`coprocessor_cache.rs` 提供响应缓存，`batch_request_sender.rs` 提供 `Backoffer`、`KeyRanges`、错误与 Region/Peer 类型。
 
 ## 错误处理与边界
+
+- TiDB 分支只为 `!disable_rpc && !address.is_empty()` 的候选建任务，每个任务保留全量 ranges 和 `row_count_hint = -1`；禁用 RPC 的 standalone BR 与空地址被跳过。候选查询失败直接传播，过滤后为空不会回退到这些节点。
 
 - 所有可恢复运行错误经 `BatchResult<T>`/`BatchError` 传播。取消返回 `Cancelled`，kill 信号返回 `QueryInterrupted`，后端关闭和 Region 缺失由后端错误表示；锁或 poisoned mutex 属于内部不变量破坏，代码使用 `expect` 明确失败。
 - Region error：先 backoff，再重新定位父任务，并分别重建失败的 batch children。合并 batch 在发送前遇到 `MissingRegion` 时重建完整 batch ranges，避免丢掉子任务。
@@ -70,6 +74,8 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 
 ## 与 Go 版本的对应关系
 
+冻结 Go `buildTiDBMemCopTasks` 的 `IsDisableRPC` 过滤对应 Rust 的 `TiDBRPCServer::disable_rpc`；Rust 额外显式排除空地址。Go `predictedReadBytes` 同样仅以 `PagingSizeBytes` 为预扣开关，`newRUEMA()` 同样从零开始。
+
 直接对照文件为 `pkg/store/copr/coprocessor.go`。Rust 的 `CopClient::send`/`build_cop_iterator` 对应 Go `(*CopClient).Send`/`BuildCopIterator`；`CopTask`、`BatchedCopTask`、`CopIterator`、`CopTaskWorker::handle_task_once` 分别对应 `copTask`、`batchedCopTask`、`copIterator`、`copIteratorWorker.handleTaskOnce`。`build_cop_tasks`、`is_small_task`、`small_task_concurrency`、`calculate_retry`、`calculate_remain`、`check_store_batch_coprocessor` 和优先级/隔离级别映射均有同名或直接语义对应。
 
 两版共同保留 Region/bucket 切分、store batch、大小任务并发、lite worker、keep-order、分页续作、缓存、锁解析、限流、runaway/RU 和 store-batch 统计等核心意图。Rust 将 Go 的 context/channel/goroutine 改为 `AtomicBool`、标准线程和 `std::sync::mpsc`，并通过 `CopBackend` 把 Region cache 与 transport 隔离；因此 API 形状不是逐行翻译。Go 文件还包含更丰富的日志、内存 tracker、execution detail 收集与 TiDB 专用错误处理；本 Rust 文件当前没有等价的全部细节，文档不将这些 Go 能力宣称为 Rust 已支持。
@@ -87,7 +93,11 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/store/copr` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/store/copr/coprocessor.rs` 阅读了目标全貌；`query build_cop_tasks` 定位生产符号及相关测试；`callees build_cop_tasks` 与 `callees handle_task_once` 核对了上述关键下游边。调用方查询未产出完整结果，因此上游关系改由实际源码引用核验，没有据此猜测。
+- 增量直接测试：冻结 `coprocessor_test.rs::skip_empty_tidb_nodes` 同时覆盖空地址、禁用 RPC 与正常节点；`paging_size_bytes_is_the_only_precharge_gate` 覆盖已学习样本的纯行分页仍发零预测和非零预算首请求为零；`go_merge_48_paging_ema_precharge_updates_only_for_continuation`、`paging_observation_error_zero_final_and_remain_order` 证明续页学习与错误/最终页边界。
+
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 - 已读生产/配置路径：`pkg/store/copr/coprocessor.rs`、`pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs`、`pkg/store/copr/store.rs`、`pkg/store/copr/network_backend.rs`、`pkg/store/driver/tikv_driver.rs`。
 - 已读对照与测试路径：`pkg/store/copr/coprocessor.go`、`pkg/store/copr/coprocessor_test.rs`；测试名覆盖 range 单调性与 Region/bucket 切分、分页、大小任务并发、store batch、限流、锁、RU/runaway、batch 错误/指标及有界通道。
 - 结构验证使用任务指定命令，要求文件存在且恰好包含本文 11 个固定二级标题。本文为静态分析文档，按计划不运行 Cargo，也不声称执行了运行时测试。

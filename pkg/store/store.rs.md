@@ -22,7 +22,7 @@
 - `Storage: Send + Sync`：必需方法是 `GetKeyspace` 与 `GetCodec`；`AsEtcdBackend`、`Close`、`GetClusterID`、`CurrentVersion` 有保守默认值。`CanonicalTiKVStore` 默认返回明确错误，防止本地或测试存储被静默替换成第二个 TiKV 客户端。
 - `Driver: Send + Sync`：核心方法 `Open(&self, path)`；`TypeName` 主要用于启动接线验证。
 - `TiKVStoreDriver`：内部用 `Mutex<TiKVDriver>` 串行调用需要可变配置的真实驱动 `Open`。成功打开后先调用 `StartGCWorker`，再包装为 `RegisteredTiKVStorage`。
-- `RegisteredTiKVStorage`：缓存真实 store、keyspace 字符串与 `BasicCodec`。空 keyspace 对应 API V1，命名 keyspace 对应 API V2；由于 client-rust 0.4 公共 API 不暴露数字 keyspace ID，此处固定 `keyspace_id = 0`。
+- `RegisteredTiKVStorage`：缓存真实 store、keyspace 字符串与 `BasicCodec`。空 keyspace 对应 API V1，命名 keyspace 对应 API V2；数字 ID 取自 `store.GetKeyspaceID().unwrap_or_default()`，复用已初始化客户端解析结果；无客户端或无 ID 时才回落为零。
 - `LocalStoreDriver`/`LocalStorage`：使用 `url::Url` 解析查询参数；除 keyspace 与 codec 外沿用 `Storage` 默认行为。
 - `Register`、`RegisteredStoreTypes`、`RegisteredDriverTypeName`：分别完成合法性/重复性受锁注册、排序后的已注册类型快照、具体驱动类型查询。
 - `StorageIdentity`：把共享 trait object 的数据指针转换为稳定的进程内身份值，用于验证启动链传递的是同一 `Arc`。
@@ -73,7 +73,7 @@
 - `url` 只用于 `LocalStoreDriver` 的完整 URI/query 解析；通用注册表路径为兼容多 PD 地址采用手工 scheme 分割。
 - 标准库 `OnceLock`、`RwLock`、`Mutex`、`Arc` 分别承担懒初始化、读多写少全局状态、真实驱动串行可变访问和共享所有权。
 
-RustCodeGraph 的文件节点报告 `pkg/store/store.rs` 被 91 个文件使用，并可靠给出本文件内部主边：`New -> newStoreWithRetry -> newStoreWithRetryAndInterval -> {loadDriver, Driver::Open, isNewStoreRetryableError}`，以及 `MustInitStorage -> mustInitStorage -> InitStorage -> New`。由于索引 CLI 对大量同名 `New`/`Register` 的独立 callers 查询未能唯一消歧，跨文件直接调用点以上述模块限定源码搜索为准。
+冻结源码中的内部主链为 `New -> newStoreWithRetry -> newStoreWithRetryAndInterval -> {loadDriver, Driver::Open, isNewStoreRetryableError}`，以及 `MustInitStorage -> mustInitStorage -> InitStorage -> New`；跨文件调用以上述模块限定直接引用为准。
 
 ## 错误处理与边界
 
@@ -115,15 +115,19 @@ RustCodeGraph 的文件节点报告 `pkg/store/store.rs` 被 91 个文件使用�
 - 增加可重试错误：优先新增明确的 `StoreErrorKind` 或可靠的结构化来源，并在 `isNewStoreRetryableError` 接入；不要仅凭宽泛字符串判定。同步覆盖嵌套错误链、大小写、无关同文消息、立即失败与尝试次数，并核对 `pkg/store/store.go` 是否已有对应语义。
 - 修改退避：保持 `maxRetries` 的“总尝试次数”含义及零次语义；使用 `newStoreWithRetryAndInterval` 写快速独立测试，同时评估阻塞线程和最坏累计等待时间。
 - 扩展 `Storage`：优先给不具备能力的实现提供明确失败，而不是伪造值；若方法涉及真实资源，更新 `RegisteredTiKVStorage`、`LocalStorage`、mock/teststore 的独立测试文件及服务器关闭顺序。
-- 修改 keyspace/codec：必须同时检查 `RegisteredTiKVStorage::new`、`LocalStoreDriver::Open`、`BuildStoragePath`、`MustInitStorage` 和 SYSTEM 不变量。尤其不要把当前 `keyspace_id = 0` 解释为已解析的真实 ID；client-rust 公共 API 可提供数字 ID 后才应接线。
+- 修改 keyspace/codec：必须同时检查 `RegisteredTiKVStorage::new`、`LocalStoreDriver::Open`、`BuildStoragePath`、`MustInitStorage` 和 SYSTEM 不变量。必须保留 `ClientRuntime::keyspace_id -> TikvStore::GetKeyspaceID -> BasicCodec.keyspace_id` 的传递链；`None` 回落的零不能当作已解析成功的证据。
 - 修改全局状态：保持锁临界区最小且不在持有 registry 锁时执行网络操作。新增生产资源槽位时需设计明确关闭路径；测试清理逻辑继续放在独立 `*_test.rs` 或测试辅助文件，不能嵌入生产源文件。
 
 ## 验证依据
 
-- 目标源码：`pkg/store/store.rs`（RustCodeGraph 文件节点，542 行），逐项核对常量、trait、实现、全局状态、注册、重试、错误链与初始化函数。
+- 冻结增量：`RegisteredTiKVStorage::new` 在读取 keyspace 名后取得 `GetKeyspaceID().unwrap_or_default()`；名称仍决定 API V1/V2，ID 来自同一规范 store 的 runtime。`store_test.rs::registered_tikv_storage_exposes_the_same_canonical_store_clone` 证明共享 store 接线，但使用注入后端，不能证明真实 PD keyspace ID；本次未进行集群验证。
+
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
+- 目标源码：`pkg/store/store.rs`，逐项核对常量、trait、实现、全局状态、注册、重试、错误链与初始化函数。
 - crate 边界：`pkg/store/lib.rs` 的 `pub use store::*`；`pkg/store/Cargo.toml` 的 `astersql-store-driver`、config/keyspace/kerneltype/url 依赖和 `nextgen` feature。
 - 应用入口与生命周期：`cmd/tidb-server/main.rs::registerStoresWithTiKVDriver`、`initRegisteredStorage`、`closeDDLOwnerMgrDomainAndStorage`。
 - Rust 直接测试：`pkg/store/store_test.rs::test_retry_open_store`、`test_zero_retry_count_matches_go_nil_success`、`test_register`、`test_init_storage`、`registered_tikv_storage_exposes_the_same_canonical_store_clone`、`local_storage_rejects_canonical_tikv_clone_requests`；补充迁移回归位于 `pkg/store/migration_aster_unit_test.rs`，覆盖快速重试、错误链、路径拼装与 SYSTEM 断言。
 - Go 对照：`pkg/store/store.go`；直接测试 `pkg/store/store_test.go::TestRetryOpenStore`、`TestRegister`、`TestInitStorage`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/store` 确认 Rust/Go 同路径文件；`node --file pkg/store/store.rs` 获取完整源码及“被 91 个文件使用”的文件级关系；`query` 定位 `newStoreWithRetry`、`newStoreWithRetryAndInterval`、`GetSystemStorage`、`ResetStoreStateForTest` 等精确节点。内部调用边经图查询核对；同名跨文件 callers 的歧义通过 `rg` 的模块限定直接引用搜索补足。
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 - 本任务为纯文档分析，没有修改 Rust/Go/Cargo，也未运行 Cargo。文档结构以任务指定的 11 个固定二级标题命令校验；内容人工复核了定位、运行流程、安全扩展点和未被实现掩盖的边界。

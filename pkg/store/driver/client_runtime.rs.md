@@ -11,7 +11,8 @@
 1. `ClientConfig` 将驱动层的 PD 地址、RPC 超时、TLS 文件和 keyspace 模式转换为 `tikv_client::Config`，同时把 gRPC 最大解码消息尺寸提升为 `usize::MAX`，避免官方客户端默认 4 MiB 上限拒绝合法的大值或扫描响应（`GRPC_MAX_DECODING_MESSAGE_SIZE`、`ClientConfig::tikv_config`）。
 2. `ClientRuntime::connect` 校验配置、创建唯一的多线程 Tokio runtime，并按 API/keyspace 模式连接官方 `TransactionClient`。
 3. `current_timestamp`、`lock_waits` 和 `resolve_locks` 提供同步命令边界；`runtime` 与 `transaction_client` 为 crate 内事务/快照适配器提供受关闭状态保护的底层能力。
-4. `close` 与 `Drop` 统一释放客户端引用并停止 runtime；关闭之后所有需要这些资源的入口都返回 `ClientRuntimeError::Closed`。
+4. `keyspace_id() -> Option<u32>` 读取已初始化 `TransactionClient::keyspace_id`，不重新查询 PD；没有客户端（测试构造或关闭后）返回 `None`。`TikvStore::GetKeyspaceID` 经此向注册表 codec 传递数字 ID。
+5. `close` 与 `Drop` 统一释放客户端引用并停止 runtime；关闭之后命令入口返回 `ClientRuntimeError::Closed`，只读的 `keyspace_id` 则返回 `None`。
 
 本文件不管理 Store 缓存、Safe Point、RegionCache，也不保存具体事务/快照句柄；这些职责分别在 `tikv_driver.rs`、Coprocessor store 和 `kv_adapter.rs` 中。
 
@@ -64,9 +65,9 @@
 - `OfficialBackend` 使用 `current_timestamp` 和 `lock_waits` 支撑 `TikvStore::Begin`、`CurrentVersion` 与 `GetLockWaits`；`OfficialTransactionLockResolver` 把 Coprocessor 遇锁路径接到 `resolve_locks`（`tikv_driver.rs:312-357`）。
 - `pkg/store/driver/kv_adapter.rs` 大量借用 `runtime()` 执行官方异步事务/快照方法，并通过 `transaction_client()` 创建事务和快照。这证明 runtime 是 store 级共享资源，而非每请求创建。
 
-下游直接依赖是 `thiserror`、`tokio::runtime` 和带固定 tag `v0.4.2-aster.10` 的 `astersql/client-rust` `tikv-client`（`pkg/store/driver/Cargo.toml`）。本文件还依赖本 crate 的 `TlsConfig`、`WaitForEntry`，以及 `astersql-store-copr` 提供的中立锁结构。Cargo 清单只启用 Tokio 的 `rt-multi-thread` feature；网络、TLS 和客户端行为由 `tikv-client` 及其配置封装。
+下游直接依赖是 `thiserror`、`tokio::runtime` 和带固定 tag `v0.4.2-aster.13` 的 `astersql/client-rust` `tikv-client`（`pkg/store/driver/Cargo.toml`）。本文件还依赖本 crate 的 `TlsConfig`、`WaitForEntry`，以及 `astersql-store-copr` 提供的中立锁结构。Cargo 清单只启用 Tokio 的 `rt-multi-thread` feature；网络、TLS 和客户端行为由 `tikv-client` 及其配置封装。
 
-RustCodeGraph 的文件节点将 `client_runtime.rs` 识别为 39 个符号，并显示其被 `tikv_driver.rs`/`kv_adapter.rs` 所在的存储链使用；精确源码查询进一步确认 `current_timestamp` 经 `OfficialBackend` 支撑 `TikvStore::Begin` 和 `TikvStore::CurrentVersion`，而 `lock_waits` 也经 `OfficialBackend` 进入 Store 状态查询。
+冻结源码中的直接调用确认 `current_timestamp` 经 `OfficialBackend` 支撑 `TikvStore::Begin` 和 `TikvStore::CurrentVersion`，而 `lock_waits` 也经 `OfficialBackend` 进入 Store 状态查询。
 
 ## 错误处理与边界
 
@@ -106,10 +107,14 @@ Go 同目录没有独立的 `client_runtime.go`；对应职责分散在 `pkg/sto
 
 ## 验证依据
 
-- 目标源码：`pkg/store/driver/client_runtime.rs`，核对全部 290 行以及常量、枚举、配置、错误、时间戳来源、runtime 方法和 `Drop` 实现。
+- 增量复核：`keyspace_id` 只经 `Option::as_ref().and_then(TransactionClient::keyspace_id)` 读取；`close` 取走 client 后自然返回 `None`。现有 `client_runtime_test.rs` 直接覆盖命令错误和关闭后命令拒绝，未直接断言新增 ID accessor 的真实 API V2 结果。
+
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
+- 目标源码：`pkg/store/driver/client_runtime.rs`，核对常量、枚举、配置、错误、时间戳来源、runtime 方法和 `Drop` 实现。
 - crate 边界：`pkg/store/driver/Cargo.toml` 与 `pkg/store/driver/lib.rs`，核对 crate 名、固定的 client-rust tag、Tokio feature、模块声明和公开再导出。
 - Rust 直接入口/调用者：`pkg/store/driver/tikv_driver.rs:312-357`、`:540-568`、`:730-810`、`:930-995`；`pkg/store/driver/kv_adapter.rs:720-875`、`:1025-1070`，核对共享所有权、生产构造、锁解析、时间戳、事务及快照接线。
 - 独立 Rust 测试：`pkg/store/driver/client_runtime_test.rs`，核对解码上限、客户端错误传播、显式关闭后的拒绝，以及被忽略的真实 PD 连接、原始时间戳转换和 TSO 单调性测试。测试未直接覆盖重复关闭、TLS、三种 keyspace 构造分支、配置校验和锁解析。
 - Go 对照：`pkg/store/driver/tikv_driver.go:90-240`、`:400-485`，以及 `pkg/store/copr/coprocessor.go:80`、`:1660-1705`、`:2680-2730`，核对 Open/API 模式、事务时间戳、锁等待、关闭及 `ResolveLocksWithOpts` 退避语义。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/driver` 找到目标源文件与独立测试；`node --file pkg/store/driver/client_runtime.rs --offset 1 --limit 260` 及 `--offset 261 --limit 80` 返回完整源码并标识 39 个符号；对 `ClientRuntime`、`ClientConfig` 和存储驱动调用链的查询确认了上述直接生产接线。由于通用符号名存在大量同名结果，调用关系以精确文件节点和相邻调用源码交叉核验。
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 - 本任务是纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

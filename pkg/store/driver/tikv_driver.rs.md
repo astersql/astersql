@@ -31,6 +31,7 @@
 - `DriverOption` 及 `WithSecurity`、`WithTiKVClientConfig`、`WithTxnLocalLatches`、`WithPDClientConfig`：消费一次的配置闭包。
 - `TiKVDriver`：打开 Store 的有状态驱动；`backend == None` 表示走生产 client-rust 路径，`with_backend` 用于替换资源边界。
 - `TikvStore` / `TikvStoreInner`：可克隆的共享句柄和受 `Mutex` 保护的实际状态。内部保存 uuid、TLS、GC/闩锁状态、cluster/keyspace、类型擦除选项、后端、可选 `ClientRuntime`、可选 Coprocessor Store 和惰性元数据快照。
+- `TikvStore::GetKeyspaceID() -> Option<u32>`：持有 Store mutex 再取得 runtime 读锁，委托 `ClientRuntime::keyspace_id`；不使用 `metadata_snapshot` 或发起额外 PD 请求。注入后端没有 runtime 时返回 `None`。
 - `MetadataSnapshot`：共享 `MetadataPdClient` 与可选 keyspace 元数据；实现 `EtcdMetadataStore` 时由 `metadata_snapshot` 惰性创建并缓存。
 - `Version`、`Transaction`、`Snapshot`：轻量兼容类型。`Transaction` 只含 `start_ts`，`Snapshot` 只含版本；真实悲观事务由 `BeginPessimistic` 经 `kv_adapter::begin_transaction` 创建。
 - `InjectTraceClient<C>` / `TikvClient`：请求注入包装器及其底层同步/异步发送接口。
@@ -41,7 +42,7 @@
 `TiKVDriver::Open` 只是以空选项调用 `OpenWithOptions`。后者的主流程如下：
 
 1. 以全局配置重置 driver 字段并依次消费 `DriverOption`。
-2. `parse_path` 校验 scheme、非空 PD 地址和布尔参数；`pdClientOptions` 与 `Security::to_tls_config` 形成连接配置。
+2. `parse_path` 校验 scheme、非空 PD 地址和布尔参数；诊断模式启用时立即调用 `astersql_metaservice::EnsureDiagnosticRpcGuard()`，在 TLS 校验和客户端连接之前安装 RPC guard；`pdClientOptions` 与 `Security::to_tls_config` 形成连接配置。
 3. 若已注入 `DriverBackend`，直接使用它且不建立 `ClientRuntime`；否则根据 PD 地址、PD 超时、TLS 和 keyspace API V2 配置调用 `ClientRuntime::connect`，再构造共享该 runtime 的 `OfficialBackend`。
 4. 调用 `backend.open_pd` 得到 cluster ID，以 `tikv-{cluster_id}/{keyspace}` 形成 uuid。
 5. 锁住进程级 `store_cache`，清理没有强引用的条目。若相同 uuid 的弱引用仍可升级，关闭本次多余的 PD 连接；生产路径还关闭刚建立的多余 runtime，然后返回缓存中的同一 `TikvStoreInner`。
@@ -83,7 +84,7 @@
 - `astersql_metaservice::{ConnectMetadataPD, EtcdMetadataStore}`：keyspace 元数据和 etcd namespace。
 - `thiserror`、`url::form_urlencoded`：错误声明与 query 解码。
 
-`pkg/store/driver/Cargo.toml` 还声明带固定 tag `v0.4.2-aster.10` 的 `astersql/client-rust` Git 依赖；本文件通过 `client_runtime` 间接使用它。RustCodeGraph 将本文件索引为 136 个符号，并报告文件被 `pkg/session/runtime/session.rs`、两个 session 测试及 mock storage 等引用；但对目标 Rust 符号执行精确 `callers/callees` 查询未输出边，因此上述调用关系以索引文件引用、模块代码和 `rg` 精确引用共同核验。
+`pkg/store/driver/Cargo.toml` 还声明带固定 tag `v0.4.2-aster.13` 的 `astersql/client-rust` Git 依赖；本文件通过 `client_runtime` 间接使用它。上游调用关系以冻结源码中的模块限定引用为准。
 
 ## 错误处理与边界
 
@@ -100,7 +101,7 @@
 
 ## 并发与资源生命周期
 
-`TiKVDriver::OpenWithOptions` 在整个缓存检查、外部资源创建和缓存插入期间持有全局 `store_cache` Mutex。这保证相同 uuid 不会并发创建两个已发布 Store，但也意味着慢连接会串行阻塞其他 cluster/keyspace 的 Open。
+`TiKVDriver::OpenWithOptions` 在 runtime 连接与 `backend.open_pd` 完成后取得全局 `store_cache` Mutex，覆盖缓存检查、safe-point/Coprocessor 资源创建及缓存插入。这保证相同 uuid 不会并发创建两个已发布 Store，但也意味着慢连接会串行阻塞其他 cluster/keyspace 的 Open。
 
 `TikvStoreInner` 用单个 Mutex 串行保护所有状态；多数 getter 会克隆小型值或 `Arc` 后立即释放锁。`Begin`/`CurrentVersion` 则在持有 Store Mutex 时调用 backend，若后端耗时会阻塞同 Store 的其他操作。`InMemoryBackend` 另用 Mutex 保证时间戳严格单调。
 
@@ -142,6 +143,10 @@ Go 对照文件是 `pkg/store/driver/tikv_driver.go`。Rust 保留了 `TiKVDrive
 
 ## 验证依据
 
+- 增量证据：`OpenWithOptions` 在路径解析成功后按 `diagnosticmode::Enabled` 安装 `EnsureDiagnosticRpcGuard`；这只能证明 guard 接线，不能证明本文件已覆盖所有 RPC 的诊断策略。`GetKeyspaceID` 从 runtime 读取 ID，与 `metadata_snapshot` 的惰性元数据连接分开。现有 `driver_lifecycle_test.rs` 证明缓存与关闭意图，未直接覆盖这两项新增行为的网络结果。
+
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
 事实核验读取了以下路径：
 
 - 目标实现：`pkg/store/driver/tikv_driver.rs`。
@@ -150,6 +155,6 @@ Go 对照文件是 `pkg/store/driver/tikv_driver.go`。Rust 保留了 `TiKVDrive
 - 生产调用入口：`cmd/tidb-server/main.rs`、`pkg/store/store.rs`、`pkg/session/runtime/crossks_store.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/session.rs`。
 - 独立 Rust 测试：`pkg/store/driver/config_test.rs`、`driver_lifecycle_test.rs`、`client_test.rs`、`meta_service_group_test.rs`、`kv_adapter_test.rs`、`real_tikv_test.rs`；其中元数据 group 测试标记为 `ignore` 并要求外部 `ASTER_ETCD_TEST_ENDPOINT`。
 
-RustCodeGraph 证据：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/driver` 找到目标及相邻 Go/测试文件；`query` 定位 `TiKVDriver`（第 486 行）、`OpenWithOptions`（第 539 行）、`BeginPessimistic`（第 946 行）和 `metadata_snapshot`（第 1003 行）；`node --file` 分段读取了目标文件全部 1,268 行。精确 `callers/callees` 对这些 Rust 符号未返回可用边，因此没有据此臆造调用关系，改由索引的 file-use 信息与 `rg` 引用结果补证。
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 
 相关测试给出的直接行为证据包括：`config_test.rs` 的默认/option/路径断言，`driver_lifecycle_test.rs` 的缓存、关闭顺序、GC 标志和锁等待断言，`client_test.rs` 的同步/异步追踪注入与错误透传，`meta_service_group_test.rs` 的元数据缓存和 Close 后失效，以及 `real_tikv_test.rs` 的错误 PD 快速失败。此次任务为纯文档分析，按计划不运行 Cargo；最终仅执行固定十一章节的结构命令，并人工检查未把占位接口写成完整实现。

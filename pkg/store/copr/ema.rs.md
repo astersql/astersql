@@ -10,31 +10,31 @@
 
 - `RuEma` 保存一个逻辑扫描内共享的读取字节数估计，供多个 coprocessor worker 对后续请求做 RU 预扣估算。上游证据是 `CopIterator::new` 创建一个 `Arc<RuEma>`，worker 启动时通过 `CopTaskWorker::with_ema` 共享它。
 - `RuEma::observe` 按相邻有效观测的时间间隔计算新样本权重：`alpha = 1 - exp(-Δt / tau)`，再以 `value += alpha * (sample - value)` 更新估计。固定时间常数 `DEFAULT_RU_EMA_TAU` 为一秒，因此间隔越大，新样本权重越高。
-- `RuEma::predict` 返回当前估计的整数读取字节数。`CopTaskWorker::handle_task_once` 仅在任务启用行分页或请求指定字节分页预算时把它写入 wire request。
+- `RuEma::predict` 返回当前估计的整数读取字节数。`CopTaskWorker::handle_task_once` 仅在请求指定非零字节分页预算时把它写入 wire request。
 - `Mutex` 将值和最后观测时间作为一个原子状态保护，使并发 worker 的观测与预测串行化，避免读到不一致的 `(value, last_time)`。
 
 ## 主要符号
 
 - `DEFAULT_RU_EMA_TAU: Duration`：私有模块常量，值为一秒，是指数衰减时间常数 `tau`。当前没有构造参数可以覆盖它。
 - `pub struct RuEma`：公开结构体，但字段私有。`state: Mutex<(f64, Option<Instant>)>` 的二元组依次保存当前浮点估计和最后一个被接受为最新的单调时刻；`tau: Duration` 保存衰减常数。结构体派生 `Debug`，未实现 `Clone`，共享由调用方的 `Arc<RuEma>` 完成。
-- `pub fn RuEma::new(seed_read_bytes: u64) -> Self`：以请求的分页字节预算作为初始预测，将其转换为 `f64`；最后观测时间初始化为 `None`，使首个真实样本获得权重 `1.0` 并完全替换种子。
+- `pub fn RuEma::new() -> Self`：初值为 `0.0`，最后观测时间为 `None`；分页预算只是上限，不是读取量估计，首个真实样本以权重 `1.0` 建立预测。
 - `pub fn RuEma::observe(&self, bytes: u64, now: Instant)`：在锁内更新估计。无历史时间时 `alpha = 1.0`；有历史时用 `Instant::saturating_duration_since` 将倒退或相同时间的间隔压为零。只有 `now > last` 才推进最后时刻，过期样本不会倒拨后续计算的时间基准。
 - `pub fn RuEma::predict(&self) -> u64`：在锁内读取 `f64` 估计并用 Rust 浮点到整数的 `as u64` 转换返回；正常输入形成的估计非负。该接口不返回快照时间或置信度。
 
 ## 执行流程
 
-1. `CopIterator::new` 用 `request.paging.size_bytes` 调用 `RuEma::new`。初值可为零，也可为调用方指定的字节预算。
+1. `CopIterator::new` 调用无参 `RuEma::new()`，初始预测恒为零。
 2. `CopIterator::open` 把同一个 `Arc<RuEma>` 克隆给轻量 worker 或线程 worker；因此一次逻辑扫描的 worker 共享学习结果，而不同 iterator 各自维护状态。
-3. `CopTaskWorker::handle_task_once` 构造 `CopWireRequest`。若 `task.paging` 为真，或请求级 `paging.size_bytes > 0`，就调用 `predict()` 填充 `wire.predicted_read_bytes`；否则维持初始值零。
+3. `CopTaskWorker::handle_task_once` 构造 `CopWireRequest`。仅在请求级 `paging.size_bytes > 0` 时才调用 `predict()` 填充 `wire.predicted_read_bytes`；否则维持初始值零。
 4. 请求 admission/RU 计算使用该预测值预估读取成本；`DefaultCopBackend::on_request_wait` 可见其按每 64 KiB 一个读成本单位折算。响应阶段再依据实际读取量与预扣值结算差额。
 5. `handle_task_once` 收到响应后，只有 `response.range.is_some()` 且 `response.read_bytes > 0` 时才以 `Instant::now()` 调用 `observe()`。这意味着只对仍有续页的非零读取反馈进行学习；最终页与零字节响应不改变 EMA。
 6. `observe()` 取得互斥锁，计算时间权重并更新数值；随后仅在时间严格前进时记录新时刻。后续 worker 的 `predict()` 将看到完整更新后的状态。
 
 ## 数据与状态
 
-状态的数值部分以 `f64` 保存，样本和对外预测以 `u64` 表示。核心不变量是估计采用凸组合：对于有限的非负输入和正的一秒 `tau`，`alpha` 位于 `[0, 1)`（首样本特判为 `1`），所以新估计位于旧估计和新样本之间，不应超调。`predict()` 的整数转换会舍弃小数部分，因此测试对浮点计算结果采用最多一个字节的容差。
+状态的数值部分以 `f64` 保存，样本和对外预测以 `u64` 表示。核心不变量是估计采用凸组合：对于有限的非负输入和正的一秒 `tau`，`alpha` 位于 `[0, 1]`（首样本为 `1`，大间隔也可能因浮点舍入达到 `1`），所以新估计位于旧估计和新样本之间，不应超调。`predict()` 的整数转换会舍弃小数部分，因此测试对浮点计算结果采用最多一个字节的容差。
 
-时间状态使用 `Option<Instant>` 而不是墙上时钟：`None` 表示尚无真实观测；`Some(last)` 表示最近被接受的严格较新时刻。`saturating_duration_since` 保证乱序时间不产生负间隔；相同或更早的时间得到 `alpha = 0`，既不改变估计，也不倒拨 `last`。大于 `tau` 很多的间隔会令 `alpha` 接近一，使陈旧样本影响迅速衰减，但在已有历史时数学上不会精确等于一。
+时间状态使用 `Option<Instant>` 而不是墙上时钟：`None` 表示尚无真实观测；`Some(last)` 表示最近被接受的严格较新时刻。`saturating_duration_since` 保证乱序时间不产生负间隔；相同或更早的时间得到 `alpha = 0`，既不改变估计，也不倒拨 `last`。大于 `tau` 很多的间隔会令 `alpha` 接近一，使陈旧样本影响迅速衰减，数学上小于一，但浮点舍入后可能等于一。
 
 EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、缓存持久化或清理动作。新的 `CopIterator` 会创建新 EMA，不跨逻辑扫描复用历史。
 
@@ -42,24 +42,24 @@ EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、
 
 上游调用链以 `pkg/store/copr/coprocessor.rs` 为准：
 
-- `CopIterator::new -> RuEma::new(request.paging.size_bytes)` 创建扫描级实例。
+- `CopIterator::new -> RuEma::new()` 创建扫描级实例。
 - `CopIterator::open -> CopTaskWorker::with_ema(Arc::clone(&self.ema))` 把同一实例交给并发 worker。
 - `CopTaskWorker::handle_task_once -> RuEma::predict` 在分页相关请求发送前设置 `CopWireRequest::predicted_read_bytes`。
 - `CopTaskWorker::handle_task_once -> RuEma::observe` 在带剩余范围且实际读取字节非零的响应后更新预测。
 
-下游依赖全部来自标准库：`Mutex::lock` 负责状态同步，`Instant::saturating_duration_since` 计算非负单调间隔，`Duration::as_secs_f64` 提供公式单位，`f64::exp` 计算指数衰减。RustCodeGraph 的文件查询确认 `ema.rs` 被 `coprocessor.rs` 和 `ema_test.rs` 使用；精确探索结果还列出生产调用者 `handle_task_once` 以及五个独立 Rust 测试调用者。
+下游依赖全部来自标准库：`Mutex::lock` 负责状态同步，`Instant::saturating_duration_since` 计算非负单调间隔，`Duration::as_secs_f64` 提供公式单位，`f64::exp` 计算指数衰减。冻结 `coprocessor.rs` 的直接引用与 `ema_test.rs` 提供生产和独立测试使用证据。
 
 ## 错误处理与边界
 
 该 API 没有 `Result` 返回值。两处锁获取都使用 `expect("RU EMA lock poisoned")`：若某线程持锁期间 panic 导致 mutex 中毒，后续 `observe()` 或 `predict()` 会继续 panic，而不是静默使用可能不一致的状态。这是当前明确的失败边界。
 
-首个观测无论构造时是否有种子都以 `alpha = 1` 完全替换初值。乱序或同一时刻的观测权重为零；它们不会更新值或最后时刻。`bytes = 0` 本身是合法样本，但生产调用点显式跳过 `response.read_bytes == 0`，只有直接调用 API 才会用零样本衰减估计。极大 `u64` 转为 `f64` 可能损失整数精度，返回 `u64` 时也会截断小数；当前测试和调用场景没有要求逐字节精确保存超大值。
+首个观测以 `alpha = 1` 完全替换零初值。乱序或同一时刻的观测权重为零；它们不会更新值或最后时刻。`bytes = 0` 本身是合法样本，但生产调用点显式跳过 `response.read_bytes == 0`，只有直接调用 API 才会用零样本衰减估计。极大 `u64` 转为 `f64` 可能损失整数精度，返回 `u64` 时也会截断小数；当前测试和调用场景没有要求逐字节精确保存超大值。
 
 文件不校验 `tau`，但当前唯一赋值是非零的一秒常量，因此不存在除零路径。若未来允许配置 `tau`，必须拒绝零时长并为极小/极大时间常数补边界测试。
 
 ## 并发与资源生命周期
 
-`observe(&self, ...)` 与 `predict(&self)` 都通过同一 `Mutex` 访问整个状态，允许 `RuEma` 经 `Arc` 在多个线程之间共享。锁只包围常数时间的浮点计算或读取，不跨网络请求、通道发送或休眠持有。`ema_concurrent_observe_and_predict` 用八个写线程和一个持续读线程验证不会 panic、死锁且最终预测为正；它验证线程安全的基本行为，但没有证明 worker 数量很大时的锁竞争上界。
+`observe(&self, ...)` 与 `predict(&self)` 都通过同一 `Mutex` 访问整个状态，允许 `RuEma` 经 `Arc` 在多个线程之间共享。锁只包围常数时间的浮点计算或读取，不跨网络请求、通道发送或休眠持有。`ruema_concurrent_observe_and_predict` 用八个写线程和一个持续读线程验证不会 panic、死锁且最终预测为正；它验证线程安全的基本行为，但没有证明 worker 数量很大时的锁竞争上界。
 
 `CopIterator` 拥有主 `Arc`，每个 worker 持有克隆；worker 退出和 iterator 被丢弃后引用计数归零，`Mutex` 状态自动释放。模块不创建线程、任务、通道或计时器，也没有显式关闭协议。`Instant` 由调用方注入，使单元测试可构造稳定时间序列；生产路径在响应处理时使用 `Instant::now()`。
 
@@ -69,7 +69,7 @@ EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、
 
 首样本语义等价但实现更明确：Go 从零时间计算一个极大间隔，使 `alpha` 数值上约等于一；Rust 在 `last == None` 时直接选择 `1.0`。负时间差方面，Go 显式把 `dt < 0` 设为零，Rust 使用 `saturating_duration_since` 得到同样结果。两边预测都在锁内把浮点值转换为 `uint64/u64`。
 
-生产接线也保持同一意图：Go `copIterator.ema` 注释说明每个逻辑扫描一个 EMA、跨 worker 共享；`predictedReadBytesForTask` 在分页或字节预算场景读取预测，`handleCopPagingResult` 仅对存在后续分页范围的非零读取量调用 `Observe`。Rust 把等价逻辑并入 `CopTaskWorker::handle_task_once`。Rust 独立测试 `pkg/store/copr/ema_test.rs` 与 Go `pkg/store/copr/ema_test.go` 对齐五类行为：种子与首样本、工作负载迁移、大时间间隔、非单调时间、并发读写。
+构造时两边都不接收预算种子，首个响应前预测为零。生产接线也保持同一意图：Go `copIterator.ema` 注释说明每个逻辑扫描一个 EMA、跨 worker 共享；`predictedReadBytes` 仅在非零字节预算场景读取预测，`handleCopPagingResult` 仅对存在后续分页范围的非零读取量调用 `Observe`。Rust 把等价逻辑并入 `CopTaskWorker::handle_task_once`。Rust 独立测试 `pkg/store/copr/ema_test.rs` 与 Go `pkg/store/copr/ema_test.go` 对齐五类行为：零初值与首样本、工作负载迁移、大时间间隔、非单调时间、并发读写。
 
 ## 扩展指南
 
@@ -81,10 +81,12 @@ EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、
 
 ## 验证依据
 
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
 - 目标源码：`pkg/store/copr/ema.rs`，核对常量 `DEFAULT_RU_EMA_TAU`、类型 `RuEma` 及 `new/observe/predict` 的完整实现；文件无条件编译项。
 - crate 边界：`pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`，确认库名、模块声明、公开再导出和独立测试模块；目标包没有 `doc.go`。
 - Rust 生产调用：`pkg/store/copr/coprocessor.rs` 中 `CopIterator::new/open`、`CopTaskWorker::new/with_ema/handle_task_once`、`CopWireRequest::predicted_read_bytes` 以及请求/响应 RU 结算代码。
 - Go 对照：`pkg/store/copr/ema.go` 的 `ruEMA/newRUEMA/Observe/Predict`，以及 `pkg/store/copr/coprocessor.go` 的扫描级共享、预测与反馈调用点。
-- 测试证据：`pkg/store/copr/ema_test.rs` 与 `pkg/store/copr/ema_test.go`，覆盖种子/无种子首样本、稳定值、负载迁移、大间隔、乱序及并发访问。
-- RustCodeGraph：`status` 显示本仓库索引包含目标 Rust/Go 文件；`node --file pkg/store/copr/ema.rs` 返回完整 51 行源码并标出 `coprocessor.rs`、`ema_test.rs` 两个使用文件；`query RuEma` 定位 Rust/Go 对照符号；`node/callees with_ema` 与精确 `explore` 确认共享入口、生产 `handle_task_once` 调用以及五个测试调用者。通用名称的全库 `callers observe/predict` 查询因重名超时，相关边已用精确探索和直接调用点复核。
+- 测试证据：`pkg/store/copr/ema_test.rs` 与 `pkg/store/copr/ema_test.go`，覆盖零初值与首样本、稳定值、负载迁移、大间隔、乱序及并发访问。
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 - 本任务是纯文档分析，按计划不运行 Cargo；交付前运行任务指定的 11 章节结构命令，并人工复核关键结论均可回溯到上述符号或文件。

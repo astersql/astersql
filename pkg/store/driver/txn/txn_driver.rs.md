@@ -2,14 +2,14 @@
 
 ## 文件定位
 
-该文件属于 `astersql-store-driver-txn` crate；crate 入口 `pkg/store/driver/txn/lib.rs` 以 `mod txn_driver` 装配它并通过 `pub use txn_driver::*` 导出其公开符号。`pkg/store/driver/txn/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/driver/txn`，直接依赖 canonical `astersql-kv`、表键编解码 crate `astersql-tablecodec`，以及带固定 tag `v0.4.2-aster.10` 的 `tikv-client`。
+该文件属于 `astersql-store-driver-txn` crate；crate 入口 `pkg/store/driver/txn/lib.rs` 以 `mod txn_driver` 装配它并通过 `pub use txn_driver::*` 导出其公开符号。`pkg/store/driver/txn/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/driver/txn`，直接依赖 canonical `astersql-kv`、表键编解码 crate `astersql-tablecodec`，以及带固定 tag `v0.4.2-aster.13` 的 `tikv-client`。
 
 文件同时承担两种边界职责。第一种是生产 `pkg/store/driver/kv_adapter.rs` 实际使用的 client-rust 公共辅助层：`ClientTransactionMode`、`map_client_error` 和 `canonical_value`。第二种是 `tikvTxn`，它用共享 `BTreeMap`、`tikvSnapshot` 和 `memBuffer` 表达 TiDB 事务适配语义；当前仓库中它的直接构造调用集中在独立测试 `pkg/store/driver/txn_test.rs`，而真实 TiKV 网络事务由 `kv_adapter.rs` 的 `ClientTransaction` 持有 `tikv_client::Transaction` 执行。因而不能把这里的 `tikvTxn::commit_inner` 描述成真实 TiKV 2PC 网络实现。
 
 ## 核心职责
 
 - `ClientTransactionMode::{Optimistic,Pessimistic}` 把上层事务模式转成 client-rust 的 `TransactionOptions`，并把 drop check 设为 `CheckLevel::None`；`as_str` 提供稳定模式名。
-- `map_client_error` 把 client-rust 错误压到 canonical `pkg/kv` 错误边界。它递归检查 `KeyError`、多错误集合和悲观锁包装中的 `WriteConflict`；找到冲突时保留三个时间戳、键、主键及 reason，否则生成无同步栈符号化的普通错误。
+- `map_client_error` 把 client-rust 错误压到 canonical `pkg/kv` 错误边界。它检查 `KeyError`，并递归检查 `MultipleKeyErrors` 与 `PessimisticLockError` 包装中的 `WriteConflict`；找到冲突时保留三个时间戳、键、主键及 reason，否则生成无同步栈符号化的普通错误。
 - `canonical_value` 把 `Option<Vec<u8>>` 转为 canonical `ValueEntry`，缺失值映射为 `ErrNotExist`。
 - `tikvTxn` 组合脏写缓冲与不可变快照，实现缓冲优先的点查/批量查、正反向联合扫描、语句级检查点、事务选项缓存、提交、重复键错误美化和公平锁状态适配。
 - `TiDBKVFilter` 在提交前识别 untouched 索引值，并拒绝“untouched 且 `PresumeKeyNotExists`”这一不变量冲突。
@@ -47,7 +47,7 @@
 
 ## 依赖与调用关系
 
-RustCodeGraph 对目标文件显示 120 个符号节点。已核对的关键下游边包括：`NewTiKVTxn -> NewSnapshot`，`from_entries -> NewTiKVTxn`，`LockKeys -> extract_key_error / generate_write_conflict_for_locked_with_conflict`，`Commit -> commit_inner -> TiDBKVFilter::IsUnnecessaryKeyValue -> is_untouched_index_key_value`，`Iter/IterReverse -> NewUnionIter`，以及 `BatchGet -> NewBufferBatchGetter`。
+冻结源码可定位的关键下游调用包括：`NewTiKVTxn -> NewSnapshot`，`from_entries -> NewTiKVTxn`，`LockKeys -> extract_key_error / generate_write_conflict_for_locked_with_conflict`，`Commit -> commit_inner -> TiDBKVFilter::IsUnnecessaryKeyValue -> is_untouched_index_key_value`，`Iter/IterReverse -> NewUnionIter`，以及 `BatchGet -> NewBufferBatchGetter`。
 
 生产调用方面，`pkg/store/driver/kv_adapter.rs` 导入 `ClientTransactionMode`、`map_client_error`、`canonical_value`：`ClientSnapshot::new` 和 `begin_transaction` 用 `mode.options()` 创建 client-rust 快照/事务；扫描、点查、开始事务及提交等路径用 `map_client_error`；事务点查再用 `canonical_value` 统一未命中语义。该文件中的 `tikvTxn` 经 `lib.rs` 导出，但仓库搜索到的 `NewTiKVTxn` Rust 调用点位于 `pkg/store/driver/txn_test.rs`。
 
@@ -92,8 +92,12 @@ RustCodeGraph 对目标文件显示 120 个符号节点。已核对的关键下�
 
 ## 验证依据
 
+- 冻结增量仅移除旧 `ExtractedErrors` match 分支；目标客户端接口使用 `MultipleKeyErrors`，其递归提取和悲观锁包装行为保留，不表示删除多错误处理。`driver_test.rs::client_prewrite_conflict_retains_canonical_error_code_and_reason` 构造 `MultipleKeyErrors([KeyError(WriteConflict)])` 并断言 canonical `ErrWriteConflict` 及 `SelfRolledBack` reason；真实网络事务仍由 `kv_adapter.rs` 接线。
+
+本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
+
 - 源码与模块：`pkg/store/driver/txn/txn_driver.rs`、`pkg/store/driver/txn/lib.rs`、`pkg/store/driver/txn/Cargo.toml`。
-- RustCodeGraph：`status` 显示项目索引含目标目录；`files --filter pkg/store/driver/txn` 列出 Rust/Go 对照文件；`node --file ...txn_driver.rs` 读取 1–870 行并报告 120 个符号；`query NewTiKVTxn` 区分 Go/Rust 定义；调用图核对了 `NewSnapshot`、`NewUnionIter`、`NewBufferBatchGetter`、`commit_inner`、`TiDBKVFilter` 等上述边。
+- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
 - 生产接线：`pkg/store/driver/kv_adapter.rs` 的 import、`ClientSnapshot::new`、`begin_transaction`、扫描与点查路径，证明三项 client-rust 辅助 API 的实际使用，并定位真实网络事务实现。
 - Go 对照：`pkg/store/driver/txn/txn_driver.go`，逐项核对构造、读写、扫描、选项、错误、公平锁、flush 和 filter。
 - 独立测试：`pkg/store/driver/txn/txn_driver_test.rs`、`pkg/store/driver/txn/driver_test.rs`、`pkg/store/driver/txn_test.rs`。这些测试分别提供缓存清除、client-rust 映射，以及本地事务读/批量读/扫描行为证据。
