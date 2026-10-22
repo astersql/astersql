@@ -257,6 +257,8 @@ PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` �
 
 [行构造语法边界](#行构造语法边界)的入口为 [expressions.rs](../pkg/parser/ast/expressions.rs) 的 `RowExpr` / `Expr::restore`、[parser.y](../pkg/parser/parser.y) 的 `SimpleExpr`、[pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::close` / `scope` / `relation`；独立测试入口为 parser_test.rs 与 pg_name_test.rs，只作静态取证。
 
+[引号与大小写规则](#引号与大小写规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的名称扫描/改写与 [expressions.rs](../pkg/parser/ast/expressions.rs) 的名称载体为入口；独立测试为 pg_name_test.rs、pg_query_test.rs，仅作静态证据。
+
 ### 目标行为
 
 #### 方言身份传递
@@ -448,6 +450,31 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** §4.2.13 [Row Constructors](https://www.postgresql.org/docs/18/sql-expressions.html#SQL-SYNTAX-ROW-CONSTRUCTORS) 定义显式 ROW 与多字段省略形式及匿名 record；§4.2 的表达式分类及 §4.2.11 区分分组与标量子查询。同页还定义零字段 ROW 和 `rowvalue.*` 形式，它们应由后续任务独立定义支持集合，不在本块四个核心输入之外擅自宣称支持。MySQL **8.4** §11.5 [Expressions](https://dev.mysql.com/doc/refman/8.4/en/expressions.html) 提供分组、ROW 至少两项及子查询的自身语法依据，投影/嵌套的实际诊断仍缺参考端证据。[PG 附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 区分 42601 与合法未支持目标拒绝码 0A000；不能把类型/上下文错误一律作为语法错误，本轮未证明当前门禁。§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 要求 P 若提供须基于原查询、从 1 起按字符定位，精确值及是否提供由参考端补证。18.6 仍仅为来源目标，没有该补丁版本或本地数据库实测。
 
+#### 引号与大小写规则
+
+本块对应源工作流 2 步骤 3 的名称词法契约，区分名称拼写、绑定键和后端存储约束。静态证据基于提交 `3bd789433dee85dcd9b2037ee631bdcf13a29429`：已读 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Token` / `tokens` / `source_tokens` / `quote` / `rewrite` / `Resolver::relation`。tokens 调用非 native 模式；source_tokens 将未引号名称转为小写 name，双引号名称保留大小写、解码成对双引号，并保存 quoted 及原输入字节 start/end。rewrite 为双引号名称生成反引号文本，关系位置再替换成当前数据库限定名；未被编辑覆盖的文本直接复制。因此 token 中小写 name 不等于整个 SQL 已按 PG 规则折叠，尤其不能据此证明表达式列名/别名已正确绑定。native=true 仅用于 stored_view_select 的存储源提取，不是允许 PG 输入反引号的开关。
+
+当前扫描跳过普通单引号字符串、行注释及普通块注释，保留未编辑原文；未闭合引号/空名称返回 42601。PG 输入反引号、美元引号、可执行 MySQL 注释及嵌套块注释有 0A000 拒绝边界；其中美元字符串与嵌套注释是合法 PG 形式，不能把当前拒绝解释为 PG 语法非法。单引号扫描沿用 native 反斜杠转义，不足以证明 standard_conforming_strings、E 字符串或全部 PG 词法保护正确。错误返回只含 SQLSTATE 和消息，rewrite 返回 String，未见本块原 SQL 到转换后文本的持久位置映射。
+
+已读 [expressions.rs](../pkg/parser/ast/expressions.rs) 的 `CiString`、`ColumnName::matches` / `restore` 与 `RestoreCtx::write_name`：original/lowercase 双拼写、按小写匹配及反引号还原不能表达完整 PG 引号敏感绑定，也不保留逐名称 quoted 和原 SQL 跨度。已读 [pg_name_test.rs](../pkg/server/pg_name_test.rs) 的 `pg_introspection_names_token_scopes`（双引号、`"a""b"`、字符串/注释）和 `pg_introspection_names_rejection_boundaries`（空/未闭合引号、`"PUBLIC"` 等拒绝）；[pg_query_test.rs](../pkg/server/pg_query_test.rs) 的 `postgres_create_table_simple_query` 使用双引号混合大小写表名，但按 schema.name.lower / table.name.lower 查找，未断言大小写不同对象共存或误绑定拒绝。这些仅为静态测试意图，本轮未执行。`pkg/server/doc.go`、`pkg/parser/doc.go`、`pkg/parser/ast/doc.go` 均不存在。
+
+目标在 PG 词法阶段区分标识符、关键字、字符串和注释，保存原拼写、是否引号、解码名称、规范绑定键和原 SQL 跨度；未引号按 PG 规则折叠，双引号保真且 `""` 解码为一个名称字符。resolver 对表、列和别名使用该语义身份，不能统一用 lowercase 或依靠反引号转换制造大小写敏感。共享 AST 扩展与受控 PG 入口的选择交后续解析方案块取证，不预设新接口。若后端存储/目录无法区分 foo 与 Foo，应显式登记能力缺口、阻止静默合并/误读；命名映射或存储改造另行细分，本块不指定方案。限定名、CTE 遮蔽及 search_path 在后续块定义；目录可见性归工作流 6，会话设置归工作流 5。
+
+以下为待新增 `NAME-QUOTING` 用例族，所有运行行为均未验证。成功目标 SQLSTATE 为“不适用（成功）”、无错误位置；类型和元数据按第 1 章分别采集，不把拼写一致当运行通过。MySQL 基线为 8.4，明确记录 sql_mode、lower_case_table_names、对象类别及平台；双引号默认字符串模式与 ANSI_QUOTES 分开验收。
+
+| 输入与正反例/前提 | PG 目标及诊断责任 | MySQL 自身目标及诊断责任 |
+| --- | --- | --- |
+| 正例：预建 public.foo，列 id=1；分别 `SELECT id FROM foo`、`SELECT id FROM Foo`、`SELECT id FROM "foo"` | 三者均绑定 foo，目标值 1；不将 Foo 作为独立对象。名称折叠发生于词法/绑定交接，非字符串全文转小写。 | 未引号 foo/Foo 的表绑定取决于 lower_case_table_names 与平台，不预定一致；双引号表名在默认模式是负例，ANSI_QUOTES 下按自身表名规则处理，不自动获得 PG 大小写敏感。MySQL 错误码与位置须参考端采集。 |
+| 保真正例/误绑定反例：同一 schema 预建 foo(id=1) 和 "Foo"(id=2)；`SELECT id FROM "Foo"` | 目标只返回 2；foo/Foo/"foo" 仍返回 1。再单独以仅有 foo 的夹具查询 "Foo"，应为未定义关系 42P01，不能降级绑定 foo。是否给出 P 及精确位置待 PG 18 参考端取证。 | 不要求其可创建这两个表；必须先按自身配置确认可区分性。以单个表的列名 foo/Foo 做自身不区分大小写正例；不将后端原有规则改成 PG 规则。 |
+| 转义正例：预建 `public."a""b"`，id=3；`SELECT id FROM public."a""b"` | 解码名称为 a 后接一个双引号再接 b，目标 3；原拼写与解码值分别保存，不把引号当字符串或分隔两名称。 | 反引号包围 a、双引号、b 为自身标识符正例；ANSI_QUOTES 下同一双引号输入也是名称候选，默认模式该 FROM 输入是负例。结果/诊断独立取证，不把 SQL 文本改写结果当执行证据。 |
+| 词法反例：`SELECT * FROM "Foo`；空名称 `SELECT * FROM ""` | 均拒绝目标 42601，不补齐引号、不进入对象查找。解析层保留错误起始引号及输入末尾跨度，P 的准确选择/数值待参考端取证，工作流 7 只传递诊断。 | 同一 FROM 输入在默认模式及 ANSI_QUOTES 下均须拒绝；错误码、阶段、位置独立采集，不套 PG 42601 或 P。自身未闭合反引号名称另作负例。 |
+| 方言隔离：反引号包围的 foo 作 FROM 表名；另对比 `SELECT "Foo"` | 反引号输入为 PG 语法负例，目标 42601；当前适配返回 0A000 是已知诊断差异。后者是名称引用，在无 FROM 且无该列时目标 42703，不能返回字符串。 | 反引号表名是自身正例；默认模式 SELECT 双引号 Foo 返回字符串 Foo，ANSI_QUOTES 下是列引用并按自身缺列规则拒绝。隔离回归交错 PG/MySQL 连接，禁止 PG 改写或绑定键泄露。 |
+| 保护正例：`SELECT 'Foo "a""b"' /* "Foo" */`，另加行注释中同样名称 | 字符串值保持原大小写及双引号，注释不制造名称/关系节点；目标只返回该字符串。不同 PG 字符串模式与合法嵌套注释须另取证，不据此推广保护集合。 | 普通单引号和普通注释是自身正例，目标相同文本；MySQL 特有可执行注释另按自身规则，不被 PG 扫描门禁改写。 |
+
+位置责任为：解析/适配保留原查询和每次替换区间，后续绑定/解析诊断若基于转换后文本，必须先映射回原 SQL；字符计数与 UTF-8 字节偏移分别处理。PG 的 P 若提供须按原输入从 1 起按字符计数，不能直接使用 Token.start/end 或反引号文本偏移。待新增用例需包含 `"a""b"` 长度变化、public 到当前数据库限定名变化，以及错误前有中文的输入；精确 P、MySQL 自身位置和简单 Q/扩展 Parse 一致性均缺运行证据。合法但尚未支持的形态按明确能力门禁拒绝，不把词法错误、绑定缺失与 0A000 混为同类。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** §4.1.1 [标识符](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS)、§4.1.2 与 §4.1.5 定义名称、字符串、注释边界；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 提供 42601、42P01、42703 和 0A000 分类；§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §11.2 [对象名称](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html) 和 §11.2.3 [名称大小写](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html) 仅为自身目标依据。U& 引号、编码、名称长度/截断与非 ASCII 折叠的完整契约另需专项官方取证及参考端验证，不由 Rust to_lowercase 推导。18.6 仅沿用来源目标，没有该补丁版本或本地数据库实测结论。
+
 ### 范围外
 
 [方言身份传递](#方言身份传递)本轮不实现方言类型、解析原型、共享 AST、缓存接线或运行测试平台；不扩建 resolver、planner、表达式子系统。六类语法、引号/大小写、限定名、CTE 及 schema/search_path 名称规则由后续文档块定义；会话设置执行归工作流 5，目录实现归工作流 6，错误传输与恢复协作工作流 7。现有文本适配只作为有界入口证据，不承担通用 SQL 翻译方案，也不据其推断完整 PG 支持。
@@ -463,6 +490,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 [数组构造语法边界](#数组构造语法边界)不实现数组类型、下标、运算符、存储或 wire codec；ARRAY(子查询) 是另一个合法构造形式，留待单独定义支持集合，不能当作本块已覆盖。类型、转换及 OID 归工作流 3，参数/结果编码归工作流 7。
 
 [行构造语法边界](#行构造语法边界)不实现 parser/AST、复合类型、行比较、NULL 求值或协议编码，不补建关系分组解析；类型与转换交工作流 3，比较/NULL 交工作流 3、4，元数据和错误响应交工作流 7。
+
+[引号与大小写规则](#引号与大小写规则)不实现词法器、名称绑定、存储大小写映射或错误位置接线，不扩建目录、CTE 或 search_path；后端名称区分能力作为独立缺口交接，不以文本改写代替。
 
 ### 验收
 
@@ -480,6 +509,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 
 [行构造语法边界](#行构造语法边界)的文档验收为：ROW(1,2)、(1,2)、(1)、ROW(1, 四个核心输入分别区分语法合法、类型可判定与可执行；单字段 ROW 对照、顺序/嵌套、参数、关系括号及词法保护均有双方言责任和证据限制。当前全部运行行为未验证，不以解析或名称扫描成功替代语义兼容。
 
+[引号与大小写规则](#引号与大小写规则)的文档验收为：foo、Foo、"Foo"、"a""b"、未闭合/空引号及字符串/注释均有双方言正反例、前提和诊断责任；词法键与后端存储、原始与转换位置区分明确。现有适配和测试不能证明完整名称解析，运行能力全部未验证。
+
 ### 后续细分
 
 [方言身份传递](#方言身份传递)后续先做连接身份拥有权及关闭/重连边界的局部取证，再分别拆简单查询与扩展查询的身份承接、共享解析/名称绑定/规划/表达式上下文的必要局部接线及隔离回归；实施前确认实际落点，不将本责任链自动扩张为完整子系统重建。各任务明确单一交接点、所需状态、现有可复用实现和验收断言；DIALECT-IDENTITY 三类场景是待新增验收入口，不是既有测试或已登记通过的能力。
@@ -495,6 +526,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 [数组构造语法边界](#数组构造语法边界)后续先比较共享 AST 与受控入口保留构造类别、嵌套及跨度的最小方案，再拆基本/嵌套/空列表树形、原 SQL 定位、参数身份与双方言隔离验收；共同类型、形状语义及数组 OID 交工作流 3，Bind/Describe/结果编码交工作流 7 单独细分，不递归补建数组子系统。
 
 [行构造语法边界](#行构造语法边界)后续先比较共享 Row 载体与受控 PG 入口保留显式性、嵌套和原 SQL 跨度的最小接线，再分别拆行/分组/子查询树形、名称扫描交互、错误位置及双方言隔离断言。沿独立测试布局取证，不递归扩建表达式或关系子系统；行类型与 NULL/比较按工作流 3、4 单独细分。
+
+[引号与大小写规则](#引号与大小写规则)后续先取证共享名称载体的 quoted/拼写/跨度保真，再分别拆折叠与精确绑定、双引号转义及词法保护、位置映射和双方言隔离；后端同名异大小写的可区分性单独评估，禁止递归补建存储或目录子系统。
 
 ## 3. 共享类型与转换契约
 
