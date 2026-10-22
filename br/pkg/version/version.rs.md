@@ -52,6 +52,8 @@ BR/PiTR checker 都先读取 `effective_release_version`。测试特殊值 `buil
 
 ## 数据与状态
 
+`ServerInfo` 新增 `NextGen: bool`，默认 false。仅在 TiDB 分支常规版本正则未匹配、回退 `parse_tidbx_version_to_semver` 得到非空字符串时设 true；它表示 premium-keyspace Cloud 格式识别结果，不是通过网络查询得出的集群能力。MySQL/MariaDB/普通 TiDB 及不被支持的 X-CLOUD 形式不能据名称猜测为 true。
+
 - 版本阈值由小函数即时构造 `Version`；正则表达式通过 `OnceLock<Regex>` 惰性初始化并在进程内复用。
 - `checkpoint_support_error` 是 `OnceLock<Mutex<Option<SharedError>>>`。`None` 表示支持；`CheckVersionForBR` 对每个成功走到该阶段的 TiKV 先清空，再在版本低于 6.5 时写入错误。
 - `pitr_support_batch_kv_files` 是 `OnceLock<Mutex<bool>>`，初始为 `false`；每个通过 PiTR 最低版本检查的 TiKV 都会按是否达到 6.5 覆盖它。
@@ -113,10 +115,7 @@ Rust `version_test.rs` 对齐 Go 的 `TestCheckClusterVersion`、版本比较、
 
 ## 验证依据
 
-- 源码与模块边界：`br/pkg/version/version.rs`（774 行）、`br/pkg/version/lib.rs`、`br/pkg/version/Cargo.toml`。
-- 直接生产接线：`br/pkg/conn/conn.rs::NewMgr` 中普通 BR、Stream/PiTR 和 Domain/DDL 三条 `CheckClusterVersion` 路径。
-- Go 对照：`br/pkg/version/version.go`，包括常量、全部 checker、服务器解析与 `FetchVersion`。
-- Rust 独立测试：`br/pkg/version/version_test.rs` 的 `test_check_cluster_version`、`test_tiflash_error_uses_peer_address`、`test_compare_version`、`test_next_major_version`、`test_extract_tidb_version`、`test_check_version`、`test_normalize_backup_version*`、`test_detect_server_info`、`test_fetch_version*`、`test_ensure_support_version`；`br/pkg/version/parity_test.rs::go_rust_public_contract_matches`。
-- Go 独立测试：`br/pkg/version/version_test.go` 中对应的 `TestCheckClusterVersion`、`TestCompareVersion`、`TestNextMajorVersion`、`TestExtractTiDBVersion`、`TestCheckVersion`、`TestNormalizeBackupVersion`、`TestDetectServerInfo`、`TestFetchVersion*` 与 `TestEnsureSupportVersion`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/version` 确认模块/测试集合；`explore "br/pkg/version/version.rs version compatibility symbols callers callees"` 给出 `NewMgr → CheckClusterVersion`、`CheckTiDBVersion → CheckVersion` 及主要内部调用边；`node --file` 核验了 Rust 与 Go 全文件实现。
-- 本任务是纯文档分析，未运行 Cargo 或运行时代码测试；交付验证只检查固定章节、文件存在性、变更范围和人工事实一致性。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/version/version_test.rs::test_parse_server_info_nextgen` 覆盖 Cloud true、普通 TiDB/MySQL/MariaDB 及 X-CLOUD false；同名 Go ServerInfo/ParseServerInfo 保持相同设置点。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

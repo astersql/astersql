@@ -32,6 +32,8 @@
 
 ## 执行流程
 
+`restoreStreamWithTiKVConfigControl` 仍在 registry 屏障后禁用 GC，但只有 `RetainLatestMVCCVersion` 为真时才调用 `KeepRocksDBMaxBackgroundJobsLow`。未启用时保存 `None` 恢复闭包与空 jobs 原值，退出时仅恢复 GC；启用时才执行 jobs 恢复。checkpoint metadata 调用新增 `cfg.name_route_fingerprint()?`，把 canonical rename 身份交给 log-client 的续跑一致性边界。
+
 普通 stream 命令链如下：
 
 1. `br/cmd/br/stream.rs::streamCommand` 先调用公共 `Config::ParseFromFlags`，再按命令调用 `ParseStreamStartFromFlags`、`ParseStreamPauseFromFlags`、`ParseStreamStatusFromFlags`、`ParseStreamTruncateFromFlags` 或公共解析。
@@ -76,6 +78,8 @@ PiTR 主链从 `RunStreamRestore` 开始：调整 stream restore 配置并创建
 
 ## 并发与资源生命周期
 
+jobs 恢复闭包现在是可选值。checkpoint 的 persisted/restorable 决策仍共同控制何时恢复配置；没有 jobs 闭包时，即使 checkpoint 中有 jobs 字符串也不会调用恢复 SQL。指纹生成错误在 metadata 持久化成功之前传播，最终清理结果覆盖原错误的既有行为没有改变。
+
 `StreamMgr` 的 `close` 仅设置布尔值，没有 RAII，也没有真实 etcd/streamhelper 资源；`RunStreamStart` 显式调用它，但中途报错不会触发 close。Go 版本的锁、连接和 safepoint 生命周期因此不能套用到当前 Rust 实现。
 
 真实恢复控制面使用多层生命周期保护：`Arc` 共享存储与注入对象；`RestoreLogClientGuard::Drop` 保证在正常、恢复失败和配置建立失败路径上关闭已创建的 log client；进度对象在 `restoreStreamBody` 调用恢复后显式 `Close`。`Registry::OperationAfterWaitIDs` 先等待注册 ID 屏障再修改集群配置，`GlobalOperationAfterSetResettingStatus` 在恢复配置时建立全局 resetting 状态，避免多个恢复任务无协调地改写全局参数。
@@ -105,8 +109,7 @@ checkpoint 模式下，失败或 `RestorePhase == 1` 时保留 GC/background-job
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/task` 确认 `stream.rs`、`stream_test.rs`、Go 对照与 crate 入口均已索引；`node --file br/pkg/task/stream.rs --offset 1 --limit 1200` 读取了目标 1043 行及其三处文件级使用关系；`query` 分别确认 Rust/Go 的 `RunStreamCommand`、`getLogInfoFromStorage` 和 Rust 的 `restoreStreamWithTiKVConfigControl` 定义。精确 `callers/callees` 查询在本地超时，因此调用边由已索引的 `node` 源码和精确引用搜索交叉核对，没有据此虚构图边。
-- 读过的 Rust 证据：[`br/pkg/task/stream.rs`](./stream.rs)、[`br/pkg/task/stream_test.rs`](./stream_test.rs)、[`br/pkg/task/lib.rs`](./lib.rs)、[`br/cmd/br/stream.rs`](../../cmd/br/stream.rs)。
-- 读过的边界与对照证据：[`br/pkg/task/Cargo.toml`](./Cargo.toml)、[`br/pkg/task/stream.go`](./stream.go)、[`br/pkg/task/stream_test.go`](./stream_test.go)。最近的目标包中没有 `doc.go`；包级 Rust 契约由 `lib.rs` 的模块文档提供。
-- 现有 Rust 测试覆盖 `stream_flag_defaults_and_parsing_match_go`、`generate_security_config_requires_effective_non_empty_key_material`、`test_shift_ts`、`test_check_log_range`、global/resume checkpoint、全量/日志目录、key range，以及 `stream_tikv_config_*`、client close 和 restore target TS 初始化。按任务约束未运行 Cargo，这些测试仅作为行为证据读取。
-- 交付结构验证使用任务指定命令，要求目标文档存在且恰有本文的 11 个固定二级标题；此外人工复核本文明确回答文件为何存在、当前如何运行、哪些路径是桩以及应从何处安全扩展。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/task/stream_test.rs`、`restore_lifecycle_test.rs` 以及 `retain_latest_mvcc_test.rs::retain_latest_mvcc_controls_rocksdb_background_jobs`，后者断言 flag 关闭时 jobs SQL 调用为零、开启时为三次并恢复原值。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

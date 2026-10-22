@@ -35,6 +35,8 @@ crate 边界由 `br/cmd/br/Cargo.toml` 确认：该包既有 `lib.rs`，也以 `
 
 ## 执行流程
 
+`rejectRestoreRenameFlag(flags, cmd_name)` 在 raw/txn 的 `ParseFromFlags` 之前检查 `FlagRename`：只有 flag 已定义且 `Changed` 时才返回 `--rename is not supported by <cmd>`；显式设置为空也会被拒绝。该前置错误直接经 `?` 返回，不经过解析失败时的 `SilenceUsage = false` 分支。full/db/table/point 仍走共享恢复配置。全局配置更新只关闭 coprocessor cache，不再覆写 `AdvertiseAddress`。
+
 进程主链如下：
 
 1. `br/cmd/br/main.rs::main` 创建根 `Command`，调用 `NewRestoreCommand` 挂载恢复命令。
@@ -48,7 +50,7 @@ full/db/table/point 的共享流程是：
 3. 使用最终的 PD、TLS、Keyspace 配置注册 BR metrics；若 `IsStreamRestore(cmdName)` 为真，再解析 PITR 专属参数。
 4. 打开全局 `SkipGrantTable`，取得默认上下文与 tracing 开关。
 5. 若备份类型是 `FullBackupTypeEBS`：`Prepare` 为真时用 `TikvGlue` 调用 `RunRestoreEBSMetaWithDefaults`；否则锁定 `tidbGlue`，构造当前 Rust 任务边界使用的 `MemStorage`，调用 `RunResolveKvData`。此分支完成后直接返回，不执行后续普通 snapshot/point 恢复环境调整。
-6. 非 EBS 路径把 BR 的 advertised address 设为不可用地址、关闭 coprocessor cache，随后禁用全局内存限制 tuner，并建立 Drop 守卫保证函数退出时重新启用。
+6. 非 EBS 路径关闭 coprocessor cache，随后禁用全局内存限制 tuner，并建立 Drop 守卫保证函数退出时重新启用。
 7. 配置中指定 schema 时，先去除名称反引号，再用 `FilterLoadSpecifiedDBAndSysDBs` 临时替换 `tidbGlue` 的 InfoSchema 过滤器。
 8. 在 `with_tracing` 中锁定 `tidbGlue` 并调用 `RunRestore`；调用返回后恢复临时过滤器。失败时记录日志，按错误类型打印 workaround，然后返回错误；成功则返回 `Ok(())`。
 
@@ -60,7 +62,7 @@ RawKV 和 TxnKV 路径较短：各自构造配置、合并并解析 flag、读�
 - `effective_task_flags(command)` 合并父命令 persistent flag 与当前叶子命令 local flag。文档或扩展不能只检查 `command.Flags()`，否则会漏掉 `DefineRestoreFlags` 注册在父命令上的配置。
 - `cmdName` 不是用户输入的 `Use` 文本，而是任务层常量：`Full Restore`、`DataBase Restore`、`Table Restore`、`Raw Restore`、`Txn Restore`、`Point Restore`。任务层用它生成 summary，并用 `PointRestoreCmd` 判定 stream restore。
 - `cfg.Config.Schemas` 驱动临时 InfoSchema 过滤；每个 schema 在传给 `FilterLoadSpecifiedDBAndSysDBs` 前经 `utils::UnquoteName` 规范化。
-- 进程级可变状态包括 `Security.SkipGrantTable`、`AdvertiseAddress`、coprocessor cache 容量、内存 tuner、`TxnTotalSizeLimit`、summary unit 及 `tidbGlue` 的过滤器。其中本文件只显式恢复内存 tuner 和临时数据库过滤器；其他设置按 BR 单次进程模型保留。
+- 进程级可变状态包括 `Security.SkipGrantTable`、coprocessor cache 容量、内存 tuner、`TxnTotalSizeLimit`、summary unit 及 `tidbGlue` 的过滤器。其中本文件只显式恢复内存 tuner 和临时数据库过滤器；其他设置按 BR 单次进程模型保留。
 - 当前 EBS 非 prepare 分支显式创建 `Arc<dyn Storage>` 包装的 `MemStorage`。这是 Rust slim 任务边界的当前事实，不等价于 Go 路径直接使用完整外部存储栈。
 
 ## 依赖与调用关系
@@ -124,9 +126,14 @@ Go 同目录没有直接针对 `restore.go` 的独立测试；Rust 使用同目�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/cmd/br` 确认 `restore.rs` 为 14-symbol 生产文件，且同目录存在 `restore.go` 与独立 `parity_test.rs`；`explore "br/cmd/br/restore.rs symbols callers callees restore command flow"` 给出构造器到三个执行入口的调用路径及各入口 caller 数。精确 `callers/callees` 命令本次未输出文本，因此没有据此推断不存在其他调用。
 - 已读 Rust 源：`br/cmd/br/restore.rs`、`br/cmd/br/main.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/cmd.rs`、`br/cmd/br/stubs.rs`。
 - 已读 crate 配置与 Go 对照：`br/cmd/br/Cargo.toml`、`br/cmd/br/restore.go`；同目录未发现 `doc.go`。
 - 已读直接 Rust 测试：`br/cmd/br/parity_test.rs`，其中 `contract_normal_command_tree_and_filters` 验证恢复子命令恰为 `full/db/table/raw/txn/point`，`contract_error_paths` 覆盖普通错误和两类特定 workaround 错误。
 - 已核对任务层入口及测试位置：`br/pkg/task/restore.rs`、`restore_raw.rs`、`restore_txn.rs`、`restore_data.rs`、`restore_ebs_meta.rs`；相关独立测试包括 `restore_test.rs`、`restore_nokit_test.rs`、`restore_lifecycle_test.rs`、`restore_raw_test.rs`、`restore_txn_test.rs`、`restore_data_test.rs`、`restore_ebs_meta_test.rs` 与 `parity_test.rs`。
 - 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定的 shell 命令验证目标文件存在且恰有 11 个固定二级标题，并人工检查所有重要陈述均能回溯到上述符号或文件。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/cmd/br/restore.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/cmd/br/restore.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`parity_test.rs::contract_error_paths` 是既有命令错误证据；目标版本未见针对 `rejectRestoreRenameFlag` 的独立 Rust 用例。Go `restore.go` 同样在 raw/txn 解析前拒绝显式 rename。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

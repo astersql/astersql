@@ -24,7 +24,7 @@
 - `init`：通过 `DIAL_HOOKS.new_mgr` 测试钩子或 `NewMgr` 创建连接管理器，再由 `Glue::GetDomain` 取得 Domain。
 - `getTables`：遍历 `InfoSchema::AllSchemas`，依次应用 `MatchSchema`、`MatchTable`，调用 `SchemaTableInfos` 收集当前表。
 - `loadOldTableIDs`：从配置的存储读取 `MetaFile`，反序列化 `BackupMeta`，经 `MetaReader::ReadSchemasFiles` 加载并过滤旧表。
-- `loadPitrIdMap`：优先读取外部 `PitrIDMapsFilename(clusterID, restoredTS)`；存储 URI 为空时查询系统表，并验证分片连续且非空。
+- `loadPitrIdMap`：优先选择唯一任务的外部 PiTR map，空路径时回退下游集群旧格式文件名；存储 URI 为空时查询系统表，并验证分片连续且非空。
 - `genRequests`：取得 PD TSO，以 `HashMap<db, HashMap<table, MetaTable>>` 匹配旧表，调用 `ExecutorBuilder::SetOldTable` 开启 ID rewrite。
 - `genRequestsWithIDMap`：构造 `router[db][table][downstream_id] = upstream_id`，克隆当前 `TableInfo` 并替换表 ID、全部分区 ID，再作为 fake old table 交给 builder。
 - `genUpstreamRequests`：不设置 old table，仅以指定时间戳为当前表构建 executor。
@@ -35,6 +35,8 @@
 - `gen_requests_with_id_map_for_test`、`test_table`：公开测试辅助接口，仅绕过真实集群初始化来观察 rewrite 后的 table ID 和构造带可选分区的 `TableInfo`，不是生产命令入口。
 
 ## 执行流程
+
+冻结增量中，外部 PiTR map 先用下游 PD cluster ID、上游 cluster ID 和 restored TS 调用 `FindUniquePitrIDMapFile`；只在其返回空路径时回退 `PitrIDMapsFilename(downstream_cluster_id, restoredTS)`。系统表存在 `restore_id` 列时，先查询最多两个 DISTINCT owner，调用 `ensureUniquePitrIDMapOwner` 拒绝多归属，再读取分片。表级路由优先使用 `TargetDbName`，否则使用父库名；建索引统一小写，并按表 `Name.L` 查找。
 
 1. 上层 CLI 解析对应配置后调用三个 `Run*ChecksumTable` 入口之一。入口创建 `checksumTableCtx`，执行 `init` 建立 `ConnMgr` 与 Domain，再由 `getTables` 从当前 infoschema 中筛选目标表。
 2. rewrite-rules 路径执行 `loadOldTableIDs`，读取备份 `MetaFile` 和 schema 文件；`genRequests` 向 PD 取 TSO，将备份表按小写库名/表名建双层索引。备份中缺库或缺表时记录日志并跳过当前表，而非终止整批。
@@ -69,6 +71,8 @@
 RustCodeGraph 的文件级查询识别出 20 个符号，并确认内部关键调用边：三个公开入口均流向 `runChecksum`；`genRequestsWithIDMap` 由 PiTR 入口及测试 helper 调用；测试 helper 和 `test_table` 的调用者是 [`parity_test.rs`](parity_test.rs) 中的 `contract_normal_config_and_helpers`、`contract_error_paths`。Cargo 直接依赖中的 `serde_json` 承担最终输出序列化；其余数据库依赖经本 crate 的 stub/trait 层间接接入。
 
 ## 错误处理与边界
+
+`ensureUniquePitrIDMapOwner` 对 owner 去重后超过一个即报错，零个或重复的同一个 owner 均通过，后续仍由分片读取检查决定是否有数据。唯一归属查询发生在显式 session Close 之前，`?` 早退的资源边界仍存在。此文件的 owner helper 已实现，既有 `parity_test.rs` 的 checksum 测试不能替代多 owner 分支的运行验证。
 
 源文件使用统一 `Result<T, Error>`，在存储创建、文件读取、反序列化、infoschema 查询、session SQL、TSO 获取和 executor build 处用 `Annotate`/`Annotatef` 补上下文。明确的硬错误包括 PiTR 缺数据库/表/表 ID/分区 ID 映射，系统表分片丢失或为空，以及 worker panic。rewrite-rules 中备份缺同名库表则是有意的软跳过。
 
@@ -112,10 +116,7 @@ Rust 三个入口、上下文、请求/结果结构以及 `getTables`、两种 I
 
 ## 验证依据
 
-- Rust 源码：[`checksum_table.rs`](checksum_table.rs) 全部 730 行；关键符号包括三类公开入口、`loadPitrIdMap`、三种 request 生成函数、`runChecksum`、`ChecksumResult` 和两个测试 helper。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)；确认 package 名、Go package 元数据、依赖、模块声明、平铺导出和独立测试模块。
-- 生产入口：[`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 第 236、264、291 行附近；对应 Go 入口为 [`br/cmd/br/operator.go`](../../../cmd/br/operator.go) 第 145、167、188 行附近。
-- Go 语义：[`checksum_table.go`](checksum_table.go)；逐段核对表发现、备份/PiTR 元数据加载、ID rewrite、executor 构建、worker pool、GC safepoint、JSON 输出和清理方式。
-- 独立 Rust 测试：[`parity_test.rs`](parity_test.rs) 的 `checksum_result_json_matches_go_tags`、`service_safe_point_keeper_rejects_invalid_config_before_write`、`contract_normal_config_and_helpers`、`contract_error_paths`。前者验证 JSON tag，正常 helper 用例验证 downstream table ID 100 rewrite 为 upstream ID 200，错误用例验证空 map 返回 `no db map found`；当前没有三类公开入口的真实集群端到端测试。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/task/operator/checksum_table.rs` 确认目标文件和 20 个符号；文件 `node` 读取 1–730 行；`explore` 确认三个入口到 `runChecksum` 的调用流，以及 `genRequestsWithIDMap`/测试 helper 的调用者关系。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的固定 11 章节结构校验、Markdown 路径/事实复核和 diff 检查；运行结果记录在提交交接中。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/task/operator/parity_test.rs` 的 checksum JSON/ID rewrite 契约；冻结树不存在 checksum_table_test.rs，本次未找到 ensureUniquePitrIDMapOwner 的独立测试调用，故不声称该新增分支已执行验证。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

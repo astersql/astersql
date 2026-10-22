@@ -19,6 +19,8 @@
 
 ## 主要符号
 
+新增 `FlagRename` 与 `RestoreConfig.Rename`，通过 `DefineRestoreFlags` 注册 string-array 并在 `ParseFromFlags` 读取；解析最后调用同 crate `restore_name_route.rs` 的 `validate_name_routing`。`Hash` 通过 `get_name_router()` 获取 canonical rules，非空时以 `RenameRules` 纳入不可变配置 JSON，空列表省略，storage 仍先脱敏。
+
 - `RestoreCommonConfig`：在线恢复、粒度、每 store 并发、小 Region 合并阈值、系统表与系统用户配置。`adjust` 只在对应 `ModifiedU64.Modified` 为假时回填阈值/并发，避免覆盖显式输入。
 - `RestoreConfig`：组合 `common::Config` 与恢复专用字段。除 CLI 配置外，还保存 `PiTRTableTracker`、`RestoreStorage`、`CheckpointMetaManagers`、`snapshotRestoreDataSize`、`RestoreStartTS`、`RestoreID` 和 `TiKVConfigControl` 等运行态数据。
 - `RestoreConfig::Hash`：序列化命令名、上游集群 ID、脱敏后的 storage、filter、系统表、快速系统表和统计信息开关，再计算 SHA-256。当前 Rust 与 Go 一样未把 `ExplicitFilter` 放入序列化值。
@@ -35,6 +37,10 @@
 - `RunRestore` / `RunRestoreAbort`：当前 Rust 的执行入口。前者包含最小快照文件恢复链，后者目前只做配置调整、summary、checkpoint manager 关闭和成功标记，远小于 Go abort 的任务定位与清理流程。
 
 ## 执行流程
+
+新增 `FilterRestoreFiles` 面向 snap-client 的 metautil 类型：跳过 checkpoint DB，去除临时系统库前缀后按源库/表过滤，并遵守 `WithSysTable`。physical stats 模式允许绕过库级筛选，且 stats 临时表绕过表筛选；物化视图、log、shadow 表跳过，选中普通表清空 `MaterializedViewBase`，输出按源 ID 索引的表/库 map。此公开 helper 不能凭导出关系推断已被 `RunRestore` 使用。
+
+`RunRestore` 在增量快照存在 rename 时返回 `ErrInvalidArgument`。全量无显式过滤只有在没有路由时才把 key_ranges 设为 None；路由属于部分恢复，需保留已准备的范围，范围缺失仍报错。这与日志恢复支持路由是不同边界。
 
 普通 `full/db/table` 和 point restore 的配置路径如下：
 
@@ -72,6 +78,8 @@ PiTR 表集合调整由 `AdjustTablesToRestoreAndCreateTableTracker` 独立完�
 RustCodeGraph 对该文件给出的文件级 used-by 是 `br/pkg/task/restore_test.rs` 与一个测试文件；对 `RunRestore` 的符号查询同时定位到 Rust/Go 定义和 CLI 恢复入口。由于图数据库的 `callers/callees` 命令在本次查询中超时，直接调用边进一步由已索引的 `br/cmd/br/restore.rs`、`br/cmd/br/abort.rs` node 输出及仓库精确符号搜索核验。
 
 ## 错误处理与边界
+
+路由解析和校验错误经 `Result` 向上传播，配置哈希也可能因路由无效失败。`FilterRestoreFiles` 对输入表元信息原地清除 MaterializedViewBase 后再克隆；其“有表无库”检查返回错误，不执行外部 I/O，也不创建并发任务。
 
 - flag getter、TS 解析、manager/storage/meta/lifecycle 操作均使用 `Result` 和 `?` 传播；配置约束使用 `Error::Annotatef(berrors::ErrInvalidArgument, ...)`，恢复模式冲突使用 `ErrRestoreModeMismatch`。
 - `ParseStreamRestoreFlags` 禁止同时指定正数 `StartTS` 与非空 `FullBackupStorage`；`ParseFromFlags` 禁止 split step 为零、非法 phase、以及不启用 checkpoint 的分阶段恢复。
@@ -118,9 +126,7 @@ RustCodeGraph 对该文件给出的文件级 used-by 是 `br/pkg/task/restore_te
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file br/pkg/task/restore.rs --offset 1 --limit 500` 与 `--offset 500 --limit 850` 读取目标文件全部 1282 行；`query RunRestore --kind function --json` 定位 Rust `restore.rs::RunRestore`、Go 对照及 CLI 候选；`node` 读取 `br/cmd/br/restore.rs`、`br/cmd/br/abort.rs`、`br/pkg/task/restore_test.rs`、`config_test.rs`、`restore_nokit_test.rs`。`callers/callees` 查询尝试超时，未把缺失图输出当作证据。
-- crate 与模块边界：`br/pkg/task/Cargo.toml`、`br/pkg/task/lib.rs`；目标包无 `doc.go`。
-- Go 对照：`br/pkg/task/restore.go`，重点核对 `RestoreCommonConfig`、`RestoreConfig`、flag/parse/adjust、`RunRestore`、空间估算、PiTR tracker、TiFlash/clustered-index 预检、DDL 过滤与 `RunRestoreAbort`。
-- Rust 独立测试：`br/pkg/task/restore_test.rs` 覆盖默认值、stream flags、checkpoint 关闭、TiFlash、clustered index、collation、DDL、空间、PiTR tracker、Hash 和快照归档大小；`br/pkg/task/config_test.rs` 覆盖 client 配置与库表校验；`br/pkg/task/restore_nokit_test.rs` 覆盖 raw meta 拒绝和 key range；`br/pkg/task/restore_lifecycle_test.rs` 覆盖 lifecycle 调用链。
-- 直接调用证据：`br/cmd/br/restore.rs:31-132` 与 `br/cmd/br/abort.rs:135-170`；仓库精确符号搜索还确认 `br/pkg/task/stream.rs` 和上述独立测试的引用。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验证命令及退出码在任务交付时记录。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/task/restore_test.rs`、`restore_lifecycle_test.rs`、`restore_name_route_test.rs` 和 `common_test.rs`；后者直接调用 FilterRestoreFiles。路由解析/限制定义在 restore_name_route.rs，模块由 task/lib.rs 装配。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

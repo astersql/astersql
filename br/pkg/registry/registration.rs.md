@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-registry` 中的恢复任务注册表实现，源码由 `br/pkg/registry/lib.rs` 以 `pub mod registration` 挂载，并经 `pub use registration::*` 作为 crate 的公开接口导出。`br/pkg/registry/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/registry` 的 library 移植，但当前依赖表为空：TiDB session、domain、filter、错误类型等依赖面由同 crate 的 `stubs.rs` 提供，心跳线程由 `heartbeat.rs` 提供。因此它既不是单纯的声明门面，也还不是直接连接完整 TiDB Rust 基础设施的最终形态。
+本文件是 Cargo 包 `astersql-br-pkg-registry` 中的恢复任务注册表实现，源码由 `br/pkg/registry/lib.rs` 以 `pub mod registration` 挂载，并经 `pub use registration::*` 作为 crate 的公开接口导出。`br/pkg/registry/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/registry` 的 library 移植，依赖 restore 路由实现、hex 和 serde_json；TiDB session、domain、filter、错误类型等依赖面由同 crate 的 `stubs.rs` 提供，心跳线程由 `heartbeat.rs` 提供。因此它既不是单纯的声明门面，也还不是直接连接完整 TiDB Rust 基础设施的最终形态。
 
 文件管理 SQL 表 `mysql.tidb_restore_registry` 中恢复任务的创建、恢复、暂停、注销、过期判断、冲突检查和全局配置操作协调。当前仓库中可见的生产 Rust 上游是 `br/pkg/task/stream.rs::restoreStreamWithTiKVConfigControl`，它调用 `OperationAfterWaitIDs` 和 `GlobalOperationAfterSetResettingStatus` 来串行化 TiKV 全局配置的修改与恢复；其余公开接口主要由本 crate 的对齐测试调用。Go 同名文件的调用面更广，不能据此推断所有 Go 上游都已接入 Rust 实现。
 
@@ -20,9 +20,9 @@
 - `RestoreRegistryDBName` / `RestoreRegistryTableName`：固定注册表位置 `mysql.tidb_restore_registry`；SQL 模板与 `heartbeat.rs` 都引用这两个常量。
 - `FilterSeparator`：值为 `\x1F`，用于 `Vec<String>` 与单列 `filter_strings` 之间的无歧义连接/拆分；过滤字符串和 SQL 标识通常不会包含该控制字符。
 - `StaleTaskThresholdMinutes`：过期判定轮数为 5。实际 tick 时长来自 `stubs::stale_ticker_duration`，便于测试缩短等待。
-- `RegistrationInfo`：公开输入值，包含 `FilterStrings`、`StartTS`、`RestoredTS`、`UpstreamClusterID`、`WithSysTable`、`Cmd`。
+- `RegistrationInfo`：公开输入值，包含 `FilterStrings`、`RouteStrings`、`RouteHash`、`FilterHashInput`、`StartTS`、`RestoredTS`、`UpstreamClusterID`、`WithSysTable`、`Cmd`。
 - `RegistrationInfoWithID`：为已持久化记录补充私有 `restoreID`；只由本模块冲突检查消费。
-- `Registry`：核心状态对象。`se` 执行注册表事务和查询，`heartbeat_session` 专供心跳更新，`heartbeat_manager` 保存后台管理器，`wait_ids` 保存注册时观察到的 `resetting` 任务，`table_exists` 记录构造时表是否存在。
+- `Registry`：核心状态对象。`se` 执行注册表事务和查询，`heartbeat_session` 专供心跳更新，`heartbeat_manager` 保存后台管理器，`wait_ids` 保存注册时观察到的 `resetting` 任务，`table_exists` 记录构造时表是否存在，`route_schema_ready` 记录路由列可用性。
 - `NewRestoreRegistry`：用 `Glue::CreateSession` 建立两个 session，并通过 `Domain::InfoSchema().TableByName` 区分“表不存在”与其他错误。
 - `ResumeOrCreateRegistration`：注册状态机入口，返回 `(task_id, resolved_restore_ts)`。
 - `PauseTask` / `Unregister`：先停止心跳，再分别做条件状态更新或删除记录。
@@ -34,7 +34,13 @@
 
 ## 执行流程
 
-注册流程从 `ResumeOrCreateRegistration` 开始。它先调用 `resolveRestoreTS`，按过滤串、`start_ts`、上游集群、系统表开关和命令查找最近任务。用户显式指定的 `RestoredTS` 若与已有任务不同则报参数错误；未显式指定时，已有暂停任务或成功转为暂停的过期任务可贡献其 `RestoredTS`，否则保留调用方值。
+注册身份新增 `RouteStrings`、`RouteHash`、`FilterHashInput`。`NormalizeRegistrationRoutes` 使用 `restore::nameroute::Router` 解析并规范化规则，以十六进制指纹设置/验证 hash；无规则却有 hash 或 hash 不符均报错。注册与 abort 入口先规范化，再检查 `route_schema_ready`，不支持路由列的目标拒绝 rename。构造时该状态来自 `table_exists && RestoreRegistryRouteSchemaReady()`；测试构造器默认跟随表存在状态。
+
+无路由保持旧 MD5 SQL；有路由使用 SHA2(..., 256) 与 `route_hash` 联合查找、冲突定位及插入，hash 输入优先 `FilterHashInput`，否则为连接后的 filter。插入同时保存源 filter 与 JSON 路由；`GetRegistrationsByMaxID` 按 schema 能力选择列，优先用非空 `source_filter_strings`，解码路由并重新验证。坏 JSON/路由报带 registration ID 的错误，不静默跳过。
+
+`CheckTablesWithRegisteredTasks` 委托 `CheckTablesWithRegisteredTasksAndRoutes(..., &[])`；新入口将当前对象映射到目标名称，并用历史注册的 router 与源 filter 判断目标占用。`registration_claims_target` 处理表规则、库规则和未映射名称，schema 检查用小写 `HashSet` 去重；PiTR tracker、Point Restore 数据库和普通表均在目标命名空间检查冲突。无法解析的历史 filter 仍跳过。此实现保留原心跳/事务状态机，不证明任务层已调用新的路由入口。
+
+注册流程从 `ResumeOrCreateRegistration` 开始。它先规范化路由并检查目标路由列兼容性，再调用 `resolveRestoreTS`，按过滤串、`start_ts`、上游集群、系统表开关和命令查找最近任务。用户显式指定的 `RestoredTS` 若与已有任务不同则报参数错误；未显式指定时，已有暂停任务或成功转为暂停的过期任务可贡献其 `RestoredTS`，否则保留调用方值。
 
 随后函数把过滤数组以 `FilterSeparator` 连接，在 `execute_in_transaction` 的悲观事务中执行带 `FOR UPDATE` 的精确查询。命中 `running/resetting` 记录即拒绝重复运行；命中 `paused` 记录则更新为 `running` 并刷新心跳；未命中则插入新记录，再用同一 session 的 `SELECT LAST_INSERT_ID()` 取得 ID。事务闭包成功后提交，失败则尝试回滚。最后 `collectResettingStatusTasks` 快照当前所有 `resetting` ID，供后续全局操作等待。
 
@@ -48,7 +54,7 @@ abort 流程 `FindAndDeleteMatchingTask` 先复用 `resolveRestoreTS`，然后�
 
 任务状态由 `TaskStatusRunning`、`TaskStatusPaused`、`TaskStatusResetting` 三个值驱动。允许的主要转换是：新建到 `running`；`paused` 恢复到 `running`；`running/resetting` 经 `PauseTask` 或过期条件更新到 `paused`；`running` 经全局收尾准备到 `resetting`；注销/abort 删除记录。代码对查询得到的未知状态不做隐式转换：注册时报 `ErrInvalidArgument`，abort 时跳过。
 
-`filter_hash = MD5(filter_strings)` 只是 SQL 侧候选定位的一部分，完整相等条件仍包括原始参数相关字段。恢复任务查找以 ID 倒序并加锁；冲突扫描则只读取小于当前 ID 的记录并按 ID 升序返回，使后注册任务对先注册任务负责避让。
+无路由时 `filter_hash = MD5(filter_strings)` 只是 SQL 侧候选定位的一部分，完整相等条件仍包括原始参数相关字段。恢复任务查找以 ID 倒序并加锁；冲突扫描则只读取小于当前 ID 的记录并按 ID 升序返回，使后注册任务对先注册任务负责避让。
 
 `wait_ids` 是注册完成时的快照，不会自动跟随数据库变化；轮询时仅关注这些 ID 是否仍处于 `resetting`。`table_exists` 同样是构造时快照。`unix_now` 在系统时间早于 Unix epoch 时回退为 0，这会进入数据库时间字段而不会单独报错。
 
@@ -58,7 +64,7 @@ abort 流程 `FindAndDeleteMatchingTask` 先复用 `resolveRestoreTS`，然后�
 
 下游关系：注册表 SQL 通过 `Session` / `RestrictedSQLExecutor` 执行；上下文统一用 `WithInternalSourceType(..., InternalTxnBR)` 标记内部 BR 事务；过滤冲突依赖 `ParseFilter`、`CaseInsensitive`、`MatchSchema`、`MatchTable`；PiTR 冲突依赖 `PiTRIdTracker`；错误分类依赖 `berrors`；心跳后台任务依赖 `heartbeat.rs::{NewHeartbeatManager, update_heartbeat}`。
 
-crate 边界值得特别注意：`br/pkg/registry/Cargo.toml` 没有外部依赖，以上类型均来自本地 `stubs.rs`。因此扩展代码时不能假定这里已获得真实 TiDB session、failpoint 或 table-filter crate 的全部行为；应同时核对 stub 契约和 Go 实现。
+crate 边界值得特别注意：`br/pkg/registry/Cargo.toml` 引入 restore、hex 和 serde_json，SQL/session/filter 类型仍来自本地 `stubs.rs`。因此扩展代码时不能假定这里已获得真实 TiDB session、failpoint 或 table-filter crate 的全部行为；应同时核对 stub 契约和 Go 实现。
 
 ## 错误处理与边界
 
@@ -100,11 +106,12 @@ Rust 的常量、SQL 模板、结构体字段、公开方法及主要状态机�
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/registry` 确认本目录的 Rust/Go 实现与独立测试文件。
-- RustCodeGraph `node --file br/pkg/registry/registration.rs`：逐段核对 1,238 行源码，确认常量、SQL、`RegistrationInfo`、`Registry`、全部公开方法、事务、冲突与过期流程；图报告本文件被 `br/pkg/registry/parity_test.rs` 和 `br/pkg/task/stream_test.rs` 使用。
-- RustCodeGraph `node --file br/pkg/registry/registration.go`：核对 Go 同名实现的 session 生命周期、状态转换、五分钟心跳观察、全局操作和 abort 语义。
-- RustCodeGraph `node --file br/pkg/task/stream.rs`：确认 `restoreStreamWithTiKVConfigControl` 对两个全局协调接口的生产调用。
-- `br/pkg/registry/Cargo.toml`、`br/pkg/registry/lib.rs`、`br/pkg/registry/BUILD.bazel`：核对 crate 名称、Go 包映射、模块导出、空 Rust 依赖表和 Go 依赖边界。
+- `br/pkg/registry/Cargo.toml`、`br/pkg/registry/lib.rs`、`br/pkg/registry/BUILD.bazel`：核对 crate 名称、Go 包映射、模块导出、restore/hex/serde_json 依赖和 Go 依赖边界。
 - `br/pkg/registry/parity_test.rs`：核对直接 Rust 单元对齐场景；`tests/realtikvtest/brietest/registry_test.rs` 与 `harness.rs`：确认 RealTiKV 风格测试使用独立 harness 镜像。
-- 全仓 `rg`：确认当前生产 Rust 调用点位于 `br/pkg/task/stream.rs`，并区分 parity test、stream test 与 realtikv harness 的同名引用。
 - 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务指定命令确认文档存在且恰好包含 11 个固定二级章节。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/registry/registration.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/registry/registration.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`registry/parity_test.rs::go_rust_public_contract_matches` 是既有事务、冲突与心跳证据，未见新增路由路径的专用测试。Go `registration.go` 包含对应规范化、route schema 检查和目标冲突逻辑。Cargo 新增 `astersql-br-pkg-restore`、`hex`、`serde_json`，session/domain/filter 仍由本地 stub 提供。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

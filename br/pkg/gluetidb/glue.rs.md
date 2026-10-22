@@ -30,6 +30,8 @@
 
 ## 执行流程
 
+`DomainHooks::GetOrCreateDomainWithFilter` 增加 `disable_rpc: bool` 参数，`NopDomainHooks` 接受并忽略该值。`Glue::getDomainInner` 每次调用 hooks 都传 `true`，因此查询与创建 Domain 的路径均表达禁用 RPC 的意图；`startDomainAsNeeded` 仍按 owner → Domain → StartDomain 顺序执行。此处只证明 hooks 参数接线，真实 RPC 生命周期依赖具体 hooks 实现，默认 Nop hooks 不提供真实 Domain。
+
 1. 构造时，`New` 锁定全局配置位、写入四项 BR 默认值，然后创建 `TikvGlue`、启动互斥量和空的 `InfoSchemaFilter`。
 2. `GetDomain` 先以 `store=None` 查询启动前是否已有 Domain；随后调用 `startDomainAsNeeded`。后者持有 `startDomainMu` 后再次查询，已有 Domain 就直接返回，否则依次调用 `StartOwnerManager`、以 `store=Some` 创建/取得 Domain、再调用 `StartDomain`。
 3. `GetDomain` 在启动后再次以真实 store 取得 Domain。如果启动前不存在 Domain，它继续按顺序执行 `InitMDLVariable` 和 `UpdateTableStatsLoop`；已有 Domain 时跳过这两项一次性初始化。
@@ -97,5 +99,10 @@ Domain 主流程与 Go 顺序相同：空 store 探测、互斥内复查、启�
 - crate 边界：[`Cargo.toml`](Cargo.toml) 的包名、`lib.rs` 入口及三项直接依赖；[`lib.rs`](lib.rs) 的模块挂载、测试隔离与扁平再导出。
 - Go 对照：[`glue.go`](glue.go) 的 `New`、过滤器、Domain/Session 启动、`UseOneShotSession`、TiKV 委托和 `tidbSession` 具体行为；[`glue_test.go`](glue_test.go) 的会话隔离、策略创建和批量建表场景。
 - Rust 测试：[`glue_test.rs`](glue_test.rs) 验证关闭 bootstrap Domain 后 `CreateSession` 触发 owner/Domain 启动，并以测试替身覆盖 schema 版本、DDL 和表/策略关系；[`parity_test.rs`](parity_test.rs) 验证配置位、过滤边界、公开 trait、Open 委托，以及一次性会话在成功/错误路径上的清理；[`test_support_test.rs`](test_support_test.rs) 验证全局测试状态的串行与复位策略。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件、目标 `glue.rs` 含 67 个符号；`node --file` 核对了全部 466 行；`callees`/`explore` 确认 `getDomainInner -> GetOrCreateDomainWithFilter`、`startDomainAsNeeded -> StartOwnerManager/GetOrCreateDomainWithFilter/StartDomain`、`GetDomain -> InitMDLVariable/UpdateTableStatsLoop`、`UseOneShotSession -> CreateSession/InitMDLVariable`，以及 guard 到 `Close`/`CloseDomain` 的边。
 - 验证限制：本任务按计划不运行 Cargo。调用图对同名 Go/Rust 方法和 trait 动态分派存在歧义，所以上游应用位置只作为公共 Glue 契约的间接使用证据；真实生产 hooks 的安装在本文件及其直接 crate 入口中未找到，本文不宣称完整 TiDB Domain 已接通。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/gluetidb/glue.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/gluetidb/glue.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`parity_test.rs` 的 hooks 替身接受 `_disable_rpc`，但没有断言该参数；现有生命周期测试不能充当真实 RPC 服务关闭证据。对应 Go `glue.go` 使用 session Domain API 表达相同禁用意图。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

@@ -27,13 +27,15 @@ Go 对应实现是 `br/pkg/stream/rewrite_meta_rawkv.go`。Go 生产链在 `br/p
 - `rewriteValue` 与私有 `rewriteResult { NewValue, Deleted, Put }`：统一 CF 语义；`Deleted` 和 `Put` 只驱动状态跟踪，不表示本函数直接删除或写入存储。
 - `rewriteDBInfo`：反序列化 `model::DBInfo`、换 ID、再序列化。
 - `rewriteTableInfo`：完整 `model::TableInfo` 重写；分区必须全部有映射，TTL 被禁用，非空映射名称覆盖原表名，最后调用 hook。
-- `rewriteTableInfoInner`：较宽松的私有变体，只改表/已有分区映射，不关闭 TTL、不改名、不调 hook。当前文件没有调用它，RustCodeGraph 也未找到外部调用；不能把它描述为现行热路径。
+- `rewriteTableInfoInner`：较宽松的私有变体，只改表/已有分区映射，不关闭 TTL、不调 hook，但会应用非空目标表名。当前文件没有调用它，RustCodeGraph 也未找到外部调用；不能把它描述为现行热路径。
 - `GetDeletedTables`：返回累计删除集合的只读引用，键和值都保留上游 ID。
 - `DelRangeParams`、`PreDelRangeQuery`、`BRInsertDeleteRangeSQLPrefix`、`BRInsertDeleteRangeSQLValue`：delete-range 回调的数据契约。
 - `processIngestIndexAndDeleteRangeFromJob` / `remap_hex_table_key`：从简化 `model::Job` 生成参数，并优先按 tablecodec 二进制前缀改写 hex key；解码或前缀匹配失败时退回字符串替换。
 - `DownstreamID`、`NewDBReplace`、`NewTableReplace`、`TableReplace`：从 `stubs` 再导出，避免调用方深入桩模块。
 
 ## 执行流程
+
+冻结增量中，DB key 与 DBInfo 值均用 `RestoresDatabaseMetadata()` 加 `Reused` 判断是否跳过；非空目标库名写入 DBInfo 的 `Name.O/L`。表作用域 key 用 `EffectiveDBID(dbReplace)` 改写库 ID，并用 `EffectiveDBName(dbReplace)` 判断系统库。表 delete 在 `SkipMetaDelete` 为真时直接返回 `None`，不会登记删除；宽松的 `rewriteTableInfoInner` 也会覆盖非空目标表名。
 
 1. 调用方用上游 ID 为键的 `HashMap<UpstreamID, DBReplace>` 构造 `SchemasReplace`。构造阶段遍历未过滤的 DB/表，把表和分区的旧→新 ID 展平，供后续 delete-range 使用。
 2. `RewriteMetaKvEntry` 先调用 `utils::IsMetaDBKey`。若不是 meta DB key，Rust 当前直接返回 `None`；若是，则用 `ParseTxnMetaKeyFrom` 解出 `Key`、`Field`、`Ts`。
@@ -45,7 +47,9 @@ Go 对应实现是 `br/pkg/stream/rewrite_meta_rawkv.go`。Go 生产链在 `br/p
 
 ## 数据与状态
 
-映射以 **上游 ID 为 HashMap key、下游 ID 为 value 字段**：`DbReplaceMap[old_db].DbID` 是新 DB ID，`TableMap[old_table].TableID` 是新表 ID，`PartitionMap[old_partition]` 是新分区 ID。`FilteredOut` 控制库/表过滤；DB 的 `Reused` 只在 DB 列表项路径中参与过滤，表 key 路径没有单独检查 `Reused`。
+路由后的表可通过 `TargetDBID/TargetDBName` 选择与父映射不同的目标库；DB 元数据是否恢复与表 key 是否恢复是两个判断，不能只按 `FilteredOut` 推断。`SkipMetaDelete` 仅控制对应表的元数据 delete，不改变其他表的删除跟踪。
+
+映射以 **上游 ID 为 HashMap key、下游 ID 为 value 字段**：`DbReplaceMap[old_db].DbID` 是新 DB ID，`TableMap[old_table].TableID` 是新表 ID，`PartitionMap[old_partition]` 是新分区 ID。表的 `FilteredOut` 控制表过滤，DB 列表项用 `RestoresDatabaseMetadata()` 和 `Reused` 决定是否过滤，表 key 路径没有单独检查 `Reused`。
 
 `RewriteTS` 只写入重编码后的 Write CF meta key，不直接改 Write CF value 中记录的 start TS。值侧通过 `RawWriteCFValue` 保存 write type、short value 和 txn source。Default CF JSON 与 Write CF short value 复用同一 DB/Table JSON 改写闭包；没有 short value 的 put 无需读取 Default CF 内容。
 
@@ -112,8 +116,7 @@ Rust 保留了 Go 的主要 key/value 规则：DB ID 位于 DB-list Field，表�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/stream/rewrite_meta_rawkv.rs` 找到目标文件和 32 个符号；`node --file ... --offset 1 --limit 500` 与 `--offset 501 --limit 220` 读取了 613 行完整源码；`explore` 验证了本文件主要符号及 Go/Rust 同名关系；对 `RewriteMetaKvEntry` / `processIngestIndexAndDeleteRangeFromJob` 的 method query 未返回可用节点，因此用精确源码搜索补齐调用证据。
-- Rust 源与 crate 边界：`br/pkg/stream/rewrite_meta_rawkv.rs`、`br/pkg/stream/lib.rs`、`br/pkg/stream/Cargo.toml`。
-- Rust 独立测试：`br/pkg/stream/rewrite_meta_rawkv_test.rs`，覆盖 DB/table key、五类表作用域 Field、rollback/delete physical-import 标记、完整表重写、分区交换、TTL、PITR 缺映射、delete-range 和 hook；`br/pkg/stream/parity_test.rs` 覆盖公开构造契约。
-- Go 对照：`br/pkg/stream/rewrite_meta_rawkv.go`、`br/pkg/stream/rewrite_meta_rawkv_test.go`；生产调用证据来自 `br/pkg/task/stream.go` 和 `br/pkg/restore/log_client/client.go`。
-- 本任务是只读分析加文档，不运行 Cargo。交付前使用任务指定命令检查文件存在且恰有 11 个固定二级标题，并人工复核本文明确区分当前 Rust 事实、Go 对照能力和未接线部分。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/stream/rewrite_meta_rawkv_test.rs` 与 `parity_test.rs`；新增路由谓词的定义核对 `br/pkg/stream/stubs.rs`。Go 另有 protectedTargetDBIDs，不能据本次 Rust key/name 改写推断已经支持该保护集合。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

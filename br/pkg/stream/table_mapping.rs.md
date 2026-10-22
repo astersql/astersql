@@ -16,8 +16,10 @@
 
 ## 主要符号
 
+新增 `TargetDatabase { Name, ID, SourceDBInfo }`、`BindUnresolvedTableRoutes`、`ValidateRoutedDependencies`、`ValidateRoutedDependenciesWithRoute`、`TableRouteTargetDatabases` 和 `RebindTableRouteTargetDatabaseID`。这些接口负责路由绑定、依赖限制、创建目标库前的汇总与创建后的实际 ID 回绑；目标提交中的直接路由绑定调用证据为 `br/pkg/task/restore_name_route_test.rs`，不代表恢复主链已接入。
+
 - `InitialTempId = 0`：临时 ID 计数起点；`generateTempID` 先减一再返回，所以首个临时 ID 是 `-1`。
-- `tableMetaKey(dbId, tableId, ts)`、`dbMetaKey(dbId, ts)`：DefaultCF 暂存键，`ts` 是事务 `start_ts`。对应 value 保存解析后的名称/`TableSimpleInfo` 及重复计数。
+- `tableMetaKey(dbId, tableId, ts)`、`dbMetaKey(dbId, ts)`：DefaultCF 暂存键，`ts` 是事务 `start_ts`。对应 value 保存解析后的 DBInfo/`TableSimpleInfo` 及重复计数。
 - `TableMappingManager`：核心可变状态。公开结果是 `DBReplaceMap`；`globalIdMap` 与 `tempIDCounter` 协调 ID 唯一性；两个 `tempDefaultKV*Map` 完成 CF 配对；`noDefaultKVErrorMap` 按 commit timestamp 延迟保存缺失 DefaultCF 的错误；`PreallocatedRange` 记录外部提供的 `[start,end)` 区间。
 - `NewTableMappingManager`：创建空管理器，所有 map 为空、PITR 来源标志为 false、计数器和预分配区间归零。
 - `ParseMetaKvAndUpdateIdMapping`：单条 meta KV 的公开解析入口。它使用 `ParseTxnMetaKeyFrom` 解码 key，再调用 `meta::Is*Key`/`Parse*Key` 分类。
@@ -30,13 +32,19 @@
 
 ## 执行流程
 
+`FromDBReplaceMap` 装载后重建 `globalIdMap`，并把临时计数器下调至库、表、目标库与分区 ID 的最小值。DB DefaultCF 暂存完整 DBInfo；提交时以非空源名更新 `Name/SourceName/SourceDBInfo`。表解析保留源名，累积外键/视图标志，并去重外键引用。
+
+`BindUnresolvedTableRoutes` 先按源库名绑定 schema 路由，再按源库表名绑定表路由；不同目标库按小写名称共享负临时 ID。`ReuseExistingDatabaseIDs` 也查找表的目标库。`assignSharedTargetDatabaseIDs` 优先选择唯一正 ID，否则选择最接近零的已有负 ID，缺失才新建；不同正 ID 冲突报错。`ReplaceTemporaryIDs` 在分配前统一目标库身份，收集并回写 `TargetDBID`；共享库目标有专门的重复 ID 例外，不能概括为所有负 ID 必须一对一。
+
 典型日志扫描流程始于 `NewTableMappingManager`，随后按 DefaultCF 在前、WriteCF 在后的顺序反复调用 `ParseMetaKvAndUpdateIdMapping`。非 meta DB key 立即成功返回。数据库字段先解析上游 DB ID 并确保 `DBReplace` 存在；表、auto-increment、auto-table、sequence、auto-random 字段则确保相应 `TableReplace` 存在。无法识别的字段被忽略，已识别的库/表值只接受 `DefaultCF` 或 `WriteCF`。
 
-DefaultCF 路径把 DBInfo 或 TableInfo JSON 简化成名称/`TableSimpleInfo`，用对象 ID 与 `start_ts` 暂存；同键重复到达时只增加 `count`。WriteCF 首先由 `RawWriteCFValue::ParseFrom` 解码：Delete/Rollback 删除相应暂存，非 Put 不产生映射更新；Put 若带 short value 就直接解析，否则以其 `start_ts` 查找 DefaultCF 暂存。命中后 `count` 减一并调用落地函数，缺失时把包含对象 ID 和 base64 WriteCF value 的错误放入 `noDefaultKVErrorMap[commitTs]`，本次调用仍返回成功，等待 `CleanError` 或 `ReportIfError` 决定最终结果。
+DefaultCF 路径保留完整 DBInfo，并把 TableInfo JSON 简化成 `TableSimpleInfo`，用对象 ID 与 `start_ts` 暂存；同键重复到达时只增加 `count`。WriteCF 首先由 `RawWriteCFValue::ParseFrom` 解码：Delete/Rollback 删除相应暂存，非 Put 不产生映射更新；Put 若带 short value 就直接解析，否则以其 `start_ts` 查找 DefaultCF 暂存。命中后 `count` 减一并调用落地函数，缺失时把包含对象 ID 和 base64 WriteCF value 的错误放入 `noDefaultKVErrorMap[commitTs]`，本次调用仍返回成功，等待 `CleanError` 或 `ReportIfError` 决定最终结果。
 
 库值落地时，仅以非空名称覆盖 `DBReplace.Name`，然后触发 `OnDatabaseInfo`。表值落地时，确保库表映射存在，为尚未出现的分区按 `globalIdMap` 复用或分配临时 ID，仅以非空名称覆盖表名，最后触发 `OnTableInfo`。扫描后可依次合并基线映射、应用选择过滤、复用已有数据库 ID，并调用 `ReplaceTemporaryIDs`；后者按临时 ID 降序（`-1、-2、...`）与申请结果逐项配对并回写库、表、分区，成功后重置计数器。
 
 ## 数据与状态
+
+`ToProto/FromDBMapProto` 往返保留库的 `SourceName/SchemaRouted/Reused` 和表的 `SourceName/TargetDbName/TargetDbId/HasForeignKeys/ForeignKeyReferences/IsView`；`SourceDBInfo` 不在这组序列化字段内，不能宣称完整 DBInfo 也随 PiTR map 往返。
 
 `DBReplaceMap` 的 key 永远是上游 DB ID，value 中的 `DbID` 是下游 ID；其 `TableMap` 和 `PartitionMap` 遵循同一“上游作 key、下游作 value/字段”的约定。负下游 ID 表示尚未正式分配，正 ID 表示来自快照、既有数据库或全局 ID 分配器。`globalIdMap` 跨库共享命名空间，主要用于 exchange partition 等同一物理 ID 在表/分区角色间再次出现时保持下游映射一致。
 
@@ -53,6 +61,8 @@ RustCodeGraph 将 `ParseMetaKvAndUpdateIdMapping` 指向同文件的 key 分类�
 Go 生产侧的上游是日志恢复 meta 扫描；Rust 的同名编排位于 `br/pkg/restore/log_client/batch_meta_processor.rs::MetaKVInfoProcessor::ProcessBatch`，但它当前调用该 crate 自己的 `stubs::stream::TableMappingManager`，而不是本文件。`br/pkg/restore/log_client/Cargo.toml` 虽已依赖 `astersql-br-pkg-stream`，当前 canonical table mapping 仍未沿这条依赖接线。这一缺口应作为后续迁移任务处理，不能在本文档任务中扩展修复。
 
 ## 错误处理与边界
+
+依赖校验仅在存在未过滤的跨库表目标时触发；此时遍历所有未过滤表，拒绝视图。带外键的表要求提供 route、引用列表非空，且引用不能被该 route 改名。错误标注 `ErrInvalidArgument`。目标库汇总按小写名称去重，拒绝 ID 冲突、非正 ID 和源库 charset/collation 不兼容，以源库小写名与 ID 选择稳定的 SourceDBInfo，再按目标库名排序。回绑要求旧 ID 等于预期或实际 ID，找不到路由目标报 `ErrRestoreInvalidRewrite`；逐项修改没有回滚保证。
 
 key、JSON 或 WriteCF 解码失败直接以 `Error` 返回；已识别 DB/表字段使用非 DefaultCF/WriteCF 时返回 `unsupported column family`。`FromDBReplaceMap` 只允许对空管理器装载，防止覆盖既有映射，并以 `ErrRestoreInvalidRewrite` 分类错误。未识别 meta 字段、非 meta DB key、非 Put WriteCF 都是成功忽略。
 
@@ -86,9 +96,7 @@ WriteCF Put 缺少对应 DefaultCF 时采取延迟报错：错误被 commit time
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/stream/table_mapping.rs` 确认目标文件已索引且包含 53 个符号；`explore "br/pkg/stream/table_mapping.rs table mapping"` 给出了主要方法的内部调用、Go 对照和 Rust 测试调用关系；精确 `query` 定位 `TableMappingManager`、`ParseMetaKvAndUpdateIdMapping`、`MergeBaseDBReplace`、`ReplaceTemporaryIDs`。
-- 生产源码：`br/pkg/stream/table_mapping.rs`（完整 809 行），重点核验 `TableMappingManager`、CF 配对辅助函数、`MergeBaseDBReplace`、`ReplaceTemporaryIDs`、三个适配 trait、`ToProto`/`FromDBMapProto`。
-- crate 边界：`br/pkg/stream/Cargo.toml`、`br/pkg/stream/lib.rs`；恢复侧接线：`br/pkg/restore/log_client/Cargo.toml`、`batch_meta_processor.rs`、`stubs.rs`。
-- Go 对照：`br/pkg/stream/table_mapping.go`（完整 900 行），包括 Go 生产用途说明和 Rust 尚缺的 `UpdateDownstreamIds`；测试对照为 `br/pkg/stream/table_mapping_test.go`。
-- Rust 独立测试：`br/pkg/stream/table_mapping_test.rs`（完整 445 行）、`br/pkg/stream/parity_test.rs`、`br/pkg/stream/rewrite_meta_rawkv_test.rs`。本任务按约束不运行 Cargo，测试文件仅用于事实和边界核验。
-- 结构验证命令：`test -f br/pkg/stream/table_mapping.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' br/pkg/stream/table_mapping.rs.md)" -eq 11`。此外人工复核了 11 个固定章节、真实符号、直接调用证据、Go 差异、测试位置和当前未接线限制。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/stream/table_mapping_test.rs`、`rewrite_meta_rawkv_test.rs`、`parity_test.rs` 和 `br/pkg/task/restore_name_route_test.rs::name_route_table_mapping_binds_shared_target_database_identity`；冻结 log-client 的 batch_meta_processor 仍导入 stubs。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

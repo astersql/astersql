@@ -37,6 +37,8 @@
 
 ## 执行流程
 
+`CreateDatabase` 先克隆为 `target_schema`，仅在克隆上删除不支持的 placement，再交给 `CreateDatabaseOnExistError`。`CreateTables` 改为只读迭代输入表，每张表先克隆 `target_info`；单表 `CreateTable` 同样先克隆。清 placement、禁用 TTL 和 ID 改写均作用于目标副本，源 `DBInfo`/`TableInfo` 保持不变，继续供名称路由、checksum 和 PiTR ID-map 使用。policy map 的一次性消费与 session 副作用仍存在，并非所有输入/外部状态都不变。
+
 构造流程：
 
 1. `NewDB` 调用 `Glue::CreateSession`；错误立即透传，`None` 则返回 `(None, false)`。
@@ -46,14 +48,14 @@
 
 数据库与 policy 流程：
 
-1. `CreateDatabase` 在目标不支持 policy 时直接清空传入 `DBInfo.PlacementPolicyRef`。
+1. `CreateDatabase` 先克隆 DBInfo，在目标不支持 policy 时清空克隆的 `PlacementPolicyRef`。
 2. 若仍有引用且提供了 policy map，先由 `ensurePlacementPolicy` 原子地锁定并 `remove` 对应小写名称，再创建 policy。
 3. 调用 `CreateDatabaseOnExistError`。成功返回 `false`；`ErrDatabaseExists` 返回 `true`；其他错误返回失败。
 
 单表创建流程：
 
 1. `CreateTable` 根据 `support_policy` 清空 placement，或确保表级及各分区 policy 已创建。
-2. 若有 TTL，将原始 `table.Info.TTLInfo.Enable` 改为 `false`，避免恢复后立即启用 TTL。
+2. 若有 TTL，将目标克隆的 `TTLInfo.Enable` 改为 `false`，避免恢复后立即启用 TTL。
 3. 要求已经注册 `prealloced_ids`，经 `rewrite_table_info` 生成使用目标 ID 的完整表信息。
 4. 调用 session `CreateTable(..., WithIDAllocated(true))`，明确告诉 DDL 层 ID 已分配。
 5. 成功后调用 `CreateTablePostRestore`：view 无动作；sequence 恢复值；增量恢复中标记为需校正的既有表执行 ALTER；其他表无动作。
@@ -76,7 +78,7 @@ DDL job 流程：
 
 `DB` 只有两个长期字段：`se` 是独占的 boxed session；`prealloced_ids` 是可替换的 ID 映射。每次 `RegisterPreallocatedIDs` 覆盖旧映射，没有增量合并。单表路径在映射缺失时使用 `expect` 触发 panic，批量路径则返回普通错误；调用方必须在两个路径前都先完成注册。
 
-建表操作会有意修改调用方传入的元数据：不支持 placement 时，`CreateDatabase` 清空数据库 policy，`CreateTable(s)` 清空表及分区 policy；存在 TTL 时把 `Enable` 置为 `false`。ID 改写发生在克隆上，原始 `TableInfo.ID` 和分区 ID 不会被替换。
+建库建表先克隆目标元数据：不支持 placement 时清空目标副本的数据库/表/分区 policy；存在 TTL 时仅把副本的 `Enable` 置为 `false`。源元数据的 policy、TTL、表 ID 和分区 ID 均保留。
 
 `policy_map` 用 `Mutex<HashMap<String, PolicyInfo>>` 表达 Go `sync.Map.LoadAndDelete` 的一次性消费语义。key 必须是 `CIStr.L`。一个 policy 第一次遇到时在持锁期间被移出，随后在锁外调用 session；之后再遇到同名引用即视为已经创建。
 
@@ -149,7 +151,7 @@ Rust 版本的结构性差异也必须保留在认知中：
 - 新增建库/建表语义时，优先修改 `DB` 的对应方法，并同步核对 `db.go` 的同名逻辑。若新增模型字段，应先决定它属于本地兼容子集还是应通过 canonical crate 接入，避免继续无界复制 TiDB 模型。
 - 新增 DDL job 特判应进入 `ExecDDL` 的 type match，并在 `db_test.rs` 增加独立测试，覆盖结构化 API、是否切库、空 query 和错误传播；不要把测试写回 `db.rs`。
 - 修改 ID 行为应同步检查 `rewrite_table_info` 与上游 `prealloc_table_id` crate，至少验证表 ID、所有分区 ID、分区数量不变量及缺失映射错误。
-- 修改 placement policy 时必须考虑一次性 remove 的重试语义、表级与分区级引用、目标不支持 policy 时的原地清理，并同步 `test_policy_mode` 与 parity 测试。
+- 修改 placement policy 时必须考虑一次性 remove 的重试语义、表级与分区级引用、目标不支持 policy 时的副本清理，并同步 `test_policy_mode` 与 parity 测试。
 - 修改建表后处理时，应维持 view 无副作用、sequence cycle 顺序、`NeedAutoID` 与 AUTO_RANDOM 的优先级，以及只校正增量既有表的不变量。
 - 若将本 crate 接入 Rust `snap_client`，需要显式解决两套 `PreallocDB`/model/session trait 的类型边界，并在相应 Cargo manifest 增加依赖；不能仅凭同名方法认为类型兼容。
 - 性能方面，batch 路径会克隆完整表信息并按库暂存；大规模恢复若调整该结构，应评估峰值内存。正确性方面，批量创建成功而后处理部分失败会留下已创建对象，重试必须继续保持幂等。
@@ -159,12 +161,12 @@ Rust 版本的结构性差异也必须保留在认知中：
 
 本说明基于以下直接证据：
 
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/restore/internal/prealloc_db` 确认本目录的 `db.rs`、`lib.rs`、`db_test.rs`、`parity_test.rs` 及 Go 对照文件均被索引。
-- RustCodeGraph `node --file br/pkg/restore/internal/prealloc_db/db.rs`：读取 1–936 行，核对全部常量、类型、trait、函数、`DB` impl 和无条件编译结构；文件没有 `#[cfg]` 生产分支。
-- RustCodeGraph `explore`：确认 `rewrite_table_info` 下游调用 `PreallocIDs::RewriteTableInfo`；`CreateTable(s)` 调用 policy ensure、ID 改写、session 建表和后处理；测试调用 `prealloc_ids`、`NewDB` 及公开方法。对同名 Go/Rust 符号执行 callers/callees 未产生可区分输出，因此未把该结果当作直接接线证明。
 - `br/pkg/restore/internal/prealloc_db/Cargo.toml` 与 `lib.rs`：核对 crate 名、library 入口、唯一依赖、Go 包映射和公开再导出。
-- RustCodeGraph `node` 读取 `db.go` 1–387 行：核对 Go 的 session、policy、ID 改写、sequence、增量校正、batch 与 Close 语义。
-- RustCodeGraph `node` 读取 `db_test.rs` 的相关段落及 `parity_test.rs` 500–691 行：核对 policy 去重、TTL 禁用、缺失 ID 错误、数据库已存在、sequence cycle、AUTO_INCREMENT/AUTO_RANDOM、DDL 重放、batch/单表一致性和 Close。
-- `rg` 搜索 Cargo manifest 与 `br/pkg/restore/**/*.rs`：确认 workspace 成员关系、没有其他 manifest 依赖该 crate，以及 Rust `snap_client/client.rs` 当前调用其本地 stub 接口的事实。
 
 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令验证本文恰有十一个固定二级章节，并人工复核没有把 Rust stub 接线描述为已完成的生产集成。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/restore/internal/prealloc_db/db.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/restore/internal/prealloc_db/db.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`db_test.rs::test_policy_mode`、`test_create_tables_in_db` 和 `parity_test.rs::go_rust_public_contract_matches` 是既有建表证据，未见本次源元数据不变性的专用回归。Go `db.go` 同样克隆数据库和表信息后修改 placement/TTL。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

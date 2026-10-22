@@ -32,7 +32,7 @@
 
 ## 执行流程
 
-`IsTypeCompatible` 先计算 `collate_eq`，之后依次比较 NOT NULL 标志、UNSIGNED 标志和 `EvalType`；任一不一致都立即返回 `(false, collate_eq)`。随后源、目标的未指定 `flen`/`decimal` 被换成类型默认值，要求源值均不大于目标值。元素检查要求源元素数量不多于目标，并要求源的每个 enum/set 元素都存在于目标集合。最后 charset 相等才使第一个返回值为真；collation 不参与第一个布尔值，所以“类型兼容但 collation 不同”是合法结果。
+`IsTypeCompatible` 先计算 `collate_eq`，之后依次比较 NOT NULL 单向约束、UNSIGNED 标志和 `EvalType`；源可空而目标非空、或后两项不一致时立即返回 `(false, collate_eq)`。随后源、目标的未指定 `flen`/`decimal` 被换成类型默认值，要求源值均不大于目标值。元素检查要求源元素数量不多于目标，并要求源的每个 enum/set 元素都存在于目标集合。最后 charset 相等才使第一个返回值为真；collation 不参与第一个布尔值，所以“类型兼容但 collation 不同”是合法结果。
 
 `CheckStoreLiveness` 先验证状态。若既不是 `Up` 也不是 `Offline`，立即返回 `ErrKVStorage` 注解错误；心跳为零则跳过时间检查。非零心跳按 Unix epoch 纳秒构造 `SystemTime`，仅在当前时间确实晚于心跳且间隔超过 100 秒时失败。如果心跳位于未来，`duration_since` 返回错误而本函数忽略它，Store 仍被视为存活，这与 Go `time.Since` 不完全等价，属于应谨慎处理的边界。
 
@@ -59,6 +59,8 @@ RustCodeGraph 文件节点报告目标文件被 21 个文件关联，但对精�
 Go 主链提供了真实语义背景：`br/pkg/backup/client.go` 使用 `CheckStoreLiveness` 与 `SummaryFiles`；`br/pkg/restore/snap_client/systable_restore.go` 使用 `IsTypeCompatible`；`br/pkg/restore/data/data.go`、`br/pkg/task/backup_ebs.go` 使用 `GRPCConn`；`br/pkg/task/backup_ebs.go`、`stream.go` 使用 `WithCleanUp`；`br/cmd/br/main.go` 使用 `StartExitSingleListener`；`br/pkg/task/restore.go` 使用 `Values`；checksum 与 snap-client 通过 `GetPartitionByName` 展开分区。它们说明迁移目标，但不证明 Rust 已完成这些接线。
 
 ## 错误处理与边界
+
+NOT NULL 兼容改为单向约束：备份列允许 NULL 而目标 NOT NULL 时返回 false；备份 NOT NULL 到可空目标允许继续检查 unsigned、EvalType、长度、小数位、元素和 charset。collation 相等仍独立返回，不因该放宽自动为真。
 
 `IsTypeCompatible` 不返回错误；任何不满足条件都编码为 `false`，而 collation 结果即使在早期类型失败时仍独立有效。它把 enum/set 元素当集合处理，不比较顺序或重复次数。新增校验不能随意把第二个布尔值并入第一个，否则会破坏 Go 调用方分别处理类型与 collation 的契约。
 
@@ -102,9 +104,7 @@ Rust 测试比 Go 同目录测试多出退出监听用例：一个验证手动 c
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11467 个文件、7032 个 Rust 文件；`node --file br/pkg/utils/misc.rs --offset 1 --limit 500` 完整读取目标 329 行，并报告该文件被 21 个文件关联。
-- RustCodeGraph `query --json`：确认 `IsTypeCompatible`、`GRPCConn`、`SummaryFiles` 等 Rust 精确符号 ID；对主要函数执行 `callers`/`callees` 未返回静态边，因此再用全仓精确 `rg` 补查，没有把空图结果直接解释为不存在迁移背景。
-- 目标源码与模块边界：`br/pkg/utils/misc.rs`、`br/pkg/utils/lib.rs`、`br/pkg/utils/Cargo.toml`。
-- Go 语义与测试：`br/pkg/utils/misc.go`、`br/pkg/utils/misc_test.go`；Go 生产调用补查覆盖 `br/pkg/backup/client.go`、`br/pkg/restore/data/data.go`、`br/pkg/restore/snap_client/systable_restore.go`、`br/pkg/task/{backup_ebs,restore,stream}.go`、`br/pkg/checksum/executor.go`、`br/cmd/br/main.go`。
-- Rust 独立测试：`br/pkg/utils/misc_test.rs`，由 `br/pkg/utils/lib.rs` 的 `#[cfg(test)] #[path = "misc_test.rs"] mod misc_test;` 挂载。另核对了 `br/pkg/backup/client.rs`、`br/cmd/br/main.rs`、`br/pkg/checksum/executor.rs` 等同名 Rust 引用，确认它们当前走局部 stubs 而非本模块。
-- 人工复核：本文区分公开实现、Noop/桩边界、当前 Rust 接线状态与 Go 迁移目标，说明了正常流程、错误与并发生命周期以及安全扩展所需的独立测试；按总计划未运行 Cargo。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/utils/misc_test.rs` 的类型兼容矩阵明确断言 NOT NULL 源到可空目标允许、反向拒绝；与 misc.go 的单向 HasNotNullFlag 条件一致。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

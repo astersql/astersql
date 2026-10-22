@@ -27,10 +27,12 @@
 - `StartCheckpointRunnerForBackup(...)`：公开生产形态入口，分别使用 `defaultTickDurationForFlush`、`defaultTickDurationForChecksum`、`defaultTickDurationForLock`、`defaultRetryDuration`。
 - `AppendForBackup(...)`：复制 `startKey`、`endKey`，取得 `files` 所有权，构造单元素 `RangeType` 后调用 `CheckpointRunner::Append`。
 - `WalkCheckpointFileForBackup<F>(...) -> Result<Duration>`：只遍历 data 目录的 `.cpt` 文件；回调逐个接收反序列化后的 `(String, RangeType)`，返回历史执行累计耗时。
-- `CheckpointMetadataForBackup`：落盘字段是 `GCServiceId`、`ConfigHash`、`BackupTS`，JSON 键分别为 `gc-service-id`、`config-hash`、`backup-ts`；`CheckpointChecksum` 与 `LoadCheckpointDataMap` 带 `#[serde(skip)]`，仅存在于运行时。
+- `CheckpointMetadataForBackup`：落盘字段是 `GCServiceId`、`ConfigHash`、`BackupTS`、`BackupID`，JSON 键分别为 `gc-service-id`、`config-hash`、`backup-ts`、`backup-id`（零 ID 省略）；`CheckpointChecksum` 与 `LoadCheckpointDataMap` 带 `#[serde(skip)]`，仅存在于运行时。
 - `LoadCheckpointMetadata`、`SaveCheckpointMetadata`、`RemoveCheckpointDataForBackup`：固定路径上的读取并合并 checksum、写入、清理入口。
 
 ## 执行流程
+
+`CheckpointMetadataForBackup` 增加 `BackupID: u64`，JSON 键为 `backup-id`。`#[serde(default)]` 使旧 JSON 缺失该字段时得到零；私有 `is_zero` 使零值不写出，非零值正常序列化。`LoadCheckpointMetadata` 与 `SaveCheckpointMetadata` 继续使用通用 serde 路径，checksum/data-map 运行时字段仍不落盘。本文件只承载 ID，不分配 ID，也不校验恢复任务的 ID 一致性。
 
 1. 启动时，两个 `Start*Runner*` 入口先调用 `newExternalCheckpointStorage(ctx, storage, Some(timer), flushPathForBackup())`。构造函数立即执行 `initialLock`：取 TSO、检查已有锁、写入本实例锁，等待 3 秒后复检；任一步失败都不会返回 runner。
 2. 锁成功后，`newCheckpointRunner` 创建共享 `meta`/`checksum` 状态、append/checksum/done/meta/lock/error 通道及工作线程句柄容器。随后 `startCheckpointMainLoop` 启动后台线程；生产入口使用默认周期，测试入口让四个周期相同。
@@ -91,8 +93,13 @@ runner 的可变状态位于 `checkpoint.rs` 的 `RunnerShared`：待刷 data ma
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`node --file br/pkg/checkpoint/backup.rs --offset 1 --limit 500` 读取完整 181 行并确认仅由 `checkpoint_test.rs` 使用；`query` 核对六个公开入口；`node`/按文件节点核对 `newCheckpointRunner`、`CheckpointRunner::Append`、`startCheckpointMainLoop`、`walkCheckpointFile`、`loadCheckpointMeta`、`loadCheckpointChecksum`、`saveCheckpointMetadata`、`removeCheckpointData` 与 `newExternalCheckpointStorage` 的下游行为。
 - crate 与模块边界：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)；当前备份客户端边界：[`../backup/Cargo.toml`](../backup/Cargo.toml)、[`../backup/client.rs`](../backup/client.rs)、[`../backup/stubs.rs`](../backup/stubs.rs)。
 - Go 对照：[`backup.go`](./backup.go)；Go 应用调用证据：[`../backup/client.go`](../backup/client.go)。
 - Rust 测试：[`checkpoint_test.rs`](./checkpoint_test.rs) 中 `test_checkpoint_meta_for_backup`、`test_checkpoint_backup_runner`、`test_checkpoint_runner_lock`；[`parity_test.rs`](./parity_test.rs) 中 `go_rust_public_contract_matches`。Go 对照测试位于 [`checkpoint_test.go`](./checkpoint_test.go)，对应 `TestCheckpointMetaForBackup`、`TestCheckpointBackupRunner`、`TestCheckpointRunnerLock`。
 - 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令检查文件存在且恰有 11 个固定二级章节，并人工复核实现事实与“尚未接线”结论没有混淆。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/checkpoint/backup.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/checkpoint/backup.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`checkpoint_test.rs::test_checkpoint_meta_for_backup` 与 `parity_test.rs::go_rust_public_contract_matches` 是既有读写证据；没有把它们视为新增非零 `backup-id` 的专用回归。Go `backup.go` 的对应元数据同样承载 BackupID。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

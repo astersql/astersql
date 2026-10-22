@@ -33,6 +33,8 @@ RustCodeGraph 的文件节点显示本文件被 `br/pkg/checkpoint/checkpoint_te
 
 ## 执行流程
 
+`CheckpointMetadataForLogRestore` 新增 `RouteFingerprint: String`，JSON 键为 `route-fingerprint`，缺失默认为空串，空串不写出。它记录规范化名称路由的稳定指纹，防止相同 filter 下换路由后错误续跑。本文件只定义和传递字段；真正比较位于 `br/pkg/restore/log_client/client.rs::LoadOrCreateCheckpointMetadataForLogRestore`，该调用方在读取旧元数据时比较指纹、不一致即返回错误，新建时保存当前指纹。不能把字段反序列化本身描述为完成路由校验。
+
 写入文件范围的流程如下：恢复代码为一个已完成文件调用 `AppendRangeForLogRestore`；函数创建单元素 `CheckpointMessage` 并进入 `CheckpointRunner::Append`。`Append` 先检查 `Context` 是否取消、Runner 是否已有异步错误或已经关闭，然后向无界 `appendCh` 发送。通用主循环按 key 合并消息，在 flush 时调用本文件的 `valueMarshalerForLogRestore`：先形成 `Goff -> TableID -> Vec<Foff>`，再把每个 `Goff` 变成一项 `LogRestoreValueMarshaled`，最终序列化整个 `RangeGroup`。manager 创建的表存储或外部存储负责真正落盘。
 
 Runner 启动时，正式入口使用默认 flush/checksum/retry 配置；测试入口把 flush 与 checksum 周期都覆盖为传入的 `tick`。`TableMetaManager::StartCheckpointRunner` 会一次性 `take` 专用 `runnerSe`，构造 `tableCheckpointStorage` 并启动主循环；`StorageMetaManager` 构造外部 checkpoint storage，可携带 cipher。两者对日志恢复都把 lock tick 设为 `Duration::ZERO`。
@@ -43,7 +45,7 @@ Runner 启动时，正式入口使用默认 flush/checksum/retry 配置；测试
 
 范围数据存在两种形态。内存/消息形态是一文件一条的 `LogRestoreValueType`；落盘形态按 `Goff` 和 `TableID` 聚合多个 `Foff`，减少重复字段。聚合使用 `HashMap`，因此 JSON 数组中不同 `Goff` 的顺序以及 map 键迭代顺序不是稳定协议；消费者应按键解释内容，不应依赖输出顺序。函数不去重，同一完成项重复追加会保留重复 `Foff`。
 
-`CheckpointMetadataForLogRestore` 是任务级持久状态。除 `RocksDBMaxBackgroundJobs`、`SnapshotRestoreDataSize` 和空 `TiFlashItems` 可在序列化时省略外，其余字段即使为默认值也会写出；反序列化均允许缺失字段回落到默认值。`RestoreProgress` 的不变量是：`0` 表示仍可从 snapshot restore 重试；只有 id-map 已持久化后才能写入 `1`，随后恢复流程必须跳过 snapshot restore，避免 rename 等 meta-kv 已落库后再次创建重复表。
+`CheckpointMetadataForLogRestore` 是任务级持久状态。除 `RocksDBMaxBackgroundJobs`、`SnapshotRestoreDataSize`、空 `RouteFingerprint` 和空 `TiFlashItems` 可在序列化时省略外，其余字段即使为默认值也会写出；反序列化均允许缺失字段回落到默认值。`RestoreProgress` 的不变量是：`0` 表示仍可从 snapshot restore 重试；只有 id-map 已持久化后才能写入 `1`，随后恢复流程必须跳过 snapshot restore，避免 rename 等 meta-kv 已落库后再次创建重复表。
 
 SQL 修复载荷把 SQL 文本、JSON 参数和对象标识持久化，但 `OldIndexIDFound`、`IndexRepaired`、`OldForeignKeyFound`、`ForeignKeyUpdated` 只属于当前进程。重启后这些布尔值恢复为默认 `false`，调用者必须重新判定运行时完成状态。
 
@@ -91,9 +93,14 @@ Go 测试 `br/pkg/checkpoint/checkpoint_test.go` 验证 metadata/progress/修复
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter br/pkg/checkpoint` 确认目标、Go 对照及测试均已索引；目标文件节点列出 30 个符号及 “used by” 文件；精确 `query` 区分了 Go/Rust 的 `GetCheckpointTaskInfo`、`StartCheckpointRunnerForLogRestore`、`AppendRangeForLogRestore`。`callers/callees` 命令在本地连续超时且没有输出，因此调用关系另由文件节点和直接调用点检索交叉核对。
 - 源码：`br/pkg/checkpoint/log_restore.rs`（全部 326 行）、`br/pkg/checkpoint/checkpoint.rs`（消息、Runner、Append、收尾）、`br/pkg/checkpoint/manager.rs`（traits 与两种 manager 实现）、`br/pkg/checkpoint/lib.rs`（模块与测试挂载）。
 - 边界配置：`br/pkg/checkpoint/Cargo.toml`（crate 类型、Go 包映射、serde/serde_json 等依赖）。
 - Go 对照：`br/pkg/checkpoint/log_restore.go`；Go 测试证据来自 `br/pkg/checkpoint/checkpoint_test.go`。
 - Rust 测试：`br/pkg/checkpoint/log_restore_test.rs`、`br/pkg/checkpoint/checkpoint_test.rs`、`br/pkg/checkpoint/parity_test.rs`；生产/上层引用还核对了 `br/pkg/restore/log_client/client.rs`、`br/pkg/task/stream.rs` 和 `br/pkg/task/stream_test.rs` 的文本调用点。
 - 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的结构命令，确保文件存在且恰有十一个固定二级标题；人工复核重点是区分本文件职责、通用 Runner/manager 职责和当前 Rust 生产接线证据。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/checkpoint/log_restore.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/checkpoint/log_restore.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+既有 `checkpoint_test.rs` 覆盖元数据往返，`log_restore_test.rs::test_restore_progress_uses_go_compatible_numeric_json` 只验证进度编码；未见该字段的独立直接回归。Go `log_restore.go` 也有对应路由指纹字段。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

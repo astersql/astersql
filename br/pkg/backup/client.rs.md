@@ -37,12 +37,14 @@ RustCodeGraph 显示本文件被 `br/cmd/br/debug.rs`、`br/pkg/kms/aws.rs` 以�
 
 ## 执行流程
 
+`Client::StartCheckpointRunner` 在 `backupTS` 后新增 `backupID: u64` 参数。首次创建元数据时写入 `BackupID`；已有 checkpoint 时只设置 `LoadCheckpointDataMap = true`，不会用新参数覆写旧 ID，也没有在此处比较 ID。随后仍启动 runner；保存或启动错误按原有 `Result` 返回。本方法使用 `crate::stubs::checkpoint`，与独立 `astersql-br-pkg-checkpoint` 的同名结构不可混为直接调用。
+
 典型调用顺序如下：
 
 1. 调用方用 `NewBackupClient` 或 `NewTableBackupClient` 注入 `ClientMgr`。构造函数立即从 PD 读取 cluster ID。
 2. 调用方设置外部存储、加密、GC TTL 和 checksum 策略。`SetStorageAndCheckNotInUse` 先创建存储句柄，再拒绝已有 `backupmeta` 的目录；若存在 checkpoint 元数据则加载并允许续跑，否则执行 lock+SST 冲突检查。
 3. `GetTS` 优先复用 checkpoint 的 `BackupTS`；否则选择显式 TS 或当前 PD TSO，并按 `duration` 回拨，最后用 `gc::CheckGCSafePoint` 验证历史版本仍可读取。
-4. 如启用 checkpoint，`CheckCheckpoint` 防止配置哈希漂移，`StartCheckpointRunner` 首次保存 `GCServiceId/ConfigHash/BackupTS`，续跑时设置 `LoadCheckpointDataMap`，随后启动追加完成区间的 runner。
+4. 如启用 checkpoint，`CheckCheckpoint` 防止配置哈希漂移，`StartCheckpointRunner` 首次保存 `GCServiceId/ConfigHash/BackupTS/BackupID`，续跑时设置 `LoadCheckpointDataMap`，随后启动追加完成区间的 runner。
 5. `BuildBackupRangeAndInitSchema` 遍历匹配的数据库和表，用 `distsql::BuildTableRanges` 生成表/索引范围并经过 storage codec 编码；全量备份还序列化 placement policy。它预先物化 `BuildBackupSchemas` 的结果，构造可重复消费的 `Schemas` 回调。
 6. `BackupRanges` 调用 `BuildProgressRangeTree` 插入所有原始范围；续跑时回放 checkpoint 文件、补写 data-file 元数据、合并 checksum 并校正 summary 开始时间。随后它启动 `ObserveStoreChangesAsync`，建立重试通道和内存限流器，进入 `RunLoop`。
 7. `RunLoop` 每轮重新计算未完成范围；为空即成功。它从 PD 列出 TiKV（跳过 TiFlash），可按 replica label 收窄目标，然后为每个存活 store 获取或重置客户端，调用 `SendAsync`。
@@ -138,6 +140,11 @@ Rust 测试必须继续放在独立的 `client_test.rs`、`schema_test.rs` 或 `
 - Go 对照：[`br/pkg/backup/client.go`](./client.go)，核对了同名类型、发送/汇聚/多轮循环、Client 配置、存储/checkpoint、schema、DDL、进度树和响应处理。
 - Rust 测试：[`br/pkg/backup/client_test.rs`](./client_test.rs)、[`br/pkg/backup/schema_test.rs`](./schema_test.rs)、[`br/pkg/backup/parity_test.rs`](./parity_test.rs)。关键覆盖包括 TS/GC 边界、DDL 过滤与排序、lock+SST、checkpoint 续跑、可工作的 schema iterator、响应分类、store 迁移/取消/同轮重试、进度树边界与 Go/Rust 公共契约。
 - Go 测试：[`br/pkg/backup/client_test.go`](./client_test.go)，确认对应测试意图和命名，包括 `TestGetTS`、`TestGetHistoryDDLJobs`、`TestSkipUnsupportedDDLJob`、`TestCheckBackupIsLocked`、`TestOnBackupResponse`、`TestMainBackupLoop`、`TestBuildProgressRangeTree`、`TestObserveStoreChangesAsync` 与 range 拆分测试。
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点、1,848,419 条边，其中 Rust 文件 7,032 个。执行了针对 `br/pkg/backup/client.rs` 的 `explore`、分段 `node --file`、`query` 以及 `node NewBackupClient`/`node WriteBackupDDLJobs`，据此核对本文件使用者、主要内部调用边和当前核心 API 的上游接线范围。
 
 本任务是纯文档分析，按计划不运行 Cargo。人工复核结论是：本文能够回答该文件为何存在、配置和备份循环如何运行、状态/错误/并发生命周期如何约束，以及扩展时应修改哪些符号与独立测试；凡是不能由当前调用图证明的生产接线均已明确标为未完成证明，而没有按 Go 设计推测 Rust 现状。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/backup/client.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/backup/client.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`client_test.rs` 的 checkpoint fixture 显式填 `BackupID: 0`；这是兼容数据构造证据，不能视为非零 ID 持久化或恢复校验已通过。Go `client.go::StartCheckpointRunner` 同样向元数据写入 backup ID。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

@@ -33,6 +33,8 @@
 
 ## 执行流程
 
+`RestoreRawConfig::ParseFromFlags` 在解析 Online/Common/Raw 配置之前检查继承的 `--rename`：仅当 flag 存在且 Changed 时返回带 `ErrInvalidArgument` 的错误，文案明确 raw 与 transactional KV restore 不支持。未注册或未显式设置不触发；这不是为 raw KV 建立库表重命名能力。该错误文案涵盖 transactional 模式，但不能据此推断 `restore_txn.rs` 的 Config 入口自动经过此解析器。
+
 1. `RunRestoreRaw` 调用 `cfg.adjust()`，随后调用 `Summary(cmdName)` 初始化任务摘要。
 2. 用 keyspace、PD、TLS、keepalive、需求检查标志和 `needDomain = false` 调用 `NewMgr`。RawKV 恢复不需要 TiDB domain。
 3. 选择 backupmeta 存储：若 `RestoreStorage` 已注入则使用它；否则构造 `MemStorage`，写入一段与配置起止 key/CF 相同的 RawRange 和单个占位文件 `f1`。该默认分支是平台中立适配，不代表从配置 URL 读取真实归档。
@@ -119,10 +121,7 @@
 
 ## 验证依据
 
-- 源文件：`br/pkg/task/restore_raw.rs`，已核对全部 266 行及 `RestoreRawConfig`、`DefineRawRestoreFlags`、`ParseFromFlags`、`adjust`、`getEndKeys`、`files_in_raw_range`、`merge_file_ranges`、`RunRestoreRaw`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/task` 确认目标及对照文件已索引；`query/node/explore RunRestoreRaw` 确认 Rust/Go 定义、Rust 下游调用及测试调用者。图中 Rust `RunRestoreRaw` 的静态调用包括 `NewMgr`、`GetKeepalive`、`adjust`、`getEndKeys`、`files_in_raw_range`、`merge_file_ranges`、`CollectInt`、`SetSuccessStatus`，直接测试调用者包括 `restore_lifecycle_test.rs::verify_entry`。
-- crate/模块证据：`br/pkg/task/Cargo.toml`、`br/pkg/task/lib.rs`。
-- 应用入口证据：`br/cmd/br/restore.rs::runRestoreRawCommand`。
-- 生命周期证据：`br/pkg/task/restore_lifecycle.rs::{RestoreGlue::GetRestoreLifecycle, RestoreLifecycle::ValidateFiles, RestoreLifecycle::RestoreFiles}` 与 `br/pkg/task/stubs.rs::Glue`。
-- Go 对照：`br/pkg/task/restore_raw.go::{RestoreRawConfig, DefineRawRestoreFlags, ParseFromFlags, adjust, RunRestoreRaw, getEndKeys}` 及 `br/cmd/br/restore.go::runRestoreRawCommand`。
-- 独立测试：`br/pkg/task/restore_raw_test.rs`、`br/pkg/task/restore_lifecycle_test.rs`，以及公开契约引用 `br/pkg/task/parity_test.rs`。本任务按计划不运行 Cargo；验证限于代码图、源码/配置/测试事实复核和文档结构检查。
+- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
+- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
+- 独立测试与边界证据：`br/pkg/task/restore_raw_test.rs` 及 `restore_name_route_test.rs::name_route_raw_restore_rejects_inherited_rename_flag`；拒绝条件与同名 Go ParseFromFlags 对照。
+- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

@@ -29,6 +29,8 @@ crate 边界由 `br/cmd/br/Cargo.toml` 确认：包名为 `astersql-br-cmd-br`�
 
 ## 执行流程
 
+普通逻辑备份只把 `CoprCache.CapacityMB` 设为零；本次增量删除 `AdvertiseAddress = UnavailableIP`，不再通过改写 advertised address 表达 BR 的 Domain 隔离。GC tuner/filter 的 RAII 清理与 EBS 提前分流保持原有顺序。
+
 进程主链为 `br/cmd/br/main.rs::main` 创建根命令并调用 `NewBackupCommand`。用户选定子命令后，命令框架先运行 backup 的 `PersistentPreRunE`：`Init` 初始化公共运行环境，随后记录构建信息和环境变量、输出脱敏后的参数、关闭统计 worker，并把 summary 单位设为 `BackupUnit`。之后具体子命令的 `RunE` 将固定的任务命令名传给相应执行函数。
 
 full/db/table 进入 `runBackupCommand`：
@@ -37,7 +39,7 @@ full/db/table 进入 `runBackupCommand`：
 2. 调用 `BackupConfig::ParseFromFlags(&flags, false)`。失败时把 `command.SilenceUsage` 改为 `false`，以便 CLI 同时显示用法，然后返回带 trace 包装的错误。
 3. 使用解析后的 PD、TLS 和 keyspace 配置注册 BR 指标；之后读取默认上下文和 `EnableOpenTracing`。
 4. 若 `FullBackupType == FullBackupTypeEBS`，在 `with_tracing` 中锁定全局 `tidbGlue`，创建 `MemStorage`，直接调用 `RunBackupEBS`，不执行普通备份的 coprocessor、GC tuner 和数据库过滤器调整。
-5. 非 EBS 路径在 tracing 作用域内把全局 `AdvertiseAddress` 改为 `UnavailableIP`、把 coprocessor cache 容量设为 0；关闭 GC tuner 并建立自动重启守卫；通过 `setTiDBGlueDBFilter(FilterLoadSysDBs)` 安装过滤器并建立恢复守卫；锁定 `tidbGlue` 后调用 `RunBackupWithDefaults`。
+5. 非 EBS 路径在 tracing 作用域内把 coprocessor cache 容量设为 0；关闭 GC tuner 并建立自动重启守卫；通过 `setTiDBGlueDBFilter(FilterLoadSysDBs)` 安装过滤器并建立恢复守卫；锁定 `tidbGlue` 后调用 `RunBackupWithDefaults`。
 6. 任务错误以 `failed to backup` 记录并再次包装返回；成功返回 `Ok(())`。
 
 raw 与 txn 路径分别使用 `RawKvConfig`、`TxnKvConfig` 的 `ParseBackupConfigFromFlags`，随后在可选 tracing 作用域中以无状态 `TikvGlue` 调用对应 `RunBackup*WithDefaults`。它们不修改 TiDB glue 过滤器、全局 TiDB advertised address 或 GC tuner，因为这两类命令绕过 SQL/TiDB glue 层直连 KV 任务接口。
@@ -47,7 +49,7 @@ raw 与 txn 路径分别使用 `RawKvConfig`、`TxnKvConfig` 的 `ParseBackupCon
 - 命令树状态存放于返回的 `Command`：父命令持有公共 persistent flags 和预运行回调，子命令持有本地 flags 与 `RunE` 闭包。所有子命令设置 `no_args = true`，拒绝 Cobra/pflag 语义下误把 flag 值写成位置参数的用法。
 - 每次执行新建一个 `BackupConfig`、`RawKvConfig` 或 `TxnKvConfig`。配置从命令 flag 快照填充；该文件不缓存跨命令配置。
 - `tidbGlue()` 是共享的全局 glue，并通过 mutex 锁定。普通逻辑备份和 EBS 分支持锁调用任务层，因此扩展任务调用时必须避免在同一线程重入并再次获取该锁。
-- 普通逻辑备份永久写入当前进程的全局 config：`AdvertiseAddress = UnavailableIP`、`CoprCache.CapacityMB = 0.0`。代码没有为这两项建立恢复守卫；设计假设 BR 是单用途批处理进程。
+- 普通逻辑备份永久写入当前进程的全局 config：`CoprCache.CapacityMB = 0.0`。代码没有为此项建立恢复守卫；设计假设 BR 是单用途批处理进程。
 - GC tuner 与 InfoSchema filter 是临时全局状态，由 Drop 守卫恢复。局部变量声明顺序使析构逆序发生：先恢复 filter，再重新启用 tuner，最后离开 tracing 包装。
 - 当前 `WithDefaults` 任务入口会构造内存版 manager/client；EBS 分支也显式使用 `MemStorage`。这些是当前 Rust slim 移植的真实状态，不能据此宣称已连接完整 PD/TiKV/AWS 生产后端。
 
@@ -110,9 +112,14 @@ Go 的 `defer` 在 Rust 中分别由 `with_tracing` 和两个 Drop 守卫表达�
 
 ## 验证依据
 
-- 目标源码：`br/cmd/br/backup.rs`（298 行）；模块与生产入口：`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`；crate 声明：`br/cmd/br/Cargo.toml`。
+- 目标源码：`br/cmd/br/backup.rs`（296 行）；模块与生产入口：`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`；crate 声明：`br/cmd/br/Cargo.toml`。
 - Go 对照：`br/cmd/br/backup.go`；未发现同目录 `backup_test.go`，补读测试 `br/cmd/br/main_test.go` 的存在性并以 Rust 独立测试为直接命令契约证据。
 - Rust 测试：`br/cmd/br/backup_test.rs::backup_filter_cleanup_runs_during_unwind`；`br/cmd/br/parity_test.rs::contract_normal_command_tree_and_filters`、`contract_resource_cleanup`。
 - 任务层直接证据：`br/pkg/task/backup.rs::{BackupConfig, DefineBackupFlags, RunBackupWithDefaults}`、`backup_ebs.rs::RunBackupEBS`、`backup_raw.rs::{RawKvConfig, RunBackupRawWithDefaults}`、`backup_txn.rs::{TxnKvConfig, RunBackupTxnWithDefaults}`，以及 `br/cmd/br/stubs.rs::effective_task_flags`。
-- RustCodeGraph：索引状态为 11,467 个文件、7,032 个 Rust 文件；目标文件包含 27 个符号。`node --file br/cmd/br/backup.rs` 核对完整源码；`query` 核对 `NewBackupCommand`、三个 run 函数和 `effective_task_flags`；`callers/callees --file` 核对五个子命令到三类 run 函数，以及 run 函数到 `with_tracing` 和四个任务层入口的调用边。图对 Rust/Go 同名符号存在混合，相关入口另由 `main.rs` 源码交叉验证。
 - 文档只描述已读源码能证明的现状；没有运行 Cargo，也没有把 Go 集成脚本视为 Rust 后端通过证据。结构验证按任务规定检查文件存在且恰有十一个固定二级标题。
+
+本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/cmd/br/backup.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/cmd/br/backup.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
+
+`backup_test.rs::backup_filter_cleanup_runs_during_unwind` 和 `parity_test.rs::contract_resource_cleanup` 是清理契约的既有证据，未覆盖本次删除地址覆写的专用断言。
+
+Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。
