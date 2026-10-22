@@ -261,6 +261,8 @@ PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` �
 
 [限定名称解析规则](#限定名称解析规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::relation` / `validate_relations` 与 [ast/dml.rs](../pkg/parser/ast/dml.rs) 为入口，实际共享 TableName 另核对 [ast/lib.rs](../pkg/parser/ast/lib.rs)；独立证据入口为 pg_name_test.rs、pg_query_test.rs。
 
+[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::scope` / `relation` 为入口；[ast/dml.rs](../pkg/parser/ast/dml.rs) 为指定导航，实际 CTE 载体在 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `WithClause` / `CommonTableExpression`。独立测试入口为 pg_name_test.rs、parser_test.rs，仅静态阅读。
+
 ### 目标行为
 
 #### 方言身份传递
@@ -502,6 +504,33 @@ validate_relations 对成功解析的共享 AST 遍历 TableName，拒绝非空�
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** §5.10.1 [Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-CREATE) 定义 schema.table 与只允许当前数据库的 database.schema.table；§5.10.3 将未限定关系交给搜索路径。§7.2.1.2 [表和列别名](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLE-ALIASES) 定义别名替代原关系名；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 0A000、42601、42P01、42703 分类，具体错误位置仍需参考端补证。§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P；MySQL **8.4** §11.2.2 [Identifier Qualifiers](https://dev.mysql.com/doc/refman/8.4/en/identifier-qualifiers.html) 区分关系的 database.table 与列的 database.table.column。18.6 仅为来源目标，本轮没有该补丁版本或本地数据库实测。
 
+#### 公共表表达式遮蔽规则
+
+本块对应源工作流 2 步骤 3 的 CTE 名称责任，承接[引号与大小写规则](#引号与大小写规则)及[限定名称解析规则](#限定名称解析规则)。静态取证基于提交 `b5ae432d5a2c6682d13b9fe2b3813bd72c766482`：已读 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::scope` / `relation`、`rewrite` / `adapt`。scope 克隆继承的名称集合，在扫描每个定义体后才插入该 CTE 名，再向后续定义和主查询传递；括号递归使用克隆集合，内层新增名称不会泄漏出去。relation 只在单段名命中集合时保留引用；显式 public.t 仍改写到当前后端库的表，即使 public 不在路径中。WITH 后紧接 RECURSIVE 一律返回 0A000，包括没有实际自引用的输入；这只是当前入口门禁，不能称为 PG 的递归规则。
+
+已读独立测试 [pg_name_test.rs](../pkg/server/pg_name_test.rs) 的 `pg_introspection_names_token_scopes`：覆盖 `WITH t AS (SELECT 1) SELECT * FROM t` 在 public=false 时不改写、同名 CTE/public.t 区分及内层 CTE 不泄漏到外层；`pg_introspection_names_rejection_boundaries` 覆盖 RECURSIVE 的 0A000。未执行这些测试；现有断言没有证明嵌套同名的绑定对象、前向引用、自引用、重复定义或错误位置。已读 [ast/dml.rs](../pkg/parser/ast/dml.rs) 的基础 `TableName`，CTE 实际共享载体另定位到 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `WithClause`（IsRecursive、顺序 CTEs）、`CommonTableExpression`（Name、ColNameList、Query、IsRecursive）及 `WithClauseRef`；这些字段存在不等于 PG 绑定接线完整。已读 [parser_test.rs](../pkg/parser/parser_test.rs) 的 `test_dml_stmt` / `test_set_operator` 注册和 `run_contract_table_with_options`：接受性及顶层节点类型检查不能替代 CTE 作用域断言。`pkg/server/doc.go`、`pkg/parser/doc.go`、`pkg/parser/ast/doc.go` 不存在。
+
+目标由 parser 保留定义顺序、查询块嵌套、递归标记、列名列表及名称的 quoted/规范身份和原 SQL 跨度；resolver/binder 拥有每个查询块的 CTE 名称空间与具体绑定。普通 WITH 的定义体只见先前同级定义及合法外层名称，主查询见本层全部定义；内层同名定义在其可见区域遮蔽外层 CTE，退出内层后恢复外层，不能用无绑定身份的字符串集合证明实现完成。未限定关系先查可见 CTE，再交关系搜索；显式 schema.t 绕过 CTE，按真实关系绑定。非递归定义自身尚未登记时，同名引用仍可绑定合法外层 CTE 或真实表，不能仅凭拼写相同认定递归或无条件拒绝。会话后续语句不保留 CTE 名称，CTE 不成为目录对象；search_path 状态执行及目录可见性分别交工作流 5、6。
+
+PG 的 RECURSIVE 还允许无环前向引用，不等于每个 CTE 都自递归；自引用是否合法由递归项位置等结构约束决定，互递归不属于 PG 已实现能力。本块只登记解析/绑定入口责任，不开放递归执行；能力未开放时保持明确 0A000 门禁，并将参考 PG 的合法结果与 AsterSQL 暂时拒绝分别记录。物化、工作表迭代、优化、SEARCH/CYCLE 与数据修改型 CTE 的执行另行细分，不以本块补建完整 WITH RECURSIVE。
+
+以下为待新增 `NAME-CTE` 用例族，全部运行行为未验证。PG 夹具为当前库 db、可见 public.t(v=9)、不存在关系 a/b/r，普通表搜索路径含 public；MySQL 8.4 独立夹具为默认库 db 的 t(v=9)，显式限定对照使用 db.t，PG 的 public.t 不直接充当 MySQL schema 语义。成功项 SQLSTATE 不适用（成功）、无错误位置；类型、列名及协议元数据按第 1 章另采集。
+
+| 输入/正反例 | PG 目标与当前边界 | MySQL 自身目标 | 诊断责任与证据缺口 |
+| --- | --- | --- | --- |
+| 基本正例 `WITH t AS (SELECT 1) SELECT * FROM t` | 目标单行 1，遮蔽 public.t 的 9；现有静态测试仅断言 rewrite 保留，public=false 也应命中 CTE。 | 同一 SQL 目标 1，遮蔽默认库真实表。 | binder 绑定 CTE，不能先因搜索路径缺表拒绝；无执行/元数据证据。 |
+| 嵌套同名正例 `WITH t AS (SELECT 1 AS v) SELECT t.v, q.v FROM t CROSS JOIN (WITH t AS (SELECT 2 AS v) SELECT v FROM t) AS q` | 目标一行 (1,2)，内层绑定内层 t，外层仍为外层 t。当前集合扫描保留同名引用，不能辨别绑定对象。 | 同一 SQL 目标 (1,2)，分别验证查询块的同名解析。 | binder 记录层级与对象身份；静态改写相同不证明遮蔽正确。 |
+| 显式表正例 `WITH t AS (SELECT 1 AS v) SELECT v FROM public.t` | 目标 9；即使移除路径中的 public 仍指显式表，当前 relation 将它改写到 db.t。 | 使用 `WITH t AS (SELECT 1 AS v) SELECT v FROM db.t`，目标 9；db 是数据库限定。 | resolver 绕过 CTE，目录/权限交工作流 6；不存在真实表时 PG 目标 42P01，MySQL 自身诊断另采集。 |
+| 顺序正例 `WITH a AS (SELECT 1 AS v), b AS (SELECT v FROM a) SELECT v FROM b`；前向反例 `WITH a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a` | 前者目标 1；后者在无真实 b 时拒绝，目标 42P01，不提前注册未来 b。当前扫描后插入次序吻合局部意图，但不会自行查目录；有真实同名 b 时应另验真实表绑定，不能一概拒绝。 | 前者目标 1；后者同样不可引用后定义的 b，无真实 b 时拒绝，精确码/位置待采集。 | binder 区分未来 CTE 与可见真实表；错误位置应关联定义体中的 b，P 是否提供及数值待证。 |
+| 递归关键字边界 `WITH RECURSIVE t AS (SELECT 1) SELECT * FROM t`；无环前向 `WITH RECURSIVE a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a` | PG 合法，目标分别为 1、2；当前适配器两者均在 RECURSIVE 处拒绝 0A000。 | 第一条目标 1；第二条仍不能前向引用，无真实 b 时拒绝；不能复制 PG 放宽规则。 | parser/binder 区分关键字、依赖与实际递归；当前门禁与参考成功分别验收，MySQL 精确诊断待取证。 |
+| 自引用边界 `WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<2) SELECT n FROM r ORDER BY n`；去掉 RECURSIVE 的反例 | 合法形式参考目标两行 1、2，当前入口拒绝 0A000；去掉关键字且无外层/真实 r 时目标 42P01，不自动升级递归。 | 合法形式目标 1、2；去掉关键字且无真实 r 时拒绝，官方示例给出 1146/42S02，仍需此输入实测。 | binder 负责自引用可见性，执行另交工作流 5；不据扫描通过宣称递归可用。 |
+| 非法递归反例 `WITH RECURSIVE r(n) AS (SELECT n FROM r UNION ALL SELECT 1) SELECT * FROM r`；同层重复 `WITH t AS (SELECT 1), t AS (SELECT 2) SELECT * FROM t` | 第一条自引用位于非递归项，应拒绝，精确码待参考端取证；第二条应拒绝重复定义，目标 42712。当前分别为 RECURSIVE 门禁与集合去重，后者未显式检查重复。 | 两条分别按自身递归结构与名称唯一性规则拒绝；精确码/位置待采集。 | binder 负责结构及重复名诊断；不能让 HashSet 去重隐藏错误，也不能用 0A000 代替 PG 本来无效输入的真实诊断。 |
+| 名称不泄漏反例：先执行基本正例，再单独执行 `SELECT * FROM t`；另将内层 WITH 放入派生表后在外层引用 t | 下一语句/外层均不得使用已结束的 CTE；给定真实表夹具应返回 9，而非 1，删除真实 t 的独立夹具下目标 42P01。现有测试只覆盖内层新增名不泄漏的文本。 | 独立连接/夹具同样绑定真实表 9；无表时按自身诊断拒绝。 | resolver 负责查询块生命周期；跨语句、简单 Q/扩展 Parse 及双方言交错连接均待新增实际断言。 |
+
+诊断按 parser 的形态/跨度、binder 的可见性/定义顺序/重复与递归结构、工作流 7 的错误传递分责。P 如提供，须指向原 SQL，从 1 起按字符计数；定义体引用、第二个重复名及递归项的定位、引号转换和错误前中文均须独立取证，不能用改写后字节偏移。未列精确码的目标需先查官方对应源码或真实参考端，再补矩阵；当前拒绝不是未来功能成功，所有适用断言仍按第 1 章保留“未验证”。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** [SELECT 的 WITH/FROM](https://www.postgresql.org/docs/18/sql-select.html#SQL-WITH) 定义普通/递归 WITH 的同级引用顺序、真实表被遮蔽及显式 schema 绕过；§7.8 [WITH Queries](https://www.postgresql.org/docs/18/queries-with.html) 定义单查询作用域及递归项结构。嵌套同名按这些作用域规则制定上述目标，仍需参考端验证具体输入；[18 分支 parse_cte.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/parser/parse_cte.c) 是重复名与递归诊断的后续取证入口，分支可变，不作固定补丁实测证据。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 42P01/42712/0A000 分类，§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §15.2.20 [WITH](https://dev.mysql.com/doc/refman/8.4/en/with.html) 定义查询块搜索、同级仅向前序引用及自递归关键字要求。18.6 仍仅为来源指定目标，没有本轮补丁版本、AsterSQL、PG 或 MySQL 的实测结果。
+
 ### 范围外
 
 [方言身份传递](#方言身份传递)本轮不实现方言类型、解析原型、共享 AST、缓存接线或运行测试平台；不扩建 resolver、planner、表达式子系统。六类语法、引号/大小写、限定名、CTE 及 schema/search_path 名称规则由后续文档块定义；会话设置执行归工作流 5，目录实现归工作流 6，错误传输与恢复协作工作流 7。现有文本适配只作为有界入口证据，不承担通用 SQL 翻译方案，也不据其推断完整 PG 支持。
@@ -521,6 +550,8 @@ validate_relations 对成功解析的共享 AST 遍历 TableName，拒绝非空�
 [引号与大小写规则](#引号与大小写规则)不实现词法器、名称绑定、存储大小写映射或错误位置接线，不扩建目录、CTE 或 search_path；后端名称区分能力作为独立缺口交接，不以文本改写代替。
 
 [限定名称解析规则](#限定名称解析规则)不实现 parser/AST、名称绑定、权限、跨库访问或完整 schema 模型；CTE/search_path 交后续块，会话状态和目录实现分别归工作流 5、6，协议诊断归工作流 7。
+
+[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)不实现解析/绑定、递归执行、物化或优化，不扩建目录及 search_path；只固定名称可见性与入口门禁责任，执行协作工作流 5、目录协作工作流 6、诊断协作工作流 7。
 
 ### 验收
 
@@ -542,6 +573,8 @@ validate_relations 对成功解析的共享 AST 遍历 TableName，拒绝非空�
 
 [限定名称解析规则](#限定名称解析规则)的文档验收为：t、public.t、db.public.t、other.public.t 和 a.id 均区分当前改写/拒绝与 PG/MySQL 目标；别名隐藏、缺列、残缺/多段名有诊断责任及缺证说明；隔离检查不被文本降级绕过。所有运行行为仍未验证，测试阅读不构成通过。
 
+[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)的文档验收为：基本 WITH、嵌套同名、public.t、定义顺序/前向、自引用及递归结构反例均有双方言目标；作用域生命周期、当前 RECURSIVE 拒绝和未验证项明确。当前测试仅为静态证据，所有解析、绑定、结果及诊断行为均未实测。
+
 ### 后续细分
 
 [方言身份传递](#方言身份传递)后续先做连接身份拥有权及关闭/重连边界的局部取证，再分别拆简单查询与扩展查询的身份承接、共享解析/名称绑定/规划/表达式上下文的必要局部接线及隔离回归；实施前确认实际落点，不将本责任链自动扩张为完整子系统重建。各任务明确单一交接点、所需状态、现有可复用实现和验收断言；DIALECT-IDENTITY 三类场景是待新增验收入口，不是既有测试或已登记通过的能力。
@@ -561,6 +594,8 @@ validate_relations 对成功解析的共享 AST 遍历 TableName，拒绝非空�
 [引号与大小写规则](#引号与大小写规则)后续先取证共享名称载体的 quoted/拼写/跨度保真，再分别拆折叠与精确绑定、双引号转义及词法保护、位置映射和双方言隔离；后端同名异大小写的可区分性单独评估，禁止递归补建存储或目录子系统。
 
 [限定名称解析规则](#限定名称解析规则)后续先取证关系分段与列限定的上下文保真及当前数据库身份，再分别拆关系限定/跨库拒绝、列与别名作用域、原 SQL 位置和双方言隔离断言；沿现有独立测试补 adapt/guard 的必要覆盖，不扩建目录或权限子系统。
+
+[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)后续先核对顺序/嵌套/名称身份与跨度的保真，再分别拆普通 CTE 绑定与显式表绕过、前向及重复名诊断、查询块退出/跨语句与双方言隔离断言；递归入口依赖图与门禁另拆，不借名称任务补齐递归执行或物化子系统。
 
 ## 3. 共享类型与转换契约
 
