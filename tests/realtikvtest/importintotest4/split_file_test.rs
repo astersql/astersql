@@ -212,18 +212,21 @@ fn check_split_file(session: &ConcreteSession, real_tikv: bool) {
     actual.sort();
     assert_eq!(actual, all_data[1..]);
     session.execute("truncate table t").unwrap();
-    query(
-        session,
-        &format!(
-            "import into t from '{source}' with split_file, lines_terminated_by='\\n', skip_rows=2, __max_engine_size='1'"
-        ),
+    let jobs_sql =
+        format!("select count(*) from mysql.tidb_import_jobs where table_schema='{database}'");
+    let jobs_before = query(session, &jobs_sql);
+    let result = session.execute(&format!(
+        "import into t from '{source}' with split_file, lines_terminated_by='\\n', skip_rows=2, __max_engine_size='1'"
+    ));
+    let error = result.err().expect("split_file must reject skip_rows > 1");
+    assert!(
+        error
+            .to_string()
+            .contains("skip_rows, should be <= 1 when split-file is enabled"),
+        "unexpected option error: {error}"
     );
-    let mut two_skipped: Vec<_> = query(session, "select * from t")
-        .iter()
-        .map(|row| row.join(" "))
-        .collect();
-    two_skipped.sort();
-    assert_eq!(two_skipped, all_data[2..]);
+    assert_eq!(query(session, &jobs_sql), jobs_before);
+    assert!(query(session, "select * from t").is_empty());
 
     session
         .execute("create table t2 (a int primary key nonclustered, b varchar(100))")
@@ -385,7 +388,9 @@ fn task_history_uses_independent_sql_sessions_and_real_transactions() {
     manager
         .FinishSubtask((), "test-executor".into(), subtask.ID, b"{}".to_vec())
         .unwrap();
-    manager.SucceedTask((), id).unwrap();
+    manager
+        .SucceedTask((), manager.GetTaskByID((), id).unwrap())
+        .unwrap();
     manager
         .TransferTasks2History((), vec![manager.GetTaskByID((), id).unwrap()])
         .unwrap();

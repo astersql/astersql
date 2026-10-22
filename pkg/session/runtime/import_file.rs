@@ -144,6 +144,11 @@ impl ConcreteSession {
                 other => return Err(error(format!("unsupported file import option {other}"))),
             }
         }
+        if skip > 1 {
+            return Err(error(
+                "invalid option value: skip_rows, should be <= 1 when split-file is enabled",
+            ));
+        }
         if csv.lines_terminated_by.is_empty() || engine_size <= 0.0 || !engine_size.is_finite() {
             return Err(error("invalid split_file options"));
         }

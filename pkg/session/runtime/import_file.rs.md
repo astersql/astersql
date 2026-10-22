@@ -29,7 +29,7 @@
 任务成功收尾现在先 `GetTaskByID((), task_id)` 取出当前完整 Task，再 `SucceedTask((), task)`。之后再次读取 Task、仅在导入成功时写 `TaskMeta.Summary.ImportedRows`，再 `TransferTasks2History`，最后传播执行闭包结果。此调整适配 DXF 成功状态转换的 Task 参数，不能描述为只传 task ID。
 
 1. `execute_import_file` 先检查是否存在大小写不敏感的 `split_file` 选项；不存在则走 `execute_import_compression`。存在时拒绝 `SELECT`、列赋值、列/用户变量映射以及非 CSV 格式。
-2. 遍历选项，用 `crate::dml_runtime::EvalExpr` 求值。支持 `split_file`、四种 CSV 分隔/包围/转义配置、`skip_rows` 和内部选项 `__max_engine_size`；其他选项立即报错。行终止符不得为空，engine 大小必须为有限正数。
+2. 遍历选项，用 `crate::dml_runtime::EvalExpr` 求值。支持 `split_file`、四种 CSV 分隔/包围/转义配置、`skip_rows` 和内部选项 `__max_engine_size`；其他选项立即报错。`split_file` 下 `skip_rows` 仅允许 0 或 1；超过 1 在读取 storage、规划和创建 job/task 前返回选项错误。行终止符不得为空，engine 大小必须为有限正数。
 3. 从 `ImportFiles` 克隆 storage 并读取 `region_size`，解析当前 schema/目标表；随后调用 `Storage::list` 精确匹配 `statement.Path` 并取得文件大小。此路径只处理一个精确 URI，不进行 glob 展开。
 4. 构造 `DataDivideConfig`：`column_count` 使用目标表列数，`strict_format = true`，并写入区域大小、engine 大小和 CSV 配置。构造单文件 `MDTableMeta` 后调用 `MakeTableRegions`，再按 `TableRegion.engine_id` 分组。
 5. 获取 `ImportTaskManager`，以当前进程 ID 构造 executor ID，登记当前节点 CPU 资源；随后在独立 SQL session 中插入 `mysql.tidb_import_jobs`，取得 `last_insert_id`。
@@ -77,7 +77,7 @@ data/index engine 的正常生命周期为 `OpenEngine -> ProcessChunk* -> Close
 
 Rust 复用了相同概念：Go `LoadDataController.PopulateChunks` 同样把目标列数、`SplitFile`、region/engine 大小和 CSV 配置交给 `mydump.MakeTableRegions`；Go 测试同样要求 500 行文件切成 3 个 subtask、`skip_rows = 1` 正确、CRLF 切分后索引一致。
 
-已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，而本文件当前接受任意可解析 `u64`，Rust 回归测试还覆盖了 `skip_rows = 2`；因此不能把两边该边界描述为完全一致。Rust 的 `__max_engine_size` 直接解析为 `f64`，Go 则按 `ByteSize.UnmarshalText` 解析。后续追求完整兼容时，这些差异必须通过独立行为任务与回归测试处理，本说明不修改现状。
+已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，本文件在选项校验阶段采用相同上限；Rust `split_file_with_canonical_kv` 回归覆盖默认 0、显式 1 的正常结果，以及 2 返回选项错误且不新增 job、不写入目标表。Rust 的 `__max_engine_size` 直接解析为 `f64`，Go 则按 `ByteSize.UnmarshalText` 解析。后续追求完整兼容时，这些差异必须通过独立行为任务与回归测试处理，本说明不修改现状。
 
 ## 扩展指南
 
