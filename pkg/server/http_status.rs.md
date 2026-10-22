@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server` crate 的 status/运维 HTTP 子系统，由 [`pkg/server/lib.rs`](lib.rs) 以 `pub mod http_status` 暴露。它不是 SQL 协议入口，而是 `Server` 在独立监听地址上提供健康检查、指标、诊断、元数据、TiKV/DDL/DXF 管理等 HTTP 路由的实现。生产启动链由 `pkg/server/server.rs` 的 `Server::run` 调用本文件的 `Server::start_status_http`；RustCodeGraph 也给出了 `run → start_status_http → build_status_router/serve_status_loop → serve_stream → Router::handle_from` 的调用边。
+本文件由 `pkg/server/lib.rs` 的 http_status 模块导出，属于 astersql-server。`Server::run` 调用 `start_status_http` 启动 status listener；本文件负责 HTTP 抽象、完整或诊断路由、可选 TLS 和请求处理。
 
 crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `astersql-server`，Go 对照包为 `pkg/server`。本文件直接使用同 crate 的 `extract`、`http_handler`、`server`，并依赖 `astersql-server-handler`、`astersql-server-handler-tikvhandler`、`astersql-server-handler-ttlhandler`、`astersql-planner-extstore`、`astersql-metrics`、`serde_json` 和 `rustls` 等组件。
 
@@ -36,8 +36,10 @@ crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `asters
 
 ## 执行流程
 
+冻结增量：`start_status_http` 仍先检查 report_status 和已有 listener，再读取进程诊断状态，选择完整 router 或 `build_diagnostic_router`。诊断 router 仅允许 GET `/status`、`/metrics` 和 `/debug/pprof/cmdline`、profile、symbol、trace、通配路径；这些路径的其他方法以备用路由返回 405，未注册的 `/info`、`/settings` 等返回 404。profiling 路由保留 profiling 标记。诊断 TLS 仍使用已有证书/CA 校验配置，并将 ALPN 限为 http/1.1；没有 TLS 配置仍可提供明文 HTTP。白名单控制 HTTP 路由表面，不表示绑定地址强制 loopback，也不构成 SQL 或存储只读隔离。
+
 1. `Server::run` 在 Domain 安装完成后调用 `start_status_http`。若 `report_status` 为 false，或已经保存了 status listener，函数直接成功返回。
-2. `start_status_http` 先用 `build_status_tls_config` 校验 TLS 配置，再 bind `status.host:status.port`，设为 nonblocking，克隆 listener 保存到 `Server`，构造 `build_status_router`，最后启动名为 `astersql-status-http` 的 worker。
+2. `start_status_http` 先用 `build_status_tls_config` 校验 TLS 配置，再 bind `status.host:status.port`，设为 nonblocking，克隆 listener 保存到 `Server`，根据诊断开关构造 `build_status_router` 或 `build_diagnostic_router`，最后启动名为 `astersql-status-http` 的 worker。
 3. `build_status_router` 按顺序注册路由。第一组是 `/status`、`/metrics` 和 NextGen 条件下的 `/variables/global`；随后是 settings、info、pprof/debug、schema/MVCC/table/region/DDL/TiFlash/DXF/ingest/plan-replayer、standby 子路由、尚未接线的类型化占位路由、extract 和根路径。
 4. `serve_status_loop` 在 `server.health() && !server.force_shutdown()` 时 accept。`WouldBlock` 休眠 10 ms；每个连接另起一个 `astersql-status-request` 线程。配置 TLS 时先创建 `rustls::ServerConnection`，否则直接处理 TCP stream。
 5. `serve_stream` 最多读取 64 KiB 一次，解析请求行和 `\r\n\r\n` 后的 body，调用 `parse_target` 形成 `Request`，再交给 `Router::handle_from`。
@@ -71,8 +73,6 @@ crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `asters
 - `astersql_server_handler_ttlhandler` 与 `astersql_server_handler::upgrade_handler` 分别处理 TTL 触发与集群升级操作。
 - `ExtractTaskServeHandler` 处理 `/extract_task/dump`；`TikvHandlerTool::routes` 提供尚未安装服务的占位路径列表。
 - `astersql_util::security::NewTLSConfig` 和 `rustls` 负责 TLS；`astersql_util_logutil` 记录 profiling 审计事件。
-
-RustCodeGraph 对 `build_status_router` 的 callees 同时显示大量本文件 handler 和 `Server::standby_handler`、`Server::config/domain`；对 `serve_stream` 显示下游为 `parse_target` 与 `Router::handle_from`，与源码流程一致。
 
 ## 错误处理与边界
 
@@ -123,9 +123,8 @@ RustCodeGraph 对 `build_status_router` 的 callees 同时显示大量本文件 
 
 ## 验证依据
 
-- Rust 源码：[`pkg/server/http_status.rs`](http_status.rs)，完整检查 1–2484 行；重点符号为 `Router`、`Ballast`、`build_status_router`、`Server::start_status_http`、`serve_status_loop`、`serve_stream`、TiKV/DXF/TTL adapters。
-- crate 与模块：[`pkg/server/Cargo.toml`](Cargo.toml) 的 package、porting metadata 与依赖；[`pkg/server/lib.rs`](lib.rs) 的 `pub mod http_status` 和 `#[path = "http_status_test.rs"]` 独立测试挂载。
-- Go 对照：[`pkg/server/http_status.go`](http_status.go) 的 `startStatusHTTP`、`listenStatusHTTPServer`、`serveError`、`sleepWithCtx`、`Ballast`、`withProfilingRequestLog`、`startHTTPServer`、`startStatusServerAndRPCServer`、`Status` 与 `handleStatus`。
-- Rust 测试：[`pkg/server/http_status_test.rs`](http_status_test.rs) 中 12 个 `#[test]`，覆盖上述主要兼容和生命周期边界；本任务为纯文档分析，按计划未运行 Cargo。
-- RustCodeGraph：索引状态为 11,467 files / 307,296 nodes / 1,848,419 edges；查询了目标文件、`build_status_router`、`start_status_http`、`serve_stream`、`status_response` 的 node/callers/callees。图确认 `Server::run` 是启动上游、`build_status_router` 是路由装配入口、`serve_status_loop` 调用 `serve_stream`，而 `serve_stream` 调用 `parse_target` 与 `Router::handle_from`。
-- 文档结构按任务要求用固定 11 个二级标题验证；内容人工复核区分了当前实现、占位能力、Go 差异与未提供的完整 HTTP/runtime 语义。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/http_status.rs` 差异及目标 blob `ca6a501251c991b4d262f5e77a144a965eca8629` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/http_status.rs` 和 `git show 2c944fb:pkg/server/http_status.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/diagnostic_http_test.rs`，Go 对照为 `pkg/server/http_status.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

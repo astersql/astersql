@@ -40,6 +40,8 @@
 
 ## 数据与状态
 
+冻结增量：扁平 `ServerInfo` 新增布尔 `DisableRPC`，Serde 公共键为 `disable_rpc`。这是可序列化的节点能力标记；本 mock 注册表不据此停止 listener 或拒绝 RPC。它和 `pkg/domain/serverinfo/info.rs` 的模型是不同类型，不能把后者的手写 JSON 省略 false 规则套到此 derive 模型。
+
 核心不变量是：默认或 `Close` 后 `infos` 为空且下一个端口为 4000；每次成功执行 `Add` 恰好消费一个连续端口。删除不会回收端口，只有 `Close` 会复位计数器。`infos` 使用 `Vec`，所以插入顺序和按下标删除语义明确；对外快照使用 `HashMap`，不承诺遍历顺序。
 
 `ServerInfo` 的字符串、标签表和数值在快照时均被克隆；调用者修改返回值不会回写注册表。内部保存的 `info.JSONServerID` 是加入时的值，但每次快照都以 getter 的最新结果覆盖返回副本，因此外部观察到的是查询时值。`StartTimestamp` 在加入时取 `SystemTime::now()` 相对 Unix epoch 的秒数；若系统时钟早于 epoch，`unwrap_or_default` 会使时间戳退化为 0，而不会返回错误。
@@ -48,7 +50,7 @@
 
 ## 依赖与调用关系
 
-上游调用边（RustCodeGraph 与文本引用共同验证）：
+上游调用关系：
 
 - `pkg/domain/infosync/info.rs::GlobalInfoSyncerInit -> MockGlobalServerInfoManagerEntry -> Add`：初始化时登记本节点。
 - `pkg/domain/infosync/info.rs::GetServerInfoByID -> MockGlobalServerInfoManagerEntry -> GetAllServerInfo`：Rust 当前按 ID 查询走 mock 快照。
@@ -101,12 +103,8 @@
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 文件 7,032 个；目标文件已索引。
-- RustCodeGraph `node --file pkg/domain/infosync/mock_info.rs --offset 1 --limit 400`：核对了目标文件全部 144 行、所有结构体、方法、serde 属性和条件编译情况（本文件无条件编译项）。
-- RustCodeGraph `query MockGlobalServerInfoManager`、`query MockGlobalServerInfoManagerEntry` 与精确 `node`：核对 Rust/Go 同名定义，并确认 `MockGlobalServerInfoManagerEntry` 的调用者包括 `GlobalInfoSyncerInit`、`GetServerInfoByID`、`GenerateSubtaskExecID4Test` 及相关测试。
-- RustCodeGraph `node GlobalInfoSyncerInit`、`node GetServerInfoByID`、`node GenerateSubtaskExecID4Test`：核对初始化、按 ID 查询和分布式任务测试解析的调用边。通用 `callers Add/GetAllServerInfo` 因跨语言同名歧义不够精确，额外用 `rg` 对直接引用作了补证。
-- 已读 crate/入口：`pkg/domain/infosync/Cargo.toml`、`pkg/domain/infosync/lib.rs`；该目录没有 `doc.go`。
-- 已读实现/调用：`pkg/domain/infosync/mock_info.rs`、`pkg/domain/infosync/info.rs`、`pkg/util/disttask/idservice.rs`。
-- 已读 Go 对照：`pkg/domain/infosync/mock_info.go`、`pkg/domain/infosync/info.go`、`pkg/domain/serverinfo/info.go`、`pkg/domain/serverinfo/syncer.go`。
-- 已读独立测试：`pkg/domain/infosync/info_test.rs::mock_server_info_manager_matches_go_lifecycle` 验证端口 4000/4001、按地址删除和 `Close` 后复位；`pkg/util/disttask/idservice_test.rs::{test_registry_resolution_matches_go_fallbacks, production_registry_resolves_remote_server_info}` 验证缺失回退、mock 地址解析及生产 etcd 路径与 mock 路径的区分。现有直接测试未覆盖 `Delete` 的成功/越界分支、动态 getter 更新、重复 ID、IPv6 删除和锁 poisoned/reentrant 情况。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核所有行为结论均可回指上述源码、调用边或测试。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/infosync/mock_info.rs` 差异及目标 blob `aa40e7b8a40cff445e38fa56955b3cbe256e95c8` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/infosync/mock_info.rs` 和 `git show 2c944fb:pkg/domain/infosync/mock_info.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/infosync/info_test.rs`，Go 对照为 `pkg/domain/infosync/mock_info.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

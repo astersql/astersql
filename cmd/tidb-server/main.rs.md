@@ -29,6 +29,8 @@ crate 边界由 `cmd/tidb-server/Cargo.toml` 明确：包同时导出 `lib.rs` �
 
 ## 执行流程
 
+冻结增量：`createStoreDDLOwnerMgrAndDomain` 在 `initRegisteredStorage` 后取得 codec；仅当 `deploymode::IsStarter()` 且 `codec.IsAPIV2()` 时调用 `metricsutil::SetKeyspaceID(codec.GetKeyspaceID())`，随后才进行 PD kernel 校验、MPP prober/coordinator、owner manager 和 bootstrap。该调用经过入口适配层，不能由此推断所有指标消费者已使用该标签。冻结版本没有 diagnosticmode 初始化或 `start_diagnostic` 调用，诊断 API 的存在不代表此入口已选择诊断启动。关闭仍由 `cleanup` 先停自动分析、drain 客户端、kill 系统进程，再停 plugin/repository/TopSQL，然后关闭 Domain、owner manager、MPP 组件与 storage，最后清理磁盘等进程资源。
+
 `bin_main.rs::main -> lib.rs::main -> entry::main -> run_main -> run_main_inner`。主流程如下：
 
 1. 解析 flags；`collect-log` 直接调用 `redact::DeRedactFile` 后返回，`--help` 也在全局初始化前返回。
@@ -37,7 +39,7 @@ crate 边界由 `cmd/tidb-server/Cargo.toml` 明确：包同时导出 `lib.rs` �
 4. 注册 USR1、三类 store 和 metrics；按条件初始化临时目录、日志、内存 hook、扩展、语句摘要、CPU profiler、TiFlash autoscaler、failpoint、全局 sysvar、SEM、CPU affinity、cgroup、tracing 和 metrics。
 5. 启动 executor/resource manager，通过 `createStoreDDLOwnerMgrAndDomain` 得到 storage 与旧 Domain；配置 repository 和可选外部 workload manager；`createServer` 建立 canonical server。Starter 激活模式执行完整清理后立即返回。
 6. 正常模式安装信号闭包。闭包依次 `Server::Close`、停止 resource manager、`cleanup`、停止 profiler/executor，并写入信号对应的退出码。随后设置 TopSQL、阻塞在 `Server::Run`，等待信号路径完成。
-7. 退出前关闭外部 workload manager并刷日志；日志刷盘失败覆盖为通用错误码。关键调用边由 RustCodeGraph 确认：`run_main_inner -> createStoreDDLOwnerMgrAndDomain/createServer/cleanup`，且 `createServer -> canonicalServerConfig/assembleCanonicalServer/startStarterResourceGroupController`。
+7. 退出前关闭外部 workload manager并刷日志；日志刷盘失败覆盖为通用错误码。
 
 ## 数据与状态
 
@@ -49,8 +51,6 @@ crate 边界由 `cmd/tidb-server/Cargo.toml` 明确：包同时导出 `lib.rs` �
 - `gracefulCloseConnectionsTimeout` 固定 15 秒；Starter 强制关闭将 drain 时间改为 0，取消阶段固定 1 秒（`main.rs:2061-2082`）。
 
 ## 依赖与调用关系
-
-上游调用关系只有 crate 壳层和测试：`bin_main.rs` 调用 `lib.rs::main`，后者调用本文件 `entry::main`；RustCodeGraph 将 `main.rs` 的文件级使用者识别为 `main_test.rs`，而 `parity_test.rs` 也经 `crate::entry` 验证公开契约。生产调用不是其它业务模块主动进入本文件，而是进程启动时自顶向下驱动。
 
 主要下游分为四组：
 
@@ -105,8 +105,8 @@ Rust 主流程、flag 名称、初始化顺序、清理顺序以及多数 helper
 
 ## 验证依据
 
-- RustCodeGraph 状态：索引包含 7032 个 Rust 文件；文件查询显示 `cmd/tidb-server/main.rs` 有 128 个符号。读取了完整文件范围，并查询 `run_main_inner`、`createStoreDDLOwnerMgrAndDomain`、`createServer`、`cleanup` 等节点。
-- RustCodeGraph 关键调用边：`run_main_inner -> initFlagSetWithArgs/overrideConfig/registerStores/createStoreDDLOwnerMgrAndDomain/createServer/setupMetrics/setupTracing/cleanup/createMgrClientForStarter`；`createServer -> canonicalServerConfig/assembleCanonicalServer/startStarterResourceGroupController/closeDDLOwnerMgrDomainAndStorage`；`cleanup -> closeDDLOwnerMgrDomainAndStorage/closeStmtSummary`。
-- 已读生产路径：`cmd/tidb-server/main.rs`、`cmd/tidb-server/lib.rs`、`cmd/tidb-server/bin_main.rs`、`cmd/tidb-server/Cargo.toml`、`cmd/tidb-server/main.go`。
-- 已读测试路径：`cmd/tidb-server/main_test.rs`、`cmd/tidb-server/parity_test.rs`、`cmd/tidb-server/main_test.go`。关键测试覆盖真实 TiKV driver 接线、canonical listener 配置与启动、退出码、配置覆盖、全局变量、deploy/version、Starter manager/observability/布尔解析、错误路径和资源关闭顺序。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定的 11 标题检查；文档中的迁移边界以 Cargo 依赖、源码调用和独立测试为依据，未把 `stubs.rs` 的适配行为表述为全部 canonical 子系统已完成。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `cmd/tidb-server/main.rs` 差异及目标 blob `2f0fccb7d1b9b90603fbc4aa967bee9463fc242e` 为准，通过 `git diff ad0a6f4..2c944fb -- cmd/tidb-server/main.rs` 和 `git show 2c944fb:cmd/tidb-server/main.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `cmd/tidb-server/main_test.rs`，Go 对照为 `cmd/tidb-server/main.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

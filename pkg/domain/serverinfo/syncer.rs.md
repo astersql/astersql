@@ -36,6 +36,8 @@
 
 ## 执行流程
 
+冻结增量：`SyncerOption::WithDisableRPC` 经 `newSyncer -> getServerInfo(..., disable_rpc)` 写入 StaticInfo，无 etcd 的 GetAllServerInfo 分支也保留该值。诊断模式下 `NewSessionAndStoreServerInfo`、`StoreServerInfo`、`UpdateServerLabel`、`StoreTopologyInfo`、`updateTopologyAliveness` 和 `RemoveTopologyInfo` 提前返回，避免相应登记、标签和 topology 写删。`RemoveServerInfo` 的诊断判断位于已有 status endpoint claim 条件删除之后、server-info 键删除之前；不能将整个关闭函数说成无操作。这些分支不证明所有 etcd API 或 server-ID 协调都被禁止，WithDisableRPC 也不是诊断模式的同义词。
+
 ### server-info 登记
 
 1. `newSyncer` 调用 `getServerInfo`，计算 claim 是否启用，并初始化 `Syncer`；此时尚无 session，也未写 etcd。
@@ -69,8 +71,6 @@
 - 取消状态和 session done 状态采用 `SeqCst` 原子序；循环退出通过 `std::sync::mpsc::Receiver<()>`，断开通道也被视为退出。
 
 ## 依赖与调用关系
-
-RustCodeGraph 对 `NewSessionAndStoreServerInfo` 给出的直接被调用边包括 `cleanupStaleServerAndOwnerInfo`、`EtcdClient::GrantLease`、`tryClaimStatusEndpoint`、`StoreServerInfo` 和 `cleanupFailedRegistration`；对 `ServerInfoSyncLoop` 给出的边包括 `Done`、`Restart` 和 `MinStartTSReporter::ReportMinStartTS`；对 `TopologySyncLoop` 给出的边包括 `TopologyDone`、`RestartTopology` 和 `StoreTopologyInfo`。
 
 上游接线由源码进一步确认：
 
@@ -129,10 +129,8 @@ RustCodeGraph 对 `NewSessionAndStoreServerInfo` 给出的直接被调用边包�
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/domain/serverinfo` 确认 `syncer.rs`、`syncer_test.rs`、Go 对照及相邻模块均已索引。
-- 目标源码：`pkg/domain/serverinfo/syncer.rs` 全部 1,155 行；主要调用边通过 `callees NewSessionAndStoreServerInfo`、`callees ServerInfoSyncLoop`、`callees TopologySyncLoop`、`callees getInfo` 核对。
-- crate 与数据边界：`pkg/domain/serverinfo/Cargo.toml`、`pkg/domain/serverinfo/lib.rs`、`pkg/domain/serverinfo/info.rs`。
-- 上游入口：`pkg/domain/domain.rs::Domain::install_server_info_syncer`、`pkg/domain/domain.rs::Domain::close`、`pkg/domain/crossks/cross_ks.rs::RegisteredRuntimeFactory::create`、`RegisteredServerInfo::{start,stop}`。RustCodeGraph 的通用名称 callers 查询未返回 Rust 上游，因此这些入口又通过精确源码引用搜索确认。
-- Go 对照：`pkg/domain/serverinfo/syncer.go` 全部 612 行；相关 Go 测试为 `pkg/domain/serverinfo/syncer_test.go` 中的 `TestTopology`、`TestCleanupStaleServerAndOwnerInfo`、`TestAssumedServerInfoSyncer` 以及 status endpoint 用例。
-- Rust 独立测试：`pkg/domain/serverinfo/syncer_test.rs`。直接阅读并核对了 topology、陈旧清理、assumed keyspace、配置隔离、claim 选项、登记失败回滚、退出优先、真实 etcd（ignored）和并发登记用例；测试由 `lib.rs` 的 `#[path = "syncer_test.rs"]` 独立挂载，未与生产源文件混放。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付结构验证要求本文恰有上述 11 个固定二级标题；验证命令及退出码在任务完成时记录。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/serverinfo/syncer.rs` 差异及目标 blob `e4d95150f842b7dea441ec3a9ada2a834fe1d3ac` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/serverinfo/syncer.rs` 和 `git show 2c944fb:pkg/domain/serverinfo/syncer.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/serverinfo/syncer_test.rs`，Go 对照为 `pkg/domain/serverinfo/syncer.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

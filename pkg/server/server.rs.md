@@ -31,6 +31,8 @@
 
 ## 执行流程
 
+冻结增量：`full_status_server_enabled` 定义为 `report_status && !diagnosticmode::Enabled()`，用于 `status_server_addr` 的身份通告和 `run` 的 advertised-status checker 启动条件。诊断模式仍可启动独立的有限 HTTP listener，但返回的完整 status 地址为 None，并跳过需要 /info 的 checker；report_status=false 则不启动 HTTP。此条件没有禁用 SQL listener。关闭仍由幂等 `close` 进入 shutdown、通知 standby、关闭 listeners、join listener workers、关闭 pending clients、kill 已登记连接、join connection workers，最后关闭 auto-ID service 并清除 running。
+
 1. `cmd/tidb-server/main.rs::assembleCanonicalServer` 创建 `Server`，随后在启动前调用 `set_connection_runtime` 注入 canonical `SessionDriver` 与 `ConnectionDomain`；该方法同时把 `Server` 的弱引用注册为 session manager，且运行后禁止替换。
 2. `Server::with_standby` 先验证 PROXY 网段与 host，再构造 SQL TLS/AutoTLS，初始化锁、原子状态和缓存，最后触发 `StandbyController::on_server_created`。
 3. `Server::run` 用 CAS 保证只启动一次，依次绑定 MySQL/Unix 与 PostgreSQL listener、发布 MPP server 地址、设置 domain、等待并准备 standby 激活，再置健康并启动 status、MySQL、PostgreSQL 服务。任一步失败都会清健康/运行标志、关闭已建立监听并在需要时 join worker。
@@ -98,9 +100,8 @@ listener worker 和每连接 worker 都是命名 OS 线程。listener 被设为�
 
 ## 验证依据
 
-- 生产源码：RustCodeGraph `node --file pkg/server/server.rs` 分段核对全部 2432 行、217 个符号；重点检查配置/TLS/PROXY、`Server` 字段与全部 impl、连接接入、排空和 trait 适配。
-- 调用图与入口：RustCodeGraph `status` 显示索引含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/server/server.rs` 确认目标文件；`query` 精确定位 `register_connection`、`drain_clients`、`proxy_source_addr`、`reload_tls`。`callers` 查询未在限定时间返回，因此生产上游又由 `rg` 核对 `cmd/tidb-server/main.rs`、`cmd/tidb-server/stubs.rs`、`pkg/server/http_status.rs` 和 `pkg/server/runtime.rs` 的真实调用点。
-- crate 与模块：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`；路径级约束：`pkg/server/AGENTS.md`。
-- Go 对照：`pkg/server/server.go`，核对 `Server`、`NewServer`、`Run`、`Close`、连接登记、KILL、process/txn、TLS、排空、内部 session 与 AutoID 行为。
-- Rust 独立测试：`pkg/server/server_test.rs`，覆盖真实 MySQL 握手/查询/prepared cursor/processlist、连接上限、账户汇总、KILL、capability、关闭标志、排空、PostgreSQL 生命周期及连接事件；补充入口/运行时/TLS/standby 测试分别位于 `cmd/tidb-server/main_test.rs`、`pkg/server/runtime_test.rs`、`pkg/server/tests/tls/tls_test.rs`、`pkg/server/tests/standby/standby_test.rs`。
-- 本任务仅生成文档，按计划未运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工检查本文没有把上述已确认的迁移缺口写成已支持能力。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/server.rs` 差异及目标 blob `31b78abb7d79515045497a533721e300425efbe0` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/server.rs` 和 `git show 2c944fb:pkg/server/server.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/diagnostic_http_test.rs`，Go 对照为 `pkg/server/server.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

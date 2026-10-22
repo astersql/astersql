@@ -4,7 +4,7 @@
 
 `runtime.rs` 属于 `astersql-server` crate（`pkg/server/Cargo.toml` 的库入口为 `pkg/server/lib.rs`），是 Rust 版 MySQL server 与 canonical `astersql-domain` / `astersql-session` 实现之间的生产适配层。它不负责监听端口或解析完整命令循环；上游 `pkg/server/server.rs`、`pkg/server/conn.rs` 定义 server/connection 抽象，本文件为其中的 `PacketIo`、`ServerDomain`、`ConnectionDomain`、`ServerDriver`、`SessionDriver` 和 `TiDBContext` trait 提供真实实现。`cmd/tidb-server/main.rs::assembleCanonicalServer` 将 `CanonicalServerDomain`、`CanonicalConnectionDomain`、`CanonicalServerDriver` 与 `ConcreteSessionDriver` 装配进应用入口。
 
-Go 版本没有同名 `runtime.go`：对应职责分散在 `pkg/server/internal/packetio.go`、`pkg/server/conn.go`、`pkg/server/driver_tidb.go` 和 `pkg/server/server.go`。因此本文件是迁移边界，而非某一个 Go 文件的逐行翻译。
+Go 版本没有同名 `runtime.go`：对应职责分散在 `pkg/server/internal/packetio/packetio.go`、`pkg/server/conn.go`、`pkg/server/driver_tidb.go` 和 `pkg/server/server.go`。因此本文件是迁移边界，而非某一个 Go 文件的逐行翻译。
 
 ## 核心职责
 
@@ -49,8 +49,6 @@ transport 的 `alive` 表示最近 I/O/压缩配置是否仍可用，`closed` �
 
 ## 依赖与调用关系
 
-上游主要是 `cmd/tidb-server/main.rs::assembleCanonicalServer` 与 `pkg/server/server.rs`、`conn.rs` 的连接生命周期。RustCodeGraph 对 `session_driver` 显示生产调用者 `assembleCanonicalServer` / `createServer`，测试调用者包括 `canonical_listener_starts_on_port_zero_and_preserves_cleanup_order`；`pkg/server/runtime_test.rs` 直接覆盖 transport、driver 和 Domain 适配器。
-
 下游关键依赖是 `astersql_session::runtime::{CanonicalSessionFactory, ConcreteSession, SplitSQLStatements}`、`astersql_domain::Domain`、`astersql_server_internal::PacketIO`、`protocol_result::WorkerResults`、`astersql_util_sqlkiller::SQLKiller` 与 `rustls`。`pkg/server/Cargo.toml` 明确声明这些 workspace crate、`rustls = "0.23"`、`chrono` 和 `serde_json`；后两者用于 Domain 状态接口的时间/JSON输出。
 
 重要调用边为：`ConcreteSessionDriver::open_ctx -> thread::Builder::spawn -> run_session_worker -> ConcreteSession::{new, configure_connection, execute/...}`；`ConcreteTiDBContext::execute_query[_streaming] -> SessionRequest::Execute[Streaming] -> execute_on_session`；`execute_prepared_statement/streaming -> SessionRequest::ExecutePrepared[Streaming] -> execute_prepared_on_session`；`TcpPacketIo::read_packet -> proxy_source_addr -> internal::PacketIO::read_packet`。
@@ -67,6 +65,8 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 
 ## 并发与资源生命周期
 
+冻结增量：`TcpPacketIo::connection_alive_probe` 克隆 TCP handle，并返回调用 `astersql_server_internal_util::probe_tcp_stream_alive` 的闭包。只有探针返回 0 才视为死亡，-1 未知状态保守视为存活；克隆失败则返回 None。探针使用非消费的系统调用，不再切换共享 socket 的 nonblocking flag，也不调整读 deadline，可与 packet reader 并发。它探测 TCP 连接而非 TLS 应用层状态；UnixPacketIo 未由此获得 TCP 探针。
+
 每个连接一个 worker 线程；`ConcreteTiDBContext` 可由 server 侧共享，但所有 session 可变操作通过 channel 串行化。`SessionManager` 保存为 `Weak`，避免 driver/domain 与 manager 形成强引用环；设置 manager 时还把它作为 info-schema coordinator 的弱引用交给 Domain。
 
 取消由 `CancellationToken`（请求侧）与共享 `SQLKiller`（session 侧）共同完成；`cancel()` 发出 `QueryInterrupted`，`finish_query_cancellation` / 成功执行路径重置 killer，测试 `query_cancellation_completion_preserves_session_transaction` 证明一次取消收尾不会破坏事务会话。
@@ -75,7 +75,7 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 
 ## 与 Go 版本的对应关系
 
-- `TcpPacketIo` / `UnixPacketIo` 对应 `pkg/server/internal/packetio.go` 与 `conn.go` 中 packet、TLS、PROXY、地址和 socket 生命周期，但 Rust 把能力收敛到 `PacketIo` trait。
+- `TcpPacketIo` / `UnixPacketIo` 对应 `pkg/server/internal/packetio/packetio.go` 与 `conn.go` 中 packet、TLS、PROXY、地址和 socket 生命周期，但 Rust 把能力收敛到 `PacketIo` trait。
 - `ConcreteSessionDriver::open_ctx` 与 `ConcreteTiDBContext` 对应 `pkg/server/driver_tidb.go::{TiDBDriver.OpenCtx, TiDBContext}`；Rust 用单连接 worker 解决 canonical session 的线程约束，Go 依靠 goroutine/session 对象直接调用。
 - `prepared_argument`、执行/关闭 prepared statement、long-data 计费和结果转换对应 `TiDBStatement` / `TiDBContext` 的协议职责；具体长数据缓存主要仍由 `conn_stmt` 与 session 实现承担，本文件只代理配额快照/计费和执行。
 - `CanonicalConnectionDomain` 对应 Go `Server`/`Domain` 的连接 ID 分配释放；`CanonicalServerDomain` 汇聚 Go `server.go` 从 Domain 读取的状态能力。
@@ -92,9 +92,8 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 
 ## 验证依据
 
-- 生产源码：`pkg/server/runtime.rs`（2098 行），核对 transport、四个公开适配类型、`SessionRequest`、worker、执行/结果转换及 `TiDBContext` 实现。
-- crate/模块：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`；入口接线：`cmd/tidb-server/main.rs`。
-- Rust 独立测试：`pkg/server/runtime_test.rs`（1187 行），包含 TCP codec/lifecycle、PROXY 延迟探测、真实 SQL/鉴权、连接 ID、取消、DDL/MDL/Domain 生命周期、LOCAL INFILE、连接事件、Unix 地址及 long-data 配额用例；入口补充测试位于 `cmd/tidb-server/main_test.rs`。
-- Go 对照：`pkg/server/internal/packetio.go`、`pkg/server/conn.go`、`pkg/server/driver_tidb.go`、`pkg/server/server.go`。
-- RustCodeGraph：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/runtime.rs` 识别该文件 195 个符号；`explore` 核对 `assembleCanonicalServer -> from_canonical/session_driver` 以及 `session_driver` 的入口与测试调用者，`node --file` 分段核对全部 2098 行实现。
-- 本任务是纯文档分析，未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核本文只陈述上述源码、调用图、Cargo、Go 与测试能够支持的事实。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/runtime.rs` 差异及目标 blob `1c941b37cc5d9cd36d5366535e865c5acf3bd1a3` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/runtime.rs` 和 `git show 2c944fb:pkg/server/runtime.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/runtime_test.rs`，Go 对照为 `pkg/server/conn.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

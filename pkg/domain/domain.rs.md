@@ -30,6 +30,8 @@
 
 ## 执行流程
 
+冻结增量：正常 `start` 与独立诊断实现共享 `begin_start`，按顺序检查 initialized、closed，并以 started 的原子 swap 拒绝重复启动。正常 `start` 保留 DDL 启动失败时清除 started 的回滚，再调用 `start_schema_reload_worker(false)`；只有 DDL 不管理 schema sync 时才创建 reader。诊断入口调用同一 helper 的 true 分支，强制启动 reader。reader 的周期至少 10ms，仅在加载成功且 schema 版本严格增大时插入缓存；加载错误保持旧缓存。此重构不为诊断路径增加正常 start 的其他 worker 或独立 server-ID 租约。
+
 主生命周期如下：
 
 1. `Domain::new` 包装存储为 `StorageHandle` 后转入 `new_with_storage_handle`。后者创建 InfoCache、statistics `Handle`/`KvStatsStore`、KV AutoID store、历史统计 worker，并初始化所有原子量、队列、锁和目录快照；此时尚不能读 `info_schema`。
@@ -58,8 +60,6 @@
 - `pkg/session/runtime/planning.rs` 消费 `stats_handle`、`stats_context` 和 `info_schema`；`pkg/session/runtime/dml.rs` 调用 DDL/统计目录入口；`pkg/session/runtime/scan_adapter_runtime.rs` 写入慢查询。
 
 下游依赖集中在 `canonical_domain::{StorageHandle, InfoSchemaLoader, DdlMetadataService}`、`astersql_infoschema::InfoCache`、`astersql_statistics_handle`、`astersql_meta_autoid` 和 `astersql_kv`。可选边界通过 trait/弱引用注入：`DdlService`、`AutoAnalyzeExecutor`、schema coordinator、资源组状态提供者和多个 manager，使 Domain 不直接拥有 SQL 执行器实现。
-
-RustCodeGraph 索引显示 `pkg/domain/domain.rs` 被 113 个文件使用；文件级精确检索确认生命周期主调用者位于 session factory/session/testkit，DDL reload 回边位于 normal DDL service。泛化方法名在全仓库高度重载，调用边结论因此只采用文件限定结果，不采用无文件约束的 `new`/`close` 候选。
 
 ## 错误处理与边界
 
@@ -96,8 +96,8 @@ Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、ch
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/domain` 确认目标及 Go/Rust 测试；`node --file pkg/domain/domain.rs` 分段核对源文件；`query domain.rs::Domain` 定位 `Domain` 及统计相关结构。索引报告该文件被 113 个文件使用。
-- 直接读取：`pkg/domain/domain.rs`、`pkg/domain/Cargo.toml`、`pkg/domain/lib.rs`、`pkg/domain/domain_test.rs`、`pkg/domain/canonical_domain_test.rs`、`pkg/domain/domain.go`、`pkg/domain/domain_test.go`、`pkg/domain/db_test.go`。
-- 上游接线核验：`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/planning.rs`、`pkg/session/runtime/dml.rs`、`pkg/testkit/mockstore.rs`。
-- 关键测试事实：`canonical_analyze_sql_detection_matches_tidb_statement_prefixes` 验证注释/空白/大小写边界；`domain_uses_canonical_storage_and_infoschema_lifecycle` 验证规范存储与 schema 生命周期；`domain_initializes_statistics_after_schema_bootstrap_in_read_only_transaction` 验证统计初始化；pending ADD INDEX、cross-keyspace、external workload 和 inference 生命周期分别由 `pkg/domain/canonical_domain_test.rs` 中具名独立测试覆盖。
-- 本任务为纯文档分析，未运行 Cargo；最终仅执行任务规定的 11 章节结构检查，并人工复核没有把 Go 独有能力写成 Rust 已支持事实。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/domain.rs` 差异及目标 blob `0e67fb16fec6b5b3d528a315c14a0400c6f22d12` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/domain.rs` 和 `git show 2c944fb:pkg/domain/domain.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/diagnostic_test.rs`，Go 对照为 `pkg/domain/domain.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

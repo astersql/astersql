@@ -31,6 +31,8 @@
 
 ## 执行流程
 
+冻结增量：`Log.timeout_action` 默认来自 `LOG_TIMEOUT_ACTION_PANIC`；`Config::valid` 在 RU 权重检查后按 ASCII 小写匹配，空串或 panic 规范化为 panic，discard 规范化为 discard，其余值返回 `log.timeout-action` 语义错误。`Log::to_log_config` 将 level/format、慢日志和 general log、文件名/大小、时间戳与错误栈开关及 timeout/timeout_action 投影为运行时 `LogConfig`。转换方法自身不调用校验；超时策略的实际执行属于 logger，而不是本文件。
+
 默认构造流程从 `Config::default` 开始：先填充所有标量和子结构默认值，再调用 `encode_def_temp_storage_dir(std::env::temp_dir(), host, status_host, port, status_port)` 生成实例特定的落盘目录。目录中包含当前 UID 和对 `host:port/status_host:status_port` 做 URL-safe Base64 后的片段，避免同机默认端口组合互相覆盖。`PessimisticTxn::default` 还通过 `astersql_config_kerneltype::IsNextGen()` 决定悲观自动提交默认值。
 
 完整文件载入由 `Config::load` 完成：读取文本后先解码为 `toml::Table` 保存“用户显式配置了哪个键”的元信息，再解码为带默认值的 `Config`。随后它把 `token-limit=0` 回退到 1000，并将过大值裁到 `MAX_TOKEN_LIMIT`；仅允许 starter 显式配置错误扩展、hosted embedding、非空 bootstrap file 和 external workload；starter 未显式给出 `max-import-data-size` 时补 25 GiB，未显式给出 `standby.enable-zero-backend` 时补 true；仅 `premium_reserved` 可显式配置 `dxf-resource-limit`。最后若 `extra` 非空则以第一个未知键报错，全部成功才用 `*self = loaded` 整体提交，因此前置失败不会把半成品写回调用者。
@@ -63,8 +65,6 @@ starter 安全覆盖是独立流程：`adjust_starter_config(false)` 直接返�
 - 窄接口桥接：`pkg/keyspace/keyspace.rs` 使用 `get_global_keyspace_name`；`pkg/session/runtime/dispatch.rs:2816` 通过 `get_json_config` 对外返回过滤后的配置；`pkg/config/lib.rs` 的 `tikvcfg::GetTxnScopeFromConfig` 从全局 labels 的 `zone` 推导事务 scope。
 
 本文件的直接下游依赖包括：Serde/TOML 负责协议；`regex` 编译错误扩展；`base64` 和 `users::get_current_uid` 构造临时路径；`users::get_effective_uid` 检查 `skip-grant-table` 权限；`url` 验证 metering URI；`once_cell`、`Arc`、`RwLock` 和原子类型实现全局状态；`astersql-resourcegroup` 提供共享 `StmtWeights` 及默认权重；`astersql-config-kerneltype` 提供内核类型默认分支；`astersql-config-configtypes` 提供 Go 兼容字节大小文本协议。相邻模块提供 external workload 与 keyspace observability 的数据和校验逻辑。
-
-RustCodeGraph 对 `config.rs::get_global_config` 的调用边直接列出 `update_global`、`restore_func`、表锁/keyspace/max-packet/JSON 便捷函数，以及 session runtime 消费者；对 `prepare_error_message_extensions` 的调用边为 `Config::valid` 和 `store_global_config`；对 `store_global_config` 的文件内调用边为 `update_global` 和 `restore_func`。由于常见函数名存在跨包同名，检索调用关系时必须按 `pkg/config/config.rs` 定义消歧，不能把 `pkg/domain/globalconfigsync` 或 TiKV driver 的同名函数当成本文件 API。
 
 ## 错误处理与边界
 
@@ -106,9 +106,8 @@ Rust 独立测试把“保持 Go 语义”作为显式合同：`pkg/config/confi
 
 ## 验证依据
 
-- 源码与 crate 边界：完整阅读 `pkg/config/config.rs`（1889 行）、`pkg/config/lib.rs` 和 `pkg/config/Cargo.toml`；确认 crate 通过根模块重导出本文件，依赖与本文描述一致。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/config` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/config/config.rs` 分段核对全部源码。`query`/`node` 检查了 `Config`、`get_global_config`、`store_global_config`、`prepare_error_message_extensions`、`load_postgres_port`、`valid_max_allowed_packet`；调用边确认 `prepare_error_message_extensions <- Config::valid/store_global_config`、`store_global_config -> prepare_error_message_extensions/GLOBAL_CONFIG/PREPARED_EXTENSIONS`、`get_global_config` 的文件内包装函数与 session runtime 消费者。
-- 直接调用证据：检索 Rust 生产文件确认 `cmd/tidb-server/main.rs:1203,1794`、`pkg/sessionctx/variable/sysvar_builtins.rs:1654-1658`、`br/pkg/gluetikv/glue.rs:240-244` 以及 session/DDL/executor/distsql/store/domain/server 等读取点。RustCodeGraph 对常见同名符号存在多定义，因此调用结论以目标文件定义和路径消歧。
-- Go 对照：阅读 `pkg/config/config.go` 的 `Config`、默认/全局快照、`InitializeConfig`、`AdjustStarterConfig`、`Load`、`Valid`、`UpdateGlobal`、`RestoreFunc`、`GetJSONConfig` 和 `GetMaxAllowedPacket` 邻近实现；对照确认相同主语义与上述迁移边界。参考 Go 回归入口 `pkg/config/config_test.go`，包括 `TestLogConfig`、`TestErrorMessageExtensionConfig`、`TestConfig`、`TestDeployModeConfig`、`TestConflictInstanceConfig`、`TestDeprecatedConfig`、`TestGetJSONConfig` 等。
-- Rust 独立测试：阅读 `pkg/config/config_test.rs` 与 `pkg/config/config_2_aster_unit_test.rs`，重点核对 TOML 载入、Serde 键名/默认值、日志三态布尔、部署模式、未知项、数值边界、TLS/root 权限、全局恢复、JSON 过滤、错误正则、RU、字节大小及 Go parity。测试由 `pkg/config/lib.rs` 的 `#[cfg(test)] #[path = ...]` 独立挂载，符合生产源与测试分离要求。
-- 本任务是纯文档分析，按计划不运行 Cargo，也未修改 Rust、Go、Cargo 或 `plan.md`。交付前执行任务指定的 11 章节结构命令，并人工复核本文能回答文件为何存在、如何加载/校验/发布、由谁消费以及如何安全扩展。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/config/config.rs` 差异及目标 blob `f01f53f1c2b364b0a41522cb946af4d4550e0181` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/config/config.rs` 和 `git show 2c944fb:pkg/config/config.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/config/config_test.rs`，Go 对照为 `pkg/config/config.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

@@ -36,6 +36,8 @@
 
 ## 数据与状态
 
+冻结增量：`StaticInfo.DisableRPC` 默认 false，`IsDisableRPC` 直接返回此字段。`ServerInfo::Marshal` 仅在 true 时输出 `"disable_rpc":true`，保留旧节点省略字段的兼容性。解析器把 `Json::Bool` 改为携带实际 bool；`assign_bool` 对 null 不覆盖、对布尔赋值、对其他类型返回字段类型错误，字段名匹配继续忽略大小写。此标记供调用方选择 RPC 目标，本模型本身不施加网络访问限制。
+
 `StaticInfo` 的设计不变量是节点运行期间原则上不变；例外是 `JSONServerID` 在每次 `Marshal` 前从回调刷新，因为 PD 重连等场景可能改变 Domain 持有的 server ID。`ServerIDGetter` 使用 `Arc` 使克隆后的记录仍能查询同一动态来源；反序列化得到的记录无法恢复原外部来源，所以改为捕获已解码 ID 的固定闭包。
 
 `DynamicInfo::Labels` 是唯一明确的运行时动态数据。`syncer.rs::UpdateServerLabel` 先克隆标签，只有实际变化时才对克隆后的完整 `ServerInfo` 编码并写入 etcd，成功后再替换本地动态部分。序列化时对 `HashMap` 键排序，使相同逻辑状态产生确定字节序；反序列化到已有对象时，labels 对象是增量插入而非先整体清空，但 JSON `null` 会清空标签。
@@ -43,8 +45,6 @@
 `StaticInfo::Unmarshal` 只处理静态字段，明确忽略 `labels` 等动态字段；JSON `null` 表示不修改当前静态值。`ServerInfo::Unmarshal` 同样允许在现有对象上部分更新，因此调用者不能假设未出现的字段会被清零。
 
 ## 依赖与调用关系
-
-直接上游由 RustCodeGraph 文件关系和已索引源码确认：`pkg/domain/serverinfo/lib.rs` 重导出本模块；`pkg/domain/serverinfo/syncer.rs` 构造、锁定、克隆、编解码并持久化这些类型；`pkg/domain/domain.rs` 启动服务器信息与拓扑注册；`pkg/domain/canonical_domain.rs`、`pkg/session/tidb_test.rs` 和 `pkg/domain/serverinfo/info_test.rs` 也使用本文件。RustCodeGraph 对本文件报告 4 个直接使用文件，其中包括 `canonical_domain.rs`、`domain.rs`、`info_test.rs`、`tidb_test.rs`；同 crate 内 `syncer.rs` 的具体调用由已索引源码进一步核实。
 
 关键下游关系为：`ServerInfo::Marshal` 调用 `json_string` 并执行 `ServerIDGetter`；`ServerInfo::Unmarshal`/`StaticInfo::Unmarshal`/`TopologyInfo::Unmarshal` 调用 `JsonParser` 与 `assign_*`；`ToTopologyInfo` 调用 `std::env::current_exe`；所有克隆和共享回调仅依赖 `HashMap`、`Arc`、`Duration` 等标准库类型。Cargo 中的 `etcd-client`、`tokio`、`astersql-config` 与日志依赖属于 crate 的同步/基础设施层，而非本文件直接依赖。
 
@@ -79,8 +79,8 @@ etcd 资源生命周期由 `Syncer` 管理：完整服务器信息绑定 45 秒 
 
 ## 验证依据
 
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/domain/serverinfo/info.rs` 被索引为 58 个符号。读取了该文件全部 747 行，并查询了 `ServerInfo`、`Marshal`、`Unmarshal`、`ToTopologyInfo`；精确 callers/callees 命令未返回可用结果，因此没有据此虚构函数级图边。
-- 已索引源码：`pkg/domain/serverinfo/info.rs`、`pkg/domain/serverinfo/info_test.rs`、`pkg/domain/serverinfo/lib.rs`、`pkg/domain/serverinfo/syncer.rs`、`pkg/domain/domain.rs`、Go 对照 `pkg/domain/serverinfo/info.go`。
-- 配置与测试证据：`pkg/domain/serverinfo/Cargo.toml`；直接测试 `info_test.rs` 的 9 个测试覆盖编码、Display、getter 缺失、部分更新、类型/Unicode、重复字段、拓扑默认值、深拷贝和静态身份解码；同步生命周期的相关覆盖位于 `pkg/domain/serverinfo/syncer_test.rs` 与 Go `pkg/domain/serverinfo/syncer_test.go`。
-- 人工复核结论：本文件存在于网络同步层与 etcd 值之间，运行时由 `Syncer` 构造并在注册、标签更新、远端查询和拓扑刷新路径调用；安全扩展入口及必须同步的独立测试已在上一节列明。
-- 本任务只新增说明文档，未运行 Cargo，也未修改 Rust、Go、Cargo 或只读总计划；最终以任务指定的 11 标题结构命令验证。
+本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/serverinfo/info.rs` 差异及目标 blob `8be7784b6a9ee938d0e74462752cddb9e81a2ebe` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/serverinfo/info.rs` 和 `git show 2c944fb:pkg/domain/serverinfo/info.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
+
+模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/serverinfo/info_test.rs`，Go 对照为 `pkg/domain/serverinfo/info.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
+
+RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。
