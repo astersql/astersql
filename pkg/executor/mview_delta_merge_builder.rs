@@ -56,6 +56,14 @@ pub struct LookupRequest {
 /// snapshot and bind keys to the supplied index-range positions before scanning.
 pub trait Resources: MutationRuntime {
     fn target_field_types(&self) -> Vec<FieldType>;
+    /// Resolve actual table metadata; absence must fail closed for COMPLETE APPLY.
+    fn complete_delta_target_columns(
+        &self,
+    ) -> Result<crate::mview_complete_delta_apply_builder::TargetColumns, BuildError> {
+        Err(BuildError::new(
+            "MViewCompleteDeltaApply target column metadata unavailable",
+        ))
+    }
     fn read_full_update(
         &self,
         source: &PlanNode,

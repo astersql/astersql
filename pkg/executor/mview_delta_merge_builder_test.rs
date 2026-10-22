@@ -370,6 +370,11 @@ impl MutationRuntime for Resource {
     }
 }
 impl Resources for Resource {
+    fn complete_delta_target_columns(
+        &self,
+    ) -> Result<crate::mview_complete_delta_apply_builder::TargetColumns, BuildError> {
+        Ok(complete_delta_apply::target_columns(&self.target_fields))
+    }
     fn target_field_types(&self) -> Vec<FieldType> {
         self.target_fields.clone()
     }
@@ -533,6 +538,9 @@ struct Deps {
     rt: Arc<Resource>,
     calls: Mutex<Vec<String>>,
     fail_child: bool,
+    complete: bool,
+    fail_update_ts: bool,
+    missing_table: bool,
 }
 macro_rules! unused_dependency_methods {
     ($(fn $name:ident($($args:tt)*) $(-> $ret:ty)?;)*) => {
@@ -551,6 +559,9 @@ impl ExecutorBuilderDependencies for Deps {
     }
     fn update_for_update_ts(&self) -> Result<(), BuildError> {
         self.calls.lock().unwrap().push("update".into());
+        if self.fail_update_ts {
+            return Err(BuildError::new("for-update TS unavailable"));
+        }
         Ok(())
     }
     fn statement_for_update_ts(&self) -> Result<u64, BuildError> {
@@ -584,6 +595,11 @@ impl ExecutorBuilderDependencies for Deps {
         }
     }
     fn resolve_table(&self, id: i64, _: bool) -> Result<ResolvedTable, BuildError> {
+        if self.missing_table {
+            return Err(BuildError::new(format!(
+                "target table id {id} not found in infoschema"
+            )));
+        }
         Ok(ResolvedTable {
             id,
             name: "mv".into(),
@@ -608,10 +624,29 @@ impl ExecutorBuilderDependencies for Deps {
         if self.fail_child {
             return Err(BuildError::new("child failed"));
         }
+        if self.complete {
+            return Ok(Box::new(Source::new(
+                vec![row(&[1, 0, 0, 0, 2, 3, 4])],
+                fields(7),
+            )));
+        }
         Ok(Box::new(Source::new(
             vec![row(&[1, 5, 1, 2, 10])],
             fields(5),
         )))
+    }
+    fn build_parallel_unary_executor(
+        &self,
+        kind: ExecutorKind,
+        _: &dyn ParallelUnaryPlanData,
+        child: ExecutorBox,
+        workers: i64,
+    ) -> Result<ExecutorBox, BuildError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{kind:?}:{workers}"));
+        Ok(child)
     }
     unused_dependency_methods! {
     fn build_deferred_executor(
@@ -701,13 +736,6 @@ impl ExecutorBuilderDependencies for Deps {
             child: ExecutorBox,
             config: StreamAggBuildConfig,
         ) -> Result<ExecutorBox, BuildError>;
-    fn build_parallel_unary_executor(
-            &self,
-            kind: ExecutorKind,
-            plan: &dyn ParallelUnaryPlanData,
-            child: ExecutorBox,
-            workers: i64,
-        ) -> Result<ExecutorBox, BuildError>;
     fn build_top_n_executor(
             &self,
             plan: &dyn TopNPlanData,
@@ -742,11 +770,6 @@ impl ExecutorBuilderDependencies for Deps {
     fn build_delete_executor(
             &self,
             plan: &dyn DeletePlanData,
-            child: ExecutorBox,
-        ) -> Result<ExecutorBox, BuildError>;
-    fn build_mview_complete_delta_apply_executor(
-            &self,
-            plan: &dyn MViewCompleteDeltaApplyPlanData,
             child: ExecutorBox,
         ) -> Result<ExecutorBox, BuildError>;
     fn build_delete_foreign_key_checks(&self, plan: &dyn DeletePlanData) -> Result<(), BuildError>;
@@ -965,6 +988,9 @@ fn dependencies() -> Arc<Deps> {
         )),
         calls: Mutex::new(vec![]),
         fail_child: false,
+        complete: false,
+        fail_update_ts: false,
+        missing_table: false,
     })
 }
 fn builder(deps: Arc<Deps>) -> executorBuilder {
@@ -1293,3 +1319,6 @@ fn mview_delta_merge_rejects_target_types_and_duplicate_key_result_layout() {
             .contains("duplicate")
     );
 }
+
+#[path = "mview_complete_delta_apply_builder_test.rs"]
+mod complete_delta_apply;

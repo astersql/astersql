@@ -151,6 +151,7 @@ pub mod mpp_gather;
 #[cfg(test)]
 mod mpp_gather_test;
 pub mod mview_complete_delta_apply;
+pub mod mview_complete_delta_apply_builder;
 #[cfg(test)]
 mod mview_complete_delta_apply_test;
 pub mod mviewdeltamergeagg;

@@ -849,6 +849,7 @@ pub trait PlanData: Send + Sync {}
 /// resources are resolved by `ExecutorBuilderDependencies`.
 pub trait MViewCompleteDeltaApplyPlanData: UnaryPlanData {
     fn target_table_id(&self) -> i64;
+    fn apply_plan(&self) -> &astersql_planner_core::MViewCompleteDeltaApply;
 }
 /// Incremental materialized-view aggregate merge plan data.
 pub trait MViewDeltaMergePlanData: UnaryPlanData {
@@ -2134,11 +2135,6 @@ pub trait ExecutorBuilderDependencies: Send + Sync {
         plan: &dyn DeletePlanData,
         child: ExecutorBox,
     ) -> Result<ExecutorBox, BuildError>;
-    fn build_mview_complete_delta_apply_executor(
-        &self,
-        plan: &dyn MViewCompleteDeltaApplyPlanData,
-        child: ExecutorBox,
-    ) -> Result<ExecutorBox, BuildError>;
     /// Resolve the table-bound transaction and snapshot reader resources. The
     /// builder, rather than the dependency, compiles mappings and owns execution.
     fn mview_resources(
@@ -2418,6 +2414,7 @@ pub struct executorBuilder {
     inInsertStmt: bool,
     inSelectLockStmt: bool,
     inMViewDeltaMergeStmt: bool,
+    inMViewCompleteDeltaApplyStmt: bool,
     forDataReaderBuilder: bool,
     dataReaderTS: u64,
     encounterUnionScan: bool,
@@ -2451,6 +2448,7 @@ pub fn newExecutorBuilder(
         inInsertStmt: false,
         inSelectLockStmt: false,
         inMViewDeltaMergeStmt: false,
+        inMViewCompleteDeltaApplyStmt: false,
         forDataReaderBuilder: false,
         dataReaderTS: 0,
         encounterUnionScan: false,
@@ -3845,6 +3843,8 @@ impl executorBuilder {
             || self.inUpdateStmt
             || self.inDeleteStmt
             || self.inInsertStmt
+            || self.inMViewDeltaMergeStmt
+            || self.inMViewCompleteDeltaApplyStmt
             || self.hasLock
         {
             0
@@ -3875,6 +3875,7 @@ impl executorBuilder {
             || self.inDeleteStmt
             || self.inSelectLockStmt
             || self.inMViewDeltaMergeStmt
+            || self.inMViewCompleteDeltaApplyStmt
         {
             return self.dependencies.statement_for_update_ts();
         }
@@ -3888,6 +3889,7 @@ impl executorBuilder {
             || self.inDeleteStmt
             || self.inSelectLockStmt
             || self.inMViewDeltaMergeStmt
+            || self.inMViewCompleteDeltaApplyStmt
         {
             self.dependencies.snapshot_with_for_update_ts()?
         } else {
@@ -4050,10 +4052,35 @@ impl executorBuilder {
         &mut self,
         plan: &dyn MViewCompleteDeltaApplyPlanData,
     ) -> Option<ExecutorBox> {
-        let child = self.build_required_child(plan.child_plan(), "MViewCompleteDeltaApply")?;
-        let result = self
-            .dependencies
-            .build_mview_complete_delta_apply_executor(plan, child);
+        let previous = self.inMViewCompleteDeltaApplyStmt;
+        self.inMViewCompleteDeltaApplyStmt = true;
+        let result = (|| {
+            self.dependencies.update_for_update_ts()?;
+            let child = self
+                .build_required_child(plan.child_plan(), "MViewCompleteDeltaApply")
+                .ok_or_else(|| {
+                    self.err.clone().unwrap_or_else(|| {
+                        BuildError::new("MViewCompleteDeltaApply source executor is nil")
+                    })
+                })?;
+            let data = plan.apply_plan();
+            if data.mv_table_id != plan.target_table_id() {
+                return Err(BuildError::new(
+                    "MViewCompleteDeltaApply target table mismatch",
+                ));
+            }
+            let table = self.dependencies.resolve_table(data.mv_table_id, false)?;
+            if table.id != data.mv_table_id {
+                return Err(BuildError::new(
+                    "MViewCompleteDeltaApply resolved target table mismatch",
+                ));
+            }
+            let resources = self
+                .dependencies
+                .mview_resources(&table, &data.current_handle_cols)?;
+            crate::mview_complete_delta_apply_builder::build(data, child, resources)
+        })();
+        self.inMViewCompleteDeltaApplyStmt = previous;
         self.finish(result)
     }
 
