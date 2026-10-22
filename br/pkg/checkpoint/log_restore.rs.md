@@ -93,7 +93,7 @@ Go 测试 `br/pkg/checkpoint/checkpoint_test.go` 验证 metadata/progress/修复
 
 ## 验证依据
 
-- 源码：`br/pkg/checkpoint/log_restore.rs`（全部 326 行）、`br/pkg/checkpoint/checkpoint.rs`（消息、Runner、Append、收尾）、`br/pkg/checkpoint/manager.rs`（traits 与两种 manager 实现）、`br/pkg/checkpoint/lib.rs`（模块与测试挂载）。
+- 源码：`br/pkg/checkpoint/log_restore.rs`（全部 334 行）、`br/pkg/checkpoint/checkpoint.rs`（消息、Runner、Append、收尾）、`br/pkg/checkpoint/manager.rs`（traits 与两种 manager 实现）、`br/pkg/checkpoint/lib.rs`（模块与测试挂载）。
 - 边界配置：`br/pkg/checkpoint/Cargo.toml`（crate 类型、Go 包映射、serde/serde_json 等依赖）。
 - Go 对照：`br/pkg/checkpoint/log_restore.go`；Go 测试证据来自 `br/pkg/checkpoint/checkpoint_test.go`。
 - Rust 测试：`br/pkg/checkpoint/log_restore_test.rs`、`br/pkg/checkpoint/checkpoint_test.rs`、`br/pkg/checkpoint/parity_test.rs`；生产/上层引用还核对了 `br/pkg/restore/log_client/client.rs`、`br/pkg/task/stream.rs` 和 `br/pkg/task/stream_test.rs` 的文本调用点。

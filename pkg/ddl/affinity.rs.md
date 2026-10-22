@@ -4,11 +4,11 @@
 
 本文件属于 `astersql-ddl` crate；crate 根模块 `pkg/ddl/lib.rs` 通过 `pub mod affinity` 将其公开。它把 DDL 对 PD（Placement Driver）亲和组的需求收敛为三层纯 Rust 能力：亲和元数据的最小视图、物理表/分区 key 范围与组 ID 的确定性构造、以及创建/删除后端的 trait 边界。对应的独立单元测试位于 `pkg/ddl/affinity_test.rs`，由 `lib.rs` 的 `#[cfg(test)] mod affinity_test` 挂载。
 
-当前仓库内除该测试外，没有其他 Rust 文件调用本文件的公开函数；因此它已经实现并测试了 Go 逻辑的核心算法与后端抽象，但尚未接入 Rust DDL 作业执行主链。实际完整生产接线仍可在 Go 对照 `pkg/ddl/affinity.go` 以及其调用方 `pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/schema.go` 中看到。它不是一个独立 DDL 作业状态机，不直接持久化 job、推进 schema state、回填数据或更新 schema version。
+冻结提交中，`pkg/session/runtime/create_table_resources.rs` 的创建与删除亲和资源路径复用 `table_affinity_group_id_for_keyspace` 和 `partition_affinity_group_id_for_keyspace`。本文件的 manager/codec 抽象入口仍未被生产路径直接调用；不能把 helper 的生产复用等同于这套抽象全部接线。实际完整生产接线仍可在 Go 对照 `pkg/ddl/affinity.go` 以及其调用方 `pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/schema.go` 中看到。它不是一个独立 DDL 作业状态机，不直接持久化 job、推进 schema state、回填数据或更新 schema version。
 
 ## 核心职责
 
-1. `get_table_affinity_group_id` 与 `get_partition_affinity_group_id` 生成与 Go/PD 约定一致、基于稳定物理 ID 的组名。
+1. `get_table_affinity_group_id` 与 `get_partition_affinity_group_id` 接收可选 codec，生成与 Go/PD 约定一致、基于物理 ID 和可选 keyspace ID 的组名。
 2. `build_affinity_group_key_range` 将物理 ID 映射为左闭右开区间 `[t{id}, t{id+1})`，必要时再经 `AffinityCodec` 加入 keyspace/Region 编码。
 3. `build_affinity_group_definitions` 根据 `AffinityLevel::Table` 或 `AffinityLevel::Partition` 生成完整的“组 ID → key 范围列表”映射，并拒绝缺少分区定义的分区级配置。
 4. `create_table_affinity_groups`、`delete_table_affinity_groups` 和 `batch_delete_table_affinity_groups` 负责空操作短路、批量整理和后端错误映射；真正的 PD I/O 留给 `AffinityGroupManager` 实现。
@@ -21,7 +21,7 @@
 - `AffinityTable { id, name, affinity, partition_ids }`：从 Go `model.TableInfo` 抽出的最小输入。`name` 当前没有参与计算或错误格式化；`affinity: None` 表示无事可做。
 - `AffinityGroupKeyRange { start_key, end_key }`：PD key 范围的本地表示，语义为左闭右开。
 - `AffinityError::{MissingPartitions, InvalidLevel, Backend}`：分别表示分区元数据不完整、预留的非法级别和后端字符串错误。`Display` 当前直接输出 `Debug` 形式。
-- `AffinityCodec::encode_region_range`：可选的存储编码边界。调用方不提供 codec 时保留逻辑 table key；提供时同时重写起止 key。
+- `AffinityCodec::encode_region_range`：可选的存储编码边界；`keyspace_id` 默认返回 `None`，NextGen 实现可返回 `Some(u32)` 来同时隔离组名。调用方不提供 codec 时保留逻辑 table key；提供时同时重写起止 key。
 - `AffinityGroupManager::{create_groups_if_not_exists, delete_groups_with_retry}`：PD 管理边界。创建契约要求幂等，删除契约名称要求实现重试，但本文件自身不实现网络、重试或日志。
 - `encode_table_prefix`：私有函数，产生 `b't' + ((id as u64) xor 2^63)` 的大端字节序，与 Go `tablecodec.EncodeTablePrefix` 使用的可比较有符号整数编码对齐。
 - `build_affinity_group_definitions`：核心分派函数；表级产生一个范围，分区级按显式或表内分区 ID 逐一产生范围。
@@ -43,7 +43,7 @@
 
 本文件没有全局可变状态。所有定义都在调用栈上构造并按值返回；`AffinityTable`、key 字节和组 ID 都是拥有所有权的数据。`BTreeMap`/`BTreeSet` 使组遍历和交给后端的 ID 顺序确定，便于测试与日志稳定；这比 Go `map` 的无序遍历更强，但不改变组集合语义。
 
-组 ID 不随名称变化，只取决于表/分区物理 ID：表级为 `_tidb_t_{table_id}`，分区级为 `_tidb_pt_{table_id}_p{partition_id}`。表级范围取表 ID；分区级范围取每个分区 ID。`AffinityTable.name` 当前只是为未来更友好的诊断保留。
+组 ID 不随表名称变化。Classic（无 codec 或 `keyspace_id=None`）为 `_tidb_t_{table_id}` / `_tidb_pt_{table_id}_p{partition_id}`；NextGen（`Some(keyspace_id)`，包括 0）为 `_tidb_ks{keyspace_id}_t_{table_id}` / `_tidb_ks{keyspace_id}_pt_{table_id}_p{partition_id}`。两个 `*_for_keyspace` helper 接受已解析 ID，供 session 运行时复用，避免不同 keyspace 的相同物理 ID 冲突。表级范围取表 ID；分区级范围取每个分区 ID。`AffinityTable.name` 当前只是为未来更友好的诊断保留。
 
 范围结束值使用 `wrapping_add(1)`，因此 `i64::MAX` 的结束 ID 回绕为 `i64::MIN`；`test_affinity_key_range_max_physical_id_wraps_like_go` 明确锁定了这一与 Go `int64` 运算相同的边界。该行为不能改成饱和加法而不破坏兼容性。
 
@@ -53,7 +53,7 @@
 
 `create_table_affinity_groups` / `delete_table_affinity_groups` / `batch_delete_table_affinity_groups` → `build_affinity_group_definitions` → 组 ID 函数 + `build_affinity_group_key_range` → 可选 `AffinityCodec::encode_region_range`；创建/删除入口最后调用 `AffinityGroupManager`。
 
-RustCodeGraph 将 `build_affinity_group_definitions` 定位在 `pkg/ddl/affinity.rs:151`，并给出三个同文件调用者及其对 ID/range 构造函数的下游边。仓库级 Rust 搜索未发现测试以外的外部调用者，说明当前 Rust 生产接线缺失，而不是图中存在一条已经落地的 DDL job 链。
+冻结提交的 `git grep` 确认 session 运行时调用两个 `*_for_keyspace` helper；组定义及 manager 入口仍是本文件内部组合和独立测试使用。运行时从 domain 获取 keyspace 并自行编码范围、调用亲和后端，应与本文件抽象层区分。
 
 `pkg/ddl/Cargo.toml` 确认本文件属于 `astersql-ddl`，但源码只使用标准库；它没有直接引用 manifest 中的 `astersql-domain-affinity`。该依赖目前只位于 `target.'cfg(windows)'.dependencies`，而本文件通过本地 trait 隔离后端。模块公开性来自 `pkg/ddl/lib.rs`；测试装配也在同一文件。Go 生产侧则直接依赖 `pkg/domain/affinity`、TiKV codec、PD HTTP 类型和 DDL `jobContext`。
 
@@ -71,7 +71,7 @@ RustCodeGraph 将 `build_affinity_group_definitions` 定位在 `pkg/ddl/affinity
 
 本文件不创建线程、异步任务、锁、通道或事务。函数同步执行；`&mut dyn AffinityGroupManager` 保证单次调用期间对管理器的独占可变借用，但不声明管理器跨线程安全，也不防止不同管理器实例并发操作同一 PD 组。
 
-codec 仅在范围构造期间以共享借用存在；构造出的 key 拥有字节缓冲区，不依赖 codec 生命周期。manager 借用只覆盖一次创建或删除调用。网络连接、超时、重试退避和 PD 资源的持久生命周期全部由未来的 manager 实现负责。创建幂等性及删除重试同样是 trait 契约；`MemoryGroups` 测试替身只验证集合效果和调用次数，不模拟真实并发或重试。
+codec 在组名及范围构造期间以共享借用存在；构造出的 key 拥有字节缓冲区，不依赖 codec 生命周期。manager 借用只覆盖一次创建或删除调用。网络连接、超时、重试退避和 PD 资源的持久生命周期全部由未来的 manager 实现负责。创建幂等性及删除重试同样是 trait 契约；`MemoryGroups` 测试替身只验证集合效果和调用次数，不模拟真实并发或重试。
 
 从 DDL 生命周期看，Go 对照在 owner 执行 job step 时使用 `jobContext.stepCtx` 和 store codec：创建失败属于关键路径并返回错误，部分删除清理由更外层记录后继续。Rust 文件尚未绑定 job context、owner failover、取消/回滚、schema version 同步或系统表，因此不能单独证明集群故障恢复语义。
 
@@ -85,15 +85,15 @@ codec 仅在范围构造期间以共享借用存在；构造出的 key 拥有字
 - Go `switch` 有 `default`，能报告包含 level、表名和表 ID 的非法级别；Rust 闭合枚举没有未知值，`InvalidLevel` 未使用，`MissingPartitions` 也只携带表 ID。
 - Go 空结果通常为 `nil` map/slice；Rust 返回空 `BTreeMap`/`Vec`。调用语义相同，但 Rust 额外保证排序确定性。
 - Go 入口从 `jobContext` 取得 step context 和 store codec，并直接调用 `domain/affinity`；Rust manager/codec 由调用者注入，当前没有生产适配器。
-- Go 的生产调用边包括：CREATE TABLE 创建组，ALTER/TRUNCATE 创建新组并尽力清理旧组，DROP TABLE 清理，DROP DATABASE 批量清理；Rust 搜索目前未发现对应调用边。
+- Go 的生产调用边包括：CREATE TABLE 创建组，ALTER/TRUNCATE 创建新组并尽力清理旧组，DROP TABLE 清理，DROP DATABASE 批量清理；Rust session 资源代码已复用组名 helper，但不是直接调用本文件的 manager 入口。
 
 Go 测试 `pkg/ddl/affinity_test.go` 同时包含算法测试和经 mock store/domain 的 PD 交互测试；Rust `pkg/ddl/affinity_test.rs` 对纯算法和内存 manager 有较细覆盖，但不等价于真实 PD/domain 集成验证。
 
 ## 扩展指南
 
-要把本模块接入 Rust DDL 主链，最小安全路径是：实现从真实表元数据到 `AffinityTable` 的无损转换；为真实 store codec 实现 `AffinityCodec`；为 `astersql-domain-affinity` 提供 `AffinityGroupManager` 适配器；再在与 Go 对应的 CREATE、ALTER、TRUNCATE、DROP TABLE 和 DROP DATABASE job step 中调用。创建失败必须阻止相应关键步骤，旧组删除则必须逐调用点核对 Go 的尽力清理策略，不能把所有错误统一吞掉或统一升级为 job 失败。
+在现有 session 组名 helper 复用之外，若要接入本模块的 manager/codec 抽象，需：实现从真实表元数据到 `AffinityTable` 的无损转换；为真实 store codec 实现 `AffinityCodec`；为 `astersql-domain-affinity` 提供 `AffinityGroupManager` 适配器；再在与 Go 对应的 CREATE、ALTER、TRUNCATE、DROP TABLE 和 DROP DATABASE job step 中调用。创建失败必须阻止相应关键步骤，旧组删除则必须逐调用点核对 Go 的尽力清理策略，不能把所有错误统一吞掉或统一升级为 job 失败。
 
-修改组名或 key 编码时，应同时更新 `get_*_group_id`、`encode_table_prefix`/`build_affinity_group_key_range` 及独立测试，并验证已存在 PD 组的向后兼容与清理可达性。修改分区选择规则时，应保持 `None` 与显式空 slice 的区别，并覆盖部分分区、重复 ID、TRUNCATE 替换 ID。引入异步或并发 manager 前应定义幂等键、重试可见性、超时/取消和同一组并发创建删除的顺序语义。
+修改组名或 key 编码时，应同时更新 `get_*_group_id`、`encode_table_prefix`/`build_affinity_group_key_range` 及独立测试，并验证已存在 PD 组的向后兼容与清理可达性。修改分区选择规则时，应保持 `None` 回退与显式空 slice 报缺少分区的区别，并覆盖部分分区、重复 ID、TRUNCATE 替换 ID。引入异步或并发 manager 前应定义幂等键、重试可见性、超时/取消和同一组并发创建删除的顺序语义。
 
 测试仍应放在独立的 `pkg/ddl/affinity_test.rs`，不要内嵌回生产源文件。生产适配器落地后还需要新增独立集成测试，覆盖后端错误、重试、owner/job 重放、CREATE 失败回滚以及删除失败继续策略；现有 `MemoryGroups` 测试不足以验证这些行为。
 
@@ -102,6 +102,6 @@ Go 测试 `pkg/ddl/affinity_test.go` 同时包含算法测试和经 mock store/d
 - 源码与模块边界：`pkg/ddl/affinity.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
 - Rust 独立测试：`pkg/ddl/affinity_test.rs`，覆盖 ID/range、codec、分区选择、`i64::MAX` 回绕、缺少分区、幂等创建、部分删除、TRUNCATE 新组和 DROP DATABASE 批量删除。
 - Go 对照与生产调用：`pkg/ddl/affinity.go`、`pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/schema.go`；Go 测试为 `pkg/ddl/affinity_test.go`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query build_affinity_group_definitions --kind function --json` 定位到 `pkg/ddl/affinity.rs:151`，`node build_affinity_group_definitions` 确认三个同文件上游入口与 ID/range 下游构造。`explore` 同时显示 Go 生产调用边和 Rust 本地调用边。
-- 仓库搜索：排除 `pkg/ddl/affinity.rs` 与 `pkg/ddl/affinity_test.rs` 后，对六个公开操作函数名的 `*.rs` 搜索无匹配，据此限定“Rust 尚未生产接线”的结论。
+- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/affinity.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
+- 仓库搜索：排除 `pkg/ddl/affinity.rs` 与 `pkg/ddl/affinity_test.rs` 后，对六个公开操作函数名的 `*.rs` 搜索无匹配，据此限定“manager 入口未生产接线”的结论；两个新增 `*_for_keyspace` helper 的生产调用则已单独核对。
 - DDL 协议背景仅用作定位，来自 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；具体行为结论均回查上述源码和测试，而非依赖文档推断。

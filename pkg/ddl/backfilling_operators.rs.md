@@ -19,6 +19,8 @@
 
 ## 主要符号
 
+- `TemporaryIndexResult::written_bytes: usize`：本批成功提交字节数，由 `TemporaryIndexStore::apply_batch -> Result<usize, TemporaryStoreError>` 的成功返回值提供，worker 不自行按 mutation 长度重算。实现者应返回提交事务大小；失败尝试不产生成功结果，也不会累加字节。
+
 - `OperatorError`：统一表达取消、非法范围、写入/flush 失败和临时索引重试耗尽。`InvalidCheckpoint` 已定义，但当前 `adjust_start_key` 对越界 checkpoint 采用 Go 兼容的回退行为，并不会构造该错误。
 - `TableScanTask` / `IndexRecord` / `IndexRecordChunk`：扫描任务、已编码索引记录以及扫描到写入阶段的传输单元。`table_scan_row_count` 记录过滤前扫描行数，`condition_pushed` 决定写入阶段能否省略 partial-index 复查。
 - `TableScanTaskSource::{adjust_start_key, generate_tasks}`：应用 checkpoint、补齐无界 Region 边界并与整体回填范围求交；`physical_table_id` 只携带上下文，当前函数不据此加载 Region。
@@ -54,7 +56,7 @@
 5. 正常路径构造 `IndexWriteResultSink`，逐结果做 quota 检查并 flush，最后发布 `AddIndexPipelineSummary`。
 6. 外层 `Close` join 协调线程，再关闭两个 stage；线程 panic 会记录写错误并对外返回 `Cancelled`。
 
-临时索引合并路径：`MergeTemporaryIndexExecutor::run_subtask` 构造逐步前移的 `TemporaryIndexScanTask`，反复调用 `handle_one_range`。worker 每次最多选择 `batch_count.max(1)` 条记录；非 `skip` 记录先对正式索引 Set/Delete，再删除临时键，整个 mutation 列表由 `TemporaryIndexStore::apply_batch` 原子提交。成功后从最后扫描键的 `prefix_next` 继续；空批次直接把 `next_key` 设为任务终点。
+临时索引合并路径：`MergeTemporaryIndexExecutor::run_subtask` 构造逐步前移的 `TemporaryIndexScanTask`，反复调用 `handle_one_range`。worker 每次最多选择 `batch_count.max(1)` 条记录；非 `skip` 记录先对正式索引 Set/Delete，再删除临时键，整个 mutation 列表由 `TemporaryIndexStore::apply_batch` 原子提交并返回已提交字节。只有成功尝试的返回值进入 `TemporaryIndexResult.written_bytes`，上层执行器再累计到 `summary.processed_bytes`；失败重试不重复计费。成功后从最后扫描键的 `prefix_next` 继续；空批次直接把 `next_key` 设为任务终点。
 
 ## 数据与状态
 
@@ -111,7 +113,7 @@ Rust 并非 Go 生产实现的等量替代：
 - Go scan worker 从 session pool 获取 session、构建 DistSQL context、在事务中扫描 chunk、更新 checkpoint/metrics；Rust 只过滤调用者传入的 `Vec<IndexRecord>`。
 - Go ingest worker 管理 Lightning writers、session context、表达式 checker、错误转换和 chunk pool；Rust 依赖简化的 `IndexWriter` trait，多个 worker 共享且串行锁住同一个 writer。
 - Go pipeline 使用通用 `operator.AsyncPipeline` 与 worker pool，并由真实 local-ingest / dist-task 入口构建；Rust 自建 OS thread 和无界队列，ADD INDEX pipeline 当前只有测试直接调用。
-- Go merge worker 在 `kv.RunInNewTxn` 内读取临时键、校验唯一键、退避重试并记录指标；Rust 要求调用者预先提供记录，只把 mutation 的原子应用交给 `TemporaryIndexStore`，没有退避计时和唯一键检查。
+- Go merge worker 在 `kv.RunInNewTxn` 内读取临时键、校验唯一键、退避重试并记录指标；Rust 要求调用者预先提供记录，只把 mutation 的原子应用交给 `TemporaryIndexStore`，没有退避计时和唯一键检查。Go 成功事务用 `txn.Size()` 填充 `writtenBytes`，Rust 由 store 成功返回值提供相同统计边界，不能用扫描条数代替事务字节。
 - Go failpoint 是进程级注入点；Rust 用每 pipeline 配置的同路径常量模拟一次性触发，便于并发测试但不是 Go failpoint 框架接线。
 
 因此扩展时应以 Go 行为和 Rust 独立测试共同校验语义，不能因为同名 API 就假设存储、事务、checkpoint 或生产接线已经等价。
@@ -129,7 +131,7 @@ Rust 并非 Go 生产实现的等量替代：
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件，`files --filter pkg/ddl/backfilling_operators.rs` 命中目标；`node --file ...` 读取了 1–1316 行完整源码；`query` 定位 `OperatorError`、Rust/Go 两个 `NewAddIndexIngestPipeline`、`run_add_index_pipeline`、`handle_one_range` 和 `execute_add_index_pipeline`。限定 Rust 符号的 `callers/callees` 查询超过 90 秒无输出后中止，调用边改由精确文本搜索和相邻源码验证。
+- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_operators.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
 - Rust 源与配置：`pkg/ddl/backfilling_operators.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/backfilling.rs`、`pkg/ddl/backfilling_txn_executor.rs`、`pkg/ddl/backfilling_merge_temp.rs`。
 - Rust 独立测试：`pkg/ddl/backfilling_operators_test.rs` 验证越界 checkpoint 回退和 partial-index 过滤后仍报告扫描行数；`pkg/ddl/backfilling_operators_async_test.rs` 验证并发调优、完整执行、quota/flush/summary 以及五个故障边界；`pkg/ddl/backfilling_merge_temp_test.rs` 验证上层临时索引初始化、全局/分区选择及 collector 语义。
 - Go 对照：`pkg/ddl/backfilling_operators.go`；生产入口由 `pkg/ddl/backfilling.go::ddlCtx.addIndexWithLocalIngest` 和 `pkg/ddl/backfilling_read_index.go` 核验，相关故障注入测试入口见 `pkg/ddl/ingest/integration_test.go`。

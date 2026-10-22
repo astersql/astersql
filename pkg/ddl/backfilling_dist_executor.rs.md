@@ -17,7 +17,7 @@
 ## 主要符号
 
 - `BACKFILL_TASK_META_VERSION_0` / `BACKFILL_TASK_META_VERSION_1`：任务元数据版本常量。当前文件定义版本值但不在 `BackfillTaskMeta` 上执行升级逻辑；版本 1 还被 [`backfilling_clean_s3.rs`](backfilling_clean_s3.rs) 用于清理任务校验。
-- `BackfillTaskSummary { index_kv_size }`：记录全局排序路径生成的索引 KV 总字节数；[`LitBackfillScheduler::plan_global_sort_ingest`](backfilling_dist_scheduler.rs) 在写入计划成功后填充它。
+- `BackfillTaskSummary { index_kv_size, merge_temp_index_txn_kv_size }`：分别记录全局排序索引 KV 字节数和临时索引合并已提交事务 KV 字节数，均为默认零的 `u64`；[`LitBackfillScheduler::plan_global_sort_ingest`](backfilling_dist_scheduler.rs) 在写入计划成功后填充前者并将后者置零；`record_merge_temp_index_summary` 在 NextGen 非回退的临时索引合并场景填充后者。`task_ru` 按任务路径选择一种字节权重，不把两项相加。摘要字段不属于 `BackfillSubTaskMeta` 的 `ABFM` 编码布局，不能将新增任务摘要字段描述为子任务协议升级。
 - `BackfillTaskMeta`：任务级配置。`cloud_storage_uri` 是否为空决定 scheduler 的 `global_sort`，`merge_temporary_index` 决定初始阶段是否直接进入临时索引合并；`batch_size`、`max_write_speed` 可被 scheduler 的运行时修改项更新。
 - `BackfillSubTaskMeta`：跨阶段传递的子任务载荷。`physical_table_id`、`row_start`、`row_end`、`ts` 是内联字段；文件列表、range keys、`meta_groups`、`element_ids` 和 `legacy_sorted_kv_meta` 可被外置。
 - `BackfillSubTaskMeta::marshal` / `marshal_all` / `unmarshal`：前者在存在 `external_path` 时清空外置字段再编码“指针载荷”，后者按完整布局解码；协议头固定为 `ABFM` 加版本字节 `0x01`。
@@ -108,6 +108,6 @@ RustCodeGraph 对 `BackfillDistExecutor`、`decode_backfill_subtask_meta`、`wri
 - Go 对照：[`pkg/ddl/backfilling_dist_executor.go`](backfilling_dist_executor.go)；重试边界补证来自 [`pkg/ddl/backfilling_test.go`](backfilling_test.go) 的 `TestBackfillRetryableErrors`。
 - Rust 独立测试：[`pkg/ddl/backfilling_dist_executor_test.rs`](backfilling_dist_executor_test.rs) 验证内外元数据往返、外部载荷不自引用以及当前重试分类；[`pkg/ddl/backfilling_test.rs`](backfilling_test.rs) 还覆盖初始化后的阶段选择。
 - 直接调用/数据流证据：[`pkg/ddl/backfilling_dist_scheduler.rs`](backfilling_dist_scheduler.rs) 的 `LitBackfillScheduler`、`try_generate_plan_for_physical_table`、`plan_global_sort_ingest`；[`pkg/ddl/backfilling_merge_sort.rs`](backfilling_merge_sort.rs) 的 `MergeSortStepExecutor::run_subtask`。
-- RustCodeGraph：`status` 报告索引包含 7,032 个 Rust 文件；`query BackfillDistExecutor --kind struct`、`query decode_backfill_subtask_meta --kind function`、`query write_external_backfill_subtask_meta --kind function` 和 `node BackfillDistExecutor` 确认目标符号与位置。`callers/callees` 未给出完整 Rust 调用边，故再以 `rg` 全仓搜索确认生产/测试调用点。
+- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_dist_executor.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
 - 人工边界复核：当前文件是协议与轻量门面，不是完整 DXF executor；未把 DDL 设计文档概览或 Go 行为当作已接入 Rust 的事实。
-- 本任务仅新增说明文档，不修改运行时代码；按任务约束不运行 Cargo。结构验证应确认文件存在且恰有上述 11 个固定二级标题。
+- 本任务仅更新说明文档，不修改运行时代码；按任务约束不运行 Cargo。结构验证应确认文件存在且恰有上述 11 个固定二级标题。

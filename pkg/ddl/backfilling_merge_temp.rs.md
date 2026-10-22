@@ -36,14 +36,14 @@
 4. `subtask_id` 尝试转成 `usize`；转换失败（例如负数）时退回 0。首个 `TemporaryIndexScanTask` 使用元数据的半开区间 `[start, end)`。
 5. 每轮把当前 `next` 作为新起点调用 `worker.handle_one_range`。worker 从 `records` 中筛选区间内记录、最多取一批，把非 `skip` 记录转换成正式索引 Set/Delete 加临时 key Delete，并通过 `TemporaryIndexStore::apply_batch` 原子提交。
 6. worker 遇到可重试存储错误会把批大小减半（最小 1），最多尝试 16 次；成功或失败退出前恢复原批大小。结果携带扫描数、实际合并数、下一 key 和完成标志。
-7. 执行器要求 `result.next_key` 严格大于本轮起点，以阻止不推进造成的死循环；随后以 `(meta.physical_table_id, index_id)` 累加 `merge_metrics`，并用 `add_count` 同步增加 `summary.row_count` 与 `total_rows`。
+7. 执行器要求 `result.next_key` 严格大于本轮起点，以阻止不推进造成的死循环；随后以 `(meta.physical_table_id, index_id)` 累加 `merge_metrics`，并用 `add_count` 同步增加 `summary.row_count` 与 `total_rows`，同时把 `result.written_bytes as i64` 以 `wrapping_add` 累计到 `summary.processed_bytes`。只有 worker 成功且范围前进检查通过的批次会计入。
 8. `done` 为真或 `next >= end` 时结束，返回已按轮次收集的结果。执行器不自行持久化检查点，调用方只能从返回结果中的 `next_key` 获取批次推进信息。
 
 ## 数据与状态
 
 子任务的权威范围是 `meta.legacy_sorted_kv_meta.start_key/end_key`。索引与实际物理表由起始 key 解码，而 `meta.physical_table_id` 只用于指标标签；这与 Go 的 `DecodeTableID` / `findIndexInfoByDecodingKey` 选择逻辑及指标标签语义一致。临时索引 ID 解码后与 `0x0000_ffff_ffff_ffff` 做掩码，以移除临时索引高位标志。
 
-执行器保存跨调用的可变状态：`physical_table_id`、`index_info` 会被最近一次初始化覆盖；`summary.row_count`、`total_rows`、`merge_metrics` 以及 worker 的 `total_scan_count` 会累积。`conflict_metrics` 虽然公开存在，但本文件没有写入点。`reset_summary` 只重置摘要，因此复用执行器时若需要“每子任务”统计，调用方必须理解其他累计字段不会一起归零。
+执行器保存跨调用的可变状态：`physical_table_id`、`index_info` 会被最近一次初始化覆盖；`summary.row_count`、`summary.processed_bytes`、`total_rows`、`merge_metrics` 以及 worker 的 `total_scan_count` 会累积。`conflict_metrics` 虽然公开存在，但本文件没有写入点。`reset_summary` 只重置摘要，因此复用执行器时若需要“每子任务”统计，调用方必须理解其他累计字段不会一起归零。
 
 输入 `records` 由调用方持有，本文件不从真实 KV 存储扫描。worker 按切片现有顺序筛选并以最后选中记录计算 `next_key`；安全扩展时应维持临时 key 的有序输入约束，否则后续范围推进可能漏掉排在切片后方但 key 更小的记录。该约束由实现方式推导，当前类型签名并未强制。
 
@@ -82,7 +82,7 @@ Go 实现会创建 worker pool、source/merge/sink 异步 pipeline，并从步�
 
 主要一一对应关系是：`mergeTempIndexExecutor` ↔ `MergeTemporaryIndexExecutor`，`initializeByMeta` ↔ `initialize_by_meta`，`RunSubtask` ↔ `run_subtask`，`mergeTempIndexCollector` 的计数 ↔ Rust 摘要与累计字段，空生命周期方法也保留了相同接口意图。
 
-已对齐的关键语义包括：从 `StartKey` 解码表/索引而不是依赖 `EleIDs`；局部分区索引选择解码分区、全局索引选择父表；合并指标仍用 `meta.PhysicalTableID` 标签；collector 的 `Processed(_, rows)` 令 `addCount` 与 `scanCount` 同增，所以 Rust 的 `summary.row_count` 和 `total_rows` 都使用 `add_count`。独立 Rust 测试覆盖了解码及临时索引前缀掩码、全局索引父表选择、指标标签、skip 记录计数、零批大小字段保留和非法分区。
+已对齐的关键语义包括：从 `StartKey` 解码表/索引而不是依赖 `EleIDs`；局部分区索引选择解码分区、全局索引选择父表；合并指标仍用 `meta.PhysicalTableID` 标签；collector 的 `Processed(_, rows)` 令 `addCount` 与 `scanCount` 同增，所以 Rust 的 `summary.row_count` 和 `total_rows` 都使用 `add_count`。字节统计存在明确差异：Go 在整条 pipeline 成功后才将 collector 字节发布到 `Processed`；Rust 在每批成功后立即更新本地 summary，后续批次失败不会撤销先前累计，调用方需在重试前按需要 `reset_summary`。因此不能声称两者失败重试统计完全一致；Rust 摘要也不会自动上报 DXF 或写 job RU。独立 Rust 测试覆盖了解码及临时索引前缀掩码、全局索引父表选择、指标标签、skip 记录计数、零批大小字段保留和非法分区。
 
 尚未等价或尚未接线的部分包括：Go 从 JSON 子任务元数据开始并自行从 KV 扫描，Rust 接收已经解析的 meta 和内存记录切片；Go 使用并发 pipeline、真实事务、日志、Prometheus counter、资源 CPU 容量和完整表对象，Rust 使用同步 worker 与抽象 store；Go 初始化 `mergeCounter` / `conflictCounter`，Rust 的 `conflict_metrics` 没有更新；Go 的修改通知标注为未来支持，Rust 同样为空；Rust worker 固定 16 次最大尝试，而 Go 片段按可重试事务错误持续退避，没有相同的本地次数上限。
 
@@ -97,7 +97,7 @@ Go 实现会创建 worker pool、source/merge/sink 异步 pipeline，并从步�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/backfilling_merge_temp.rs` 确认目标文件有 23 个符号；`node --file ... --offset 1 --limit 500` 读取了全部 284 行，并报告关联文件为 `pkg/ddl/backfilling_merge_temp_test.rs` 与 `pkg/ddl/index.rs`。组合 `callers/callees` 查询超时且未返回边，因此调用关系又用精确仓库搜索核验。
+- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_merge_temp.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
 - 已读源码/配置：目标 [backfilling_merge_temp.rs](backfilling_merge_temp.rs)、[Cargo.toml](Cargo.toml)、`lib.rs`、`backfilling_dist_executor.rs`、`backfilling_dist_scheduler.rs`、`backfilling_operators.rs`、`backfilling_read_index.rs`、`backfilling_import_cloud.rs` 与 `index.rs`。
 - Go 对照：[backfilling_merge_temp.go](backfilling_merge_temp.go)、`backfilling_operators.go`、`index.go`；DDL 上下文还核对了 `docs/agents/ddl/README.md` 与 `docs/agents/ddl/06-add-index.md`，但行为结论以上述代码和测试为准。
 - 测试证据：[backfilling_merge_temp_test.rs](backfilling_merge_temp_test.rs) 的三个测试覆盖 key 解码、全局/分区选择、指标/统计、skip 记录和零批大小；`backfilling_dist_scheduler_test.rs` 覆盖阶段流转及合并计划不设置 `element_ids`。本任务按计划为纯文档分析，未运行 Cargo 或测试二进制。

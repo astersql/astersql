@@ -36,7 +36,7 @@
 2. `NormalDdlExecutor::step` 首先要求 `persistent_actions::handler_available(job.tp)`；未知且非终态 action 立即报错，避免没有实现的 action 被当作成功。
 3. `Paused` 保持不动；`Pausing` 转为 `Paused` 并记录 `[ddl:8262]`；`Cancelling` 通常转为 `Cancelled`，但处于 `WriteReorganization` 的 create-materialized-view 会进入 `Rollingback`。已有终态直接进入 `finish`。
 4. 执行器通过 Go wire encode/decode 复制一个内存 job，再补回未进入持久化 JSON 的 `multi_schema_info`、`need_reorg` 和 decoded `args`。`with_execution_context` 打开真实 worker 上下文，先 `StageStatement`，再调用 `persistent_actions::step`。
-5. action 成功时 `ReleaseStatement` 并记录 schema version；action 失败时 `CleanupStatement`，把错误和计数写回 job，超过 `error_limit` 且可回滚时置为 `Cancelling`。这类 action 错误是可持久化的 job 结果；stage/存储等基础设施错误才从 `step` 返回 `Err`。
+5. action 成功时 `ReleaseStatement` 并记录 schema version；action 失败时 `CleanupStatement`，把错误和计数写回 job，超过 `error_limit` 且可回滚时置为 `Cancelling`。action 失败时还读取 execution context 的 `must_rollback_transaction_on_error()`，以共享 `AtomicBool` 的 Release/Acquire 传给 `DurableJobStep.must_rollback_transaction`。普通返回路径传播该标志；Paused、Pausing、取消特例及 finish 返回 false。这类 action 错误通常是可持久化的 job 结果；stage/存储等基础设施错误从 `step` 返回 `Err`。
 6. action 75 在 `persistent_actions::step_metadata` 中进入 `on_persistent_alter_table_mode`：解析 V1 数组首元素或 V2 对象，读取数据库和完整表，验证模式值及 `CanTransitionTo`，no-op 直接完成；真实变更调用 `update_version_and_table` 写表、schema version/diff，再以 Public schema state 完成 job。
 7. 若 action 产生正版本，启用 MDL 时从 `mysql.tidb_ddl_job.table_ids` 取得完整依赖表集合，并 `REPLACE` 到 `mysql.tidb_mdl_info`；系统库不写 owner ID。随后 worker 可调用 barrier 等待版本同步。
 8. job 达到 `Done`、`Cancelled` 或 `RollbackDone` 后，`finish` 将 Done 转为 Synced，必要时注册 delete ranges，分配单调 `seq_num`，在 KV history 设置 `finished_ts`，容忍 SQL history 插入失败，最后删除 `mysql.tidb_ddl_job` 队列行并返回 `removed: true`。
@@ -65,10 +65,12 @@
 - 持久化 handler 用 `[ddl:1105]` 标识参数解码/类型错误，用 `[schema:1049]` 标识数据库不存在，用 `[schema:8259]` 标识未知模式或非法迁移。数据库、非法现存模式、非法目标与非法迁移会取消 job；底层 `public_table`/元数据更新失败则向外传播，由普通 worker 清理 stage、累计错误并决定重试或取消。
 - 同模式是成功 no-op：handler 设置 `Done` 并返回 0，不发布 schema version。Import↔Restore 依赖完整模型的 `CanTransitionTo` 拒绝；安全路径是先回 Normal。
 - `NormalDdlExecutor` 不允许缺少 persistent handler 的运行中 action 静默完成。暂停/取消分支具有专门状态和错误码，materialized-view 的特例不能推广到 TableMode。
-- SQL history 插入失败仅输出诊断，KV history 仍是权威记录；相反，删除队列行、KV history 或事务/stage 失败会返回错误。
+- 终态 Cancelled/RollbackDone 在 finish 将 job RU 清零。SQL history 插入失败仅输出诊断，KV history 仍是权威记录；相反，删除队列行、KV history 或事务/stage 失败会返回错误。
 - `sql_text` 用十六进制 SQL literal 避免 SQLMode、引号与反斜杠差异；扩展 SQL 拼接时应继续使用安全编码，不应直接插入未转义文本。
 
 ## 并发与资源生命周期
+
+- statement 清理与整事务回滚是两层边界：需要回滚的 action 错误由本文件传播标志，`job_worker.rs` 在外层 rollback 后重新 begin、重读并核对原 job meta，再以零 schema version 继续错误持久化与 owner 检查。本文件不会自行开启这个替代事务；若 action 已把 job 置为 Cancelled，则进入 finish，不经过普通结果的标志传播。不能把所有失败都解释为只清理 statement，或都整事务回滚。
 
 - owner 生命周期由 `JobLease` 和 `DdlSchemaBarrier` 控制：恢复和等待必须观察 owner 身份与 scheduler cancellation，旧 owner 不能在失去所有权后继续提交。
 - action 的元数据写入位于 `StageStatement`/`ReleaseStatement` 边界；失败路径调用 `CleanupStatement`，确保已经写入的 version/diff 不会形成“幽灵版本”。[`table_mode_test.rs`](./table_mode_test.rs) 用 KV 大小失败验证了该回滚性质。
@@ -94,7 +96,8 @@
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/table_mode.rs` 定位目标；`node --file ... --offset 1/261` 读取 482 行与 38 个符号；`query` 定位 `alter_table_mode`、`on_alter_table_mode`、`table_mode_allows`、`NormalDdlExecutor`、`on_persistent_alter_table_mode`。caller/callee 命令未返回可用边，因此调用关系按技能规则由精确源码搜索补证。
+- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/table_mode.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
 - 已读生产证据：[`table_mode.rs`](./table_mode.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`persistent_actions.rs`](./persistent_actions.rs)、[`job_worker.rs`](./job_worker.rs)、[`normal_policy.rs`](./normal_policy.rs)、[`schema_version.rs`](./schema_version.rs)、[`pkg/session/runtime/normal_ddl_service.rs`](../session/runtime/normal_ddl_service.rs)。
+- 事务回滚补证：`pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 覆盖外层 worker 的标志消费、失败原子性和重开后的 job meta 检查；它们使用独立 executor 替身，不能代替 `NormalDdlExecutor` 端到端运行证据。
 - 已读对照与测试：[`table_mode.go`](./table_mode.go)、[`table_mode_test.rs`](./table_mode_test.rs)、[`table_mode_test.go`](./table_mode_test.go)，并通过 `pkg/meta/model` 中 action 75、TableMode 和 job args 定义核对 wire/枚举来源。
-- 结构校验使用任务指定命令，要求文件存在且恰有 11 个固定二级标题。本任务只新增说明文档，不修改运行时代码，按计划不运行 Cargo。
+- 结构校验使用任务指定命令，要求文件存在且恰有 11 个固定二级标题。本任务只更新说明文档，不修改运行时代码，按计划不运行 Cargo。
