@@ -853,6 +853,7 @@ pub trait MViewCompleteDeltaApplyPlanData: UnaryPlanData {
 /// Incremental materialized-view aggregate merge plan data.
 pub trait MViewDeltaMergePlanData: UnaryPlanData {
     fn target_table_id(&self) -> i64;
+    fn merge_plan(&self) -> &astersql_planner_core::MViewDeltaMerge;
 }
 /// 快照抽象接口。
 pub trait Snapshot: Send {
@@ -2138,11 +2139,14 @@ pub trait ExecutorBuilderDependencies: Send + Sync {
         plan: &dyn MViewCompleteDeltaApplyPlanData,
         child: ExecutorBox,
     ) -> Result<ExecutorBox, BuildError>;
-    fn build_mview_delta_merge_executor(
+    /// Resolve the table-bound transaction and snapshot reader resources. The
+    /// builder, rather than the dependency, compiles mappings and owns execution.
+    fn mview_resources(
         &self,
-        plan: &dyn MViewDeltaMergePlanData,
-        child: ExecutorBox,
-    ) -> Result<ExecutorBox, BuildError>;
+        table: &ResolvedTable,
+        handle_columns: &[usize],
+    ) -> Result<Arc<dyn crate::mview_delta_merge_builder::Resources>, BuildError>;
+    fn snapshot_at_ts(&self, ts: u64) -> Result<Box<dyn Snapshot>, BuildError>;
     /// 构建deleteforeignkeychecks执行器。
     fn build_delete_foreign_key_checks(&self, plan: &dyn DeletePlanData) -> Result<(), BuildError>;
     /// 构建deleteforeignkeycascades执行器。
@@ -2413,6 +2417,7 @@ pub struct executorBuilder {
     inDeleteStmt: bool,
     inInsertStmt: bool,
     inSelectLockStmt: bool,
+    inMViewDeltaMergeStmt: bool,
     forDataReaderBuilder: bool,
     dataReaderTS: u64,
     encounterUnionScan: bool,
@@ -2445,6 +2450,7 @@ pub fn newExecutorBuilder(
         inDeleteStmt: false,
         inInsertStmt: false,
         inSelectLockStmt: false,
+        inMViewDeltaMergeStmt: false,
         forDataReaderBuilder: false,
         dataReaderTS: 0,
         encounterUnionScan: false,
@@ -3864,7 +3870,12 @@ impl executorBuilder {
         if self.forDataReaderBuilder {
             return Ok(self.dataReaderTS);
         }
-        if self.inInsertStmt || self.inUpdateStmt || self.inDeleteStmt || self.inSelectLockStmt {
+        if self.inInsertStmt
+            || self.inUpdateStmt
+            || self.inDeleteStmt
+            || self.inSelectLockStmt
+            || self.inMViewDeltaMergeStmt
+        {
             return self.dependencies.statement_for_update_ts();
         }
         self.dependencies.statement_read_ts()
@@ -3872,13 +3883,16 @@ impl executorBuilder {
 
     /// 获取快照。
     pub fn getSnapshot(&self) -> Result<Box<dyn Snapshot>, BuildError> {
-        let mut snapshot =
-            if self.inInsertStmt || self.inUpdateStmt || self.inDeleteStmt || self.inSelectLockStmt
-            {
-                self.dependencies.snapshot_with_for_update_ts()?
-            } else {
-                self.dependencies.snapshot_with_read_ts()?
-            };
+        let mut snapshot = if self.inInsertStmt
+            || self.inUpdateStmt
+            || self.inDeleteStmt
+            || self.inSelectLockStmt
+            || self.inMViewDeltaMergeStmt
+        {
+            self.dependencies.snapshot_with_for_update_ts()?
+        } else {
+            self.dependencies.snapshot_with_read_ts()?
+        };
         InitSnapshotWithSessCtx(
             snapshot.as_mut(),
             &self.dependencies.snapshot_session_options(),
@@ -4047,10 +4061,38 @@ impl executorBuilder {
         &mut self,
         plan: &dyn MViewDeltaMergePlanData,
     ) -> Option<ExecutorBox> {
-        let child = self.build_required_child(plan.child_plan(), "MViewDeltaMerge")?;
-        let result = self
-            .dependencies
-            .build_mview_delta_merge_executor(plan, child);
+        let previous = self.inMViewDeltaMergeStmt;
+        self.inMViewDeltaMergeStmt = true;
+        let result = (|| {
+            self.dependencies.update_for_update_ts()?;
+            let child = self
+                .build_required_child(plan.child_plan(), "MViewDeltaMerge")
+                .ok_or_else(|| {
+                    self.err
+                        .clone()
+                        .unwrap_or_else(|| BuildError::new("MViewDeltaMerge source is nil"))
+                })?;
+            let data = plan.merge_plan();
+            if data.mv_table_id != plan.target_table_id() {
+                return Err(BuildError::new("MViewDeltaMerge target table mismatch"));
+            }
+            let table = self.dependencies.resolve_table(data.mv_table_id, false)?;
+            if table.id != data.mv_table_id {
+                return Err(BuildError::new(
+                    "MViewDeltaMerge resolved target table mismatch",
+                ));
+            }
+            let resources = self
+                .dependencies
+                .mview_resources(&table, &data.mv_table_pk_cols)?;
+            let ts = data
+                .full_update_snapshot
+                .map_or_else(|| self.getSnapshotTS(), |snapshot| Ok(snapshot.ts))?;
+            let snapshot = self.dependencies.snapshot_at_ts(ts)?;
+            let reader = self.newDataReaderSnapshot(Some(snapshot), ts, Some(self.is.clone()))?;
+            crate::mview_delta_merge_builder::build(data, child, resources, reader)
+        })();
+        self.inMViewDeltaMergeStmt = previous;
         self.finish(result)
     }
 
@@ -4372,6 +4414,32 @@ impl executorBuilder {
     /// 检测相关列：corColInAccess。
     pub fn corColInAccess(&self, plan: &dyn DistributedPlanData) -> bool {
         plan.has_correlated_column_in_access_condition()
+    }
+
+    /// Bind an explicit immutable timestamp and InfoSchema for full-update readers.
+    pub fn newDataReaderSnapshot(
+        &self,
+        snapshot: Option<Box<dyn Snapshot>>,
+        ts: u64,
+        info_schema: Option<Arc<dyn InfoSchema>>,
+    ) -> Result<crate::mview_delta_merge_builder::ReaderSnapshot, BuildError> {
+        let mut snapshot =
+            snapshot.ok_or_else(|| BuildError::new("data reader snapshot is nil"))?;
+        if ts == 0 {
+            return Err(BuildError::new("data reader snapshot TS is zero"));
+        }
+        let info_schema =
+            info_schema.ok_or_else(|| BuildError::new("data reader InfoSchema is nil"))?;
+        InitSnapshotWithSessCtx(
+            snapshot.as_mut(),
+            &self.dependencies.snapshot_session_options(),
+            Some(&self.readReplicaScope),
+        )?;
+        Ok(crate::mview_delta_merge_builder::ReaderSnapshot {
+            ts,
+            snapshot: Mutex::new(snapshot),
+            info_schema,
+        })
     }
 
     /// 构造数据读取器构建器。
@@ -5737,3 +5805,7 @@ impl emptySampler {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "mview_delta_merge_builder_test.rs"]
+mod mview_delta_merge_builder_test;

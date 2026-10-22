@@ -74,7 +74,7 @@ pub fn validate(mappings: &[Mapping], delta_cols: usize) -> Result<()> {
     Ok(())
 }
 
-fn numeric_add(current: &Datum, delta: &Datum) -> Result<Datum> {
+pub(crate) fn numeric_add(current: &Datum, delta: &Datum) -> Result<Datum> {
     let mut out = Datum::default();
     match (current.Kind(), delta.Kind()) {
         (KindInt64, KindInt64) => out.SetInt64(
@@ -92,6 +92,16 @@ fn numeric_add(current: &Datum, delta: &Datum) -> Result<Datum> {
         }
         (KindFloat32 | KindFloat64, KindFloat32 | KindFloat64) => {
             out.SetFloat64(current.GetFloat64() + delta.GetFloat64())
+        }
+        (astersql_types::datum::KindMysqlDecimal, astersql_types::datum::KindMysqlDecimal) => {
+            let mut value = astersql_types::decimal::mydecimal::MyDecimal::default();
+            astersql_types::decimal::mydecimal::DecimalAdd(
+                &current.GetMysqlDecimal(),
+                &delta.GetMysqlDecimal(),
+                &mut value,
+            )
+            .map_err(|e| e.to_string())?;
+            out.SetMysqlDecimal(value);
         }
         _ => return Err("SUM type mismatch".into()),
     }
@@ -114,9 +124,31 @@ pub fn merge_rows(
             let before = row[m.output_col].clone();
             let delta = row[m.delta_col].clone();
             let next = match m.kind {
-                AggKind::Count => numeric_add(&before, &delta)?,
+                AggKind::Count => {
+                    let before = if before.IsNull() {
+                        astersql_types::datum::NewIntDatum(0)
+                    } else {
+                        before.clone()
+                    };
+                    if before.Kind() != KindInt64 || delta.Kind() != KindInt64 {
+                        return Err("COUNT requires signed integer values".into());
+                    }
+                    let next = numeric_add(&before, &delta)?;
+                    if next.GetInt64() < 0 {
+                        return Err("count becomes negative".into());
+                    }
+                    next
+                }
                 AggKind::Sum => {
-                    if delta.IsNull() {
+                    if let Some(dep) = m.count_dependency
+                        && row
+                            .get(dep)
+                            .ok_or("COUNT dependency out of range")?
+                            .GetInt64()
+                            == 0
+                    {
+                        Datum::default()
+                    } else if delta.IsNull() {
                         before.clone()
                     } else if before.IsNull() {
                         delta.clone()

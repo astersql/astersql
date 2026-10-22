@@ -113,3 +113,23 @@ fn mview_complete_delta_noop_when_value_unchanged() {
     let touched = merge_rows(&mut rows, &[count(1, 0)], 1, None).unwrap();
     assert!(!touched[0][1]);
 }
+
+#[test]
+fn mview_delta_merge_count_null_old_is_zero_and_negative_rejected() {
+    let mut rows = vec![vec![NewIntDatum(2), Datum::default()]];
+    merge_rows(&mut rows, &[count(1, 0)], 1, None).unwrap();
+    assert_eq!(rows[0][1].GetInt64(), 2);
+    let mut rows = vec![vec![NewIntDatum(-3), NewIntDatum(2)]];
+    assert!(merge_rows(&mut rows, &[count(1, 0)], 1, None).is_err());
+}
+#[test]
+fn mview_delta_merge_nullable_sum_resets_when_count_zero() {
+    let mut rows = vec![vec![NewIntDatum(-3), NewIntDatum(0), NewIntDatum(3)]];
+    let mut mapping = count(2, 0);
+    mapping.kind = AggKind::Sum;
+    mapping.nullable = true;
+    mapping.count_dependency = Some(1);
+    // Computed COUNT is on the materialized-view side.
+    merge_rows(&mut rows, &[mapping], 1, None).unwrap();
+    assert!(rows[0][2].IsNull());
+}

@@ -596,3 +596,5 @@ mod update_test;
 #[cfg(test)]
 #[path = "write_concurrent_test.rs"]
 mod write_concurrent_test;
+
+pub mod mview_delta_merge_builder;

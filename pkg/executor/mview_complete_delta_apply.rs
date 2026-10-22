@@ -29,6 +29,20 @@ pub trait MutationBatch {
     fn insert(&mut self, row: &[Datum]) -> Result<()>;
     fn delete(&mut self, row: &[Datum]) -> Result<()>;
     fn update(&mut self, old: &[Datum], new: &[Datum], touched: &[bool]) -> Result<()>;
+    /// MView merge preserves the full input for hidden row IDs and common handles.
+    /// Writers keyed by the target columns can use the ordinary mutation methods.
+    fn delete_from_source(&mut self, _source: &[Datum], old: &[Datum]) -> Result<()> {
+        self.delete(old)
+    }
+    fn update_from_source(
+        &mut self,
+        _source: &[Datum],
+        old: &[Datum],
+        new: &[Datum],
+        touched: &[bool],
+    ) -> Result<()> {
+        self.update(old, new, touched)
+    }
 }
 
 /// Runtime owns transaction creation, table-context borrowing and statement rollback.
