@@ -32,6 +32,10 @@ crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义：包名为 `astersql-parser
 
 ## 执行流程
 
+冻结增量为轻量 `misc::RecommendIndexStmt` 增加六个 `RECOMMEND_INDEX_ACTION_*` 常量（run、return、set、show、apply、ignore）。`restore` 的 RUN/RETURN 共用选项拼接：RETURN 输出 `RECOMMEND INDEX RETURN RESULT`，无论 SQL 是否为空都追加 ` FOR ` 和转义后的字符串；RUN 仅在 SQL 非空时追加 FOR。故空 RETURN 还原为 `RECOMMEND INDEX RETURN RESULT FOR ''`。非空选项继续输出 ` WITH NAME = value`，名称大写、值为原字符串；SHOW/APPLY/IGNORE/SET 分支改用常量，未知 action 仍回退 `RECOMMEND INDEX`。
+
+这里是小写字段 `action/sql/options` 的轻量文本模型；主解析器产出 `lib.rs::RecommendIndexStmt`，字段为 `Action/SQL/Options`，只读判断使用后者。两种常量和类型位于不同命名空间，不应把本文件的 restore 当作主 AST 的执行路径；本增量没有实现索引推荐算法或 SQL 内串的执行。
+
 典型流程是“构造字段 → 选择语句分支 → 格式化子值 → 拼接 SQL”。例如 `AdminStmt::restore` 先预计算表名和 job id 列表，再按 `AdminStmtType` 选择语法；需要附属状态的分支读取 `ShowSlow`、`StatementScope`、`BdrRole`、范围或 ALTER JOB 选项，最后统一添加 `ADMIN ` 前缀。`BRIEStmt::restore` 先由 `BrieKind::as_str` 决定命令，再按备份/恢复、job、流备份和 metadata/purge 分支选择 `TO`、`FROM` 或 job id，末尾追加所有 `BRIEOption`。
 
 敏感输出不直接修改原节点。`TrafficStmt::secure_text` 和 `BRIEStmt::secure_text` 克隆节点，调用 `redact_url` 处理存储地址；Traffic 还把 Password 选项替换成 `xxxxxx`，之后复用正常 `restore`。`UserSpec::security_string` 只暴露身份和双密码选项，将真实认证串写成 `password = ***`；`GrantStmt`/`GrantRoleStmt` 从原始文本中截断首个大小写不敏感的 `identified` 后缀。
@@ -98,8 +102,8 @@ Rust 版本不是 Go 文件的逐类型完整镜像。Go `misc.go` 还包含 mat
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11,467 files、307,296 nodes、1,848,419 edges；`node --file pkg/parser/ast/misc.rs` 分段读取了 1–3139 行；`query` 精确确认了 `redact_url`、`check_query_watch_append`、`TableOptimizerHint`、`SensitiveStatement`、`MiscVisitable`、`PlanReplayerStmt`、`VariableAssignment`、`BRIEStmt`、`TrafficStmt` 和 `AdminStmt`。调用图对常见同名方法有歧义，故生产调用关系又用精确路径搜索复核。
-- 源与边界：读过 `pkg/parser/ast/misc.rs`、`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/lib.rs`；该包没有 `doc.go`，因此最近的 crate 契约来自 `lib.rs` 模块入口与 trait 定义。
-- Go 对照：读过 `pkg/parser/ast/misc.go` 的符号与相关实现，以及 `pkg/parser/ast/misc_test.go` 的 visitor、敏感语句、hint、BRIE、PLAN REPLAYER、URL、QUERY WATCH、Traffic、embedding key 和 SET PASSWORD 用例。
-- Rust 测试：读过 `pkg/parser/ast/misc_test.rs`、`pkg/parser/ast/misc_6_aster_unit_test.rs`、`pkg/parser/ast/go_merge_16_test.rs` 的相关断言。它们验证了深度优先 LEADING、分支优先级、账户选项顺序、错误敏感文本、URL scheme/key 规则及 leaf visitor 的 enter/leave 行为。
-- 结构验收使用任务指定命令，要求目标文件存在且恰有本文这 11 个固定二级标题。人工复核重点是：文件存在原因、主要还原/脱敏流程、接线边界、安全扩展位置和独立测试路径均有直接代码依据；未运行 Cargo，符合本任务约束。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/misc.rs`，并用 `git show 2c944fb:pkg/parser/ast/misc.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `misc.go::RecommendIndexStmt::Restore` 对 RUN/RETURN 使用相同 FOR 空值规则，但选项值由表达式 RestoreCtx 还原；Rust 轻量模型只拼接字符串。`misc_test.rs::recommend_index_return_result_restore_matches_go` 覆盖带选项和空 SQL 两种 RETURN 输出。`parser_test.rs::recommend_index_return_result_ast_is_read_only` 另行证明主 AST 的解析与只读分类，不能与本文件类型混同。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

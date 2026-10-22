@@ -28,12 +28,14 @@
 - `RefreshMDLFromSQL`：要求已经加载 schema 且三个运行期依赖均已设置，读取 `[current_min_job_id, current_schema_version]` 范围内的 MDL job，然后刷新快照。
 - `CheckMDL` / `check_mdl_with_context`：执行单次、可确定性测试的 MDL 检查；对可推进 job 调用 `VersionSyncer::UpdateSelfVersion(context, job_id, version)`。
 - `MDLCheckLoop`：最多等待 50ms 或显式唤醒；仅在 MDL 开启时检查，单次失败打印错误并继续循环，直到 `Context` 取消。
-- `SyncLoop`：InfoSchema 主同步循环。监听 `GlobalVersionCh`、同步器 `Done` 和半租约定时点，并在每次 reload/recovery 路径后刷新 MDL SQL 快照、唤醒 MDL 检查线程。
+- `SyncLoop`：InfoSchema 主同步循环。监听 `GlobalVersionCh`、同步器 `Done` 和半租约定时点，并在非诊断模式的 reload/recovery 路径后刷新 MDL SQL 快照、唤醒 MDL 检查线程。
 - `ReloadWithContext`：可取消的核心 reload；`Reload` 只是以后台 context 调用它。
 - `postReload`：schema 版本确有变化且存在 change 时，动作码 28 删除 Loader 的表缓存，动作码 62 请求协调器杀死非 flashback 连接。
 - `getFlashbackStartTSFromErrorMsg`：只接受恰好一个固定 marker 且后缀能直接解析为 `u64` 的消息，否则返回 0。
 
 ## 执行流程
+
+冻结增量在 `SyncLoop` 末尾增加 `!astersql_config::diagnosticmode::Enabled()` 门控：诊断模式跳过 `RefreshMDLFromSQL`，也不设置 `mdl_wake` 或发送条件变量通知。schema reload、版本协议恢复、validator 更新和到期的 `DeferFn::check` 仍在门控之外。该条件没有加到公开 `RefreshMDLFromSQL` 或 `MDLCheckLoop`：后者仍可按 50ms 超时及 MDL 开关检查已有快照，不能把此改动解释为关闭全部 schema/MDL 活动。
 
 生产初始化流程如下：
 
@@ -41,7 +43,7 @@
 2. 同一入口调用 `InitRequiredFields`、`SetMinJobIDRefresher`，先初始化 schema-version 协议，再调用 `ReloadWithContext` 完成首次加载；因此后台循环正常运行所需字段在启动前已具备。
 3. `NormalSchemaRuntime::start` 分别启动 `SyncLoop`、`MDLCheckLoop`、job schema-version 同步循环和 min-job-id 刷新循环。
 4. `SyncLoop` 收到全局版本通知或到达 `schemaLease / 2` 时调用 `ReloadWithContext`。若通知通道断开，它重新注册 watch；若版本同步器的 `Done` 已关闭，则先 `SchemaValidator::Stop`，每秒重试 `Restart`，每 200ms 重试 reload，成功后以当前版本 `Restart` validator 并取得新通知通道。
-5. 每轮同步后，循环检查到期的 `DeferFn`（仅到半租约时点）、从 SQL 刷新 MDL job，并通过 `Condvar` 唤醒 `MDLCheckLoop`。
+5. 每轮同步后，循环检查到期的 `DeferFn`（仅到半租约时点）、仅在非诊断模式从 SQL 刷新 MDL job，并通过 `Condvar` 唤醒 `MDLCheckLoop`。
 
 一次 reload 的顺序是：先检查 context；配置协议开关；持有 `reload_lock`；取得 Loader 当前存储版本；调用 `LoadWithTS`。若错误包含合法 flashback start TS，则以 `start_ts - 1` 再加载一次。非缓存命中且版本前进时尽力发布 job 0 的节点版本，发布失败只记录而不使 reload 失败；非缓存命中的全量加载会 `Reset` validator。若加载耗时超过半租约，则读取更新的存储时间戳，并仅在该时间戳对应的 schema 版本仍等于刚加载版本时用它续租。最后无论是否命中缓存都调用 validator `Update`，再执行 `postReload`。
 
@@ -122,11 +124,8 @@ reload 由 `reload_lock` 串行化；MDL 快照由 `MDLCheckTableInfo` 自身锁
 
 ## 验证依据
 
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/infoschema/issyncer` 确认目标、Go 对照和独立测试均已索引。
-- 目标源码：`pkg/infoschema/issyncer/syncer.rs` 全部 547 行；主要证据为 `Syncer`、`newSyncer`、`InitRequiredFields`、`RefreshMDLFromSQL`、`check_mdl_with_context`、`MDLCheckLoop`、`SyncLoop`、`ReloadWithContext`、`postReload`、`getFlashbackStartTSFromErrorMsg`。
-- crate 与装配：`pkg/infoschema/issyncer/Cargo.toml`、`pkg/infoschema/issyncer/lib.rs`。该目录不存在 `doc.go`，故无额外 package contract 文件可读。
-- 生产上游：`pkg/session/runtime/session_factory.rs::prepare_normal_schema_runtime`、`pkg/session/runtime/normal_ddl_service.rs::NormalSchemaRuntime::{start,close}` 与其 `SchemaLoader::reload` 实现。
-- Go 对照：`pkg/infoschema/issyncer/syncer.go` 全部 548 行；测试 `pkg/infoschema/issyncer/syncer_test.go::TestSyncerSkipMDLCheck`。
-- Rust 测试：`pkg/infoschema/issyncer/syncer_test.rs` 全部 265 行；跨 crate 集成证据 `pkg/session/tests/system_session.rs` 的 MDL SQL/发布测试段。
-- RustCodeGraph `explore` 给出了 `configure_protocol`、`version_syncer`、`ReloadWithContext`、`SyncLoop`、`MDLCheckLoop` 等文件内调用关系及文件引用集合；精确 `query --kind method` 未返回 Rust impl 方法节点，故用索引源码节点和精确调用点搜索补证，并在文档中明确此限制。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证本文恰有 11 个固定二级章节，并人工检查没有把测试文件内嵌进生产源码的建议。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/infoschema/issyncer/syncer.rs`，并用 `git show 2c944fb:pkg/infoschema/issyncer/syncer.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `syncer.go::SyncLoop` 同样把 SQL 快照刷新和 MDL channel 通知放在诊断模式判断内；Rust 用条件变量表达通知。独立 `syncer_test.rs` 提供同步/恢复基线，但未发现冻结版本中直接覆盖此诊断门控的测试，结论来自分支源码复核。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

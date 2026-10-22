@@ -33,6 +33,8 @@
 
 ## 执行流程
 
+冻结增量新增 `StatementKind::RecommendIndex`，`GetStmtLabel` 返回 crate 根部 `RecommendIndexStmtLabel`，其值为 `"RecommendIndex"`。这是语句观测分类，不按 RUN/RETURN/SET 等 action 分标签，也不判断只读或执行推荐操作。调用者仍须显式提供枚举；新增标签不构成从主 AST 自动转换的生产接线。
+
 本文件唯一包含分支执行逻辑的入口是 `GetStmtLabel`：
 
 1. 调用者先把具体语句归类为 `StatementKind`；本文件没有提供从 crate 根 AST 结点自动完成该转换的函数。
@@ -97,10 +99,8 @@ Go 对照文件为 `pkg/parser/ast/ast.go`。标志位名称和值、`OptBinary`
 
 ## 验证依据
 
-- 目标源码：`pkg/parser/ast/ast.rs`，共 208 行；核对了 9 个标志常量、2 个结构、7 个分类 trait、`StatementKind` 与 `GetStmtLabel`，未发现条件编译项或实现块。
-- crate 边界与装配：`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/lib.rs`；后者在 `#[path = "ast.rs"] pub mod ast` 处公开模块，并定义真实 `Node`/访问者/具体 AST 类型。
-- Go 对照：`pkg/parser/ast/ast.go`；应用侧 Go 引用由 `pkg/sessionctx/stmtctx/stmtctx.go`、`pkg/session/session.go`、`pkg/executor/compiler.go` 等搜索结果佐证。
-- Rust 独立测试：`pkg/parser/ast/ast_1_aster_unit_test.rs`；`ast_flags_and_statement_labels_match_go` 覆盖标志值和标签，`go_merge_7_materialized_view_statement_labels` 覆盖物化视图标签，其他测试说明遍历基础协议实现在 crate 根部。
-- 相邻边界证据：`pkg/parser/ast/flag.rs` 与 `pkg/parser/ast/flag_test.rs`，用于确认另一套传播常量及组合行为，不将其误认成本文件 API。
-- RustCodeGraph：`status` 显示目标仓库已索引（11,467 个文件）；`files --filter pkg/parser/ast` 列出 `ast.rs`、Go 对照与测试；`query ExprNode --kind trait`、`query StmtNode --kind trait`、`query GetStmtLabel --kind function` 分别定位本文件符号及 Go 对照。图的 `explore/node/callers/callees` 没有提供可用调用边输出，因此最终调用边以精确仓库搜索补证，没有据空结果推断生产接线。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前以任务规定命令验证文档存在且恰好包含 11 个固定二级标题，并人工复核所有“已接线/已支持”陈述均有上述路径或符号依据。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/ast.rs`，并用 `git show 2c944fb:pkg/parser/ast/ast.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `ast.go::GetStmtLabel` 对 `*RecommendIndexStmt` 返回同名标签；Rust `ast_1_aster_unit_test.rs` 的标签表包含 `(StatementKind::RecommendIndex, "RecommendIndex")`。crate 根部 `lib.rs` 定义标签常量并公开 `ast` 模块。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

@@ -30,7 +30,7 @@
 - `GetStorageClassTransitionsTableColumns`：从注册项重新构造并返回新列向量，避免调用者修改全局定义。
 - `information_schema_db`、`information_schema_db_with_storage_class`、`INFORMATION_SCHEMA_DB`：完整快照的公开入口、可测试入口与一次性缓存。
 - `ServerInfo`、`ServerDiscovery`：集群节点值对象和发现接口。trait 默认实现均返回空列表，具体发现由调用方注入。
-- `GetClusterServerInfo` 及八个单组件 getter：聚合或转发发现调用。聚合顺序是 TiDB、PD、Store、TiFlash、TiProxy、TiCDC、TSO、Scheduling，任一错误立即返回。
+- `GetClusterServerInfo` 及八个单组件 getter：聚合或转发发现调用，TiDB getter 额外过滤禁用 RPC 的节点。聚合顺序是 TiDB、PD、Store、TiFlash、TiProxy、TiCDC、TSO、Scheduling，任一错误立即返回。
 - `FormatTiDBVersion`、`FormatStoreServerVersion`：分别处理默认 TiDB 兼容前缀和单个前导 `v`。
 - `StoreLabel`、`StoreInfo`、`isTiFlashStore`、`isTiFlashWriteNode`：在精简 Store 标签模型上做区分大小写的精确匹配；snake_case 两函数只是 Rust 测试友好的转发别名。
 - `FilterClusterServerInfo`：节点类型集合和地址集合分别为空时表示该维度不过滤；两个非空条件之间是 AND。
@@ -38,6 +38,8 @@
 - `GetShardingInfo`：返回 `None`、`PK_AUTO_RANDOM_BITS=...`、`SHARD_BITS=...`、`NOT_SHARDED(PK_IS_HANDLE)` 或 `NOT_SHARDED`。
 
 ## 执行流程
+
+冻结增量为 `ServerInfo` 增加 `disable_rpc: bool`（派生默认值为 false）。`GetTiDBServerInfo` 先传播 `tidb_servers()` 的错误，再消费列表并保序保留 `!server.disable_rpc` 的节点；`GetClusterServerInfo` 也改经此 getter 汇总 TiDB，随后才追加其他组件并解析回环地址。因此 standalone BR 等注册了信息但不能接收 TiDB RPC 的进程不会被该路径暴露为集群 TiDB 端点。过滤只施于 TiDB 发现结果，不改变其他组件，也不改变 INFORMATION_SCHEMA 的静态表/列定义。
 
 **构建注册表和 InfoSchema 快照：**
 
@@ -144,8 +146,8 @@ RustCodeGraph 的文件节点把本文件标为被 20 个文件使用，并成�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标 `pkg/infoschema/tables.rs` 已索引为 92 个符号；`files --filter` 命中目标；`node --file` 阅读了 1–1165 行；`query` 定位了 `table_registry`、`buildTableMeta`、`information_schema_db`、`information_schema_db_with_storage_class`、`GetClusterServerInfo`、`GetShardingInfo`。图的批量 `callers/callees` 查询超时，故没有把未返回的边当作证据。
-- 已读生产文件：[`tables.rs`](tables.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`builder.rs`](builder.rs) 的直接调用段、[`catalog_columns_go45.rs`](catalog_columns_go45.rs) 的直接列定义辅助，以及直接 Rust 引用搜索结果。
-- 已读测试：[`tables_test.rs`](tables_test.rs)；[`go_merge_45_test.rs`](go_merge_45_test.rs) 中注册 ID、字段转换、存储类开关和大列集测试；[`test/clustertablestest/cluster_tables_test.rs`](test/clustertablestest/cluster_tables_test.rs) 及相关 harness/测试的直接调用位置。
-- 已读 Go 对照：[`tables.go`](tables.go) 中 `tableIDMap`、`columnInfo`、`buildColumnInfo`、`buildTableMeta`、`GetShardingInfo`、`ServerInfo`、发现/版本/标签/过滤函数、`tableNameToColumns`、`infoschemaTable`；[`tables_test.go`](tables_test.go) 中存储类和 TiFlash 标签测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时执行任务规定的 11 章节结构命令，并人工复核只新增本说明、不改 Rust/Go/Cargo/`plan.md`。仓库说明引用的 `.agents/skills/tidb-verify-profile` 在当前 checkout 不存在，因此 Ready 以本任务明确给出的文档结构验证和 diff 自审为准，该缺失不影响文档事实核验。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/infoschema/tables.rs`，并用 `git show 2c944fb:pkg/infoschema/tables.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `tables.go::GetTiDBServerInfo` 用 `node.IsDisableRPC()` 跳过相应节点；Rust 将该能力作为发现结果字段传入，并不自行读取 infosync。`tables_test.rs::tidb_server_info_skips_rpc_disabled_processes` 构造普通 TiDB 与 standalone BR，断言仅保留前者；聚合复用 getter 的事实由 `GetClusterServerInfo` 源码证明。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

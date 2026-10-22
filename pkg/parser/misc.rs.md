@@ -48,6 +48,8 @@ Hint 路径不走 `isTokenIdentifier` 的三级判断：`hintparserimpl.rs` 对 
 
 ## 数据与状态
 
+冻结增量在普通 `tokenMap` 增加 `("RESULT", token::result)` 与 `("RETURN", token::returnKwd)`。它们经既有 `isTokenIdentifier` 的 ASCII 大写化和限定名规则参与识别；没有加入内建函数、窗口函数或 Hint 表。`keywords.rs` 同步把这两个词标为非保留，语法接受位置由 grammar/生成 parser 决定，不能仅凭 tokenMap 认定任意位置都是保留字或可执行语句。
+
 `tokenMap`、`btFuncTokenMap`、`windowFuncTokenMap`、`aliases`、`hintedTokens`、`hintTokenMap` 都是只读静态切片；本文件没有运行时可变全局映射。`ruleTable` 是 `LazyLock` 包装的只读 trie，构建完成后扫描器只读访问。
 
 单次 identifier 判定会修改所属 `Scanner` 的两个局部状态：复用 `buf` 保存规范化名称；在 `IGNORE_SPACE` 分支中，`skipWhitespace` 会推进 reader。这个推进与 Go 行为一致，也是调用者随后看到 `(` 的基础，不应把该方法误当作完全无副作用的查询。限定名回看使用 `token_offset` 索引 `reader.s` 的字节，依赖 offset 与原 SQL 字节位置一致。
@@ -102,8 +104,8 @@ Hint 路径不走 `isTokenIdentifier` 的三级判断：`hintparserimpl.rs` 对 
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/parser/misc.rs` 找到本文件及 23 个符号；精确查询找到 Rust `buildRuleTable`、`isInTokenMap`、`ruleTable`、`hintTokenMap`，文件节点列出 `lexer.rs` 与 `hintparserimpl.rs` 等使用者；`node --file pkg/parser/misc.rs --offset 1180 --limit 80` 核验 `Scanner::isTokenIdentifier` 实现。泛化 `explore` 结果存在同名符号噪声，未把无关模块结果当作本文件调用证据。
-- Rust 源与装配：[`pkg/parser/misc.rs`](misc.rs)、[`pkg/parser/lib.rs`](lib.rs)、[`pkg/parser/lexer.rs`](lexer.rs)、[`pkg/parser/hintparserimpl.rs`](hintparserimpl.rs)、[`pkg/parser/Cargo.toml`](Cargo.toml)。目标目录没有 `doc.go`，包入口和 include 边界以 `lib.rs` 为准。
-- Go 对照：[`pkg/parser/misc.go`](misc.go)；调用路径还与同目录 `lexer.go` 的对应实现一致。
-- 独立测试：[`pkg/parser/misc_2_aster_unit_test.rs`](misc_2_aster_unit_test.rs) 覆盖字符边界、反向命名、trie 最长匹配、四类映射、限定名、`IGNORE_SPACE` 与窗口函数开关；[`pkg/parser/consistent_test.rs`](consistent_test.rs)、[`pkg/parser/reserved_words_test.rs`](reserved_words_test.rs)、[`pkg/parser/lexer_test.rs`](lexer_test.rs) 分别约束 grammar/别名一致性、窗口关键字例外和公开解析路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证恰好存在十一个固定二级章节，并人工复核文档只描述已由上述源码、图查询和测试支持的当前行为。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/misc.rs`，并用 `git show 2c944fb:pkg/parser/misc.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `misc.go` 对应 RESULT/RETURN token 映射一致。Rust `parser_test.rs::recommend_index_return_result_ast_is_read_only` 从完整 SQL 解析到主推荐 AST；`misc_2_aster_unit_test.rs`、`consistent_test.rs` 提供既有映射/词法一致性基线。未运行 parser 生成或测试。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

@@ -33,10 +33,12 @@ crate 入口 `pkg/parser/lib.rs:129-137` 将它与 token 表、Hint 表、`lexer
 2. 某个实例的 `Keywords` 第一次被解引用或迭代时，`KeywordLazyLock` 执行初始化闭包（`pkg/parser/keywords.rs:54-64`）。
 3. 闭包分别统计三个压缩词表的项目数，据此一次性预留向量容量；这避免展开过程因容量不足发生常规扩容，但仍会为最终向量分配堆内存。
 4. `append_section` 先展开保留字，再展开通用非保留字，最后展开 TiDB 扩展字。`split_whitespace` 只切分分隔空白，不改变词中的下划线（`pkg/parser/keywords.rs:60-62,68-78`）。
-5. 初始化完成后，所有后续访问复用同一个不可变 `Vec`。当前 Rust 回归测试把结果固定为 695 项、其中 233 项为保留字（`pkg/parser/keywords_test.rs:62-75`）。
+5. 初始化完成后，所有后续访问复用同一个不可变 `Vec`。当前 Rust 回归测试把结果固定为 697 项、其中 233 项为保留字（`pkg/parser/keywords_test.rs:62-75`）。
 6. 在 digester 路径中，`token_identifier` 排除限定名并先处理紧跟 `(` 的内置函数，然后调用 `is_keyword`；`is_keyword` 排除窗口函数词，再以 `eq_ignore_ascii_case` 扫描 `Keywords`（`pkg/parser/digester.rs:425-466`）。命中结果影响 SQL 规范化及摘要，而不是在此文件内产生 token 编号。
 
 ## 数据与状态
+
+冻结增量只在 `UNRESERVED_WORDS` 中按字典序加入 `RESULT` 和 `RETURN`，两项均为 `Reserved = false`、`Section = "unreserved"`。总项数从 695 变为 697，保留字数仍为 233；三段展开顺序和 LazyLock 生命周期不变。关键字目录用于分类/摘要，不会单独使 RETURN RESULT 语法可解析，还需词法 tokenMap、生成 token 和语法动作共同接线。
 
 三个压缩常量和每个 `KeywordsType` 字段都引用编译进二进制的 `'static` 字符串。运行时唯一创建的可变状态是初始化闭包中的局部 `Vec`；发布到 `LazyLock` 后，`Keywords` 仅通过共享引用读取，本文件没有提供增删改接口。
 
@@ -63,7 +65,7 @@ crate 入口 `pkg/parser/lib.rs:129-137` 将它与 token 表、Hint 表、`lexer
 主要边界和失效方式是数据一致性，而非运行时 I/O：
 
 - 错误分类会改变 `Reserved` 或 `Section` 的外部语义，但初始化本身不会报错。
-- 错误排序由 `test_keywords_sorting` 捕获；数量或分类漂移由 695/233 断言捕获（`pkg/parser/keywords_test.rs:62-100`）。
+- 错误排序由 `test_keywords_sorting` 捕获；数量或分类漂移由 697/233 断言捕获（`pkg/parser/keywords_test.rs:62-100`）。
 - Rust 测试额外断言不包含 MariaDB 专用词 `MONITOR`（`pkg/parser/keywords_test.rs:77-81`），这是 Go 同名测试文件未覆盖的 Rust 侧兼容边界。
 - 查表大小写规则不在本文件实现；digester 使用 `eq_ignore_ascii_case`（`pkg/parser/digester.rs:461-466`），而 `Scanner::isTokenIdentifier` 将 ASCII 小写转为大写后查询独立 token map（`pkg/parser/misc.rs:1204-1229`）。非 ASCII 大小写折叠不应由本表推断为已支持。
 - `Keywords` 的线性成员扫描出现在 digester 中；清单规模增长会线性增加该路径的比较成本。是否需要索引结构应在性能证据出现后统一评估，不能只改本生成文件。
@@ -78,9 +80,9 @@ crate 入口 `pkg/parser/lib.rs:129-137` 将它与 token 表、Hint 表、`lexer
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/parser/keywords.go:19-27` 定义同名 `KeywordsType`（`Word string`、`Reserved bool`、`Section string`）和导出切片 `Keywords`。Rust 保留字段名、三种 section 字符串、元素顺序和分类值；区别是 Go 文件逐项写出 695 个结构体字面量，而 Rust 把词按段压缩成三个字符串，并在首次访问时展开。
+Go 对照文件 `pkg/parser/keywords.go` 定义同名 `KeywordsType`（`Word string`、`Reserved bool`、`Section string`）和导出切片 `Keywords`。Rust 保留字段名、三种 section 字符串、元素顺序和分类值；区别是 Go 文件逐项写出 697 个结构体字面量，而 Rust 把词按段压缩成三个字符串，并在首次访问时展开。
 
-Go 表从 `ADD` 开始，`reserved` 段之后依次是 `unreserved` 与 `tidb`，结尾为 `WIDTH`（`pkg/parser/keywords.go:27-723`）；Rust 的三个常量和三次追加保持同一布局（`pkg/parser/keywords.rs:41-63`）。Go 测试固定首项、`ADMIN`/`AUTO`、总数 695、保留数 233 以及段内排序（`pkg/parser/keywords_test.go:23-63`）；Rust 独立测试保留这些断言，并新增 `MONITOR` 排除检查（`pkg/parser/keywords_test.rs:38-100`）。
+Go 表从 `ADD` 开始，`reserved` 段之后依次是 `unreserved` 与 `tidb`，结尾为 `WIDTH`（`pkg/parser/keywords.go`）；Rust 的三个常量和三次追加保持同一布局（`pkg/parser/keywords.rs:41-63`）。Go 测试固定首项、`ADMIN`/`AUTO`、总数 697、保留数 233 以及段内排序（`pkg/parser/keywords_test.go`）；Rust 独立测试保留这些断言，并新增 `MONITOR` 排除检查（`pkg/parser/keywords_test.rs:38-100`）。
 
 所有权模型不同：Go 导出的是可变包级 slice，Rust 导出的是 `LazyLock<Vec<_>>` 且没有公开可变访问。Rust 的 `Word`/`Section` 是静态借用，Go 对应字段是语言字符串值。两边在当前测试覆盖的观察结果上一致，但不能据此推断任意外部代码修改 Go slice 的行为在 Rust 中也可复现。
 
@@ -100,11 +102,8 @@ Go 表从 `ADD` 开始，`reserved` 段之后依次是 `unreserved` 与 `tidb`�
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/keywords.rs` 确认目标已索引并识别 7 个符号。
-- RustCodeGraph `node --file pkg/parser/keywords.rs --offset 1 --limit 260`：读取目标文件完整 79 行，确认结构体、三个常量、`Keywords` 初始化和 `append_section`。
-- RustCodeGraph `query KeywordsType`、`query Keywords`、`query append_section`：区分 Rust/Go 同名符号并定位私有展开函数；`callers/callees keywords.rs::append_section` 未返回边，故没有把图缺失解释成“无调用”，而以初始化闭包源码补证。
-- RustCodeGraph `node`/`explore`：核对 `pkg/parser/digester.rs::is_keyword`、`token_identifier`、`misc.rs::isTokenIdentifier`、`lexer.rs` 的 `Lex/getNextToken/getNextTwoTokens`，确认 digester 直接读取本表而主 Lexer 使用独立 token maps。
-- 已读源码/配置：`pkg/parser/Cargo.toml`、`pkg/parser/lib.rs`、`pkg/parser/keywords.rs`、`pkg/parser/lexer.rs`、`pkg/parser/misc.rs`、`pkg/parser/digester.rs`。`pkg/parser/doc.go` 不存在，因此无可读取的包契约文件。
-- 已读 Go 对照：`pkg/parser/keywords.go`、`pkg/parser/keywords_test.go`。
-- 已读独立 Rust 测试：`pkg/parser/keywords_test.rs`；补充调用/迁移证据来自 `pkg/parser/go_merge_29_test.rs` 与 `pkg/parser/digester_1_aster_unit_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工检查所有运行时结论均指向上述符号或文件；未验证生成器端到端重新生成结果，也未运行关键字单元测试。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/keywords.rs`，并用 `git show 2c944fb:pkg/parser/keywords.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `keywords.go` 同样包含两个非保留词；冻结版本 `keywords_test.rs::test_keywords_length` 和 Go `TestKeywordsLength` 均固定 697/233。这些是已读取的断言，未运行生成器或单元测试。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

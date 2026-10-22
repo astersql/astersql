@@ -10,7 +10,7 @@
 
 ## 核心职责
 
-1. 通过 `is_read_only(node, check_global_vars)` 对一棵语句 AST 分类。已明确支持 `SelectStmt`、`ExplainStmt`、`DoStmt`、`ShowStmt`、`SetOprStmt`、`SetOprSelectList`、`AdminStmt` 和 `TraceStmt`；未列出的节点默认返回 `false`，因此对未知语句采取保守策略。
+1. 通过 `is_read_only(node, check_global_vars)` 对一棵语句 AST 分类。已明确支持 `SelectStmt`、`ExplainStmt`、`DoStmt`、`ShowStmt`、`RecommendIndexStmt`、`SetOprStmt`、`SetOprSelectList`、`AdminStmt` 和 `TraceStmt`；未列出的节点默认返回 `false`，因此对未知语句采取保守策略。
 2. 用 `ReadOnlyChecker` 遍历 SELECT 子树，识别 `VariableExpr { is_system: true, value: Some(_) }` 这一系统变量赋值形态。
 3. 提供 Go 迁移兼容名称：`IsReadOnly` 委托给 Rust 风格的 `is_read_only`，`UnspecifiedSize` 与 `UNSPECIFIED_SIZE` 等值。
 4. 通过 `#[path = "../util/escape.rs"]` 引入并公开 `UnescapeChar`。直接调用点位于 [`base.rs`](./base.rs) 的 AST 原始文本恢复逻辑，用它展开 MySQL 反斜杠转义。
@@ -25,6 +25,8 @@
 - `pub use self::parser_escape::UnescapeChar`：公开 MySQL 单字节转义展开函数；实际实现位于 [`../util/escape.rs`](../util/escape.rs)，不在本文件内重复实现。
 
 ## 执行流程
+
+冻结增量在 DO/SHOW 与集合语句分派之间识别 crate 根部 `RecommendIndexStmt`：只有 `Action == RecommendIndexActionRun` 或 `Action == RecommendIndexActionReturn` 返回 true；SET、SHOW、APPLY、IGNORE、空值和未知 action 均为 false。该分支不受 `check_global_vars` 参数影响，也不解析 `SQL` 字符串或遍历其中的语句。此结果是 AST 分类契约，不能推导推荐算法的运行时副作用或权限。
 
 `is_read_only` 按以下顺序分类，顺序也构成扩展时需要维护的分派规则：
 
@@ -90,8 +92,8 @@ Rust 额外提供蛇形命名主入口和大写常量，同时保留 Go 风格�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/parser/ast` 确认目标、Go 对照和测试均已索引；`node --file pkg/parser/ast/util.rs --offset 1 --limit 240` 返回完整 150 行源码，并报告 `util_test.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs` 两个使用文件；`query IsReadOnly` 与 `query is_read_only` 用于消歧核心入口；精确 `callers`/`callees` 未返回额外边，本文没有据此补造调用关系。
-- 源码：[`util.rs`](./util.rs) 的常量、分派函数、兼容包装和访问器；[`lib.rs`](./lib.rs) 的 `Visitor`、`Node`、具体 AST 数据结构、`SelectStmt::accept` 与 `pub mod util`；[`base.rs`](./base.rs) 的 `UnescapeChar` 调用；[`../util/escape.rs`](../util/escape.rs) 的真实转义实现。
-- crate 配置：[`Cargo.toml`](./Cargo.toml) 的包名、crate 根、内部依赖和 `go-package = "pkg/parser/ast"` 移植元数据。
-- Go 与测试：[`util.go`](./util.go)、[`util_test.go`](./util_test.go)、[`util_test.rs`](./util_test.rs)、[`util_tests.rs`](./util_tests.rs)、[`util_8_aster_unit_test.rs`](./util_8_aster_unit_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查目标文件存在且恰有十一个固定二级标题，并人工复核文档没有把未获得的生产调用边写成已验证事实。
+- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/util.rs`，并用 `git show 2c944fb:pkg/parser/ast/util.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
+- Go `util.go::IsReadOnly` 对推荐语句采用同样的两个 action 白名单。Rust `parser_test.rs::recommend_index_return_result_ast_is_read_only` 经公开 ParseOneStmt 获得主 AST，检查 Action/SQL/Options 并断言 `IsReadOnly(..., true)`；既有 `util_test.rs` 等继续作为其他分支基线，未将未执行的测试声称为通过。
+- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
+- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
+- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。
