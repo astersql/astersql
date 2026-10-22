@@ -251,3 +251,59 @@ fn query_expression_modules_have_no_numeric_fallback() {
         assert!(!source.contains("rhs_index"));
     }
 }
+
+/// SignedLiteral must retain NumLiteral's datum and type, as Go's grammar
+/// passes the original numeric value to ast.NewValueExpr. Stringifying it
+/// makes DEFAULT -1 restore as -'1' and breaks mysql.analyze_options writes.
+#[test]
+fn signed_numeric_defaults_keep_numliteral_datum_and_type() {
+    fn default_expression(sql: &str) -> parser_ast::ExprNode {
+        let statement = crate::New().ParseOneStmt(sql, "", "").unwrap();
+        let column = if let Some(create) = statement
+            .as_any()
+            .downcast_ref::<parser_ast::CreateTableStmt>()
+        {
+            &create.Cols[0]
+        } else {
+            &statement
+                .as_any()
+                .downcast_ref::<parser_ast::AlterTableStmt>()
+                .unwrap()
+                .Specs[0]
+                .NewColumns[0]
+        };
+        column
+            .Options
+            .iter()
+            .find(|option| option.Tp == parser_ast::ColumnOptionType::DefaultValue)
+            .unwrap()
+            .Expr
+            .as_ref()
+            .unwrap()
+            .clone()
+    }
+    for number in ["1", "18446744073709551615", "1.25", "1e3"] {
+        let plain = default_expression(&format!("create table t(a double default {number})"));
+        let parser_ast::ExprKind::Value(expected) = plain.Kind else {
+            panic!("expected numeric literal")
+        };
+        assert!(!matches!(expected.Datum, parser_ast::ValueDatum::String(_)));
+        for sign in ["+", "-"] {
+            for sql in [
+                format!("create table t(a double default {sign}{number})"),
+                format!("alter table t add column a double default {sign}{number}"),
+            ] {
+                let signed = default_expression(&sql);
+                let parser_ast::ExprKind::Unary { Op, V } = signed.Kind else {
+                    panic!("expected signed literal: {sql}")
+                };
+                assert_eq!(Op, sign);
+                let parser_ast::ExprKind::Value(actual) = V.Kind else {
+                    panic!("expected numeric operand: {sql}")
+                };
+                assert_eq!(actual.Datum, expected.Datum, "{sql}");
+                assert_eq!(actual.Type, expected.Type, "{sql}");
+            }
+        }
+    }
+}

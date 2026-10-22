@@ -1088,11 +1088,11 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             ));
         }
         ExpressionRule::SignedLiteralAlt02 | ExpressionRule::SignedLiteralAlt03 => {
-            let value = rhs[rhs_len - (0)]
-                .item
-                .as_deref()
-                .map(semantic_value_text)
-                .unwrap_or_default();
+            let Some(value) = rhs[rhs_len - (0)].item.as_deref() else {
+                yylex.AppendError(yylex.Errorf("missing numeric semantic value", &[]));
+                return Err(1);
+            };
+            let value = semantic_value_expr(value, &parser_state.charset, &parser_state.collation);
             out.expr = Some(parser_ast::ExprNode::Unary(
                 if rule == ExpressionRule::SignedLiteralAlt02 {
                     "+"
@@ -1100,7 +1100,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                     "-"
                 }
                 .to_owned(),
-                Box::new(parser_ast::ExprNode::Value(value)),
+                Box::new(value),
             ));
         }
         ExpressionRule::LengthNumAlt01 => {
